@@ -465,6 +465,125 @@ class KtxClient(BaseRestClient):
         result = (j.get("result") if isinstance(j, dict) else None) or []
         return result if isinstance(result, list) else []
 
+    def wait_for_fill(
+        self,
+        *,
+        symbol: str,
+        order_id: str = "",
+        client_order_id: str = "",
+        max_wait_sec: float = 3.0,
+        poll_interval_sec: float = 0.5,
+    ) -> Dict[str, Any]:
+        """
+        Poll KTX order status until filled / cancelled / rejected / timeout.
+
+        Returns ``{"filled": float, "avg_price": float, "fee": float, "fee_ccy": str, "status": str, "order": dict}``.
+        KTX order fields (best-effort, may need adjustment after live testing):
+            - ``status``: "open" | "filled" | "cancelled" | "rejected" | "partial_filled"
+            - ``filled_amount`` / ``deal_amount``: cumulative base filled
+            - ``average_price`` / ``avg_price`` / ``price_avg``: VWAP
+            - ``fee`` / ``fee_amount`` / ``deal_fee``: cumulative fee
+            - ``fee_currency`` / ``fee_ccy``: fee currency
+        """
+        end_ts = time.time() + float(max_wait_sec or 0.0)
+        last: Dict[str, Any] = {}
+        while True:
+            timed_out = time.time() >= end_ts
+            try:
+                last = self.get_order(
+                    symbol=symbol,
+                    order_id=str(order_id or ""),
+                    client_order_id=str(client_order_id or ""),
+                )
+            except Exception:
+                last = last or {}
+            # Some KTX responses wrap the order under "result"
+            order = last.get("result") if isinstance(last, dict) and isinstance(last.get("result"), dict) else last
+            if not isinstance(order, dict):
+                order = {}
+            status = str(order.get("status") or order.get("state") or "").lower()
+            try:
+                filled = float(
+                    order.get("filled_amount")
+                    or order.get("deal_amount")
+                    or order.get("executed_amount")
+                    or order.get("filled")
+                    or 0.0
+                )
+            except Exception:
+                filled = 0.0
+            try:
+                avg_price = float(
+                    order.get("average_price")
+                    or order.get("avg_price")
+                    or order.get("price_avg")
+                    or order.get("deal_avg_price")
+                    or 0.0
+                )
+            except Exception:
+                avg_price = 0.0
+            try:
+                fee = abs(
+                    float(
+                        order.get("fee")
+                        or order.get("fee_amount")
+                        or order.get("deal_fee")
+                        or 0.0
+                    )
+                )
+            except Exception:
+                fee = 0.0
+            fee_ccy = str(order.get("fee_currency") or order.get("fee_ccy") or "")
+            terminal = status in ("filled", "cancelled", "canceled", "rejected", "expired")
+            if (filled > 0 and avg_price > 0) or terminal:
+                # Wait one extra poll if fee not yet reported but we still have time.
+                if fee <= 0 and filled > 0 and avg_price > 0 and not timed_out:
+                    time.sleep(float(poll_interval_sec or 0.5))
+                    continue
+                return {
+                    "filled": filled,
+                    "avg_price": avg_price,
+                    "fee": fee,
+                    "fee_ccy": fee_ccy,
+                    "status": status,
+                    "order": order,
+                }
+            if timed_out:
+                return {
+                    "filled": filled,
+                    "avg_price": avg_price,
+                    "fee": fee,
+                    "fee_ccy": fee_ccy,
+                    "status": status,
+                    "order": order,
+                }
+            time.sleep(float(poll_interval_sec or 0.5))
+
+    def set_leverage(self, *, symbol: str, leverage: float) -> Dict[str, Any]:
+        """
+        Best-effort leverage setter for KTX futures.
+
+        KTX (lpc) leverage is configured per-account/per-symbol via ``/papi/v1/trade/leverage``
+        in the public docs. Endpoint payload may differ between deployments — callers should
+        wrap this in ``try/except`` because not all KTX accounts support runtime adjustment.
+        Spot market is a no-op.
+        """
+        if self.market_type == "spot":
+            return {"skipped": True, "reason": "spot"}
+        try:
+            lev = int(float(leverage or 0))
+        except Exception:
+            lev = 0
+        if lev <= 0:
+            return {"skipped": True, "reason": "invalid_leverage"}
+        ktx_sym = to_ktx_symbol(symbol, market_type=self.market_type)
+        body = {"symbol": ktx_sym, "leverage": lev}
+        try:
+            return self._signed_request("POST", "/v1/trade/leverage", json_body=body)
+        except LiveTradingError as e:
+            logger.debug(f"KTX set_leverage best-effort failed: {e}")
+            return {"skipped": True, "error": str(e)}
+
     def get_fee_rate(self, symbol: str, market_type: str = "swap") -> Optional[Dict[str, float]]:
         """Return maker/taker fee from product info."""
         try:
