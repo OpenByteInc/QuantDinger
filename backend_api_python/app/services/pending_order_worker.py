@@ -35,6 +35,7 @@ from app.services.live_trading.kucoin import KucoinFuturesClient
 from app.services.live_trading.gate import GateSpotClient, GateUsdtFuturesClient
 from app.services.live_trading.deepcoin import DeepcoinClient
 from app.services.live_trading.htx import HtxClient
+from app.services.live_trading.ktx import KtxClient
 from app.services.live_trading.symbols import to_okx_swap_inst_id
 from app.services.live_trading.symbols import to_gate_currency_pair
 from app.utils.db import get_db_connection
@@ -566,6 +567,52 @@ class PendingOrderWorker:
                                 exch_size.setdefault(hb_sym, {"long": 0.0, "short": 0.0})[side] = abs(float(sz))
                                 try:
                                     ep = float(p.get("avgPrice") or p.get("entryPrice") or 0.0)
+                                    if ep > 0:
+                                        exch_entry_price.setdefault(hb_sym, {"long": 0.0, "short": 0.0})[side] = ep
+                                except Exception:
+                                    pass
+
+                    elif isinstance(client, KtxClient) and market_type == "swap":
+                        # KTX (lpc) positions. Field names follow public docs and may need
+                        # adjustment after live testing with real account responses.
+                        positions = client.get_positions()
+                        if isinstance(positions, list):
+                            for p in positions:
+                                if not isinstance(p, dict):
+                                    continue
+                                sym = str(p.get("symbol") or "").strip().upper()
+                                side0 = str(p.get("side") or p.get("position_side") or "").strip().lower()
+                                try:
+                                    sz = float(
+                                        p.get("amount")
+                                        or p.get("size")
+                                        or p.get("position")
+                                        or p.get("qty")
+                                        or 0.0
+                                    )
+                                except Exception:
+                                    sz = 0.0
+                                if not sym or abs(sz) <= 0:
+                                    continue
+                                # Normalize KTX symbol (BTC_USDT_SWAP / BTC_USDT) -> HB BTC/USDT
+                                hb_sym = sym
+                                if hb_sym.endswith("_SWAP"):
+                                    hb_sym = hb_sym[:-5]
+                                hb_sym = hb_sym.replace("_", "/")
+                                side = "long" if side0 in ("long", "buy") else (
+                                    "short" if side0 in ("short", "sell") else (
+                                        "long" if sz > 0 else "short"
+                                    )
+                                )
+                                exch_size.setdefault(hb_sym, {"long": 0.0, "short": 0.0})[side] = abs(float(sz))
+                                try:
+                                    ep = float(
+                                        p.get("entry_price")
+                                        or p.get("avg_price")
+                                        or p.get("average_price")
+                                        or p.get("open_price")
+                                        or 0.0
+                                    )
                                     if ep > 0:
                                         exch_entry_price.setdefault(hb_sym, {"long": 0.0, "short": 0.0})[side] = ep
                                 except Exception:
@@ -1805,6 +1852,21 @@ class PendingOrderWorker:
                         pos_side=pos_side,
                         client_order_id=limit_client_oid,
                     )
+                elif isinstance(client, KtxClient):
+                    if market_type == "swap":
+                        try:
+                            client.set_leverage(symbol=str(symbol), leverage=leverage)
+                        except Exception:
+                            pass
+                    res1 = client.place_limit_order(
+                        symbol=str(symbol),
+                        side=side,
+                        qty=remaining,
+                        price=limit_price,
+                        reduce_only=reduce_only,
+                        pos_side=pos_side,
+                        client_order_id=limit_client_oid,
+                    )
                 else:
                     raise LiveTradingError(f"Unsupported client type: {type(client)}")
 
@@ -1893,6 +1955,11 @@ class PendingOrderWorker:
                     phases["limit_query"] = q
                     _apply_fill(float(q.get("filled") or 0.0), float(q.get("avg_price") or 0.0))
                     _apply_fee(float(q.get("fee") or 0.0), str(q.get("fee_ccy") or ""))
+                elif isinstance(client, KtxClient):
+                    q = client.wait_for_fill(symbol=str(symbol), order_id=limit_order_id, client_order_id=limit_client_oid, max_wait_sec=maker_wait_sec)
+                    phases["limit_query"] = q
+                    _apply_fill(float(q.get("filled") or 0.0), float(q.get("avg_price") or 0.0))
+                    _apply_fee(float(q.get("fee") or 0.0), str(q.get("fee_ccy") or ""))
 
                 remaining = max(0.0, float(amount or 0.0) - total_base)
 
@@ -1954,6 +2021,8 @@ class PendingOrderWorker:
                         elif isinstance(client, DeepcoinClient):
                             phases["limit_cancel"] = client.cancel_order(symbol=str(symbol), order_id=limit_order_id, client_order_id=limit_client_oid)
                         elif isinstance(client, HtxClient):
+                            phases["limit_cancel"] = client.cancel_order(symbol=str(symbol), order_id=limit_order_id, client_order_id=limit_client_oid)
+                        elif isinstance(client, KtxClient):
                             phases["limit_cancel"] = client.cancel_order(symbol=str(symbol), order_id=limit_order_id, client_order_id=limit_client_oid)
                     except Exception:
                         pass
@@ -2157,6 +2226,20 @@ class PendingOrderWorker:
                         pos_side=pos_side,
                         client_order_id=market_client_oid,
                     )
+                elif isinstance(client, KtxClient):
+                    if market_type == "swap":
+                        try:
+                            client.set_leverage(symbol=str(symbol), leverage=leverage)
+                        except Exception:
+                            pass
+                    res2 = client.place_market_order(
+                        symbol=str(symbol),
+                        side=side,
+                        qty=remaining,
+                        reduce_only=reduce_only,
+                        pos_side=pos_side,
+                        client_order_id=market_client_oid,
+                    )
                 else:
                     raise LiveTradingError(f"Unsupported client type: {type(client)}")
 
@@ -2237,6 +2320,11 @@ class PendingOrderWorker:
                     _apply_fill(float(q2.get("filled") or 0.0), float(q2.get("avg_price") or 0.0))
                     _apply_fee(float(q2.get("fee") or 0.0), str(q2.get("fee_ccy") or ""))
                 elif isinstance(client, HtxClient):
+                    q2 = client.wait_for_fill(symbol=str(symbol), order_id=market_order_id, client_order_id=market_client_oid, max_wait_sec=12.0)
+                    phases["market_query"] = q2
+                    _apply_fill(float(q2.get("filled") or 0.0), float(q2.get("avg_price") or 0.0))
+                    _apply_fee(float(q2.get("fee") or 0.0), str(q2.get("fee_ccy") or ""))
+                elif isinstance(client, KtxClient):
                     q2 = client.wait_for_fill(symbol=str(symbol), order_id=market_order_id, client_order_id=market_client_oid, max_wait_sec=12.0)
                     phases["market_query"] = q2
                     _apply_fill(float(q2.get("filled") or 0.0), float(q2.get("avg_price") or 0.0))
