@@ -68,6 +68,9 @@ yarn.lock
 *.log
 backend_api_python/logs/
 backend_api_python/dist/
+# 2026/05/27 Steve Peng：新增原因：台股 Gradio UI 會在本機產生 JSON/CSV 報告，
+# 這些是使用者執行輸出，不應推送到 GitHub。
+reports/
 
 # MCP server build artifacts (PyPI release output, never committed)
 mcp_server/dist/
