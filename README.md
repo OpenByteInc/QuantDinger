@@ -265,6 +265,7 @@ QuantDinger is a **self-hosted quantitative operating system** — not a single-
 ## Features at a glance
 
 - **Research & AI** — Multi-LLM ensemble analysis, watchlists, opportunity radar, NL→indicator/strategy, post-backtest AI hints; optional confidence calibration. **[Agent Gateway + MCP](#use-it-from-an-ai-agent-cursor--claude-code--codex--mcp)** for Cursor / Claude Code / Codex with scoped tokens and SSE job streaming.
+- **Taiwan market information** — Read-only TWSE / TPEx opportunity radar with official/mock/auto providers, universe filters, top-20 strength ranking, single-stock analysis by symbol/name, pre-market / post-market reports, risk references, candidate backtest summaries, and a double-click local Gradio UI (`run_taiwan_market_ui.cmd`). All outputs include “非投資建議，請自行評估風險”; this module does not add broker connections, order services, paper/live trading, or execution features.
 - **Build** — Professional KLine chart UI; `IndicatorStrategy` (dataframe `buy`/`sell` signals) and `ScriptStrategy` (`on_bar`, `ctx.buy()` / `ctx.sell()`); AI code generation as a starting point, Python as source of truth.
 - **Validate** — Server-side backtests with equity curves, drawdown metrics, trade logs, and strategy snapshots — no client-side-only backtest theater.
 - **Operate** — Live strategy bots, quick trade, **10+ crypto exchanges** via CCXT, **IBKR** / **MT5** / **Alpaca** (US stocks, ETFs, crypto); unified **Broker Accounts** page; notifications (Telegram, email, SMS, Discord, webhooks).
@@ -632,6 +633,8 @@ Use `backend_api_python/env.example` as the primary template. Key areas include:
 | Doc | Notes |
 |-----|--------|
 | [Changelog](docs/CHANGELOG.md) | Releases & migrations |
+| [Taiwan Market Module](docs/Taiwan_Market_Module.md) | Read-only TWSE / TPEx reports, top-20 candidates, risk references, mock provider, API and CLI usage |
+| [Taiwan Market Module Report](TAIWAN_MARKET_MODULE_REPORT.md) | Implementation report, validation results, data-source notes, and no-trading safety confirmation |
 | [README (中文)](docs/README_CN.md) | Chinese overview |
 | [JA](docs/README_JA.md) · [KO](docs/README_KO.md) · [TH](docs/README_TH.md) · [VI](docs/README_VI.md) · [AR](docs/README_AR.md) | Concise localized READMEs (Japanese, Korean, Thai, Vietnamese, Arabic) |
 | [Cloud deployment](docs/CLOUD_DEPLOYMENT_EN.md) | HTTPS, reverse proxy, production |

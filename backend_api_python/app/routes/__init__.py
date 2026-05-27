@@ -29,6 +29,11 @@ def register_routes(app: Flask):
     from app.routes.quick_trade import quick_trade_bp
     from app.routes.experiment import experiment_bp
     from app.routes.policy import policy_bp
+    # 2026/05/27 Steve Peng：新增 Taiwan Market read-only API 註冊。
+    # 修改原因：提供台股資訊蒐集、量化分析、候選股報告與回測摘要入口。
+    # 修改前代碼：沒有 /api/taiwan-market 路由。
+    # 修改後功能：只註冊資訊型端點，不連接任何交易執行、券商或下單服務。
+    from app.routes.taiwan_market import taiwan_market_bp
     
     app.register_blueprint(health_bp)
     app.register_blueprint(auth_bp, url_prefix='/api/auth')   # Auth routes
@@ -53,6 +58,7 @@ def register_routes(app: Flask):
     app.register_blueprint(quick_trade_bp, url_prefix='/api/quick-trade')
     app.register_blueprint(experiment_bp, url_prefix='/api/experiment')
     app.register_blueprint(policy_bp, url_prefix='/api/policy')
+    app.register_blueprint(taiwan_market_bp, url_prefix='/api/taiwan-market')
 
     # Agent Gateway (/api/agent/v1) — versioned, scoped surface for AI agents.
     # See docs/agent/AI_INTEGRATION_DESIGN.md.

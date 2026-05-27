@@ -36,3 +36,8 @@ ib_insync>=0.9.86
 # SerpAPI - Google/Bing search scraper (free 100 requests/month)
 # google-search-results>=2.4.0
 alpaca-py>=0.30.0
+# 2026/05/27 Steve Peng：新增台股本機圖形化介面依賴。
+# 修改原因：run_taiwan_market_ui.cmd 需要 Gradio 啟動 localhost Web UI 直接顯示報告。
+# 修改前代碼：只提供 API/CLI，沒有 GUI 依賴。
+# 修改後功能：支援 `python -m app.ui.taiwan_market_app` 啟動 read-only 台股報告 UI。
+gradio>=4.44.0
