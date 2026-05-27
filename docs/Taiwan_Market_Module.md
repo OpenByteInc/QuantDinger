@@ -19,11 +19,11 @@ QuantDinger 目前 repo 主要包含 Flask 後端、Docker Compose、文件、MC
 
 本模組新增位置：
 
-- `backend_api_python/app/services/taiwan_market.py`：台股 provider interface、mock provider、universe builder、強勢評分、風險參考、報告與回測摘要。
+- `backend_api_python/app/services/taiwan_market.py`：台股 provider interface、mock provider、universe builder、強勢評分、指定個股分析、風險參考、報告與回測摘要。
 - `backend_api_python/app/routes/taiwan_market.py`：`/api/taiwan-market/*` read-only API。
 - `backend_api_python/app/ui/taiwan_market_app.py`：Gradio 本機圖形化介面，直接顯示報告、表格、明細與下載檔。
 - `backend_api_python/scripts/generate_taiwan_market_report.py`：手動產生台股報告或回測摘要。
-- `backend_api_python/tests/test_taiwan_market.py`：mock provider、股票池過濾、報告、回測與 API smoke tests。
+- `backend_api_python/tests/test_taiwan_market.py`：mock provider、股票池過濾、指定個股分析、報告、回測與 API smoke tests。
 - `backend_api_python/tests/test_taiwan_market_ui.py`：GUI helper 的摘要、表格、明細與下載檔測試。
 
 ## 資料 Provider 設計
@@ -135,6 +135,15 @@ curl -H "Authorization: Bearer <token>" \
   "http://localhost:8888/api/taiwan-market/backtest?provider=mock&days=60&top=20"
 ```
 
+指定個股分析：
+
+```bash
+curl -H "Authorization: Bearer <token>" \
+  "http://localhost:8888/api/taiwan-market/stock-analysis?provider=mock&query=2330"
+```
+
+`query` 可輸入股票代號或名稱片段。輸出包含現價、漲跌幅、量能、均線、法人籌碼欄位、強勢分數、信心分數、風險等級、是否納入強勢排行股票池、觀察價位區間、停損/停利觀察價位、追高適合度、主要理由、主要風險、事件風險與下一步觀察項目。此輸出只屬資訊型觀察建議，仍會標示「非投資建議，請自行評估風險」。
+
 資料來源說明：
 
 ```bash
@@ -187,6 +196,7 @@ GUI 分頁：
 - 開盤前報告
 - 收盤後報告
 - 強勢候選股排行榜 / 個股明細
+- 指定個股分析
 - 回測摘要
 - 資料來源/授權說明
 
@@ -196,6 +206,7 @@ GUI 控制項：
 - 日期：`YYYY-MM-DD`，可留空使用 Asia/Taipei 今日
 - Top N 候選股數量
 - 是否納入 ETF
+- 股票名稱或代號：可輸入 `2330`、`台積電` 或名稱片段
 - 回測天數
 
 GUI 輸出：
@@ -203,6 +214,7 @@ GUI 輸出：
 - 報告摘要 Markdown
 - 候選股表格
 - 個股明細
+- 指定個股現況、強勢分數、風險等級、觀察價位與事件風險
 - 風險提示
 - JSON 下載
 - CSV 下載

@@ -257,3 +257,110 @@ def test_auto_provider_falls_back_to_mock_when_official_unavailable():
     assert report["data_source_status"]["fallback_used"] is True
     assert "network down" in report["data_source_status"]["message"]
     assert len(report["top_candidates"]) == 20
+
+
+def test_analyze_stock_by_code_returns_read_only_status_snapshot():
+    """功能：指定個股分析可依股票代號回傳現況、分數、風險與觀察說明。
+
+    2026/05/27 Steve Peng：新增原因：使用者需要輸入股票名稱或代號後查看單檔股票現況與說明。
+    修改前代碼：台股模組只提供排行榜與整體報告，沒有指定個股查詢入口。
+    修改後功能：服務層提供 read-only 單檔分析，不加入下單、券商或交易執行功能。
+    """
+    service = TaiwanMarketService(provider=MockTaiwanMarketProvider())
+
+    analysis = service.analyze_stock("2330", as_of=date(2026, 5, 27), include_etf=False)
+
+    assert analysis["disclaimer"] == TAIWAN_MARKET_DISCLAIMER
+    assert analysis["status"] == "found"
+    assert analysis["query"] == "2330"
+    assert analysis["stock"]["code"] == "2330"
+    assert analysis["current_snapshot"]["close"] > 0
+    assert analysis["quantitative_analysis"]["strength_score"] > 0
+    assert analysis["observation_reference"]["suggested_observation"]
+    assert "非投資建議" in analysis["observation_reference"]["guidance_note"]
+
+    serialized = json.dumps(analysis, ensure_ascii=False).lower()
+    for forbidden in ["broker_api", "order_service", "buy_button", "sell_button", "live_trading", "paper_trading"]:
+        assert forbidden not in serialized
+
+
+def test_analyze_stock_by_name_and_not_found_suggestions():
+    """功能：指定個股分析支援名稱查詢，找不到時回傳候選提示而不是丟錯。
+
+    2026/05/27 Steve Peng：新增原因：使用者可能輸入股票名稱而非代號。
+    修改前代碼：無名稱查詢或找不到時的友善提示。
+    修改後功能：名稱可做大小寫不敏感比對，找不到時回傳可讀訊息與相近標的。
+    """
+    snapshots = [
+        StockSnapshot(
+            code="1111",
+            name="Alpha Semiconductor",
+            market="TWSE",
+            industry="半導體",
+            close=100,
+            previous_close=96,
+            volume=4_000_000,
+            turnover=400_000_000,
+            day_high=104,
+            day_low=95,
+            ma5=98,
+            ma20=90,
+            ma60=82,
+            volume_ma20=2_000_000,
+            data_days=120,
+        ),
+        StockSnapshot(
+            code="2222",
+            name="Beta Cloud",
+            market="TPEx",
+            industry="雲端服務",
+            close=50,
+            previous_close=49,
+            volume=2_000_000,
+            turnover=100_000_000,
+            day_high=51,
+            day_low=48,
+            ma5=49,
+            ma20=47,
+            ma60=45,
+            volume_ma20=1_200_000,
+            data_days=120,
+        ),
+    ]
+    service = TaiwanMarketService(provider=MockTaiwanMarketProvider(snapshots=snapshots))
+
+    by_name = service.analyze_stock("alpha", as_of=date(2026, 5, 27))
+    missing = service.analyze_stock("cloudx", as_of=date(2026, 5, 27))
+
+    assert by_name["status"] == "found"
+    assert by_name["stock"]["code"] == "1111"
+    assert missing["status"] == "not_found"
+    assert missing["suggestions"]
+    assert missing["suggestions"][0]["code"] == "2222"
+
+
+def test_taiwan_market_stock_analysis_api_uses_read_only_envelope(client, monkeypatch):
+    """功能：API 提供指定個股分析，回傳 read-only 分析資料。
+
+    2026/05/27 Steve Peng：新增原因：外部 UI 或手動工具需要以 API 觸發單檔查詢。
+    修改前代碼：只有報告、排行榜、回測與資料來源 API。
+    修改後功能：新增 `/api/taiwan-market/stock-analysis`，只回傳資訊分析與風險說明。
+    """
+    import app.utils.auth as auth_module
+
+    monkeypatch.setattr(
+        auth_module,
+        "verify_token",
+        lambda token: {"sub": "tester", "user_id": 1, "role": "admin"},
+    )
+
+    response = client.get(
+        "/api/taiwan-market/stock-analysis?query=2330&provider=mock",
+        headers={"Authorization": "Bearer test-token"},
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["code"] == 1
+    assert payload["data"]["status"] == "found"
+    assert payload["data"]["stock"]["code"] == "2330"

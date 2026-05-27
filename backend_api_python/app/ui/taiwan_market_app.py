@@ -221,6 +221,94 @@ def build_backtest_outputs(backtest: Dict[str, Any]):
     return summary, table, str(json_path), str(csv_path)
 
 
+def stock_analysis_markdown(analysis: Dict[str, Any]) -> str:
+    """功能：將指定個股分析 JSON 轉成 GUI 可讀 Markdown。"""
+    # 2026/05/27 Steve Peng：新增原因：GUI 需要直接顯示指定股票現況、風險與觀察建議。
+    # 修改前代碼：UI 只有整體報告、排行榜與回測摘要，無單檔分析顯示格式。
+    # 修改後功能：把單檔分析轉為繁體中文 Markdown，且明確標示非投資建議。
+    lines = [
+        "# 指定個股分析",
+        f"> {analysis.get('disclaimer') or TAIWAN_MARKET_DISCLAIMER}",
+        "",
+    ]
+    if analysis.get("status") != "found":
+        lines.append(f"## 查詢結果：{analysis.get('message', '找不到符合條件的股票。')}")
+        suggestions = analysis.get("suggestions") or []
+        if suggestions:
+            lines.append("")
+            lines.append("### 可能的相近標的")
+            for item in suggestions:
+                lines.append(f"- {item.get('code')} {item.get('name')}｜{item.get('market')}｜{item.get('industry')}")
+        return "\n".join(lines)
+
+    stock = analysis.get("stock") or {}
+    snapshot = analysis.get("current_snapshot") or {}
+    quantitative = analysis.get("quantitative_analysis") or {}
+    observation = analysis.get("observation_reference") or {}
+    moving_average = snapshot.get("moving_average") or {}
+    universe_filter = analysis.get("universe_filter") or {}
+    lines.extend(
+        [
+            f"## {stock.get('code')} {stock.get('name')}｜{stock.get('market')}｜{stock.get('industry')}",
+            f"- 報告日期：{analysis.get('report_date')}（{analysis.get('timezone')}）",
+            f"- 資料來源：{analysis.get('provider')}",
+            f"- 收盤價：{snapshot.get('close')}，日漲跌幅：{snapshot.get('day_change_pct')}%",
+            f"- 日高/日低：{snapshot.get('day_high')} / {snapshot.get('day_low')}",
+            f"- 成交量：{snapshot.get('volume')}，成交金額：{snapshot.get('turnover')}",
+            f"- 量能相對 20 日均量：{snapshot.get('volume_vs_20d')} 倍",
+            f"- MA5/MA20/MA60：{moving_average.get('ma5')} / {moving_average.get('ma20')} / {moving_average.get('ma60')}",
+            "",
+            "## 量化現況",
+            f"- 強勢分數：{quantitative.get('strength_score')}",
+            f"- 信心分數：{quantitative.get('confidence_score')}",
+            f"- 風險等級：{quantitative.get('risk_level')}",
+            f"- 目前排行榜名次：{quantitative.get('rank_in_current_universe') or '未納入排行'}",
+            f"- 資料品質：{quantitative.get('data_quality')}",
+            f"- 是否納入強勢排行股票池：{'是' if universe_filter.get('eligible_for_strength_ranking') else '否'}",
+        ]
+    )
+    exclusions = universe_filter.get("exclusion_reasons") or []
+    if exclusions:
+        lines.append("- 排除原因：" + "；".join(map(str, exclusions)))
+    lines.extend(
+        [
+            "",
+            "## 觀察參考",
+            f"- 觀察買入價位區間：{_range_text(observation.get('observe_entry_price_range'))}",
+            f"- 停損觀察價位：{observation.get('stop_loss_observe_price')}",
+            f"- 停利/賣出觀察區間：{_range_text(observation.get('take_profit_observe_range'))}",
+            f"- 最大觀察部位比例：{observation.get('max_observe_position_pct')}%",
+            f"- 是否適合追高：{observation.get('chasing_suitability')}",
+            f"- 觀察建議：{observation.get('suggested_observation')}",
+            f"- 說明：{observation.get('guidance_note')}",
+            "",
+            "## 主要理由",
+        ]
+    )
+    lines.extend([f"- {item}" for item in analysis.get("primary_reasons") or []])
+    lines.append("")
+    lines.append("## 主要風險")
+    lines.extend([f"- {item}" for item in analysis.get("primary_risks") or []])
+    lines.append("")
+    lines.append("## 事件風險")
+    lines.extend([f"- {item}" for item in analysis.get("event_risk") or []])
+    lines.append("")
+    lines.append("## 下一步觀察項目")
+    lines.extend([f"- {item}" for item in analysis.get("next_watch_items") or []])
+    return "\n".join(lines)
+
+
+def build_stock_analysis_outputs(analysis: Dict[str, Any]):
+    """功能：將指定個股分析轉成 Markdown 與 JSON 下載檔。"""
+    REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    query = str(analysis.get("query") or "stock").strip() or "stock"
+    safe_query = "".join(ch for ch in query if ch.isalnum() or ch in ("-", "_"))[:32] or "stock"
+    json_path = REPORT_DIR / f"taiwan_stock_analysis_{safe_query}_{stamp}.json"
+    json_path.write_text(json.dumps(analysis, ensure_ascii=False, indent=2) + os.linesep, encoding="utf-8")
+    return stock_analysis_markdown(analysis), str(json_path)
+
+
 def generate_report_ui(report_type: str, provider_label: str, report_date: str, top_n: int, include_etf: bool):
     """功能：Gradio 按鈕 callback，產生開盤前或收盤後報告。"""
     provider = create_taiwan_market_provider(_provider_key(provider_label))
@@ -232,6 +320,20 @@ def generate_report_ui(report_type: str, provider_label: str, report_date: str, 
         include_etf=bool(include_etf),
     )
     return build_report_outputs(report, session)
+
+
+def generate_stock_analysis_ui(provider_label: str, query: str, report_date: str, include_etf: bool):
+    """功能：Gradio 按鈕 callback，依股票名稱或代號產生指定個股分析。"""
+    # 2026/05/27 Steve Peng：新增原因：使用者需要在圖形化介面直接輸入股票名稱或代號分析單檔股票。
+    # 修改前代碼：Gradio UI 無指定個股分析 callback。
+    # 修改後功能：呼叫 TaiwanMarketService.analyze_stock 並輸出 Markdown/JSON，保持 read-only。
+    provider = create_taiwan_market_provider(_provider_key(provider_label))
+    analysis = TaiwanMarketService(provider=provider).analyze_stock(
+        query=query,
+        as_of=_parse_date(report_date),
+        include_etf=bool(include_etf),
+    )
+    return build_stock_analysis_outputs(analysis)
 
 
 def generate_backtest_ui(provider_label: str, top_n: int, include_etf: bool, days: int):
@@ -315,6 +417,15 @@ def create_app():
         with gr.Tab("強勢候選股排行榜 / 個股明細"):
             gr.Markdown("請先在開盤前或收盤後分頁產生報告；表格與個股明細會在該分頁顯示。")
 
+        with gr.Tab("指定個股分析"):
+            # 2026/05/27 Steve Peng：新增原因：使用者需要輸入股票名稱或代號查看單檔股票現況。
+            # 修改前代碼：UI 只能看整體報告與排行榜，無法直接查詢單一股票。
+            # 修改後功能：新增 read-only 單檔分析分頁，不提供下單或交易執行入口。
+            stock_query = gr.Textbox(label="股票名稱或代號", placeholder="例如：2330 或 台積電")
+            stock_btn = gr.Button("產生指定個股分析", variant="primary")
+            stock_analysis = gr.Markdown()
+            stock_json = gr.File(label="下載 JSON")
+
         with gr.Tab("回測摘要"):
             days = gr.Slider(5, 180, value=60, step=1, label="回測天數")
             backtest_btn = gr.Button("產生資訊型回測摘要", variant="primary")
@@ -336,6 +447,11 @@ def create_app():
             fn=lambda p, d, t, e: generate_report_ui("收盤後", p, d, t, e),
             inputs=[provider, date_box, top_n, include_etf],
             outputs=[post_summary, post_table, post_detail, post_risk, post_json, post_csv],
+        )
+        stock_btn.click(
+            fn=generate_stock_analysis_ui,
+            inputs=[provider, stock_query, date_box, include_etf],
+            outputs=[stock_analysis, stock_json],
         )
         backtest_btn.click(
             fn=generate_backtest_ui,

@@ -562,17 +562,7 @@ class TaiwanMarketService:
         snapshots = self.provider.list_snapshots(as_of=as_of)
         universe: List[StockSnapshot] = []
         for item in snapshots:
-            if item.market not in VALID_TAIWAN_MARKETS:
-                continue
-            if item.is_etf and not include_etf:
-                continue
-            if item.is_full_delivery or item.is_disposition or item.has_major_abnormality:
-                continue
-            if item.data_days < 60:
-                continue
-            if item.volume < 100_000 or item.turnover < 10_000_000:
-                continue
-            if min(item.close, item.previous_close, item.ma20, item.ma60, item.volume_ma20) <= 0:
+            if self._universe_exclusion_reasons(item, include_etf=include_etf):
                 continue
             universe.append(item)
         return universe
@@ -635,6 +625,107 @@ class TaiwanMarketService:
             base["data_source_status"] = dict(getattr(self.provider, "status") or {})
         if normalized_session == "post_market":
             base.update(self._post_market_sections(context, public_candidates))
+        return base
+
+    def analyze_stock(
+        self,
+        query: str,
+        *,
+        as_of: Optional[date] = None,
+        include_etf: bool = True,
+    ) -> Dict[str, Any]:
+        """功能：依股票代號或名稱產生指定個股 read-only 現況分析。
+
+        使用說明：`query` 可輸入股票代號或名稱片段；輸出僅包含資訊分析、風險提示與觀察說明，
+        不提供任何下單、自動下單、paper/live trading、broker API 或交易執行功能。
+        """
+        # 2026/05/27 Steve Peng：新增原因：使用者需要在 GUI/API 輸入股票名稱或代號後查看單檔股票現況。
+        # 修改前代碼：台股模組只支援整體報告、排行榜與回測摘要。
+        # 修改後功能：新增指定個股分析資料結構，重用既有強勢評分與風險模型並保持 read-only。
+        report_date = as_of or self._today_taipei()
+        normalized_query = (query or "").strip()
+        snapshots = self.provider.list_snapshots(as_of=report_date)
+        base: Dict[str, Any] = {
+            "disclaimer": TAIWAN_MARKET_DISCLAIMER,
+            "provider": self.provider.name,
+            "query": normalized_query,
+            "report_date": report_date.isoformat(),
+            "timezone": TAIPEI_TZ_NAME,
+            "manual_only_notice": "本分析僅供資訊觀察與風險提示，非投資建議；實際買賣需由使用者自行到券商系統人工操作。",
+        }
+        if hasattr(self.provider, "status"):
+            base["data_source_status"] = dict(getattr(self.provider, "status") or {})
+
+        if not normalized_query:
+            base.update(
+                {
+                    "status": "invalid_query",
+                    "message": "請輸入股票代號或股票名稱。",
+                    "suggestions": self._stock_suggestions("", snapshots),
+                }
+            )
+            return base
+
+        target = self._find_stock_snapshot(normalized_query, snapshots)
+        if target is None:
+            base.update(
+                {
+                    "status": "not_found",
+                    "message": f"找不到符合「{normalized_query}」的台股標的；請確認代號、名稱或資料來源。",
+                    "suggestions": self._stock_suggestions(normalized_query, snapshots),
+                }
+            )
+            return base
+
+        candidate = self._candidate_payload(target)
+        public_candidate = self._public_candidate(candidate)
+        exclusion_reasons = self._universe_exclusion_reasons(target, include_etf=include_etf)
+        ranked = self.rank_candidates(top_n=9999, include_etf=include_etf, as_of=report_date)
+        rank_position = next((idx for idx, row in enumerate(ranked, start=1) if row.get("code") == target.code), None)
+        base.update(
+            {
+                "status": "found",
+                "stock": {
+                    "code": target.code,
+                    "name": target.name,
+                    "market": target.market,
+                    "industry": target.industry,
+                    "is_etf": target.is_etf,
+                },
+                "current_snapshot": self._stock_snapshot_payload(target),
+                "quantitative_analysis": {
+                    "strength_score": public_candidate["strength_score"],
+                    "confidence_score": public_candidate["confidence_score"],
+                    "risk_level": public_candidate["risk_level"],
+                    "rank_in_current_universe": rank_position,
+                    "score_breakdown": {key: round(value, 2) for key, value in self._score_parts(target).items()},
+                    "liquidity": public_candidate["liquidity"],
+                    "data_quality": "normal" if target.data_days >= 90 else "low_confidence",
+                },
+                "universe_filter": {
+                    "eligible_for_strength_ranking": not exclusion_reasons,
+                    "exclusion_reasons": exclusion_reasons,
+                },
+                "observation_reference": {
+                    "observe_entry_price_range": public_candidate["observe_entry_price_range"],
+                    "stop_loss_observe_price": public_candidate["stop_loss_observe_price"],
+                    "take_profit_observe_range": public_candidate["take_profit_observe_range"],
+                    "max_observe_position_pct": public_candidate["max_observe_position_pct"],
+                    "chasing_suitability": public_candidate["chasing_suitability"],
+                    "suggested_observation": self._stock_observation_guidance(public_candidate, target),
+                    "guidance_note": "以下為觀察建議與風險提示，非投資建議，請自行評估風險。",
+                },
+                "primary_reasons": public_candidate["primary_reasons"],
+                "primary_risks": public_candidate["primary_risks"],
+                "event_risk": public_candidate["event_risk"],
+                "next_watch_items": [
+                    "確認官方資料是否已更新至最新交易日。",
+                    "觀察成交量是否維持在 20 日均量以上，避免單日異常量造成誤判。",
+                    "檢查 MOPS 重大訊息、財報、法說、除權息與處置/警示資訊。",
+                    "留意跳空、流動性、交易成本、手續費、證交稅與滑價估算。",
+                ],
+            }
+        )
         return base
 
     def backtest_top_candidates(
@@ -714,6 +805,109 @@ class TaiwanMarketService:
     def _public_candidate(row: Dict[str, Any]) -> Dict[str, Any]:
         """功能：移除 service 內部欄位，產生 API/report 可公開輸出的候選股資料。"""
         return {k: v for k, v in row.items() if not str(k).startswith("_")}
+
+    @staticmethod
+    def _universe_exclusion_reasons(item: StockSnapshot, *, include_etf: bool) -> List[str]:
+        """功能：列出標的不納入強勢排行股票池的原因。
+
+        使用說明：排行榜會排除這些標的；指定個股分析仍會顯示現況，但同步提示排除原因。
+        """
+        # 2026/05/27 Steve Peng：新增原因：指定個股分析需要解釋標的是否被強勢排行股票池排除。
+        # 修改前代碼：`build_universe` 直接 continue，使用者無法知道單檔被排除的原因。
+        # 修改後功能：集中產生排除原因，供股票池與單檔分析共用。
+        reasons: List[str] = []
+        if item.market not in VALID_TAIWAN_MARKETS:
+            reasons.append("市場別不屬於 TWSE 或 TPEx。")
+        if item.is_etf and not include_etf:
+            reasons.append("ETF 預設與個股分開，未勾選納入 ETF。")
+        if item.is_full_delivery:
+            reasons.append("全額交割標的，風險較高。")
+        if item.is_disposition:
+            reasons.append("處置股或受交易限制標的。")
+        if item.has_major_abnormality:
+            reasons.append("存在重大異常或警示資訊。")
+        if item.data_days < 60:
+            reasons.append("可用資料天數不足 60 日，可信度偏低。")
+        if item.volume < 100_000 or item.turnover < 10_000_000:
+            reasons.append("成交量或成交金額不足，流動性風險偏高。")
+        if min(item.close, item.previous_close, item.ma20, item.ma60, item.volume_ma20) <= 0:
+            reasons.append("價格、均線或均量資料不足，無法穩定評分。")
+        return reasons
+
+    @staticmethod
+    def _find_stock_snapshot(query: str, snapshots: Sequence[StockSnapshot]) -> Optional[StockSnapshot]:
+        """功能：依代號精準比對或名稱片段比對尋找股票。"""
+        raw = (query or "").strip()
+        lowered = raw.lower()
+        for item in snapshots:
+            if raw == item.code:
+                return item
+        for item in snapshots:
+            if lowered and lowered in item.name.lower():
+                return item
+        return None
+
+    @staticmethod
+    def _stock_suggestions(query: str, snapshots: Sequence[StockSnapshot], limit: int = 8) -> List[Dict[str, Any]]:
+        """功能：找不到指定股票時回傳相近代號或名稱提示。"""
+        raw = (query or "").strip().lower()
+        fragments = {raw[idx: idx + 3] for idx in range(max(len(raw) - 2, 0)) if len(raw[idx: idx + 3]) == 3}
+        suggestions: List[Dict[str, Any]] = []
+        for item in snapshots:
+            haystack = f"{item.code} {item.name}".lower()
+            matched = (raw and raw in haystack) or any(fragment in haystack for fragment in fragments)
+            if matched or not raw:
+                suggestions.append({"code": item.code, "name": item.name, "market": item.market, "industry": item.industry})
+            if len(suggestions) >= limit:
+                break
+        if suggestions:
+            return suggestions
+        return [{"code": item.code, "name": item.name, "market": item.market, "industry": item.industry} for item in snapshots[:limit]]
+
+    def _stock_snapshot_payload(self, item: StockSnapshot) -> Dict[str, Any]:
+        """功能：產生指定個股現況欄位，供 API 與 GUI 顯示。"""
+        return {
+            "close": item.close,
+            "previous_close": item.previous_close,
+            "day_change_pct": round(self._day_change_pct(item), 2),
+            "day_high": item.day_high,
+            "day_low": item.day_low,
+            "volume": int(item.volume),
+            "turnover": int(item.turnover),
+            "volume_vs_20d": round(item.volume / item.volume_ma20, 2) if item.volume_ma20 > 0 else None,
+            "moving_average": {
+                "ma5": item.ma5,
+                "ma20": item.ma20,
+                "ma60": item.ma60,
+                "above_ma20_pct": round((item.close / item.ma20 - 1.0) * 100.0, 2) if item.ma20 > 0 else None,
+                "above_ma60_pct": round((item.close / item.ma60 - 1.0) * 100.0, 2) if item.ma60 > 0 else None,
+            },
+            "institutional_flow": {
+                "foreign_buy_sell": int(item.foreign_buy_sell),
+                "investment_trust_buy_sell": int(item.investment_trust_buy_sell),
+                "dealer_buy_sell": int(item.dealer_buy_sell),
+            },
+            "data_days": item.data_days,
+        }
+
+    @staticmethod
+    def _stock_observation_guidance(candidate: Dict[str, Any], item: StockSnapshot) -> str:
+        """功能：依分數與風險產生資訊型觀察建議。
+
+        使用說明：文字僅描述量價與風險觀察重點，不構成買進、賣出或持有建議。
+        """
+        risk_level = str(candidate.get("risk_level") or "")
+        strength = float(candidate.get("strength_score") or 0.0)
+        day_change = ((item.close - item.previous_close) / item.previous_close * 100.0) if item.previous_close > 0 else 0.0
+        if risk_level == "High":
+            return "風險等級偏高，應優先確認處置、警示、重大訊息與流動性；不適合只因短線強勢而追價觀察。"
+        if day_change > 7.0:
+            return "單日漲幅偏大，追高風險較高；可等待量價結構穩定後再評估觀察區間。"
+        if strength >= 78:
+            return "量價與趨勢分數偏強，可列入觀察名單，但仍需搭配停損、停利與事件風險控管。"
+        if strength >= 60:
+            return "分數屬中性偏強，適合持續追蹤成交量、均線與法人籌碼是否延續。"
+        return "目前強勢分數不高，建議先觀察是否重新站回關鍵均線並改善流動性。"
 
     @staticmethod
     def is_taiwan_business_day(value: date) -> bool:

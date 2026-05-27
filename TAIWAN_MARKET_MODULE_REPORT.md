@@ -15,6 +15,7 @@
 - 收盤後 report
 - 風險欄位與事件風險
 - 資訊型候選股回測摘要
+- 指定個股分析，可輸入股票名稱或代號查看單檔現況、量化分數、風險與觀察說明
 - Flask API 與手動 CLI 觸發方式
 - Gradio 本機圖形化介面，可雙擊啟動並直接顯示報告、表格、明細、風險與下載檔
 - TWSE/TPEx 官方 OpenAPI provider 與 auto fallback
@@ -75,6 +76,7 @@ README 描述 QuantDinger 支援 backtest、paper/live execution、broker accoun
 - 建立 universe builder，排除低流動性、全額交割、處置股、重大異常、資料不足與 ETF。
 - 建立強勢股量化評分模型，輸出前 20 檔候選股。
 - 每檔候選股包含代號、名稱、市場別、產業、強勢分數、信心分數、風險等級、觀察價位、流動性、主要理由、主要風險、追高適合度與事件風險。
+- 新增指定個股分析，支援股票代號或名稱片段查詢，輸出現價、漲跌幅、量能、均線、強勢分數、信心分數、風險等級、股票池排除原因、觀察價位與事件風險。
 - 產生開盤前 report。
 - 產生收盤後 report，包含今日回顧、族群強弱、明日預測、異動股、轉弱股與避免追高股。
 - 加入停損、停利、追高、跳空、流動性、重大訊息、財報、法說、除權息、交易成本、手續費、證交稅、滑價估算等風險參考。
@@ -88,6 +90,7 @@ README 描述 QuantDinger 支援 backtest、paper/live execution、broker accoun
 - `GET|POST /api/taiwan-market/report`
 - `GET /api/taiwan-market/candidates`
 - `GET /api/taiwan-market/backtest`
+- `GET|POST /api/taiwan-market/stock-analysis`
 - `GET /api/taiwan-market/sources`
 - `GET /api/taiwan-market/schedule`
 
@@ -153,7 +156,7 @@ python -m app.ui.taiwan_market_app
 
 測試結果：
 
-- `tests/test_taiwan_market.py` 與 `tests/test_taiwan_market_ui.py`：涵蓋 mock、official fixture、auto fallback、GUI helper。
+- `tests/test_taiwan_market.py` 與 `tests/test_taiwan_market_ui.py`：涵蓋 mock、official fixture、auto fallback、指定個股分析、GUI helper。
 - CLI JSON UTF-8 讀回成功。
 
 ## 未完成項目

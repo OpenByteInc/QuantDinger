@@ -16,6 +16,7 @@ from app.ui.taiwan_market_app import (
     candidate_rows,
     detail_markdown,
     generate_report_ui,
+    generate_stock_analysis_ui,
 )
 
 
@@ -84,3 +85,20 @@ def test_generate_report_ui_accepts_ascii_provider_key(tmp_path, monkeypatch):
     assert "風險" in risk
     assert Path(json_path).exists()
     assert Path(csv_path).exists()
+
+
+def test_generate_stock_analysis_ui_returns_markdown_and_download(tmp_path, monkeypatch):
+    """功能：GUI 指定個股分析 callback 可回傳中文 Markdown 與 JSON 下載檔。
+
+    2026/05/27 Steve Peng：新增原因：使用者要求圖形化介面可輸入股票名稱或代號分析單檔現況。
+    修改前代碼：GUI 只有整體報告、排行榜與回測摘要。
+    修改後功能：新增指定個股分析 callback，保持 read-only 並輸出非投資建議聲明。
+    """
+    monkeypatch.setattr("app.ui.taiwan_market_app.REPORT_DIR", tmp_path)
+
+    markdown, json_path = generate_stock_analysis_ui("mock", "2330", "2026-05-27", False)
+
+    assert "指定個股分析" in markdown
+    assert "2330" in markdown
+    assert "非投資建議" in markdown
+    assert Path(json_path).exists()

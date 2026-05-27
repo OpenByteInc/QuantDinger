@@ -113,6 +113,33 @@ def backtest_taiwan_market_candidates():
         return jsonify({"code": 0, "msg": str(exc), "data": None}), 400
 
 
+@taiwan_market_bp.route("/stock-analysis", methods=["GET", "POST"])
+@login_required
+def analyze_taiwan_market_stock():
+    """功能：依股票名稱或代號回傳指定個股 read-only 現況分析。"""
+    # 2026/05/27 Steve Peng：新增原因：使用者需要以 API 或 GUI 查詢單檔股票現況與觀察說明。
+    # 修改前代碼：台股 API 僅提供整體報告、排行榜、回測與資料來源，無指定個股分析入口。
+    # 修改後功能：新增 read-only 單檔分析 endpoint，不加入任何下單、券商或交易執行功能。
+    try:
+        body = request.get_json(silent=True) if request.method == "POST" else {}
+        body = body if isinstance(body, dict) else {}
+        query = request.args.get("query") or body.get("query") or ""
+        include_etf = _bool_arg(request.args.get("include_etf") or body.get("include_etf"), True)
+        as_of = _parse_date(request.args.get("date") or body.get("date"))
+        data = _service_from_request().analyze_stock(
+            query=str(query),
+            as_of=as_of,
+            include_etf=include_etf,
+        )
+        status_code = 200 if data.get("status") != "invalid_query" else 400
+        return jsonify({"code": 1 if status_code == 200 else 0, "msg": "success", "data": data}), status_code
+    except TaiwanMarketProviderError as exc:
+        return jsonify({"code": 0, "msg": str(exc), "data": None}), 502
+    except Exception as exc:
+        logger.error("analyze_taiwan_market_stock failed: %s", exc, exc_info=True)
+        return jsonify({"code": 0, "msg": str(exc), "data": None}), 400
+
+
 @taiwan_market_bp.route("/sources", methods=["GET"])
 @login_required
 def taiwan_market_sources():
