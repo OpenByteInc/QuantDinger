@@ -1534,6 +1534,29 @@ def close_position():
             actual_close_size = position_size
         if actual_close_size <= 0:
             return jsonify({"code": 0, "msg": "Close size is zero"}), 400
+
+        if market_type == "spot":
+            from app.services.live_trading.spot_sizing import clamp_spot_close_quantity
+
+            adjusted, spot_meta = clamp_spot_close_quantity(
+                client, symbol=symbol, requested_qty=actual_close_size
+            )
+            if adjusted <= 0:
+                return jsonify(
+                    {
+                        "code": 0,
+                        "msg": "可卖余额不足，无法平仓（可能因买入手续费导致可用数量小于持仓记录）",
+                    }
+                ), 400
+            if spot_meta.get("adjusted"):
+                logger.info(
+                    "quick_trade spot close adjusted: symbol=%s requested=%s final=%s meta=%s",
+                    symbol,
+                    actual_close_size,
+                    adjusted,
+                    spot_meta,
+                )
+            actual_close_size = adjusted
         
         # ---- determine signal type based on position side ----
         if market_type == "spot":

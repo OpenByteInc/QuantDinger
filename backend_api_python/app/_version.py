@@ -5,4 +5,4 @@ This constant mirrors the repo-root ``VERSION`` file. Both are kept in sync by
 CI). Do **not** edit by hand — run the bump script instead.
 """
 
-APP_VERSION = "3.0.11"
+APP_VERSION = "3.0.15"

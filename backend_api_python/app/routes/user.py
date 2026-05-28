@@ -1123,6 +1123,81 @@ def _safe_json_loads(s, default=None):
         return default
 
 
+def _strategy_exchange_display_name(
+    exchange_config: dict,
+    *,
+    credential_map: dict,
+    user_id: int = 0,
+) -> str:
+    """Resolve exchange label for admin strategy lists.
+
+    Strategies often persist ``exchange_config`` as ``{credential_id: N}`` only
+  (API secrets live in ``qd_exchange_credentials``).  Read inline ``exchange_id``
+    first, then the credential row's ``exchange_id``, then ``resolve_exchange_config``
+    as a last resort.
+    """
+    if not isinstance(exchange_config, dict):
+        return ''
+
+    direct = (
+        exchange_config.get('exchange_id')
+        or exchange_config.get('exchange')
+        or exchange_config.get('broker')
+        or ''
+    )
+    direct = str(direct or '').strip()
+    if direct:
+        return direct
+
+    cred_id = exchange_config.get('credential_id') or exchange_config.get('credentials_id')
+    if cred_id:
+        try:
+            row = credential_map.get(int(cred_id))
+        except (TypeError, ValueError):
+            row = None
+        if row:
+            ex = str(row.get('exchange_id') or '').strip()
+            if ex:
+                return ex
+
+        try:
+            from app.services.exchange_execution import resolve_exchange_config
+
+            resolved = resolve_exchange_config(exchange_config, user_id=int(user_id or 1))
+            ex = str(resolved.get('exchange_id') or resolved.get('exchange') or '').strip()
+            if ex:
+                return ex
+        except Exception:
+            pass
+
+    return ''
+
+
+def _batch_load_credential_exchange_map(credential_ids: set) -> dict:
+    """Map credential id -> {id, exchange_id, name} for display (no decrypt)."""
+    if not credential_ids:
+        return {}
+    ids = sorted({int(i) for i in credential_ids if i})
+    if not ids:
+        return {}
+    placeholders = ','.join(['?'] * len(ids))
+    credential_map = {}
+    with get_db_connection() as db:
+        cur = db.cursor()
+        cur.execute(
+            f"""
+            SELECT id, exchange_id, name
+            FROM qd_exchange_credentials
+            WHERE id IN ({placeholders})
+            """,
+            tuple(ids),
+        )
+        for row in (cur.fetchall() or []):
+            credential_map[int(row['id'])] = dict(row)
+        cur.close()
+    return credential_map
+
+
 @user_bp.route('/system-strategies', methods=['GET'])
 @login_required
 @admin_required
@@ -1299,7 +1374,18 @@ def get_system_strategies():
 
             cur.close()
 
-        # Build response
+        # Build response — batch-resolve exchange names for credential_id-only configs.
+        cred_ids = set()
+        for s in strategies:
+            ec = _safe_json_loads(s.get('exchange_config'), {})
+            cid = ec.get('credential_id') or ec.get('credentials_id')
+            if cid:
+                try:
+                    cred_ids.add(int(cid))
+                except (TypeError, ValueError):
+                    pass
+        credential_map = _batch_load_credential_exchange_map(cred_ids)
+
         items = []
         for s in strategies:
             sid = s['id']
@@ -1322,10 +1408,12 @@ def get_system_strategies():
                 else:
                     indicator_name = s.get('strategy_name') or ''
 
-            # Extract exchange name
-            exchange_name = ''
-            if isinstance(exchange_config, dict):
-                exchange_name = exchange_config.get('exchange_id') or exchange_config.get('exchange') or ''
+            # Extract exchange name (inline config or saved credential reference).
+            exchange_name = _strategy_exchange_display_name(
+                exchange_config,
+                credential_map=credential_map,
+                user_id=int(s.get('user_id') or 0),
+            )
 
             # Positions data
             positions = positions_map.get(sid, [])

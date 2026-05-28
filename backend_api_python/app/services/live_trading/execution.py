@@ -143,6 +143,16 @@ def place_order_from_signal(
 
     cfg = exchange_config if isinstance(exchange_config, dict) else {}
     mt = (market_type or cfg.get("market_type") or "swap").strip().lower()
+
+    # Spot full close: sell size must not exceed exchange free base (buy fees reduce sellable qty).
+    if mt == "spot" and side == "sell" and reduce_only:
+        from app.services.live_trading.spot_sizing import clamp_spot_close_quantity
+
+        qty, _meta = clamp_spot_close_quantity(client, symbol=symbol, requested_qty=qty)
+        if qty <= 0:
+            raise LiveTradingError(
+                "Insufficient spot base balance to close (fees or balance mismatch)"
+            )
     if mt in ("futures", "future", "perp", "perpetual"):
         mt = "swap"
 

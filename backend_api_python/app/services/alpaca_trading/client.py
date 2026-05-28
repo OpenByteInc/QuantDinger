@@ -11,9 +11,32 @@ from dataclasses import dataclass, field
 from typing import Optional, Dict, Any, List
 
 from app.utils.logger import get_logger
-from app.services.alpaca_trading.symbols import normalize_symbol, format_display_symbol
+from app.services.alpaca_trading.symbols import normalize_symbol, format_display_symbol, parse_symbol
 
 logger = get_logger(__name__)
+
+
+def _market_hint_from_type(market_type: str) -> str:
+    return "Crypto" if (market_type or "").strip().lower() == "crypto" else "USStock"
+
+
+def _format_alpaca_error(err: Exception, *, context: str = "") -> str:
+    """Turn Alpaca SDK/HTTP errors into actionable messages for operators."""
+    msg = str(err or "").strip()
+    low = msg.lower()
+    prefix = f"{context}: " if context else ""
+    if "invalid syntax" in low or '"code":400' in low or "code 400" in low:
+        return (
+            prefix
+            + "Alpaca 返回 400 invalid syntax。若使用行情 WebSocket，请确认："
+            "① 连接后 10 秒内发送 {\"action\":\"auth\",\"key\":\"...\",\"secret\":\"...\"}；"
+            "② 订阅格式为 {\"action\":\"subscribe\",\"trades\":[\"AAPL\"]}（美股）或 "
+            "{\"action\":\"subscribe\",\"trades\":[\"BTC/USD\"]}（加密，勿用 BTC/USDT）。"
+            "本系统「测试连接」仅走 REST 交易接口，不经过该 WebSocket。"
+        )
+    if "401" in low or "403" in low or "auth failed" in low or "not authenticated" in low:
+        return prefix + f"Alpaca 鉴权失败，请检查 API Key/Secret 与 paper(PK*)/live(AK*) 是否匹配。原始错误: {msg}"
+    return prefix + msg
 
 
 # Lazy import alpaca-py to allow other features to work without it installed
@@ -98,19 +121,29 @@ class AlpacaClient:
         """Initialize Alpaca client and verify credentials by fetching account."""
         try:
             modules = _ensure_alpaca()
+            api_key = (self.config.api_key or "").strip()
+            secret_key = (self.config.secret_key or "").strip()
+            if not api_key or not secret_key:
+                logger.error("Alpaca connect failed: empty api_key or secret_key")
+                return False
+
             self._trading_client = modules["TradingClient"](
-                api_key=self.config.api_key,
-                secret_key=self.config.secret_key,
+                api_key=api_key,
+                secret_key=secret_key,
                 paper=self.config.paper,
                 url_override=self.config.base_url,
             )
+            # Align market-data REST with paper sandbox when using PK* keys.
+            data_sandbox = bool(self.config.paper)
             self._stock_data_client = modules["StockHistoricalDataClient"](
-                api_key=self.config.api_key,
-                secret_key=self.config.secret_key,
+                api_key=api_key,
+                secret_key=secret_key,
+                sandbox=data_sandbox,
             )
             self._crypto_data_client = modules["CryptoHistoricalDataClient"](
-                api_key=self.config.api_key,
-                secret_key=self.config.secret_key,
+                api_key=api_key,
+                secret_key=secret_key,
+                sandbox=data_sandbox,
             )
             # Verify by fetching account
             account = self._trading_client.get_account()
@@ -119,7 +152,7 @@ class AlpacaClient:
             logger.info(f"Alpaca connected ({mode}), account={self._account_id[:12]}..., status={account.status}")
             return True
         except Exception as e:
-            logger.error(f"Alpaca connect failed: {e}")
+            logger.error("Alpaca connect failed: %s", _format_alpaca_error(e, context="REST account"))
             self._trading_client = None
             self._account_id = None
             return False
@@ -150,8 +183,7 @@ class AlpacaClient:
         try:
             self._ensure_connected()
             modules = _ensure_alpaca()
-            asset_class = "crypto" if market_type.lower() == "crypto" else "us_equity"
-            sym = normalize_symbol(symbol, asset_class)
+            sym, asset_class = parse_symbol(symbol, market_hint=_market_hint_from_type(market_type))
 
             req = modules["MarketOrderRequest"](
                 symbol=sym,
@@ -185,8 +217,8 @@ class AlpacaClient:
                 },
             )
         except Exception as e:
-            logger.error(f"Alpaca market order failed: {e}")
-            return OrderResult(success=False, message=str(e))
+            logger.error("Alpaca market order failed: %s", _format_alpaca_error(e))
+            return OrderResult(success=False, message=_format_alpaca_error(e))
 
     def place_limit_order(
         self,
@@ -201,8 +233,7 @@ class AlpacaClient:
         try:
             self._ensure_connected()
             modules = _ensure_alpaca()
-            asset_class = "crypto" if market_type.lower() == "crypto" else "us_equity"
-            sym = normalize_symbol(symbol, asset_class)
+            sym, asset_class = parse_symbol(symbol, market_hint=_market_hint_from_type(market_type))
 
             req = modules["LimitOrderRequest"](
                 symbol=sym,
@@ -236,8 +267,8 @@ class AlpacaClient:
                 },
             )
         except Exception as e:
-            logger.error(f"Alpaca limit order failed: {e}")
-            return OrderResult(success=False, message=str(e))
+            logger.error("Alpaca limit order failed: %s", _format_alpaca_error(e))
+            return OrderResult(success=False, message=_format_alpaca_error(e))
 
     def cancel_order(self, order_id: str) -> bool:
         """Cancel an open order by ID."""
@@ -330,8 +361,7 @@ class AlpacaClient:
         try:
             self._ensure_connected()
             modules = _ensure_alpaca()
-            asset_class = "crypto" if market_type.lower() == "crypto" else "us_equity"
-            sym = normalize_symbol(symbol, asset_class)
+            sym, asset_class = parse_symbol(symbol, market_hint=_market_hint_from_type(market_type))
 
             if asset_class == "crypto":
                 req = modules["CryptoLatestQuoteRequest"](symbol_or_symbols=[sym])
@@ -353,8 +383,9 @@ class AlpacaClient:
                 "timestamp": str(q.timestamp),
             }
         except Exception as e:
-            logger.error(f"Alpaca get_quote failed: {e}")
-            return {"success": False, "error": str(e)}
+            err = _format_alpaca_error(e)
+            logger.error("Alpaca get_quote failed: %s", err)
+            return {"success": False, "error": err}
 
     def get_connection_status(self) -> Dict[str, Any]:
         """Get connection status."""

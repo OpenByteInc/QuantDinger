@@ -9,6 +9,7 @@ from datetime import datetime
 from app.utils.logger import get_logger
 from app.utils.db import get_db_connection
 from app.services.symbol_name import normalize_crypto_symbol
+from app.services.exchange_execution import coalesce_exchange_config_from_payload
 
 logger = get_logger(__name__)
 
@@ -1002,9 +1003,9 @@ class StrategyService:
 
         indicator_config = payload.get('indicator_config') or {}
         trading_config = payload.get('trading_config') or {}
-        exchange_config = payload.get('exchange_config') or {}
+        from app.services.exchange_execution import coalesce_exchange_config_from_payload, resolve_exchange_config
 
-        from app.services.exchange_execution import resolve_exchange_config
+        exchange_config = coalesce_exchange_config_from_payload(payload)
 
         resolved_ex_cfg = resolve_exchange_config(
             exchange_config if isinstance(exchange_config, dict) else {},
@@ -1146,7 +1147,7 @@ class StrategyService:
         # Each per-symbol create_strategy() call below will re-validate, but
         # checking once up front fails the whole batch fast on a mismatch.
         market_category = payload.get('market_category') or 'Crypto'
-        exchange_config = payload.get('exchange_config') or {}
+        exchange_config = coalesce_exchange_config_from_payload(payload)
         batch_trading_config = payload.get('trading_config') if isinstance(payload.get('trading_config'), dict) else {}
         batch_execution_mode = (payload.get('execution_mode') or 'signal').strip().lower()
         from app.services.exchange_execution import resolve_exchange_config as _resolve_ex
@@ -1361,7 +1362,13 @@ class StrategyService:
         if payload.get('rebalance_frequency') is not None:
             trading_config['rebalance_frequency'] = payload.get('rebalance_frequency')
 
-        from app.services.exchange_execution import resolve_exchange_config as _resolve_ex_upd
+        from app.services.exchange_execution import coalesce_exchange_config_from_payload, resolve_exchange_config as _resolve_ex_upd
+
+        exchange_config = coalesce_exchange_config_from_payload({
+            **payload,
+            'exchange_config': exchange_config,
+            'trading_config': trading_config,
+        })
 
         _merged_ex = _resolve_ex_upd(
             exchange_config if isinstance(exchange_config, dict) else {},

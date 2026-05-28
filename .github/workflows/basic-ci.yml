@@ -107,7 +107,8 @@ jobs:
           python-version: '3.12'
 
       - name: Verify VERSION matches all declarations
-        # Fails the build if any README badge / env.example default / backend
-        # constant has drifted from repo-root VERSION. Run
-        # `python scripts/bump_version.py <new>` locally to fix drift.
+        # Fails if any *tracked* version constant drifts from repo-root VERSION.
+        # Frontend paths under QuantDinger-Vue-src/ are gitignored (private FE
+        # repo) and are skipped when absent. Run bump_version.py locally with
+        # the full FE checkout to sync those files before building the image.
         run: python scripts/check_version.py

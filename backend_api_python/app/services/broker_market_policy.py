@@ -197,7 +197,11 @@ def validate_strategy_config(
     # Rule 2 + 3: broker x market combination
     if not ex:
         if require_exchange:
-            raise ValueError("exchange_id is required for live strategies.")
+            raise ValueError(
+                "exchange_id is required for live strategies. "
+                "Set exchange_config.exchange_id (or credential_id), "
+                "or trading_config.exchange_id for legacy clients."
+            )
         # Signal-mode: skip the rest. Direction/bot rules need a broker
         # context to be meaningful.
         return

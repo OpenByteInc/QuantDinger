@@ -649,6 +649,20 @@ CONFIG_SCHEMA = {
                 'description': 'Wait time for limit order fill before switching to market order'
             },
             {
+                'key': 'SPOT_CLOSE_SAFETY_RATIO',
+                'label': 'Spot Close Safety Ratio',
+                'type': 'number',
+                'default': '0.998',
+                'description': 'When closing spot long, sell qty is capped to (exchange free base × this ratio), then floored to lot step. Lower if full close fails due to fees (valid range 0.9–1.0).'
+            },
+            {
+                'key': 'SPOT_OPEN_QUOTE_BUFFER',
+                'label': 'Spot Open Quote Buffer',
+                'type': 'number',
+                'default': '0.995',
+                'description': 'Fraction of USDT/notional used on spot open (reserve headroom for buy fees). Example 0.995 uses 99.5% of allocated quote (valid range 0.9–1.0).'
+            },
+            {
                 'key': 'ALLOW_LOCAL_DESKTOP_BROKERS',
                 'label': 'Allow IBKR / MT5 (local desktop brokers)',
                 'type': 'boolean',

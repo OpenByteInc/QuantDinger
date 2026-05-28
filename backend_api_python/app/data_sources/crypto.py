@@ -57,6 +57,36 @@ def resolve_ccxt_for_live_trading(exchange_id: str, market_type: str) -> Tuple[s
     return ccxt_id, opts
 
 
+def resolve_crypto_venue(
+    *,
+    exchange_config: Optional[Dict[str, Any]] = None,
+    trading_config: Optional[Dict[str, Any]] = None,
+    market_type: Optional[str] = None,
+) -> Tuple[str, str]:
+    """Resolve (exchange_id, spot|swap) for public crypto OHLCV/ticker."""
+    cfg = exchange_config or {}
+    tc = trading_config or {}
+    ex = (
+        cfg.get("exchange_id")
+        or cfg.get("exchange")
+        or cfg.get("exchangeId")
+        or tc.get("exchange_id")
+        or tc.get("exchange")
+        or tc.get("exchangeId")
+        or ""
+    )
+    ex = str(ex).strip().lower()
+    if not ex:
+        ex = (CCXTConfig.DEFAULT_EXCHANGE or "binance").strip().lower()
+
+    mt = str(market_type or tc.get("market_type") or "swap").strip().lower()
+    if mt in ("futures", "future", "perp", "perpetual"):
+        mt = "swap"
+    if mt not in ("spot", "swap"):
+        mt = "swap"
+    return ex, mt
+
+
 class CryptoDataSource(BaseDataSource):
     """加密货币数据源"""
     

@@ -23,13 +23,20 @@ except Exception:  # pragma: no cover
     PgUndefinedTable = None  # type: ignore
 from app.utils.auth import login_required
 from app.data_sources import DataSourceFactory
+from app.utils.pnl import (
+    calc_margin_notional,
+    calc_notional_value,
+    calc_pnl_percent,
+    calc_unrealized_pnl,
+    is_derivatives_market,
+)
 
 logger = get_logger(__name__)
 
 strategy_bp = Blueprint('strategy', __name__)
 
 
-def _normalize_trade_row_for_api(trade: dict) -> dict:
+def _normalize_trade_row_for_api(trade: dict, *, leverage: float = 1.0, market_type: str = "spot") -> dict:
     """Ensure numeric fields are JSON-friendly floats (PostgreSQL DECIMAL → float)."""
     try:
         from decimal import Decimal
@@ -40,6 +47,28 @@ def _normalize_trade_row_for_api(trade: dict) -> dict:
         v = out.get(k)
         if isinstance(v, Decimal):
             out[k] = float(v)
+    try:
+        price = float(out.get("price") or 0.0)
+        amount = float(out.get("amount") or 0.0)
+        value = float(out.get("value") or 0.0)
+        if value <= 0 and price > 0 and amount > 0:
+            value = calc_notional_value(price, amount)
+            out["value"] = value
+        out["notional_value"] = value
+        out["margin_value"] = calc_margin_notional(value, leverage, market_type)
+        profit = out.get("profit")
+        if profit is not None:
+            margin = float(out.get("margin_value") or 0.0)
+            if margin > 0:
+                out["profit_pct_on_margin"] = round(float(profit) / margin * 100.0, 4)
+            else:
+                out["profit_pct_on_margin"] = 0.0
+            if value > 0:
+                out["profit_pct_on_notional"] = round(float(profit) / value * 100.0, 4)
+            else:
+                out["profit_pct_on_notional"] = 0.0
+    except Exception:
+        pass
     return out
 
 
@@ -737,6 +766,17 @@ def get_trades():
         st = get_strategy_service().get_strategy(strategy_id, user_id=user_id)
         if not st:
             return jsonify({'code': 0, 'msg': 'Strategy not found', 'data': {'trades': [], 'items': []}}), 404
+
+        trading_config = st.get("trading_config") if isinstance(st.get("trading_config"), dict) else {}
+        try:
+            leverage = float(trading_config.get("leverage") or st.get("leverage") or 1.0)
+        except Exception:
+            leverage = 1.0
+        if leverage <= 0:
+            leverage = 1.0
+        market_type = str(trading_config.get("market_type") or st.get("market_type") or "swap").strip().lower()
+        if is_derivatives_market(market_type):
+            market_type = "swap"
         
         with get_db_connection() as db:
             cur = db.cursor()
@@ -775,7 +815,7 @@ def get_trades():
                         trade['created_at'] = int(dt.timestamp())
                     except Exception:
                         pass
-            processed_rows.append(_normalize_trade_row_for_api(trade))
+            processed_rows.append(_normalize_trade_row_for_api(trade, leverage=leverage, market_type=market_type))
         
         # Frontend expects data.trades; keep data.items for compatibility with list-style components.
         return jsonify({'code': 1, 'msg': 'success', 'data': {'trades': processed_rows, 'items': processed_rows}})
@@ -829,6 +869,26 @@ def get_positions():
         st = get_strategy_service().get_strategy(strategy_id, user_id=user_id)
         if not st:
             return jsonify({'code': 0, 'msg': 'Strategy not found', 'data': {'positions': [], 'items': []}}), 404
+
+        trading_config = st.get("trading_config") if isinstance(st.get("trading_config"), dict) else {}
+        try:
+            leverage = float(trading_config.get("leverage") or st.get("leverage") or 1.0)
+        except Exception:
+            leverage = 1.0
+        if leverage <= 0:
+            leverage = 1.0
+        market_type = str(trading_config.get("market_type") or st.get("market_type") or "swap").strip().lower()
+        if is_derivatives_market(market_type):
+            market_type = "swap"
+
+        exchange_config = st.get("exchange_config") if isinstance(st.get("exchange_config"), dict) else {}
+        from app.data_sources.crypto import resolve_crypto_venue
+
+        price_exchange_id, price_market_type = resolve_crypto_venue(
+            exchange_config=exchange_config,
+            trading_config=trading_config,
+            market_type=market_type,
+        )
         
         with get_db_connection() as db:
             cur = db.cursor()
@@ -846,29 +906,9 @@ def get_positions():
             cur.close()
 
         # Sync current price and PnL on read (frontend polls every few seconds).
-        def _calc_unrealized_pnl(side: str, entry_price: float, current_price: float, size: float) -> float:
-            ep = float(entry_price or 0.0)
-            cp = float(current_price or 0.0)
-            sz = float(size or 0.0)
-            if ep <= 0 or cp <= 0 or sz <= 0:
-                return 0.0
-            s = (side or "").strip().lower()
-            if s == "short":
-                return (ep - cp) * sz
-            return (cp - ep) * sz
-
-        def _calc_pnl_percent(entry_price: float, size: float, pnl: float) -> float:
-            ep = float(entry_price or 0.0)
-            sz = float(size or 0.0)
-            denom = ep * sz
-            if denom <= 0:
-                return 0.0
-            return float(pnl) / denom * 100.0
-
         now = int(time.time())
         # Fetch prices once per symbol to reduce API calls.
         sym_to_price: dict[str, float] = {}
-        ds = DataSourceFactory.get_source("Crypto")
         for r in rows:
             sym = (r.get("symbol") or "").strip()
             if not sym:
@@ -876,7 +916,12 @@ def get_positions():
             if sym in sym_to_price:
                 continue
             try:
-                t = ds.get_ticker(sym) or {}
+                t = DataSourceFactory.get_ticker(
+                    "Crypto",
+                    sym,
+                    exchange_id=price_exchange_id,
+                    market_type=price_market_type,
+                ) or {}
                 px = float(t.get("last") or t.get("close") or 0.0)
                 if px > 0:
                     sym_to_price[sym] = px
@@ -893,8 +938,9 @@ def get_positions():
                 entry = float(r.get("entry_price") or 0.0)
                 size = float(r.get("size") or 0.0)
                 cp = float(sym_to_price.get(sym) or r.get("current_price") or 0.0)
-                pnl = _calc_unrealized_pnl(side, entry, cp, size)
-                pct = _calc_pnl_percent(entry, size, pnl)
+                pnl = calc_unrealized_pnl(side, entry, cp, size)
+                pct = calc_pnl_percent(entry, size, pnl, leverage=leverage, market_type=market_type)
+                notional = calc_notional_value(entry, size)
 
                 rr = dict(r)
                 # 确保 entry_price 有值（如果数据库中是 NULL，使用计算出的 entry 值）
@@ -905,6 +951,8 @@ def get_positions():
                 rr["current_price"] = float(cp or 0.0)
                 rr["unrealized_pnl"] = float(pnl)
                 rr["pnl_percent"] = float(pct)
+                rr["notional_value"] = float(notional)
+                rr["margin_value"] = calc_margin_notional(notional, leverage, market_type)
                 rr["updated_at"] = now
                 out.append(rr)
 

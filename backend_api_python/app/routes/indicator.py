@@ -738,6 +738,44 @@ def delete_indicator():
         return jsonify({"code": 0, "msg": str(e), "data": None}), 500
 
 
+@indicator_bp.route("/applyParamDefaults", methods=["POST"])
+@login_required
+def apply_param_defaults():
+    """
+    Apply tuned indicator parameter values into ``# @param`` lines in source code.
+
+    Body: { "code": "...", "indicatorParams": { "sma_short": 11, "sma_long": 35 } }
+    or flat keys: { "indicator_params.sma_short": 11, ... }
+    """
+    try:
+        data = request.get_json() or {}
+        code = str(data.get("code") or "")
+        if not code.strip():
+            return jsonify({"code": 0, "msg": "code is required", "data": None}), 400
+
+        params = data.get("indicatorParams") or data.get("indicator_params") or {}
+        if not isinstance(params, dict):
+            params = {}
+        for key, value in list((data.get("overrides") or {}).items()):
+            k = str(key or "")
+            if k.startswith("indicator_params."):
+                params[k.split(".", 1)[1]] = value
+
+        from app.services.experiment.overrides import enrich_experiment_overrides
+
+        nested = enrich_experiment_overrides({"indicatorParams": params}).get("indicatorParams") or params
+        new_code = IndicatorParamsParser.apply_defaults_to_code(code, nested)
+        changed = new_code != code
+        return jsonify({
+            "code": 1,
+            "msg": "success",
+            "data": {"code": new_code, "changed": changed, "indicatorParams": nested},
+        })
+    except Exception as e:
+        logger.error("apply_param_defaults failed: %s", e, exc_info=True)
+        return jsonify({"code": 0, "msg": str(e), "data": None}), 500
+
+
 @indicator_bp.route("/getIndicatorParams", methods=["GET"])
 @login_required
 def get_indicator_params():

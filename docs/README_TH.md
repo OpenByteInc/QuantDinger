@@ -5,8 +5,8 @@
 
   <h1>QuantDinger</h1>
   <h3>ระบบปฏิบัติการเทรดเชิงปริมาณ AI ส่วนตัวของคุณ</h3>
-  <p><strong>สแต็กเดียวสำหรับวิจัยกราฟ การวิเคราะห์ตลาดด้วย AI อินดิเคเตอร์และกลยุทธ์ Python การทดสอบย้อนหลัง และการเทรดจริง—บนเซิร์ฟเวอร์ของคุณและคีย์ API ของคุณ</strong></p>
-  <p><em>แพลตฟอร์มเทรดเชิงปริมาณแบบ self-hosted: ตั้งแต่ไอเดียและการเขียนโค้ดช่วยด้วย AI ไปจนถึงเวิร์กโฟลว์แบบเทรดจำลองและเทรดจริงที่เชื่อมต่อกับตลาด พร้อมตัวเลือกหลายผู้ใช้และการเรียกเก็บเงิน</em></p>
+  <p><strong>สแต็ก Docker เดียวสำหรับกราฟ มัลติ LLM วิจัย กลยุทธ์ Python แบ็คเทสต์ระดับสถาบัน และไลฟ์หลาย venue—โฮสต์เอง คีย์ของคุณ ข้อมูลของคุณ</strong></p>
+  <p><em>quant OS โอเพนซอร์ส: AI ช่วยเขียนโค้ด → แบ็คเทสต์ → เทรดจำลอง → ไลฟ์ (crypto/IBKR/MT5/Alpaca) พร้อม Agent Gateway และ MCP</em></p>
 
   <div align="center" style="max-width: 680px; margin: 1.25rem auto 0; padding: 20px 22px 22px; border: 1px solid #d1d9e0; border-radius: 16px;">
     <p style="margin: 0 0 14px; line-height: 1.65;">
@@ -49,6 +49,8 @@
     <img src="https://img.shields.io/github/v/release/brokermr810/QuantDinger?style=flat-square&color=orange&label=Version" alt="Version">
     <img src="https://img.shields.io/badge/Python-3.10%2B%20%7C%20Docker%203.12-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python">
     <img src="https://img.shields.io/badge/Docker-Compose-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker">
+    <img src="https://img.shields.io/badge/Agent%20Gateway-MCP%20Ready-6f42c1?style=flat-square" alt="Agent Gateway">
+    <img src="https://img.shields.io/badge/PostgreSQL-16-336791?style=flat-square&logo=postgresql&logoColor=white" alt="PostgreSQL">
     <img src="https://img.shields.io/github/stars/brokermr810/QuantDinger?style=flat-square&logo=github" alt="Stars">
   </p>
 </div>
@@ -57,22 +59,46 @@
 
 ## สารบัญ
 
-[เริ่มต้นอย่างรวดเร็ว](#เริ่มต้นอย่างรวดเร็ว) · [ที่เก็บที่เกี่ยวข้อง](#ที่เก็บที่เกี่ยวข้อง) · [MCP / Agent](#mcp--agent-gateway) · [ภาพรวม](#ภาพรวมผลิตภัณฑ์) · [คุณสมบัติ](#ไฮไลต์คุณสมบัติ) · [ภาพหน้าจอ](#ทัวร์ภาพ) · [สถาปัตยกรรม](#สถาปัตยกรรม) · [ติดตั้ง](#การติดตั้งและการเริ่มต้น) · [เอกสาร](#รายการเอกสาร) · [คำถามที่พบบ่อย](#คำถามที่พบบ่อย) · [ใบอนุญาต](#ใบอนุญาต)
+[เริ่มต้นอย่างรวดเร็ว](#เริ่มต้นอย่างรวดเร็ว) · [ไฮไลต์ทางเทคนิค](#ไฮไลต์ทางเทคนิค) · [ที่เก็บที่เกี่ยวข้อง](#ที่เก็บที่เกี่ยวข้อง) · [MCP / Agent](#mcp--agent-gateway) · [ภาพรวม](#ภาพรวมผลิตภัณฑ์) · [คุณสมบัติ](#ไฮไลต์คุณสมบัติ) · [ภาพหน้าจอ](#ทัวร์ภาพ) · [สถาปัตยกรรม](#สถาปัตยกรรม) · [ติดตั้ง](#การติดตั้งและการเริ่มต้น) · [เอกสาร](#รายการเอกสาร) · [คำถามที่พบบ่อย](#คำถามที่พบบ่อย) · [ใบอนุญาต](#ใบอนุญาต)
 
 ---
 
-> QuantDinger เป็นแพลตฟอร์มเทรดเชิงปริมาณแบบ **self-hosted และเน้นโลคัล** รวม **การวิจัยช่วยด้วย AI** **กลยุทธ์ Python แบบเนทีฟ** **การทดสอบย้อนหลัง** และ **การเทรดจริง** (คริปโต, IBKR หุ้นสหรัฐ, MT5 FX, Alpaca หุ้นสหรัฐ / ETF / คริปโต) ไว้ใน **ผลิตภัณฑ์เดียว**
+> QuantDinger เป็น **quant OS แบบ self-hosted และเน้นโลคัล** — ไม่ใช่แชทบอทที่มีปุ่มซื้อ รวม **มัลติ LLM วิจัย** **กลยุทธ์ Python เนทีฟ** **แบ็คเทสต์ฝั่งเซิร์ฟเวอร์** และ **ไลฟ์หลายโบรกเกอร์** (10+ crypto venue, IBKR, MT5, Alpaca) ในสแต็กระดับ production ที่คุณควบคุมได้ทั้งหมด
+
+<div align="center">
+  <img src="screenshots/ezgif.com-animated-gif-maker.gif" alt="QuantDinger demo" width="920" style="border-radius: 12px; border: 1px solid #eaeef2;">
+  <p><sub><em>จากศูนย์ถึงรันได้—กราฟ AI วิจัย และเวิร์กโฟลว์กลยุทธ์ในไม่กี่นาที</em></sub></p>
+</div>
 
 <div align="center">
   <img src="screenshots/architecture.png" alt="สถาปัตยกรรม QuantDinger" width="960">
-  <p><sub><em>ลูปปิดจากแหล่งข้อมูลไปยังอินดิเคเตอร์ สัญญาณ กลยุทธ์ การทดสอบย้อนหลัง การวิเคราะห์ AI และการดำเนินการ</em></sub></p>
+  <p><sub><em>ลูปปิด 5 ชั้น: <strong>ไอเดีย → อินดิเคเตอร์ → กลยุทธ์ → แบ็คเทสต์ → ปรับแต่ง → ดำเนินการ → มอนิเตอร์</strong></em></sub></p>
 </div>
+
+## ไฮไลต์ทางเทคนิค
+
+| | จุดเด่นของ QuantDinger |
+|---|------------------------|
+| **quant OS ครบวงจร** | กราฟ IDE AI แบ็คเทสต์ bot ไลฟ์ quick trade จัดการบัญชีโบรกเกอร์—ผลิตภัณฑ์เดียว |
+| **Agent-native** | **Agent Gateway** + PyPI [`quantdinger-mcp`](https://pypi.org/project/quantdinger-mcp/) — Cursor / Claude Code / Codex พร้อม audit log |
+| **runtime กลยุทธ์คู่** | `IndicatorStrategy` (สัญญาณเวกเตอร์) และ `ScriptStrategy` (`on_bar`) |
+| **หลาย venue** | CCXT crypto, IBKR, MT5, Alpaca — หน้าบัญชีโบรกเกอร์รวม |
+| **infra ระดับ production** | PostgreSQL 16 + Redis 7, Worker, อิมเมจ GHCR multi-arch |
+| **ความปลอดภัย** | ปฏิเสธ `SECRET_KEY` ค่าเริ่มต้น, token แฮช, เทรดจำลองเป็นค่าเริ่มต้น |
 
 ## เริ่มต้นอย่างรวดเร็ว
 
-**สิ่งที่ต้องมี:** [Docker](https://docs.docker.com/get-docker/) + Compose และ **Git** **ไม่ต้องใช้ Node.js** (อิมเมจฟรอนต์เอนด์ถูกดึงจาก GHCR)
+**สิ่งที่ต้องมี:** [Docker](https://docs.docker.com/get-docker/) + Compose v2 **ไม่ต้องใช้ Node.js** (ดึง frontend จาก GHCR)
 
-### macOS / Linux
+### ติดตั้งบรรทัดเดียว (Linux / macOS)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/brokermr810/QuantDinger/main/install.sh | bash
+```
+
+ติดตั้งที่ `~/quantdinger` โดยค่าเริ่มต้น รันซ้ำเพื่อ pull อิมเมจล่าสุด → **`http://localhost:8888`** (`quantdinger` / `123456` เปลี่ยนรหัสทันที)
+
+### มาตรฐาน: โคลนที่เก็บ (macOS / Linux)
 
 ```bash
 git clone https://github.com/brokermr810/QuantDinger.git && cd QuantDinger && cp backend_api_python/env.example backend_api_python/.env && chmod +x scripts/generate-secret-key.sh && ./scripts/generate-secret-key.sh && docker-compose up -d --build
@@ -123,7 +149,19 @@ docker-compose up -d --build
 
 ## ภาพรวมผลิตภัณฑ์
 
-สภาพแวดล้อมรวม **AI + กลยุทธ์ Python + การทดสอบย้อนหลัง + เทรดจริง** ที่โฮสต์เองได้ ข้อมูลรับรองอยู่ใน **PostgreSQL** และ **`.env`** การเชื่อมต่อตลาดคริปโต IBKR MT5 Alpaca และ LLM ผ่านตัวแปรสภาพแวดล้อม
+สภาพแวดล้อม **AI + กลยุทธ์ Python + แบ็คเทสต์ + ไลฟ์** แบบ self-hosted แทนที่ชุด TradingView + Notebook + แชท AI + bot ด้วย **สแต็ก Docker ที่ตรวจสอบได้** ข้อมูลรับรองใน **PostgreSQL** และ **`.env`**
+
+## ไฮไลต์คุณสมบัติ
+
+- **วิจัย & AI** — มัลติ LLM, NL→โค้ด, Agent / MCP (scoped token, SSE)
+- **สร้าง** — `IndicatorStrategy` / `ScriptStrategy`, UI แท่งเทียนโปร
+- **ตรวจสอบ** — แบ็คเทสต์ฝั่งเซิร์ฟเวอร์ (equity, drawdown, บันทึกเทรด)
+- **ปฏิบัติการ** — 10+ crypto, IBKR / MT5 / Alpaca, หน้าบัญชีโบรกเกอร์รวม, Telegram / Discord / Webhook
+- **แพลตฟอร์ม** — Docker + GHCR, Postgres 16, Redis 7, OAuth, หลายผู้ใช้, การเรียกเก็บเงิน, AWS Marketplace
+
+## สถาปัตยกรรม
+
+**หลักการ:** แยกข้อมูลตลาด · กลยุทธ์/แบ็คเทสต์ · การดำเนินการ Nginx + Vue SPA, Flask + Gunicorn, PostgreSQL 16, Redis 7 การ deploy: `install.sh` บรรทัดเดียว, GHCR zero-repo, full repo Compose, AWS AMI, [SaaS](https://ai.quantdinger.com)
 
 ## ทัวร์ภาพ
 
@@ -145,56 +183,6 @@ docker-compose up -d --build
     <td align="center"><img src="screenshots/v34.png" alt="Live" style="border-radius: 6px;"><br/><sub>กลยุทธ์จริงและผลงาน</sub></td>
   </tr>
 </table>
-
-## ไฮไลต์คุณสมบัติ
-
-- **วิจัย & AI** — วิเคราะห์หลาย LLM รายการโปรด ประวัติ NL→โค้ด การเชื่อม **Agent / MCP**
-- **สร้าง** — `IndicatorStrategy` และ `ScriptStrategy` (`on_bar`) UI แท่งเทียนระดับโปร
-- **ตรวจสอบ** — ทดสอบย้อนหลังฝั่งเซิร์ฟเวอร์ เส้น equity
-- **ปฏิบัติการ** — ดำเนินการคริปโต เทรดเร็ว IBKR / MT5 / Alpaca (หุ้นสหรัฐ · ETF · คริปโต) Telegram อีเมล Discord Webhook ฯลฯ
-- **แพลตฟอร์ม** — Docker Compose Postgres Redis OAuth หลายผู้ใช้ เครดิต สมาชิก USDT สวิตช์การเรียกเก็บเงิน
-
-## สถาปัตยกรรม
-
-```mermaid
-flowchart LR
-    U[เทรดเดอร์ / ผู้ปฏิบัติการ]
-
-    subgraph FE[ฟรอนต์เอนด์]
-        WEB[Vue]
-        NG[Nginx]
-    end
-
-    subgraph BE[แบ็กเอนด์]
-        API[Flask API]
-        AI[บริการ AI]
-        STRAT[กลยุทธ์·แบ็กเทสต์]
-        EXEC[การดำเนินการ]
-    end
-
-    subgraph DATA[ข้อมูล]
-        PG[(PostgreSQL)]
-        REDIS[(Redis)]
-    end
-
-    subgraph EXT[ภายนอก]
-        LLM[LLM]
-        EXCH[ตลาด]
-        BROKER[IBKR / MT5 / Alpaca]
-    end
-
-    U --> WEB --> NG --> API
-    API --> AI
-    API --> STRAT
-    API --> EXEC
-    AI --> PG
-    STRAT --> PG
-    EXEC --> PG
-    API --> REDIS
-    AI --> LLM
-    EXEC --> EXCH
-    EXEC --> BROKER
-```
 
 ## การติดตั้งและการเริ่มต้น
 

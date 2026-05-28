@@ -9,6 +9,21 @@ from app.data_providers import safe_float
 
 logger = get_logger(__name__)
 
+TOP_CRYPTO_SYMBOLS = [
+    {"yf": "BTC-USD", "symbol": "BTC", "name": "Bitcoin"},
+    {"yf": "ETH-USD", "symbol": "ETH", "name": "Ethereum"},
+    {"yf": "BNB-USD", "symbol": "BNB", "name": "Binance Coin"},
+    {"yf": "SOL-USD", "symbol": "SOL", "name": "Solana"},
+    {"yf": "XRP-USD", "symbol": "XRP", "name": "Ripple"},
+    {"yf": "ADA-USD", "symbol": "ADA", "name": "Cardano"},
+    {"yf": "DOGE-USD", "symbol": "DOGE", "name": "Dogecoin"},
+    {"yf": "AVAX-USD", "symbol": "AVAX", "name": "Avalanche"},
+    {"yf": "DOT-USD", "symbol": "DOT", "name": "Polkadot"},
+    {"yf": "POL-USD", "symbol": "POL", "name": "Polygon"},
+    {"yf": "LINK-USD", "symbol": "LINK", "name": "Chainlink"},
+    {"yf": "LTC-USD", "symbol": "LTC", "name": "Litecoin"},
+]
+
 
 def fetch_crypto_prices_ccxt() -> List[Dict[str, Any]]:
     """Fetch crypto prices using CCXT (system's existing data source)."""
@@ -55,20 +70,7 @@ def fetch_crypto_prices_yfinance() -> List[Dict[str, Any]]:
     try:
         import yfinance as yf
 
-        symbols = [
-            {"yf": "BTC-USD", "symbol": "BTC", "name": "Bitcoin"},
-            {"yf": "ETH-USD", "symbol": "ETH", "name": "Ethereum"},
-            {"yf": "BNB-USD", "symbol": "BNB", "name": "Binance Coin"},
-            {"yf": "SOL-USD", "symbol": "SOL", "name": "Solana"},
-            {"yf": "XRP-USD", "symbol": "XRP", "name": "Ripple"},
-            {"yf": "ADA-USD", "symbol": "ADA", "name": "Cardano"},
-            {"yf": "DOGE-USD", "symbol": "DOGE", "name": "Dogecoin"},
-            {"yf": "AVAX-USD", "symbol": "AVAX", "name": "Avalanche"},
-            {"yf": "DOT-USD", "symbol": "DOT", "name": "Polkadot"},
-            {"yf": "POL-USD", "symbol": "POL", "name": "Polygon"},
-            {"yf": "LINK-USD", "symbol": "LINK", "name": "Chainlink"},
-            {"yf": "LTC-USD", "symbol": "LTC", "name": "Litecoin"},
-        ]
+        symbols = TOP_CRYPTO_SYMBOLS
 
         yf_symbols = [s["yf"] for s in symbols]
         tickers = yf.Tickers(" ".join(yf_symbols))
@@ -115,12 +117,13 @@ def fetch_crypto_prices_yfinance() -> List[Dict[str, Any]]:
         return []
 
 
-def fetch_crypto_prices() -> List[Dict[str, Any]]:
+def fetch_crypto_prices(*, fast: bool = False) -> List[Dict[str, Any]]:
     """Fetch top crypto prices — try CCXT → yfinance → CoinGecko."""
-    result = fetch_crypto_prices_ccxt()
-    if result and len(result) >= 5:
-        logger.info("Fetched %d crypto prices via CCXT", len(result))
-        return result
+    if not fast:
+        result = fetch_crypto_prices_ccxt()
+        if result and len(result) >= 5:
+            logger.info("Fetched %d crypto prices via CCXT", len(result))
+            return result
 
     result = fetch_crypto_prices_yfinance()
     if result and len(result) >= 5:
@@ -161,11 +164,9 @@ def fetch_crypto_prices() -> List[Dict[str, Any]]:
 
     logger.warning("All crypto data sources failed, returning placeholder data")
     return [
-        {"symbol": "BTC", "name": "Bitcoin", "price": 0, "change_24h": 0, "change_7d": 0, "market_cap": 0, "volume_24h": 0, "image": "", "category": "crypto"},
-        {"symbol": "ETH", "name": "Ethereum", "price": 0, "change_24h": 0, "change_7d": 0, "market_cap": 0, "volume_24h": 0, "image": "", "category": "crypto"},
-        {"symbol": "BNB", "name": "BNB", "price": 0, "change_24h": 0, "change_7d": 0, "market_cap": 0, "volume_24h": 0, "image": "", "category": "crypto"},
-        {"symbol": "SOL", "name": "Solana", "price": 0, "change_24h": 0, "change_7d": 0, "market_cap": 0, "volume_24h": 0, "image": "", "category": "crypto"},
-        {"symbol": "XRP", "name": "XRP", "price": 0, "change_24h": 0, "change_7d": 0, "market_cap": 0, "volume_24h": 0, "image": "", "category": "crypto"},
+        {"symbol": s["symbol"], "name": s["name"], "price": 0, "change_24h": 0, "change_7d": 0,
+         "market_cap": 0, "volume_24h": 0, "image": "", "category": "crypto"}
+        for s in TOP_CRYPTO_SYMBOLS
     ]
 
 

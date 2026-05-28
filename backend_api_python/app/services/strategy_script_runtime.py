@@ -146,6 +146,11 @@ class StrategyScriptContext:
     def log(self, message: Any):
         self._logs.append(str(message))
 
+    def flush_logs(self) -> List[str]:
+        logs = self._logs.copy()
+        self._logs = []
+        return logs
+
     def buy(self, price: Any = None, amount: Any = None):
         self._orders.append({'action': 'buy', 'price': price, 'amount': amount})
 

@@ -460,8 +460,8 @@ def create_alpaca_client(exchange_config: Dict[str, Any]):
         except ImportError:
             raise LiveTradingError("Alpaca trading requires alpaca-py. Run: pip install alpaca-py")
 
-    api_key = _get(exchange_config, "api_key", "apiKey")
-    secret_key = _get(exchange_config, "secret_key", "secret", "secretKey")
+    api_key = (_get(exchange_config, "api_key", "apiKey") or "").strip()
+    secret_key = (_get(exchange_config, "secret_key", "secret", "secretKey") or "").strip()
     if not api_key or not secret_key:
         raise LiveTradingError("Alpaca requires api_key and secret_key")
 
@@ -488,8 +488,10 @@ def create_alpaca_client(exchange_config: Dict[str, Any]):
     client = AlpacaClient(config)
     if not client.connect():
         raise LiveTradingError(
-            "Failed to connect to Alpaca. Please check api_key/secret and "
-            "the paper/live flag (PK*=paper, AK*=live)."
+            "Failed to connect to Alpaca (REST trading API). Check api_key/secret, "
+            "paper/live (PK*=paper, AK*=live), and network access. "
+            "HTTP 400 'invalid syntax' on market-data WebSocket is usually a bad "
+            "auth/subscribe JSON or symbol (use BTC/USD not BTC/USDT for crypto)."
         )
     return client
 

@@ -5,8 +5,8 @@
 
   <h1>QuantDinger</h1>
   <h3>프라이빗 AI 퀀트 운영체제</h3>
-  <p><strong>차트 연구, AI 시장 분석, Python 인디케이터·전략, 백테스트, 라이브 실행을 자체 서버와 자체 API 키로 한 스택에서 운영합니다.</strong></p>
-  <p><em>셀프호스트 퀀트 플랫폼: 아이디어와 AI 보조 코딩부터 페이퍼 워크플로, 거래소 연동 라이브까지. 선택적 멀티유저·과금 프리미티브.</em></p>
+  <p><strong>차트, 멀티 LLM 리서치, Python 전략, 기관급 백테스트, 멀티 venue 라이브 실행을 하나의 Docker 스택으로—완전 셀프호스트, 내 키, 내 데이터.</strong></p>
+  <p><em>오픈소스 quant OS: AI 보조 코딩 → 백테스트 → 페이퍼 → 라이브(crypto/IBKR/MT5/Alpaca), Agent Gateway·MCP 내장.</em></p>
 
   <div align="center" style="max-width: 680px; margin: 1.25rem auto 0; padding: 20px 22px 22px; border: 1px solid #d1d9e0; border-radius: 16px;">
     <p style="margin: 0 0 14px; line-height: 1.65;">
@@ -49,6 +49,8 @@
     <img src="https://img.shields.io/github/v/release/brokermr810/QuantDinger?style=flat-square&color=orange&label=Version" alt="Version">
     <img src="https://img.shields.io/badge/Python-3.10%2B%20%7C%20Docker%203.12-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python">
     <img src="https://img.shields.io/badge/Docker-Compose-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker">
+    <img src="https://img.shields.io/badge/Agent%20Gateway-MCP%20Ready-6f42c1?style=flat-square" alt="Agent Gateway">
+    <img src="https://img.shields.io/badge/PostgreSQL-16-336791?style=flat-square&logo=postgresql&logoColor=white" alt="PostgreSQL">
     <img src="https://img.shields.io/github/stars/brokermr810/QuantDinger?style=flat-square&logo=github" alt="Stars">
   </p>
 </div>
@@ -57,22 +59,46 @@
 
 ## 목차
 
-[빠른 시작](#빠른-시작) · [관련 저장소](#관련-저장소) · [MCP / Agent](#mcp--agent-게이트웨이) · [개요](#제품-개요) · [기능](#기능-하이라이트) · [스크린샷](#비주얼-투어) · [아키텍처](#아키텍처) · [설치](#설치-및-첫-실행) · [문서](#문서-목록) · [FAQ](#자주-묻는-질문) · [라이선스](#라이선스)
+[빠른 시작](#빠른-시작) · [기술 하이라이트](#기술-하이라이트) · [관련 저장소](#관련-저장소) · [MCP / Agent](#mcp--agent-게이트웨이) · [개요](#제품-개요) · [기능](#기능-하이라이트) · [스크린샷](#비주얼-투어) · [아키텍처](#아키텍처) · [설치](#설치-및-첫-실행) · [문서](#문서-목록) · [FAQ](#자주-묻는-질문) · [라이선스](#라이선스)
 
 ---
 
-> QuantDinger는 **셀프호스트·로컬 우선** 퀀트 플랫폼입니다. **AI 보조 리서치**, **Python 네이티브 전략**, **백테스트**, **라이브 거래**(암호화폐, IBKR 미국 주식, MT5 FX, Alpaca 미국 주식 / ETF / 암호화폐)를 **하나의 제품**으로 묶습니다.
+> QuantDinger는 **셀프호스트·로컬 우선** 퀀트 **OS**입니다. 매수 버튼 챗봇이 아니라 **멀티 LLM 리서치**, **Python 네이티브 전략**, **서버 사이드 백테스트**, **멀티 브로커 라이브**(10+ crypto venue, IBKR, MT5, Alpaca)를 하나의 프로덕션급 스택에 통합합니다.
+
+<div align="center">
+  <img src="screenshots/ezgif.com-animated-gif-maker.gif" alt="QuantDinger 빠른 데모" width="920" style="border-radius: 12px; border: 1px solid #eaeef2;">
+  <p><sub><em>제로에서 실행까지—차트, AI 리서치, 전략 워크플로를 몇 분 만에.</em></sub></p>
+</div>
 
 <div align="center">
   <img src="screenshots/architecture.png" alt="QuantDinger 아키텍처" width="960">
-  <p><sub><em>데이터 소스에서 인디케이터·시그널·전략·백테스트·AI 분석으로 이어지는 폐쇄 루프.</em></sub></p>
+  <p><sub><em>5계층 엔진 폐쇄 루프: <strong>아이디어 → 인디케이터 → 전략 → 백테스트 → 최적화 → 실행 → 모니터링</strong></em></sub></p>
 </div>
+
+## 기술 하이라이트
+
+| | QuantDinger의 강점 |
+|---|-------------------|
+| **풀스택 quant OS** | 차트, IDE, AI, 백테스트, 라이브 bot, 퀵 트레이드, 브로커 관리를 한 제품에. |
+| **Agent 네이티브** | **Agent Gateway** + PyPI [`quantdinger-mcp`](https://pypi.org/project/quantdinger-mcp/) — Cursor / Claude Code / Codex, 감사 로그. |
+| **이중 전략 런타임** | `IndicatorStrategy`(벡터 시그널)와 `ScriptStrategy`(`on_bar` 이벤트). |
+| **멀티 venue** | CCXT crypto, IBKR, MT5, Alpaca — 통합 브로커 계정 페이지. |
+| **프로덕션 인프라** | PostgreSQL 16 + Redis 7, Worker, GHCR 멀티 아키 이미지. |
+| **보안** | 기본 `SECRET_KEY` 거부, Agent 토큰 해시 저장, 기본 페이퍼만. |
 
 ## 빠른 시작
 
-**필요:** [Docker](https://docs.docker.com/get-docker/) + Compose, **Git**. **Node.js 불필요**(프론트엔드 이미지는 GHCR에서 가져옴).
+**필요:** [Docker](https://docs.docker.com/get-docker/) + Compose v2. **Node.js 불필요**(GHCR 프론트).
 
-### macOS / Linux
+### 한 줄 설치 (Linux / macOS)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/brokermr810/QuantDinger/main/install.sh | bash
+```
+
+기본 `~/quantdinger`. 재실행 시 최신 이미지 pull. → **`http://localhost:8888`** (`quantdinger` / `123456`, 즉시 비밀번호 변경).
+
+### 표준: 저장소 클론 (macOS / Linux)
 
 ```bash
 git clone https://github.com/brokermr810/QuantDinger.git && cd QuantDinger && cp backend_api_python/env.example backend_api_python/.env && chmod +x scripts/generate-secret-key.sh && ./scripts/generate-secret-key.sh && docker-compose up -d --build
@@ -123,7 +149,19 @@ Git for Windows Bash에서는 위 macOS/Linux 한 줄 명령을 그대로 사용
 
 ## 제품 개요
 
-셀프호스트 가능한 **AI + Python 전략 + 백테스트 + 라이브** 통합 환경입니다. 자격 증명은 **PostgreSQL**과 **`.env`**로 관리합니다. 암호화폐 거래소, IBKR, MT5, Alpaca, LLM은 환경 변수로 연결합니다.
+셀프호스트 **AI + Python 전략 + 백테스트 + 라이브** 통합 환경. TradingView + Notebook + 챗 AI + 거래소 bot 조합을 **하나의 감사 가능한 Docker 스택**으로 대체. 자격 증명은 **PostgreSQL**과 **`.env`**로 관리.
+
+## 기능 하이라이트
+
+- **리서치 & AI** — 멀티 LLM, NL→코드, Agent / MCP(scoped token, SSE).
+- **구축** — `IndicatorStrategy` / `ScriptStrategy`, 프로 K라인 UI.
+- **검증** — 서버 사이드 백테스트(에퀴티, 드로다운, 체결 로그).
+- **운영** — 10+ crypto, IBKR / MT5 / Alpaca, 통합 브로커 계정, Telegram / Discord / Webhook.
+- **플랫폼** — Docker + GHCR, Postgres 16, Redis 7, OAuth, 멀티유저, 과금, AWS Marketplace.
+
+## 아키텍처
+
+**설계 원칙:** 시세·전략/백테스트·실행 분리. Nginx + Vue SPA, Flask + Gunicorn, PostgreSQL 16, Redis 7. 배포: `install.sh` 한 줄, GHCR zero-repo, full repo Compose, AWS AMI, [SaaS](https://ai.quantdinger.com).
 
 ## 비주얼 투어
 
@@ -145,56 +183,6 @@ Git for Windows Bash에서는 위 macOS/Linux 한 줄 명령을 그대로 사용
     <td align="center"><img src="screenshots/v34.png" alt="Live" style="border-radius: 6px;"><br/><sub>라이브 전략·성과</sub></td>
   </tr>
 </table>
-
-## 기능 하이라이트
-
-- **리서치 & AI** — 멀티 LLM 분석, 관심목록, 기록; NL→코드; **Agent / MCP** 연동.
-- **구축** — `IndicatorStrategy`와 `ScriptStrategy`(`on_bar`); 프로 K라인 UI.
-- **검증** — 서버 사이드 백테스트, 에퀴티 커브.
-- **운영** — 암호화폐 실행, 퀵 트레이드, IBKR / MT5 / Alpaca(미국 주식 · ETF · 암호화폐); Telegram, 이메일, Discord, Webhook 등.
-- **플랫폼** — Docker Compose, Postgres, Redis, OAuth, 멀티유저, 크레딧·멤버십·USDT 과금 스위치.
-
-## 아키텍처
-
-```mermaid
-flowchart LR
-    U[트레이더 / 운영자]
-
-    subgraph FE[프론트]
-        WEB[Vue]
-        NG[Nginx]
-    end
-
-    subgraph BE[백엔드]
-        API[Flask API]
-        AI[AI 서비스]
-        STRAT[전략·백테스트]
-        EXEC[실행]
-    end
-
-    subgraph DATA[데이터]
-        PG[(PostgreSQL)]
-        REDIS[(Redis)]
-    end
-
-    subgraph EXT[외부]
-        LLM[LLM]
-        EXCH[거래소]
-        BROKER[IBKR / MT5 / Alpaca]
-    end
-
-    U --> WEB --> NG --> API
-    API --> AI
-    API --> STRAT
-    API --> EXEC
-    AI --> PG
-    STRAT --> PG
-    EXEC --> PG
-    API --> REDIS
-    AI --> LLM
-    EXEC --> EXCH
-    EXEC --> BROKER
-```
 
 ## 설치 및 첫 실행
 

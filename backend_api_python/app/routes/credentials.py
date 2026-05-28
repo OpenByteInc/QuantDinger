@@ -252,6 +252,53 @@ def create_credential():
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
 
 
+@credentials_bp.route('/update-name', methods=['PUT', 'PATCH'])
+@login_required
+def update_credential_name():
+    """Update display name (alias) only — API keys in encrypted_config are untouched."""
+    try:
+        user_id = g.user_id
+        data = request.get_json() or {}
+        cred_id = data.get('id')
+        if cred_id is None:
+            cred_id = request.args.get('id', type=int)
+        try:
+            cred_id = int(cred_id)
+        except (TypeError, ValueError):
+            cred_id = None
+        if not cred_id:
+            return jsonify({'code': 0, 'msg': 'Missing id', 'data': None}), 400
+
+        name = (data.get('name') or '').strip()
+        if len(name) > 128:
+            return jsonify({'code': 0, 'msg': 'Name too long (max 128 characters)', 'data': None}), 400
+
+        with get_db_connection() as db:
+            cur = db.cursor()
+            cur.execute(
+                """
+                UPDATE qd_exchange_credentials
+                SET name = %s, updated_at = NOW()
+                WHERE id = %s AND user_id = %s
+                RETURNING id, name, exchange_id, api_key_hint, created_at, updated_at
+                """,
+                (name, cred_id, user_id),
+            )
+            row = cur.fetchone()
+            if not row:
+                cur.close()
+                return jsonify({'code': 0, 'msg': 'Not found', 'data': None}), 404
+            db.commit()
+            cur.close()
+
+        item = dict(row or {})
+        return jsonify({'code': 1, 'msg': 'success', 'data': item})
+    except Exception as e:
+        logger.error(f"update_credential_name failed: {str(e)}")
+        logger.error(traceback.format_exc())
+        return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
+
+
 @credentials_bp.route('/delete', methods=['DELETE'])
 @login_required
 def delete_credential():

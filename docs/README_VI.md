@@ -5,8 +5,8 @@
 
   <h1>QuantDinger</h1>
   <h3>Hệ điều hành giao dịch định lượng AI riêng tư của bạn</h3>
-  <p><strong>Một stack triển khai cho nghiên cứu biểu đồ, phân tích thị trường bằng AI, chỉ báo &amp; chiến lược Python, kiểm thử lùi và giao dịch thực—trên máy chủ và khóa API của bạn.</strong></p>
-  <p><em>Nền tảng định lượng tự lưu trữ: từ ý tưởng và lập trình hỗ trợ bởi AI đến quy trình giấy và giao dịch thực kết nối sàn; tùy chọn đa người dùng và thanh toán.</em></p>
+  <p><strong>Một stack Docker cho biểu đồ, nghiên cứu đa LLM, chiến lược Python, backtest cấp tổ chức và live đa venue—tự host hoàn toàn, khóa của bạn, dữ liệu của bạn.</strong></p>
+  <p><em>quant OS mã nguồn mở: AI hỗ trợ code → backtest → paper → live (crypto/IBKR/MT5/Alpaca), tích hợp Agent Gateway &amp; MCP.</em></p>
 
   <div align="center" style="max-width: 680px; margin: 1.25rem auto 0; padding: 20px 22px 22px; border: 1px solid #d1d9e0; border-radius: 16px;">
     <p style="margin: 0 0 14px; line-height: 1.65;">
@@ -49,6 +49,8 @@
     <img src="https://img.shields.io/github/v/release/brokermr810/QuantDinger?style=flat-square&color=orange&label=Version" alt="Version">
     <img src="https://img.shields.io/badge/Python-3.10%2B%20%7C%20Docker%203.12-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python">
     <img src="https://img.shields.io/badge/Docker-Compose-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker">
+    <img src="https://img.shields.io/badge/Agent%20Gateway-MCP%20Ready-6f42c1?style=flat-square" alt="Agent Gateway">
+    <img src="https://img.shields.io/badge/PostgreSQL-16-336791?style=flat-square&logo=postgresql&logoColor=white" alt="PostgreSQL">
     <img src="https://img.shields.io/github/stars/brokermr810/QuantDinger?style=flat-square&logo=github" alt="Stars">
   </p>
 </div>
@@ -57,22 +59,46 @@
 
 ## Mục lục
 
-[Bắt đầu nhanh](#bắt-đầu-nhanh) · [Kho liên quan](#kho-liên-quan) · [MCP / Agent](#mcp--agent-gateway) · [Tổng quan](#tổng-quan-sản-phẩm) · [Tính năng](#điểm-nổi-bật) · [Ảnh màn hình](#tour-hình-ảnh) · [Kiến trúc](#kiến-trúc) · [Cài đặt](#cài-đặt-và-chạy-lần-đầu) · [Tài liệu](#danh-sách-tài-liệu) · [FAQ](#câu-hỏi-thường-gặp) · [Giấy phép](#giấy-phép)
+[Bắt đầu nhanh](#bắt-đầu-nhanh) · [Điểm nổi bật kỹ thuật](#điểm-nổi-bật-kỹ-thuật) · [Kho liên quan](#kho-liên-quan) · [MCP / Agent](#mcp--agent-gateway) · [Tổng quan](#tổng-quan-sản-phẩm) · [Tính năng](#điểm-nổi-bật) · [Ảnh màn hình](#tour-hình-ảnh) · [Kiến trúc](#kiến-trúc) · [Cài đặt](#cài-đặt-và-chạy-lần-đầu) · [Tài liệu](#danh-sách-tài-liệu) · [FAQ](#câu-hỏi-thường-gặp) · [Giấy phép](#giấy-phép)
 
 ---
 
-> QuantDinger là nền tảng định lượng **tự lưu trữ, ưu tiên cục bộ**, gom **nghiên cứu hỗ trợ AI**, **chiến lược Python gốc**, **kiểm thử lùi** và **giao dịch thực** (tiền mã hóa, cổ phiếu Mỹ qua IBKR, FX qua MT5, cổ phiếu Mỹ / ETF / tiền mã hóa qua Alpaca) trong **một sản phẩm**.
+> QuantDinger là **quant OS tự lưu trữ, ưu tiên cục bộ** — không phải chatbot có nút mua. Gom **nghiên cứu đa LLM**, **chiến lược Python gốc**, **backtest phía server** và **live đa broker** (10+ crypto venue, IBKR, MT5, Alpaca) trong một stack production bạn kiểm soát hoàn toàn.
+
+<div align="center">
+  <img src="screenshots/ezgif.com-animated-gif-maker.gif" alt="QuantDinger demo" width="920" style="border-radius: 12px; border: 1px solid #eaeef2;">
+  <p><sub><em>Từ zero đến chạy được—biểu đồ, AI nghiên cứu và workflow chiến lược trong vài phút.</em></sub></p>
+</div>
 
 <div align="center">
   <img src="screenshots/architecture.png" alt="Kiến trúc QuantDinger" width="960">
-  <p><sub><em>Vòng kín từ nguồn dữ liệu đến chỉ báo, tín hiệu, chiến lược, kiểm thử lùi, phân tích AI và thực thi.</em></sub></p>
+  <p><sub><em>Vòng lặp 5 tầng: <strong>Ý tưởng → Chỉ báo → Chiến lược → Backtest → Tối ưu → Thực thi → Giám sát</strong></em></sub></p>
 </div>
+
+## Điểm nổi bật kỹ thuật
+
+| | Điểm khác biệt của QuantDinger |
+|---|-------------------------------|
+| **quant OS full-stack** | Biểu đồ, IDE, AI, backtest, bot live, quick trade, quản lý broker—một sản phẩm |
+| **Agent-native** | **Agent Gateway** + PyPI [`quantdinger-mcp`](https://pypi.org/project/quantdinger-mcp/) — Cursor / Claude Code / Codex, audit log |
+| **Hai runtime chiến lược** | `IndicatorStrategy` (tín hiệu vector) và `ScriptStrategy` (`on_bar`) |
+| **Đa venue** | CCXT crypto, IBKR, MT5, Alpaca — trang tài khoản broker thống nhất |
+| **Hạ tầng production** | PostgreSQL 16 + Redis 7, Worker, ảnh GHCR multi-arch |
+| **Bảo mật** | Từ chối `SECRET_KEY` mặc định, token hash, mặc định chỉ paper |
 
 ## Bắt đầu nhanh
 
-**Yêu cầu:** [Docker](https://docs.docker.com/get-docker/) + Compose và **Git**. **Không cần Node.js** (ảnh frontend được kéo từ GHCR).
+**Yêu cầu:** [Docker](https://docs.docker.com/get-docker/) + Compose v2. **Không cần Node.js** (kéo frontend từ GHCR).
 
-### macOS / Linux
+### Cài đặt một dòng (Linux / macOS)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/brokermr810/QuantDinger/main/install.sh | bash
+```
+
+Mặc định `~/quantdinger`. Chạy lại để pull ảnh mới. → **`http://localhost:8888`** (`quantdinger` / `123456`, đổi mật khẩu ngay).
+
+### Chuẩn: clone kho (macOS / Linux)
 
 ```bash
 git clone https://github.com/brokermr810/QuantDinger.git && cd QuantDinger && cp backend_api_python/env.example backend_api_python/.env && chmod +x scripts/generate-secret-key.sh && ./scripts/generate-secret-key.sh && docker-compose up -d --build
@@ -123,7 +149,19 @@ Dành cho **Cursor / Claude Code / Codex**: **Model Context Protocol (MCP)** và
 
 ## Tổng quan sản phẩm
 
-Môi trường thống nhất **AI + chiến lược Python + kiểm thử lùi + giao dịch thực**, có thể tự host. Thông tin xác thực nằm trong **PostgreSQL** và **`.env`**. Sàn tiền mã hóa, IBKR, MT5, Alpaca, LLM kết nối qua biến môi trường.
+Môi trường **AI + chiến lược Python + backtest + live** tự host. Thay bộ TradingView + Notebook + chat AI + bot sàn bằng **một stack Docker có thể kiểm toán**. Thông tin xác thực trong **PostgreSQL** và **`.env`**.
+
+## Điểm nổi bật
+
+- **Nghiên cứu & AI** — Đa LLM, NL→code, Agent / MCP (scoped token, SSE).
+- **Xây dựng** — `IndicatorStrategy` / `ScriptStrategy`, UI K-line chuyên nghiệp.
+- **Xác minh** — Backtest phía server (equity, drawdown, nhật ký lệnh).
+- **Vận hành** — 10+ crypto, IBKR / MT5 / Alpaca, trang broker thống nhất, Telegram / Discord / Webhook.
+- **Nền tảng** — Docker + GHCR, Postgres 16, Redis 7, OAuth, đa người dùng, billing, AWS Marketplace.
+
+## Kiến trúc
+
+**Nguyên tắc:** Tách dữ liệu thị trường · chiến lược/backtest · thực thi. Nginx + Vue SPA, Flask + Gunicorn, PostgreSQL 16, Redis 7. Triển khai: `install.sh` một dòng, GHCR zero-repo, full repo Compose, AWS AMI, [SaaS](https://ai.quantdinger.com).
 
 ## Tour hình ảnh
 
@@ -145,56 +183,6 @@ Môi trường thống nhất **AI + chiến lược Python + kiểm thử lùi 
     <td align="center"><img src="screenshots/v34.png" alt="Live" style="border-radius: 6px;"><br/><sub>Chiến lược thực &amp; hiệu suất</sub></td>
   </tr>
 </table>
-
-## Điểm nổi bật
-
-- **Nghiên cứu &amp; AI** — Phân tích đa LLM, danh mục theo dõi, lịch sử; NL→mã; tích hợp **Agent / MCP**.
-- **Xây dựng** — `IndicatorStrategy` và `ScriptStrategy` (`on_bar`); giao diện nến chuyên nghiệp.
-- **Xác minh** — Kiểm thử lùi phía máy chủ, đường vốn.
-- **Vận hành** — Thực thi tiền mã hóa, giao dịch nhanh, IBKR / MT5 / Alpaca (cổ Mỹ · ETF · tiền mã hóa); Telegram, email, Discord, Webhook, v.v.
-- **Nền tảng** — Docker Compose, Postgres, Redis, OAuth, đa người dùng, tín dụng / thành viên / USDT.
-
-## Kiến trúc
-
-```mermaid
-flowchart LR
-    U[Nhà giao dịch / vận hành]
-
-    subgraph FE[Giao diện]
-        WEB[Vue]
-        NG[Nginx]
-    end
-
-    subgraph BE[Backend]
-        API[Flask API]
-        AI[Dịch vụ AI]
-        STRAT[Chiến lược·backtest]
-        EXEC[Thực thi]
-    end
-
-    subgraph DATA[Dữ liệu]
-        PG[(PostgreSQL)]
-        REDIS[(Redis)]
-    end
-
-    subgraph EXT[Bên ngoài]
-        LLM[LLM]
-        EXCH[Sàn]
-        BROKER[IBKR / MT5 / Alpaca]
-    end
-
-    U --> WEB --> NG --> API
-    API --> AI
-    API --> STRAT
-    API --> EXEC
-    AI --> PG
-    STRAT --> PG
-    EXEC --> PG
-    API --> REDIS
-    AI --> LLM
-    EXEC --> EXCH
-    EXEC --> BROKER
-```
 
 ## Cài đặt và chạy lần đầu
 

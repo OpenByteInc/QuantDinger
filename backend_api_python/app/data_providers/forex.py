@@ -19,6 +19,10 @@ FOREX_PAIRS = [
     {"td": "USD/CAD", "yf": "USDCAD=X", "tiingo": "usdcad", "name_cn": "美元/加元", "name_en": "USD/CAD", "base": "USD", "quote": "CAD"},
     {"td": "USD/CHF", "yf": "USDCHF=X", "tiingo": "usdchf", "name_cn": "美元/瑞郎", "name_en": "USD/CHF", "base": "USD", "quote": "CHF"},
     {"td": "NZD/USD", "yf": "NZDUSD=X", "tiingo": "nzdusd", "name_cn": "纽元/美元", "name_en": "NZD/USD", "base": "NZD", "quote": "USD"},
+    {"td": "EUR/GBP", "yf": "EURGBP=X", "tiingo": "eurgbp", "name_cn": "欧元/英镑", "name_en": "EUR/GBP", "base": "EUR", "quote": "GBP"},
+    {"td": "EUR/JPY", "yf": "EURJPY=X", "tiingo": "eurjpy", "name_cn": "欧元/日元", "name_en": "EUR/JPY", "base": "EUR", "quote": "JPY"},
+    {"td": "GBP/JPY", "yf": "GBPJPY=X", "tiingo": "gbpjpy", "name_cn": "英镑/日元", "name_en": "GBP/JPY", "base": "GBP", "quote": "JPY"},
+    {"td": "USD/HKD", "yf": "USDHKD=X", "tiingo": "usdhkd", "name_cn": "美元/港币", "name_en": "USD/HKD", "base": "USD", "quote": "HKD"},
 ]
 
 
@@ -168,4 +172,19 @@ def fetch_forex_pairs() -> List[Dict[str, Any]]:
                     result.append(r)
         if len(result) >= len(pairs) // 2:
             break
+
+    if not result:
+        logger.warning("Forex fetch all tiers failed, returning placeholder data")
+        for pair in pairs:
+            result.append({
+                "symbol": pair["td"],
+                "name": pair["td"],
+                "name_cn": pair["name_cn"],
+                "name_en": pair["name_en"],
+                "price": 0,
+                "change": 0,
+                "base": pair["base"],
+                "quote": pair["quote"],
+                "category": "forex",
+            })
     return result

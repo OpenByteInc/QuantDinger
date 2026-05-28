@@ -17,6 +17,12 @@ COMMODITIES = [
     {"td": "BZ", "yf": "BZ=F", "tiingo": None, "name_cn": "原油 Brent", "name_en": "Brent Oil", "unit": "USD/bbl"},
     {"td": "HG", "yf": "HG=F", "tiingo": None, "name_cn": "铜", "name_en": "Copper", "unit": "USD/lb"},
     {"td": "NG", "yf": "NG=F", "tiingo": None, "name_cn": "天然气", "name_en": "Natural Gas", "unit": "USD/MMBtu"},
+    {"td": "PL", "yf": "PL=F", "tiingo": None, "name_cn": "铂金", "name_en": "Platinum", "unit": "USD/oz"},
+    {"td": "PA", "yf": "PA=F", "tiingo": None, "name_cn": "钯金", "name_en": "Palladium", "unit": "USD/oz"},
+    {"td": "ALI", "yf": "ALI=F", "tiingo": None, "name_cn": "铝", "name_en": "Aluminum", "unit": "USD/lb"},
+    {"td": "ZW", "yf": "ZW=F", "tiingo": None, "name_cn": "小麦", "name_en": "Wheat", "unit": "USD/bu"},
+    {"td": "ZC", "yf": "ZC=F", "tiingo": None, "name_cn": "玉米", "name_en": "Corn", "unit": "USD/bu"},
+    {"td": "SB", "yf": "SB=F", "tiingo": None, "name_cn": "糖", "name_en": "Sugar", "unit": "USD/lb"},
 ]
 
 

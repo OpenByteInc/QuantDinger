@@ -34,6 +34,51 @@ from app.services.strategy_script_runtime import (
 logger = get_logger(__name__)
 
 
+def _coerce_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return bool(default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    s = str(value).strip().lower()
+    if s in ("1", "true", "yes", "on", "enabled"):
+        return True
+    if s in ("0", "false", "no", "off", "disabled", ""):
+        return False
+    return bool(default)
+
+
+def normalize_trading_execution_modes(trading_config: Optional[Dict[str, Any]]) -> None:
+    """
+    Align live execution knobs with the UI ``strict_mode`` toggle.
+
+    ``strict_mode=True``  → backtest-like: closed-bar signals only.
+    ``strict_mode=False`` → allow intra-bar (aggressive) signals + immediate entry triggers.
+    """
+    if not isinstance(trading_config, dict):
+        return
+    tc = trading_config
+    has_strict_toggle = "strict_mode" in tc or "strictMode" in tc
+    strict = _coerce_bool(tc.get("strict_mode", tc.get("strictMode")), default=False)
+    tc["strict_mode"] = strict
+    if has_strict_toggle:
+        if strict:
+            tc["signal_mode"] = "confirmed"
+            tc["exit_signal_mode"] = "confirmed"
+        else:
+            tc["signal_mode"] = "aggressive"
+            tc["exit_signal_mode"] = "aggressive"
+            tc["entry_trigger_mode"] = "immediate"
+    elif strict:
+        tc.setdefault("exit_signal_mode", "confirmed")
+        tc.setdefault("signal_mode", "confirmed")
+    else:
+        tc.setdefault("signal_mode", "aggressive")
+        tc.setdefault("exit_signal_mode", "aggressive")
+        tc.setdefault("entry_trigger_mode", "immediate")
+
+
 class TradingExecutor:
     """实时交易执行器 (Signal Provider Mode)"""
     
@@ -877,6 +922,83 @@ class TradingExecutor:
         self._persist_script_runtime_state(strategy_id, closed_ts, ctx._params)
         logger.info(f"Strategy {strategy_id} script closed bar {closed_ts} -> {len(pending)} signal(s)")
         return pending, closed_ts
+
+    def _flush_ctx_logs(self,strategy_id,ctx):
+        """Flush ctx user defined logs to strategy log table."""
+        logs = ctx.flush_logs()
+        for log in logs:
+            append_strategy_log(strategy_id, "info", log)
+
+    def _script_evaluate_in_progress_bar(
+        self,
+        df: pd.DataFrame,
+        ctx: StrategyScriptContext,
+        on_bar,
+        trade_direction: str,
+        strategy_id: int,
+        symbol: str,
+        trading_config: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        """Evaluate the forming (last) bar — used when strict_mode is off."""
+        if df is None or len(df) < 1:
+            return []
+        df_exec = self._df_to_script_exec_df(df)
+        ctx._bars_df = df_exec
+        pos = len(df) - 1
+        ctx.current_index = int(pos)
+        row = df_exec.iloc[pos]
+        _init_cap = (trading_config or {}).get("initial_capital")
+        _bar_close_for_hydrate = None
+        try:
+            _bar_close_for_hydrate = float(row.get("close") or 0)
+        except Exception:
+            _bar_close_for_hydrate = None
+        self._hydrate_script_ctx_from_positions(
+            ctx, strategy_id, symbol,
+            initial_capital=_init_cap,
+            current_price=_bar_close_for_hydrate,
+        )
+        ctx._orders = []
+        bar_ts = df.index[pos]
+        bar = ScriptBar(
+            open=float(row.get("open") or 0),
+            high=float(row.get("high") or 0),
+            low=float(row.get("low") or 0),
+            close=float(row.get("close") or 0),
+            volume=float(row.get("volume") or 0),
+            timestamp=row.get("time"),
+        )
+        self._prepare_grid_bot_before_bar(
+            ctx, trading_config,
+            price=float(bar.close or 0),
+            high=float(bar.high or bar.close or 0),
+            low=float(bar.low or bar.close or 0),
+            is_closed_bar=False,
+        )
+        try:
+            on_bar(ctx, bar)
+            self._flush_ctx_logs(strategy_id, ctx)
+        except Exception as e:
+            logger.error(f"Strategy {strategy_id} script in-progress on_bar error: {e}")
+            logger.error(traceback.format_exc())
+            return []
+        bar_close = float(row.get("close") or 0)
+        pending = self._script_orders_to_execution_signals(
+            ctx, trade_direction, bar_close, bar_ts, trading_config,
+        )
+        try:
+            ts_i = int(bar_ts.timestamp())
+        except Exception:
+            ts_i = int(time.time())
+        pending = self._post_process_grid_bot_signals(
+            pending, ctx, trading_config, price=bar_close, timestamp=ts_i,
+        )
+        self._persist_script_runtime_state(strategy_id, None, ctx._params)
+        if pending:
+            logger.info(
+                f"Strategy {strategy_id} script in-progress bar {bar_ts} -> {len(pending)} signal(s)"
+            )
+        return pending
     
     def _run_strategy_loop(self, strategy_id: int):
         """
@@ -974,15 +1096,20 @@ class TradingExecutor:
 
             # 初始化策略状态
             trading_config = strategy['trading_config']
+            normalize_trading_execution_modes(trading_config)
+            logger.info(
+                f"Strategy {strategy_id} execution modes: strict_mode={trading_config.get('strict_mode')}, "
+                f"signal_mode={trading_config.get('signal_mode')}, "
+                f"entry_trigger_mode={trading_config.get('entry_trigger_mode')}, "
+                f"exit_signal_mode={trading_config.get('exit_signal_mode')}"
+            )
             # `strict_mode` opts the strategy into "backtest-equivalent" semantics:
             # closed-bar signals only (drop in-progress bar) and a confirmed exit
             # signal (no aggressive intra-bar close). This reduces the drift
             # between backtest and live but typically delays entries/exits by
             # one full bar. Both knobs default to existing behaviour when
             # strict_mode is unset.
-            if trading_config and bool(trading_config.get('strict_mode', False)):
-                trading_config.setdefault('exit_signal_mode', 'confirmed')
-            indicator_config = strategy.get('indicator_config') or {}
+            strict_mode = bool(trading_config.get('strict_mode', False))
             ai_model_config = strategy.get('ai_model_config') or {}
             execution_mode = (strategy.get('execution_mode') or 'signal').strip().lower()
             if execution_mode not in ['signal', 'live']:
@@ -1216,6 +1343,22 @@ class TradingExecutor:
                     df, script_ctx, on_bar_script, trade_direction,
                     last_script_closed_ts, strategy_id, symbol, trading_config,
                 )
+                if not strict_mode and len(df) > 0:
+                    try:
+                        init_price = float(df['close'].iloc[-1])
+                        rt_df = self._update_dataframe_with_current_price(
+                            df.copy(), init_price, timeframe,
+                        )
+                        ip_sig = self._script_evaluate_in_progress_bar(
+                            rt_df, script_ctx, on_bar_script, trade_direction,
+                            strategy_id, symbol, trading_config,
+                        )
+                        if ip_sig:
+                            pending_signals = ip_sig
+                    except Exception as e:
+                        logger.warning(
+                            f"Strategy {strategy_id} script init in-progress eval failed: {e}"
+                        )
                 try:
                     last_kline_time = int(df.index[-1].timestamp())
                 except Exception:
@@ -1325,6 +1468,21 @@ class TradingExecutor:
                                         last_script_closed_ts, strategy_id, symbol, trading_config,
                                     )
                                     pending_signals = new_sig
+                                    if not strict_mode:
+                                        try:
+                                            rt_df = self._update_dataframe_with_current_price(
+                                                df.copy(), current_price, timeframe,
+                                            )
+                                            ip_sig = self._script_evaluate_in_progress_bar(
+                                                rt_df, script_ctx, on_bar_script, trade_direction,
+                                                strategy_id, symbol, trading_config,
+                                            )
+                                            if ip_sig:
+                                                pending_signals = ip_sig
+                                        except Exception as e:
+                                            logger.warning(
+                                                f"Strategy {strategy_id} script kline in-progress eval failed: {e}"
+                                            )
                                     try:
                                         last_kline_time = int(df.index[-1].timestamp())
                                     except Exception:
@@ -1424,6 +1582,32 @@ class TradingExecutor:
                             except Exception as e:
                                 logger.warning(f"Strategy {strategy_id} bot tick on_bar error: {e}")
 
+                        # 3a2. Non-bot scripts: evaluate forming bar when strict mode is off
+                        elif (
+                            is_script
+                            and not is_bot_mode
+                            and not strict_mode
+                            and on_bar_script
+                            and script_ctx is not None
+                            and 'df' in locals()
+                            and df is not None
+                            and len(df) > 0
+                        ):
+                            try:
+                                rt_df = self._update_dataframe_with_current_price(
+                                    df.copy(), current_price, timeframe,
+                                )
+                                new_sig = self._script_evaluate_in_progress_bar(
+                                    rt_df, script_ctx, on_bar_script, trade_direction,
+                                    strategy_id, symbol, trading_config,
+                                )
+                                if new_sig:
+                                    pending_signals = new_sig
+                            except Exception as e:
+                                logger.warning(
+                                    f"Strategy {strategy_id} script in-progress recompute failed: {e}"
+                                )
+
                         # 3b. Indicator strategies: real-time recompute
                         elif (not is_script) and 'df' in locals() and df is not None and len(df) > 0:
                             try:
@@ -1438,7 +1622,6 @@ class TradingExecutor:
                                 # users opt into strict mode we additionally
                                 # drop the in-progress bar so the indicator sees
                                 # the same bar sequence the backtester saw.
-                                strict_mode = bool(trading_config.get('strict_mode', False))
                                 if strict_mode:
                                     try:
                                         from app.data_sources.base import TIMEFRAME_SECONDS as _TFS
@@ -1667,6 +1850,7 @@ class TradingExecutor:
                                 initial_capital=initial_capital,
                                 market_type=market_type,
                                 market_category=market_category,
+                                price_exchange_id=kline_exchange_id,
                                 execution_mode=execution_mode,
                                 notification_config=notification_config,
                                 trading_config=trading_config,
@@ -1946,25 +2130,13 @@ class TradingExecutor:
         mode = (execution_mode or "").strip().lower()
         if mode not in ("live", "signal"):
             return None, None
-        cfg = exchange_config or {}
-        tc = trading_config or {}
-        ex = (
-            cfg.get("exchange_id")
-            or cfg.get("exchange")
-            or cfg.get("exchangeId")
-            or tc.get("exchange_id")
-            or tc.get("exchange")
-            or tc.get("exchangeId")
-            or ""
+        from app.data_sources.crypto import resolve_crypto_venue
+
+        ex, mt = resolve_crypto_venue(
+            exchange_config=exchange_config,
+            trading_config=trading_config,
+            market_type=market_type,
         )
-        ex = str(ex).strip().lower()
-        if not ex:
-            return None, None
-        mt = (market_type or "swap").strip().lower()
-        if mt in ("futures", "future", "perp", "perpetual"):
-            mt = "swap"
-        if mt not in ("spot", "swap"):
-            mt = "swap"
         return ex, mt
 
     @staticmethod
@@ -2888,6 +3060,7 @@ class TradingExecutor:
         trading_config: Optional[Dict[str, Any]] = None,
         ai_model_config: Optional[Dict[str, Any]] = None,
         signal_ts: int = 0,
+        price_exchange_id: Optional[str] = None,
     ):
         """执行具体的交易信号"""
         try:
@@ -3000,13 +3173,17 @@ class TradingExecutor:
                      # Bot scripts pass amount as absolute USDT notional, not ratio.
                      usdt_notional = float(position_size)
                      if market_type == 'spot':
+                         from app.services.live_trading.spot_sizing import scale_spot_open_notional
+                         usdt_notional = scale_spot_open_notional(usdt_notional)
                          amount = usdt_notional / current_price
                      else:
                          amount = (usdt_notional * leverage) / current_price
                  else:
                      position_ratio = self._to_ratio(position_size, default=0.05)
                      if market_type == 'spot':
-                         amount = available_capital * position_ratio / current_price
+                         from app.services.live_trading.spot_sizing import scale_spot_open_notional
+                         quote_stake = scale_spot_open_notional(available_capital * position_ratio)
+                         amount = quote_stake / current_price
                      else:
                          amount = (available_capital * position_ratio * leverage) / current_price
 
@@ -3067,6 +3244,7 @@ class TradingExecutor:
                 ref_price=float(current_price or 0.0),
                 market_type=market_type,
                 market_category=market_category,
+                price_exchange_id=price_exchange_id,
                 leverage=leverage,
                 execution_mode=execution_mode,
                 notification_config=notification_config,
@@ -3421,6 +3599,7 @@ class TradingExecutor:
         execution_mode: str = 'signal',
         notification_config: Optional[Dict[str, Any]] = None,
         signal_ts: int = 0,
+        price_exchange_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         将信号转为 pending_orders 队列记录（本方法不直连交易所、不使用 ccxt）。
@@ -3434,7 +3613,14 @@ class TradingExecutor:
         try:
             # Reference price at enqueue time: use current tick price if provided to avoid extra fetch.
             if ref_price is None:
-                ref_price = self._fetch_current_price(None, symbol, market_category=market_category) or 0.0
+                ref_price = self._fetch_current_price(
+                    None,
+                    symbol,
+                    market_type=market_type,
+                    market_category=market_category,
+                    exchange_id=price_exchange_id,
+                    kline_market_type=market_type,
+                ) or 0.0
             ref_price = float(ref_price or 0.0)
 
             extra_payload = {

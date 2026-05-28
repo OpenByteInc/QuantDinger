@@ -101,36 +101,7 @@ def _is_bot_strategy(row: Dict[str, Any]) -> bool:
         return False
 
 
-def _calc_unrealized_pnl(side: str, entry_price: float, current_price: float, size: float) -> float:
-    try:
-        ep = float(entry_price or 0.0)
-        cp = float(current_price or 0.0)
-        sz = float(size or 0.0)
-        if ep <= 0 or cp <= 0 or sz <= 0:
-            return 0.0
-        s = (side or "").strip().lower()
-        if s == "short":
-            return (ep - cp) * sz
-        return (cp - ep) * sz
-    except Exception:
-        return 0.0
-
-
-def _calc_pnl_percent(entry_price: float, size: float, pnl: float, leverage: float = 1.0, market_type: str = "spot") -> float:
-    try:
-        denom = float(entry_price or 0.0) * float(size or 0.0)
-        if denom <= 0:
-            return 0.0
-        lev = float(leverage or 1.0)
-        if lev <= 0:
-            lev = 1.0
-        mt = str(market_type or "").strip().lower()
-        # Margin PnL% (user expectation): pnl / (notional / leverage)
-        # = pnl / notional * leverage
-        mult = lev if mt in ("swap", "futures", "future", "perp", "perpetual") else 1.0
-        return float(pnl) / denom * 100.0 * float(mult)
-    except Exception:
-        return 0.0
+from app.utils.pnl import calc_pnl_percent, calc_unrealized_pnl
 
 
 def _compute_performance_stats(trades: List[Dict[str, Any]], initial_capital: float = 0.0) -> Dict[str, Any]:
@@ -415,13 +386,13 @@ def summary():
         current_positions: List[Dict[str, Any]] = []
         total_unrealized_pnl = 0.0
         for r in rows:
-            pnl = _calc_unrealized_pnl(
+            pnl = calc_unrealized_pnl(
                 side=str(r.get("side") or ""),
                 entry_price=float(r.get("entry_price") or 0.0),
                 current_price=float(r.get("current_price") or 0.0),
                 size=float(r.get("size") or 0.0),
             )
-            pct = _calc_pnl_percent(
+            pct = calc_pnl_percent(
                 float(r.get("entry_price") or 0.0),
                 float(r.get("size") or 0.0),
                 pnl,

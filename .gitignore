@@ -28,6 +28,7 @@ backend_api_python/.env
 .cursor/
 .github/
 .vscode/
+agent-tools/
 *.swp
 *.swo
 *~

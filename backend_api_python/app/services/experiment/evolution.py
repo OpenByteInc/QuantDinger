@@ -9,6 +9,8 @@ import itertools
 import random
 from typing import Any, Dict, List
 
+from app.services.experiment.overrides import enrich_experiment_overrides
+
 
 class StrategyEvolutionService:
     """Generate strategy variants from structured parameter spaces."""
@@ -76,7 +78,7 @@ class StrategyEvolutionService:
             variants.append({
                 'name': f'variant_{idx}',
                 'snapshot': snapshot,
-                'overrides': overrides,
+                'overrides': enrich_experiment_overrides(overrides),
                 'source': 'evolution_grid',
             })
         return variants
@@ -100,7 +102,7 @@ class StrategyEvolutionService:
             variants.append({
                 'name': f'variant_{idx}',
                 'snapshot': snapshot,
-                'overrides': overrides,
+                'overrides': enrich_experiment_overrides(overrides),
                 'source': 'evolution_random',
             })
         return variants

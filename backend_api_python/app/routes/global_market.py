@@ -129,7 +129,7 @@ def market_heatmap():
     try:
         force = request.args.get("force", "").lower() in ("true", "1")
         data = cached_or_compute(
-            "market_heatmap", generate_heatmap_data, force=force
+            "market_heatmap_v4", generate_heatmap_data, force=force
         )
         return jsonify({"code": 1, "msg": "success", "data": data})
     except Exception as e:

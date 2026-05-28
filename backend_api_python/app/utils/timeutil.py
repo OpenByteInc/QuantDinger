@@ -3,11 +3,11 @@ Time / time-zone helpers for serializing datetimes to the frontend.
 
 Background
 ----------
-Most ``qd_*`` tables use ``TIMESTAMP WITHOUT TIME ZONE`` columns.  Combined with
-``NOW()`` and a container ``TZ`` (e.g. ``Asia/Shanghai``), PostgreSQL stores a
-*naive* wall-clock value in the server's time zone.  When the backend then
-serializes that ``datetime`` with ``.isoformat()`` the result has **no time
-zone suffix** (e.g. ``"2026-05-08T19:36:00"``).
+Most ``qd_*`` tables use ``TIMESTAMP WITHOUT TIME ZONE`` columns.  Our PostgreSQL
+pool sets ``options="-c timezone=UTC"`` (see ``db_postgres.py``), so ``NOW()``
+and driver round-trips store a *naive* **UTC wall-clock** value.  When the
+backend serializes that ``datetime`` with ``.isoformat()`` the result has **no
+time zone suffix** (e.g. ``"2026-05-08T19:36:00"``).
 
 The frontend uses ``new Date(text)`` to parse it; modern browsers interpret a
 naive ISO string as the *browser's local time*, which yields wrong values for
@@ -30,16 +30,18 @@ except Exception:  # pragma: no cover - fallback for very old runtimes
     ZoneInfo = None  # type: ignore[misc,assignment]
 
 
-def _server_tzinfo() -> timezone:
-    """Resolve the server's wall-clock time zone.
+def _db_naive_tzinfo() -> timezone:
+    """Timezone for naive ``datetime`` values read from PostgreSQL.
 
-    Reads the ``TZ`` env var (set by docker-compose).  Falls back to UTC if the
-    name is unknown or zoneinfo is unavailable.
+    The connection pool pins the session to UTC.  Naive timestamps are UTC wall
+    clock — **not** the backend container's ``TZ`` (e.g. Asia/Shanghai).
     """
-    name = (os.getenv("TZ") or "UTC").strip() or "UTC"
+    override = (os.getenv("DB_NAIVE_TIMESTAMP_TZ") or "UTC").strip() or "UTC"
+    if override.upper() in ("UTC", "GMT", "ETC/UTC", "ETC/GMT"):
+        return timezone.utc
     if ZoneInfo is not None:
         try:
-            return ZoneInfo(name)  # type: ignore[return-value]
+            return ZoneInfo(override)  # type: ignore[return-value]
         except Exception:
             pass
     return timezone.utc
@@ -54,10 +56,8 @@ def to_utc_iso(value: Any) -> Optional[str]:
     Rules
     -----
     * Aware ``datetime`` → converted to UTC.
-    * Naive ``datetime`` → assumed to be in the server's wall-clock time zone
-      (``TZ`` env var), then converted to UTC.  This matches how PostgreSQL
-      ``NOW()`` writes ``TIMESTAMP WITHOUT TIME ZONE`` columns when the
-      container ``TZ`` is set.
+    * Naive ``datetime`` → assumed to be UTC wall clock from our PG session
+      (``options=-c timezone=UTC``), then converted/emitted as UTC ``Z``.
     * Numeric input → treated as epoch seconds (or milliseconds when too large).
     * String input that parses as ISO 8601 → re-emitted in UTC.  If the string
       has no time-zone designator we treat it as server local time.
@@ -101,7 +101,7 @@ def to_utc_iso(value: Any) -> Optional[str]:
         return None
 
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=_server_tzinfo())
+        dt = dt.replace(tzinfo=_db_naive_tzinfo())
     dt_utc = dt.astimezone(timezone.utc)
     # Always emit with trailing Z and second-precision (drop microseconds for
     # smaller, cleaner payloads).  ISO 8601 with Z is unambiguous for all

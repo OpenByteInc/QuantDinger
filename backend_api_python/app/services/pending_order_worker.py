@@ -19,6 +19,7 @@ from app.services.exchange_execution import load_strategy_configs, resolve_excha
 from app.services.live_trading.execution import place_order_from_signal
 from app.services.live_trading.factory import create_client
 from app.services.live_trading.records import apply_fill_to_local_position, record_trade
+from app.utils.pnl import calc_notional_value
 from app.services.live_trading.base import LiveTradingError
 from app.services.live_trading.binance import BinanceFuturesClient
 from app.services.live_trading.binance_spot import BinanceSpotClient
@@ -56,6 +57,101 @@ AlpacaClient = None
 
 logger = get_logger(__name__)
 
+# PositionSync: one exchange snapshot per credential per TTL window (many strategies
+# often share the same API key — without this we N× get_positions and trigger bans).
+_position_sync_snapshot_cache: Dict[str, Tuple[float, Dict[str, Dict[str, float]], Dict[str, Dict[str, float]]]] = {}
+_exchange_sync_backoff_until: Dict[str, float] = {}
+_position_sync_cache_lock = threading.Lock()
+
+
+def _position_sync_cache_key(
+    user_id: int,
+    exchange_id: str,
+    market_type: str,
+    exchange_config: Dict[str, Any],
+) -> str:
+    cred_id = exchange_config.get("credential_id") or exchange_config.get("credentials_id")
+    if cred_id:
+        return f"u{int(user_id)}:{exchange_id}:{market_type}:cred:{int(cred_id)}"
+    hint = str(exchange_config.get("api_key") or exchange_config.get("apiKey") or "")[-16:]
+    return f"u{int(user_id)}:{exchange_id}:{market_type}:inline:{hint}"
+
+
+def _position_sync_cache_ttl_sec() -> float:
+    try:
+        custom = float(os.getenv("POSITION_SYNC_CACHE_TTL_SEC", "0"))
+        if custom > 0:
+            return custom
+    except Exception:
+        pass
+    try:
+        interval = float(os.getenv("POSITION_SYNC_INTERVAL_SEC", "30"))
+        return max(30.0, interval)
+    except Exception:
+        return 60.0
+
+
+def _get_position_sync_snapshot(
+    cache_key: str,
+) -> Optional[Tuple[Dict[str, Dict[str, float]], Dict[str, Dict[str, float]]]]:
+    now = time.time()
+    with _position_sync_cache_lock:
+        entry = _position_sync_snapshot_cache.get(cache_key)
+        if not entry:
+            return None
+        expires, exch_size, exch_entry = entry
+        if now >= expires:
+            _position_sync_snapshot_cache.pop(cache_key, None)
+            return None
+        return exch_size, exch_entry
+
+
+def _set_position_sync_snapshot(
+    cache_key: str,
+    exch_size: Dict[str, Dict[str, float]],
+    exch_entry_price: Dict[str, Dict[str, float]],
+) -> None:
+    ttl = _position_sync_cache_ttl_sec()
+    with _position_sync_cache_lock:
+        _position_sync_snapshot_cache[cache_key] = (
+            time.time() + ttl,
+            exch_size,
+            exch_entry_price,
+        )
+
+
+def _exchange_sync_backoff_sec() -> float:
+    try:
+        return max(60.0, float(os.getenv("EXCHANGE_SYNC_BACKOFF_SEC", "900")))
+    except Exception:
+        return 900.0
+
+
+def _is_exchange_sync_backoff(cache_key: str) -> bool:
+    with _position_sync_cache_lock:
+        until = float(_exchange_sync_backoff_until.get(cache_key) or 0.0)
+    return time.time() < until
+
+
+def _set_exchange_sync_backoff(cache_key: str, seconds: Optional[float] = None) -> None:
+    sec = float(seconds if seconds is not None else _exchange_sync_backoff_sec())
+    with _position_sync_cache_lock:
+        _exchange_sync_backoff_until[cache_key] = time.time() + sec
+
+
+def _is_exchange_rate_limit_error(msg: str) -> bool:
+    m = (msg or "").lower()
+    return any(
+        token in m
+        for token in (
+            "418",
+            "-1003",
+            "too many requests",
+            "rate limit",
+            "banned until",
+        )
+    )
+
 
 class PendingOrderWorker:
     def __init__(self, poll_interval_sec: float = 1.0, batch_size: int = 50):
@@ -74,7 +170,7 @@ class PendingOrderWorker:
 
         # Position sync self-check (best-effort): keep local positions aligned with exchange.
         self._position_sync_enabled = os.getenv("POSITION_SYNC_ENABLED", "true").lower() == "true"
-        self._position_sync_interval_sec = float(os.getenv("POSITION_SYNC_INTERVAL_SEC", "10"))
+        self._position_sync_interval_sec = float(os.getenv("POSITION_SYNC_INTERVAL_SEC", "30"))
         self._last_position_sync_ts = 0.0
         logger.info(f"PendingOrderWorker: sync_enabled={self._position_sync_enabled}, interval={self._position_sync_interval_sec}s")
 
@@ -277,377 +373,397 @@ class PendingOrderWorker:
                     except ImportError:
                         pass
 
-                # 尝试创建客户端，如果失败则跳过（可能是配置错误）
-                try:
-                    client = create_client(exchange_config, market_type=market_type)
-                except Exception as e:
-                    msg = str(e)
-                    if is_fatal_exchange_error(msg):
-                        logger.error(
-                            "[PositionSync] Strategy %s fatal client error; auto-stopping. error=%s",
+                cache_key = _position_sync_cache_key(sync_user_id, exchange_id, market_type, exchange_config)
+                cached_snap = _get_position_sync_snapshot(cache_key)
+                exch_size: Dict[str, Dict[str, float]] = {}
+                exch_entry_price: Dict[str, Dict[str, float]] = {}
+
+                if cached_snap is not None:
+                    exch_size, exch_entry_price = cached_snap
+                else:
+                    if _is_exchange_sync_backoff(cache_key):
+                        logger.warning(
+                            "[PositionSync] Strategy %s skipped: %s sync backoff active (key=%s)",
                             sid,
-                            msg,
+                            exchange_id,
+                            cache_key,
                         )
-                        auto_stop_live_strategy(int(sid), msg, source="position_sync_client")
-                    else:
-                        logger.debug(
-                            f"[PositionSync] Strategy {sid} skipped: failed to create client (exchange_id={exchange_id}): {e}"
-                        )
-                    continue
-                
-                # Build an "exchange snapshot" per symbol+side
-                exch_size: Dict[str, Dict[str, float]] = {}  # {symbol: {long: size, short: size}}
-                exch_entry_price: Dict[str, Dict[str, float]] = {} # {symbol: {long: px, short: px}}
-
-                if isinstance(client, BinanceFuturesClient) and market_type == "swap":
-                    try:
-                        all_pos = client.get_positions() or []
-                    except Exception as e:
-                        msg = str(e)
-                        m = msg.lower()
-                        # Fatal auth/config errors should auto-stop the strategy to avoid endless spam.
-                        # Typical Binance response: HTTP 401 {"code":-2015,"msg":"Invalid API-key, IP, or permissions for action"}
-                        if is_fatal_exchange_error(msg):
-                            logger.error(f"[PositionSync] Strategy {sid} fatal auth error; auto-stopping. error={msg}")
-                            auto_stop_live_strategy(int(sid), msg, source="position_sync_binance")
-                            continue
-                        logger.error(f"[PositionSync] Strategy {sid} get_positions failed: {msg}", exc_info=True)
                         continue
-                    # Handle dict response if needed (wrapper)
-                    if isinstance(all_pos, dict) and "raw" in all_pos:
-                         all_pos = all_pos["raw"]
-                    
-                    if isinstance(all_pos, list):
-                        for p in all_pos:
-                            sym = str(p.get("symbol") or "").strip().upper()
-                            try:
-                                amt = float(p.get("positionAmt") or 0.0)
-                                ep = float(p.get("entryPrice") or 0.0)
-                            except Exception:
-                                amt = 0.0
-                                ep = 0.0
-                            if not sym or abs(amt) <= 0:
-                                continue
-                            # Map to our symbol format: BTCUSDT -> BTC/USDT (best-effort)
-                            hb_sym = sym
-                            if hb_sym.endswith("USDT") and len(hb_sym) > 4 and "/" not in hb_sym:
-                                hb_sym = f"{hb_sym[:-4]}/USDT"
-                            side = "long" if amt > 0 else "short"
-                            exch_size.setdefault(hb_sym, {"long": 0.0, "short": 0.0})[side] = abs(float(amt))
-                            exch_entry_price.setdefault(hb_sym, {"long": 0.0, "short": 0.0})[side] = abs(float(ep))
 
-                elif isinstance(client, OkxClient) and market_type == "swap":
+                    # 尝试创建客户端，如果失败则跳过（可能是配置错误）
                     try:
-                        resp = client.get_positions()
-                    except Exception as e:
-                        # Fatal auth/config errors should auto-stop the strategy to avoid endless spam.
-                        # Typical OKX response: HTTP 401 {"msg":"Invalid OK-ACCESS-KEY","code":"50111"}
-                        msg = str(e)
-                        m = msg.lower()
-                        if is_fatal_exchange_error(msg):
-                            logger.error(f"[PositionSync] Strategy {sid} fatal auth error; auto-stopping. error={msg}")
-                            auto_stop_live_strategy(int(sid), msg, source="position_sync_okx")
-                            continue
-                        # Non-fatal: keep syncing other strategies, but don't crash the worker loop.
-                        logger.error(f"[PositionSync] Strategy {sid} get_positions failed: {msg}", exc_info=True)
-                        continue
-                    data = (resp.get("data") or []) if isinstance(resp, dict) else []
-                    if isinstance(data, list):
-                        for p in data:
-                            inst_id = str(p.get("instId") or "")
-                            pos_side = str(p.get("posSide") or "").lower()
-                            try:
-                                pos = float(p.get("pos") or 0.0)
-                            except Exception:
-                                pos = 0.0
-                            if not inst_id or abs(pos) <= 0:
-                                continue
-                            # instId: BTC-USDT-SWAP -> BTC/USDT
-                            hb_sym = inst_id.replace("-SWAP", "").replace("-", "/")
-                            side = "long" if pos_side == "long" else ("short" if pos_side == "short" else ("long" if pos > 0 else "short"))
-                            # IMPORTANT: OKX swap positions `pos` is in contracts, but our system uses base-asset quantity.
-                            # Convert contracts -> base using ctVal when available.
-                            qty_base = abs(float(pos))
-                            try:
-                                inst = client.get_instrument(inst_type="SWAP", inst_id=inst_id) or {}
-                                ct_val = float(inst.get("ctVal") or 0.0)
-                                if ct_val > 0:
-                                    qty_base = qty_base * ct_val
-                            except Exception:
-                                pass
-                            exch_size.setdefault(hb_sym, {"long": 0.0, "short": 0.0})[side] = float(qty_base)
-                            
-                            # Extract entry price from OKX position data
-                            # OKX API returns avgPx (average price) or avgPxEp (average price in equity) for positions
-                            try:
-                                # Try avgPx first (average entry price)
-                                avg_px = p.get("avgPx")
-                                if avg_px:
-                                    entry_price = float(avg_px)
-                                else:
-                                    # Fallback to avgPxEp (average price in equity)
-                                    avg_px_ep = p.get("avgPxEp")
-                                    if avg_px_ep:
-                                        entry_price = float(avg_px_ep)
-                                    else:
-                                        # Fallback to last price if available
-                                        last_px = p.get("last")
-                                        entry_price = float(last_px) if last_px else 0.0
-                                
-                                if entry_price > 0:
-                                    exch_entry_price.setdefault(hb_sym, {"long": 0.0, "short": 0.0})[side] = entry_price
-                                    logger.debug(f"[PositionSync] OKX {hb_sym} {side}: entry_price={entry_price} from avgPx={p.get('avgPx')} or avgPxEp={p.get('avgPxEp')}")
-                                else:
-                                    logger.warning(f"[PositionSync] OKX {hb_sym} {side}: Could not extract entry price from position data: {p}")
-                            except Exception as e:
-                                logger.warning(f"[PositionSync] Failed to extract entry price for OKX {hb_sym} {side}: {e}")
-                                # Don't set entry_price, will remain 0.0
-
-                elif isinstance(client, BitgetMixClient) and market_type == "swap":
-                    product_type = str(exchange_config.get("product_type") or exchange_config.get("productType") or "USDT-FUTURES")
-                    resp = client.get_positions(product_type=product_type)
-                    data = resp.get("data") if isinstance(resp, dict) else None
-                    if isinstance(data, list):
-                        for p in data:
-                            sym = str(p.get("symbol") or "")
-                            hold_side = str(p.get("holdSide") or "").lower()
-                            try:
-                                total = float(p.get("total") or 0.0)
-                            except Exception:
-                                total = 0.0
-                            if not sym or abs(total) <= 0:
-                                continue
-                            hb_sym = sym.upper()
-                            if hb_sym.endswith("USDT") and len(hb_sym) > 4 and "/" not in hb_sym:
-                                hb_sym = f"{hb_sym[:-4]}/USDT"
-                            side = "long" if hold_side == "long" else "short"
-                            exch_size.setdefault(hb_sym, {"long": 0.0, "short": 0.0})[side] = abs(float(total))
-                            try:
-                                ep = float(p.get("openPriceAvg") or p.get("averageOpenPrice") or 0.0)
-                                if ep > 0:
-                                    exch_entry_price.setdefault(hb_sym, {"long": 0.0, "short": 0.0})[side] = ep
-                            except Exception:
-                                pass
-
-                elif isinstance(client, BybitClient) and market_type == "swap":
-                    # Bybit v5 requires symbol or settleCoin — use USDT for full linear book
-                    resp = client.get_positions(settle_coin="USDT")
-                    lst = (((resp.get("result") or {}).get("list")) if isinstance(resp, dict) else None) or []
-                    if isinstance(lst, list):
-                        for p in lst:
-                            if not isinstance(p, dict):
-                                continue
-                            sym = str(p.get("symbol") or "").strip().upper()
-                            side0 = str(p.get("side") or "").strip().lower()  # Buy/Sell
-                            try:
-                                sz = float(p.get("size") or 0.0)
-                            except Exception:
-                                sz = 0.0
-                            if not sym or abs(sz) <= 0:
-                                continue
-                            hb_sym = sym
-                            if hb_sym.endswith("USDT") and len(hb_sym) > 4 and "/" not in hb_sym:
-                                hb_sym = f"{hb_sym[:-4]}/USDT"
-                            side = "long" if side0 == "buy" else ("short" if side0 == "sell" else ("long" if sz > 0 else "short"))
-                            exch_size.setdefault(hb_sym, {"long": 0.0, "short": 0.0})[side] = abs(float(sz))
-                            try:
-                                ep = float(p.get("avgPrice") or p.get("entryPrice") or 0.0)
-                                if ep > 0:
-                                    exch_entry_price.setdefault(hb_sym, {"long": 0.0, "short": 0.0})[side] = ep
-                            except Exception:
-                                pass
-
-                elif isinstance(client, GateUsdtFuturesClient) and market_type == "swap":
-                    resp = client.get_positions()
-                    items = resp if isinstance(resp, list) else []
-                    if isinstance(items, list):
-                        for p in items:
-                            if not isinstance(p, dict):
-                                continue
-                            contract = str(p.get("contract") or "").strip()
-                            try:
-                                sz_ct = float(p.get("size") or 0.0)  # contracts, signed
-                            except Exception:
-                                sz_ct = 0.0
-                            if not contract or abs(sz_ct) <= 0:
-                                continue
-                            hb_sym = contract.replace("_", "/")
-                            side = "long" if sz_ct > 0 else "short"
-                            # Convert contracts -> base using quanto_multiplier.
-                            qty_base = abs(sz_ct)
-                            try:
-                                meta = client.get_contract(contract=contract) or {}
-                                qm = float(meta.get("quanto_multiplier") or meta.get("contract_size") or 0.0)
-                                if qm > 0:
-                                    qty_base = qty_base * qm
-                            except Exception:
-                                pass
-                            exch_size.setdefault(hb_sym, {"long": 0.0, "short": 0.0})[side] = float(qty_base)
-                            try:
-                                ep = float(p.get("entry_price") or p.get("open_price") or 0.0)
-                                if ep > 0:
-                                    exch_entry_price.setdefault(hb_sym, {"long": 0.0, "short": 0.0})[side] = ep
-                            except Exception:
-                                pass
-
-                elif isinstance(client, KucoinFuturesClient) and market_type == "swap":
-                    resp = client.get_positions()
-                    data = (resp.get("data") if isinstance(resp, dict) else None) or []
-                    if isinstance(data, list):
-                        for p in data:
-                            if not isinstance(p, dict):
-                                continue
-                            sym = str(p.get("symbol") or "").strip()
-                            try:
-                                qty_ct = float(p.get("currentQty") or p.get("quantity") or 0.0)
-                            except Exception:
-                                qty_ct = 0.0
-                            if not sym or abs(qty_ct) <= 0:
-                                continue
-                            side = "long" if qty_ct > 0 else "short"
-                            # Convert contracts -> base using multiplier.
-                            qty_base = abs(qty_ct)
-                            try:
-                                meta = client.get_contract(symbol=sym) or {}
-                                mult = float(meta.get("multiplier") or meta.get("lotSize") or 0.0)
-                                if mult > 0:
-                                    qty_base = qty_base * mult
-                            except Exception:
-                                pass
-                            exch_size.setdefault(sym, {"long": 0.0, "short": 0.0})[side] = float(qty_base)
-                            try:
-                                ep = float(p.get("avgEntryPrice") or p.get("realLeverage") and float(p.get("posCost") or 0) / max(abs(qty_ct), 1e-12) or 0.0)
-                                if ep > 0:
-                                    exch_entry_price.setdefault(sym, {"long": 0.0, "short": 0.0})[side] = ep
-                            except Exception:
-                                pass
-
-                elif isinstance(client, KrakenFuturesClient) and market_type == "swap":
-                    resp = client.get_open_positions()
-                    positions = (resp.get("openPositions") if isinstance(resp, dict) else None) or (resp.get("open_positions") if isinstance(resp, dict) else None) or []
-                    if isinstance(positions, list):
-                        for p in positions:
-                            if not isinstance(p, dict):
-                                continue
-                            sym = str(p.get("symbol") or p.get("instrument") or "").strip()
-                            try:
-                                sz = float(p.get("size") or p.get("positionSize") or 0.0)
-                            except Exception:
-                                sz = 0.0
-                            if not sym or abs(sz) <= 0:
-                                continue
-                            side = "long" if sz > 0 else "short"
-                            exch_size.setdefault(sym, {"long": 0.0, "short": 0.0})[side] = abs(float(sz))
-                            try:
-                                ep = float(p.get("price") or p.get("avgPrice") or 0.0)
-                                if ep > 0:
-                                    exch_entry_price.setdefault(sym, {"long": 0.0, "short": 0.0})[side] = ep
-                            except Exception:
-                                pass
-
-                elif MT5Client is not None and isinstance(client, MT5Client):
-                    # MT5 forex positions
-                    positions = client.get_positions()
-                    if isinstance(positions, list):
-                        for p in positions:
-                            if not isinstance(p, dict):
-                                continue
-                            sym = str(p.get("symbol") or "").strip()
-                            pos_type = str(p.get("type") or "").strip().lower()
-                            try:
-                                vol = float(p.get("volume") or 0.0)
-                            except Exception:
-                                vol = 0.0
-                            if not sym or vol <= 0:
-                                continue
-                            # MT5: type "buy" = long, "sell" = short
-                            side = "long" if pos_type == "buy" else "short"
-                            exch_size.setdefault(sym, {"long": 0.0, "short": 0.0})[side] = float(vol)
-                    # Continue to reconciliation logic below
-
-                elif IBKRClient is not None and isinstance(client, IBKRClient):
-                    # IBKR US-stock positions. `quantity` is signed: >0 = long, <0 = short.
-                    # We currently only enforce long-only entries (see _execute_ibkr_order),
-                    # but still mirror short rows so reconciliation does not orphan them
-                    # if the user had pre-existing inventory in TWS.
-                    try:
-                        positions = client.get_positions() or []
+                        client = create_client(exchange_config, market_type=market_type)
                     except Exception as e:
                         msg = str(e)
                         if is_fatal_exchange_error(msg):
                             logger.error(
-                                "[PositionSync] Strategy %s IBKR fatal error; auto-stopping. error=%s",
+                                "[PositionSync] Strategy %s fatal client error; auto-stopping. error=%s",
                                 sid,
                                 msg,
                             )
-                            auto_stop_live_strategy(int(sid), msg, source="position_sync_ibkr")
+                            auto_stop_live_strategy(int(sid), msg, source="position_sync_client")
                         else:
-                            logger.error(f"[PositionSync] Strategy {sid} IBKR get_positions failed: {e}", exc_info=True)
+                            logger.debug(
+                                f"[PositionSync] Strategy {sid} skipped: failed to create client (exchange_id={exchange_id}): {e}"
+                            )
                         continue
-                    if isinstance(positions, list):
-                        for p in positions:
-                            if not isinstance(p, dict):
-                                continue
-                            sym = str(p.get("symbol") or p.get("ib_symbol") or "").strip()
-                            try:
-                                qty = float(p.get("quantity") or 0.0)
-                            except Exception:
-                                qty = 0.0
-                            try:
-                                avg = float(p.get("avgCost") or 0.0)
-                            except Exception:
-                                avg = 0.0
-                            if not sym or abs(qty) <= 0:
-                                continue
-                            side = "long" if qty > 0 else "short"
-                            exch_size.setdefault(sym, {"long": 0.0, "short": 0.0})[side] = abs(qty)
-                            if avg > 0:
-                                exch_entry_price.setdefault(sym, {"long": 0.0, "short": 0.0})[side] = avg
-                    # Continue to reconciliation logic below
 
-                elif AlpacaClient is not None and isinstance(client, AlpacaClient):
-                    # Alpaca positions cover both US stocks and crypto. The client
-                    # already returns a normalized `side` string ("long" / "short")
-                    # plus `quantity` and `avgCost`. Crypto symbols come through as
-                    # "BTC/USD" — same format the strategy stores, so no extra
-                    # normalization is needed here.
-                    try:
-                        positions = client.get_positions() or []
-                    except Exception as e:
-                        logger.error(f"[PositionSync] Strategy {sid} Alpaca get_positions failed: {e}", exc_info=True)
+                    if isinstance(client, BinanceFuturesClient) and market_type == "swap":
+                        try:
+                            all_pos = client.get_positions() or []
+                        except Exception as e:
+                            msg = str(e)
+                            if is_fatal_exchange_error(msg):
+                                logger.error(f"[PositionSync] Strategy {sid} fatal auth error; auto-stopping. error={msg}")
+                                auto_stop_live_strategy(int(sid), msg, source="position_sync_binance")
+                                continue
+                            if _is_exchange_rate_limit_error(msg):
+                                _set_exchange_sync_backoff(cache_key)
+                                logger.error(
+                                    "[PositionSync] Binance rate limit for key=%s; backing off %ss. error=%s",
+                                    cache_key,
+                                    int(_exchange_sync_backoff_sec()),
+                                    msg,
+                                )
+                                continue
+                            logger.error(f"[PositionSync] Strategy {sid} get_positions failed: {msg}", exc_info=True)
+                            continue
+                        if isinstance(all_pos, dict) and "raw" in all_pos:
+                            all_pos = all_pos["raw"]
+
+                        if isinstance(all_pos, list):
+                            for p in all_pos:
+                                sym = str(p.get("symbol") or "").strip().upper()
+                                try:
+                                    amt = float(p.get("positionAmt") or 0.0)
+                                    ep = float(p.get("entryPrice") or 0.0)
+                                except Exception:
+                                    amt = 0.0
+                                    ep = 0.0
+                                if not sym or abs(amt) <= 0:
+                                    continue
+                                hb_sym = sym
+                                if hb_sym.endswith("USDT") and len(hb_sym) > 4 and "/" not in hb_sym:
+                                    hb_sym = f"{hb_sym[:-4]}/USDT"
+                                side = "long" if amt > 0 else "short"
+                                exch_size.setdefault(hb_sym, {"long": 0.0, "short": 0.0})[side] = abs(float(amt))
+                                exch_entry_price.setdefault(hb_sym, {"long": 0.0, "short": 0.0})[side] = abs(float(ep))
+
+
+                    elif isinstance(client, OkxClient) and market_type == "swap":
+                        try:
+                            resp = client.get_positions()
+                        except Exception as e:
+                            # Fatal auth/config errors should auto-stop the strategy to avoid endless spam.
+                            # Typical OKX response: HTTP 401 {"msg":"Invalid OK-ACCESS-KEY","code":"50111"}
+                            msg = str(e)
+                            m = msg.lower()
+                            if is_fatal_exchange_error(msg):
+                                logger.error(f"[PositionSync] Strategy {sid} fatal auth error; auto-stopping. error={msg}")
+                                auto_stop_live_strategy(int(sid), msg, source="position_sync_okx")
+                                continue
+                            # Non-fatal: keep syncing other strategies, but don't crash the worker loop.
+                            logger.error(f"[PositionSync] Strategy {sid} get_positions failed: {msg}", exc_info=True)
+                            continue
+                        data = (resp.get("data") or []) if isinstance(resp, dict) else []
+                        if isinstance(data, list):
+                            for p in data:
+                                inst_id = str(p.get("instId") or "")
+                                pos_side = str(p.get("posSide") or "").lower()
+                                try:
+                                    pos = float(p.get("pos") or 0.0)
+                                except Exception:
+                                    pos = 0.0
+                                if not inst_id or abs(pos) <= 0:
+                                    continue
+                                # instId: BTC-USDT-SWAP -> BTC/USDT
+                                hb_sym = inst_id.replace("-SWAP", "").replace("-", "/")
+                                side = "long" if pos_side == "long" else ("short" if pos_side == "short" else ("long" if pos > 0 else "short"))
+                                # IMPORTANT: OKX swap positions `pos` is in contracts, but our system uses base-asset quantity.
+                                # Convert contracts -> base using ctVal when available.
+                                qty_base = abs(float(pos))
+                                try:
+                                    inst = client.get_instrument(inst_type="SWAP", inst_id=inst_id) or {}
+                                    ct_val = float(inst.get("ctVal") or 0.0)
+                                    if ct_val > 0:
+                                        qty_base = qty_base * ct_val
+                                except Exception:
+                                    pass
+                                exch_size.setdefault(hb_sym, {"long": 0.0, "short": 0.0})[side] = float(qty_base)
+                            
+                                # Extract entry price from OKX position data
+                                # OKX API returns avgPx (average price) or avgPxEp (average price in equity) for positions
+                                try:
+                                    # Try avgPx first (average entry price)
+                                    avg_px = p.get("avgPx")
+                                    if avg_px:
+                                        entry_price = float(avg_px)
+                                    else:
+                                        # Fallback to avgPxEp (average price in equity)
+                                        avg_px_ep = p.get("avgPxEp")
+                                        if avg_px_ep:
+                                            entry_price = float(avg_px_ep)
+                                        else:
+                                            # Fallback to last price if available
+                                            last_px = p.get("last")
+                                            entry_price = float(last_px) if last_px else 0.0
+                                
+                                    if entry_price > 0:
+                                        exch_entry_price.setdefault(hb_sym, {"long": 0.0, "short": 0.0})[side] = entry_price
+                                        logger.debug(f"[PositionSync] OKX {hb_sym} {side}: entry_price={entry_price} from avgPx={p.get('avgPx')} or avgPxEp={p.get('avgPxEp')}")
+                                    else:
+                                        logger.warning(f"[PositionSync] OKX {hb_sym} {side}: Could not extract entry price from position data: {p}")
+                                except Exception as e:
+                                    logger.warning(f"[PositionSync] Failed to extract entry price for OKX {hb_sym} {side}: {e}")
+                                    # Don't set entry_price, will remain 0.0
+
+                    elif isinstance(client, BitgetMixClient) and market_type == "swap":
+                        product_type = str(exchange_config.get("product_type") or exchange_config.get("productType") or "USDT-FUTURES")
+                        resp = client.get_positions(product_type=product_type)
+                        data = resp.get("data") if isinstance(resp, dict) else None
+                        if isinstance(data, list):
+                            for p in data:
+                                sym = str(p.get("symbol") or "")
+                                hold_side = str(p.get("holdSide") or "").lower()
+                                try:
+                                    total = float(p.get("total") or 0.0)
+                                except Exception:
+                                    total = 0.0
+                                if not sym or abs(total) <= 0:
+                                    continue
+                                hb_sym = sym.upper()
+                                if hb_sym.endswith("USDT") and len(hb_sym) > 4 and "/" not in hb_sym:
+                                    hb_sym = f"{hb_sym[:-4]}/USDT"
+                                side = "long" if hold_side == "long" else "short"
+                                exch_size.setdefault(hb_sym, {"long": 0.0, "short": 0.0})[side] = abs(float(total))
+                                try:
+                                    ep = float(p.get("openPriceAvg") or p.get("averageOpenPrice") or 0.0)
+                                    if ep > 0:
+                                        exch_entry_price.setdefault(hb_sym, {"long": 0.0, "short": 0.0})[side] = ep
+                                except Exception:
+                                    pass
+
+                    elif isinstance(client, BybitClient) and market_type == "swap":
+                        # Bybit v5 requires symbol or settleCoin — use USDT for full linear book
+                        resp = client.get_positions(settle_coin="USDT")
+                        lst = (((resp.get("result") or {}).get("list")) if isinstance(resp, dict) else None) or []
+                        if isinstance(lst, list):
+                            for p in lst:
+                                if not isinstance(p, dict):
+                                    continue
+                                sym = str(p.get("symbol") or "").strip().upper()
+                                side0 = str(p.get("side") or "").strip().lower()  # Buy/Sell
+                                try:
+                                    sz = float(p.get("size") or 0.0)
+                                except Exception:
+                                    sz = 0.0
+                                if not sym or abs(sz) <= 0:
+                                    continue
+                                hb_sym = sym
+                                if hb_sym.endswith("USDT") and len(hb_sym) > 4 and "/" not in hb_sym:
+                                    hb_sym = f"{hb_sym[:-4]}/USDT"
+                                side = "long" if side0 == "buy" else ("short" if side0 == "sell" else ("long" if sz > 0 else "short"))
+                                exch_size.setdefault(hb_sym, {"long": 0.0, "short": 0.0})[side] = abs(float(sz))
+                                try:
+                                    ep = float(p.get("avgPrice") or p.get("entryPrice") or 0.0)
+                                    if ep > 0:
+                                        exch_entry_price.setdefault(hb_sym, {"long": 0.0, "short": 0.0})[side] = ep
+                                except Exception:
+                                    pass
+
+                    elif isinstance(client, GateUsdtFuturesClient) and market_type == "swap":
+                        resp = client.get_positions()
+                        items = resp if isinstance(resp, list) else []
+                        if isinstance(items, list):
+                            for p in items:
+                                if not isinstance(p, dict):
+                                    continue
+                                contract = str(p.get("contract") or "").strip()
+                                try:
+                                    sz_ct = float(p.get("size") or 0.0)  # contracts, signed
+                                except Exception:
+                                    sz_ct = 0.0
+                                if not contract or abs(sz_ct) <= 0:
+                                    continue
+                                hb_sym = contract.replace("_", "/")
+                                side = "long" if sz_ct > 0 else "short"
+                                # Convert contracts -> base using quanto_multiplier.
+                                qty_base = abs(sz_ct)
+                                try:
+                                    meta = client.get_contract(contract=contract) or {}
+                                    qm = float(meta.get("quanto_multiplier") or meta.get("contract_size") or 0.0)
+                                    if qm > 0:
+                                        qty_base = qty_base * qm
+                                except Exception:
+                                    pass
+                                exch_size.setdefault(hb_sym, {"long": 0.0, "short": 0.0})[side] = float(qty_base)
+                                try:
+                                    ep = float(p.get("entry_price") or p.get("open_price") or 0.0)
+                                    if ep > 0:
+                                        exch_entry_price.setdefault(hb_sym, {"long": 0.0, "short": 0.0})[side] = ep
+                                except Exception:
+                                    pass
+
+                    elif isinstance(client, KucoinFuturesClient) and market_type == "swap":
+                        resp = client.get_positions()
+                        data = (resp.get("data") if isinstance(resp, dict) else None) or []
+                        if isinstance(data, list):
+                            for p in data:
+                                if not isinstance(p, dict):
+                                    continue
+                                sym = str(p.get("symbol") or "").strip()
+                                try:
+                                    qty_ct = float(p.get("currentQty") or p.get("quantity") or 0.0)
+                                except Exception:
+                                    qty_ct = 0.0
+                                if not sym or abs(qty_ct) <= 0:
+                                    continue
+                                side = "long" if qty_ct > 0 else "short"
+                                # Convert contracts -> base using multiplier.
+                                qty_base = abs(qty_ct)
+                                try:
+                                    meta = client.get_contract(symbol=sym) or {}
+                                    mult = float(meta.get("multiplier") or meta.get("lotSize") or 0.0)
+                                    if mult > 0:
+                                        qty_base = qty_base * mult
+                                except Exception:
+                                    pass
+                                exch_size.setdefault(sym, {"long": 0.0, "short": 0.0})[side] = float(qty_base)
+                                try:
+                                    ep = float(p.get("avgEntryPrice") or p.get("realLeverage") and float(p.get("posCost") or 0) / max(abs(qty_ct), 1e-12) or 0.0)
+                                    if ep > 0:
+                                        exch_entry_price.setdefault(sym, {"long": 0.0, "short": 0.0})[side] = ep
+                                except Exception:
+                                    pass
+
+                    elif isinstance(client, KrakenFuturesClient) and market_type == "swap":
+                        resp = client.get_open_positions()
+                        positions = (resp.get("openPositions") if isinstance(resp, dict) else None) or (resp.get("open_positions") if isinstance(resp, dict) else None) or []
+                        if isinstance(positions, list):
+                            for p in positions:
+                                if not isinstance(p, dict):
+                                    continue
+                                sym = str(p.get("symbol") or p.get("instrument") or "").strip()
+                                try:
+                                    sz = float(p.get("size") or p.get("positionSize") or 0.0)
+                                except Exception:
+                                    sz = 0.0
+                                if not sym or abs(sz) <= 0:
+                                    continue
+                                side = "long" if sz > 0 else "short"
+                                exch_size.setdefault(sym, {"long": 0.0, "short": 0.0})[side] = abs(float(sz))
+                                try:
+                                    ep = float(p.get("price") or p.get("avgPrice") or 0.0)
+                                    if ep > 0:
+                                        exch_entry_price.setdefault(sym, {"long": 0.0, "short": 0.0})[side] = ep
+                                except Exception:
+                                    pass
+
+                    elif MT5Client is not None and isinstance(client, MT5Client):
+                        # MT5 forex positions
+                        positions = client.get_positions()
+                        if isinstance(positions, list):
+                            for p in positions:
+                                if not isinstance(p, dict):
+                                    continue
+                                sym = str(p.get("symbol") or "").strip()
+                                pos_type = str(p.get("type") or "").strip().lower()
+                                try:
+                                    vol = float(p.get("volume") or 0.0)
+                                except Exception:
+                                    vol = 0.0
+                                if not sym or vol <= 0:
+                                    continue
+                                # MT5: type "buy" = long, "sell" = short
+                                side = "long" if pos_type == "buy" else "short"
+                                exch_size.setdefault(sym, {"long": 0.0, "short": 0.0})[side] = float(vol)
+                        # Continue to reconciliation logic below
+
+                    elif IBKRClient is not None and isinstance(client, IBKRClient):
+                        # IBKR US-stock positions. `quantity` is signed: >0 = long, <0 = short.
+                        # We currently only enforce long-only entries (see _execute_ibkr_order),
+                        # but still mirror short rows so reconciliation does not orphan them
+                        # if the user had pre-existing inventory in TWS.
+                        try:
+                            positions = client.get_positions() or []
+                        except Exception as e:
+                            msg = str(e)
+                            if is_fatal_exchange_error(msg):
+                                logger.error(
+                                    "[PositionSync] Strategy %s IBKR fatal error; auto-stopping. error=%s",
+                                    sid,
+                                    msg,
+                                )
+                                auto_stop_live_strategy(int(sid), msg, source="position_sync_ibkr")
+                            else:
+                                logger.error(f"[PositionSync] Strategy {sid} IBKR get_positions failed: {e}", exc_info=True)
+                            continue
+                        if isinstance(positions, list):
+                            for p in positions:
+                                if not isinstance(p, dict):
+                                    continue
+                                sym = str(p.get("symbol") or p.get("ib_symbol") or "").strip()
+                                try:
+                                    qty = float(p.get("quantity") or 0.0)
+                                except Exception:
+                                    qty = 0.0
+                                try:
+                                    avg = float(p.get("avgCost") or 0.0)
+                                except Exception:
+                                    avg = 0.0
+                                if not sym or abs(qty) <= 0:
+                                    continue
+                                side = "long" if qty > 0 else "short"
+                                exch_size.setdefault(sym, {"long": 0.0, "short": 0.0})[side] = abs(qty)
+                                if avg > 0:
+                                    exch_entry_price.setdefault(sym, {"long": 0.0, "short": 0.0})[side] = avg
+                        # Continue to reconciliation logic below
+
+                    elif AlpacaClient is not None and isinstance(client, AlpacaClient):
+                        # Alpaca positions cover both US stocks and crypto. The client
+                        # already returns a normalized `side` string ("long" / "short")
+                        # plus `quantity` and `avgCost`. Crypto symbols come through as
+                        # "BTC/USD" — same format the strategy stores, so no extra
+                        # normalization is needed here.
+                        try:
+                            positions = client.get_positions() or []
+                        except Exception as e:
+                            logger.error(f"[PositionSync] Strategy {sid} Alpaca get_positions failed: {e}", exc_info=True)
+                            continue
+                        if isinstance(positions, list):
+                            for p in positions:
+                                if not isinstance(p, dict):
+                                    continue
+                                sym = str(p.get("symbol") or "").strip()
+                                try:
+                                    qty = float(p.get("quantity") or 0.0)
+                                except Exception:
+                                    qty = 0.0
+                                try:
+                                    avg = float(p.get("avgCost") or 0.0)
+                                except Exception:
+                                    avg = 0.0
+                                if not sym or abs(qty) <= 0:
+                                    continue
+                                side_str = str(p.get("side") or "").strip().lower()
+                                if side_str not in ("long", "short"):
+                                    side_str = "long" if qty > 0 else "short"
+                                exch_size.setdefault(sym, {"long": 0.0, "short": 0.0})[side_str] = abs(qty)
+                                if avg > 0:
+                                    exch_entry_price.setdefault(sym, {"long": 0.0, "short": 0.0})[side_str] = avg
+                        # Continue to reconciliation logic below
+
+                    else:
+                        # Spot reconciliation is optional; skip for now (keeps self-check low-risk).
+                        logger.debug(f"position sync: skip unsupported market/client: sid={sid}, cfg={safe_cfg}, market_type={market_type}, client={type(client)}")
                         continue
-                    if isinstance(positions, list):
-                        for p in positions:
-                            if not isinstance(p, dict):
-                                continue
-                            sym = str(p.get("symbol") or "").strip()
-                            try:
-                                qty = float(p.get("quantity") or 0.0)
-                            except Exception:
-                                qty = 0.0
-                            try:
-                                avg = float(p.get("avgCost") or 0.0)
-                            except Exception:
-                                avg = 0.0
-                            if not sym or abs(qty) <= 0:
-                                continue
-                            side_str = str(p.get("side") or "").strip().lower()
-                            if side_str not in ("long", "short"):
-                                side_str = "long" if qty > 0 else "short"
-                            exch_size.setdefault(sym, {"long": 0.0, "short": 0.0})[side_str] = abs(qty)
-                            if avg > 0:
-                                exch_entry_price.setdefault(sym, {"long": 0.0, "short": 0.0})[side_str] = avg
-                    # Continue to reconciliation logic below
 
-                else:
-                    # Spot reconciliation is optional; skip for now (keeps self-check low-risk).
-                    logger.debug(f"position sync: skip unsupported market/client: sid={sid}, cfg={safe_cfg}, market_type={market_type}, client={type(client)}")
-                    continue
+                    _set_position_sync_snapshot(cache_key, exch_size, exch_entry_price)
 
                 # [DEBUG] Log all normalized exchange keys for inspection
                 logger.debug(f"[PositionSync] Strategy {sid} Exchange Keys: {list(exch_size.keys())}")
 
-                # [Log Optimization] Always log current positions every sync cycle (10s)
+                # [Log Optimization] Log current positions each sync cycle (see POSITION_SYNC_INTERVAL_SEC)
                 pos_summary_parts = []
                 for _sym, _sides in exch_size.items():
                     for _side_key, _qty in _sides.items():
@@ -897,13 +1013,14 @@ class PendingOrderWorker:
             if (not notification_config) and strategy_id:
                 notification_config = self._load_notification_config(int(strategy_id))
 
+            stake_quote = calc_notional_value(float(price or 0.0), float(amount or 0.0)) or float(amount or 0.0)
             results = self._notifier.notify_signal(
                 strategy_id=int(strategy_id or 0),
                 strategy_name=str(strategy_name or ""),
                 symbol=str(symbol or ""),
                 signal_type=str(signal_type or ""),
                 price=float(price or 0.0),
-                stake_amount=float(amount or 0.0),
+                stake_amount=float(stake_quote),
                 direction=str(direction or "long"),
                 notification_config=notification_config if isinstance(notification_config, dict) else {},
                 extra={"pending_order_id": order_id, "mode": mode},
@@ -1020,13 +1137,14 @@ class PendingOrderWorker:
                 px = float(price_hint) if (price_hint is not None and float(price_hint or 0.0) > 0) else ref0
                 amt = float(amount_hint) if (amount_hint is not None and float(amount_hint or 0.0) > 0) else amt0
 
+                stake_quote = calc_notional_value(float(px or 0.0), float(amt or 0.0)) or float(amt or 0.0)
                 results = self._notifier.notify_signal(
                     strategy_id=int(strategy_id),
                     strategy_name=str(strategy_name or ""),
                     symbol=str(sym0 or ""),
                     signal_type=str(sig0 or ""),
                     price=float(px or 0.0),
-                    stake_amount=float(amt or 0.0),
+                    stake_amount=float(stake_quote),
                     direction=("short" if "short" in str(sig0 or "").lower() else "long"),
                     notification_config=notification_config if isinstance(notification_config, dict) else {},
                     extra={
@@ -1461,6 +1579,23 @@ class PendingOrderWorker:
                 # Best-effort only; log and continue with original amount
                 logger.warning(f"Failed to query position for close adjustment: pending_id={order_id}, err={e}")
                 phases["pos_query_error"] = str(e)
+
+        # Spot close: cap to exchange free base (fees often make DB size > sellable free).
+        if reduce_only and market_type == "spot" and side == "sell":
+            try:
+                from app.services.live_trading.spot_sizing import clamp_spot_close_quantity
+
+                new_amt, spot_meta = clamp_spot_close_quantity(
+                    client, symbol=str(symbol), requested_qty=float(amount or 0.0)
+                )
+                if spot_meta.get("adjusted"):
+                    phases["spot_close_adjustment"] = spot_meta
+                amount = new_amt
+            except Exception as e:
+                logger.warning(
+                    "Spot close amount adjustment failed: pending_id=%s, err=%s", order_id, e
+                )
+                phases["spot_close_adjust_error"] = str(e)
 
         # Decide if we should use limit-first flow.
         use_limit_first = order_mode in ("maker", "limit", "limit_first", "maker_then_market")

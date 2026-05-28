@@ -151,14 +151,8 @@ df['st_lower'] = final_lower
                 period = params.get('period', 14)
                 key = f"rsi_{period}"
                 if key not in calculated:
-                    code += f"""
-# RSI ({period})
-delta = df['close'].diff()
-gain = (delta.where(delta > 0, 0)).rolling(window={period}).mean()
-loss = (-delta.where(delta < 0, 0)).rolling(window={period}).mean()
-rs = gain / loss
-df['rsi_{period}'] = 100 - (100 / (1 + rs))
-"""
+                    from app.utils.technical_indicators import rsi_wilder_codegen
+                    code += rsi_wilder_codegen(period, f"rsi_{period}")
                     calculated.add(key)
 
             elif ind == 'macd':
@@ -195,17 +189,13 @@ df['bb_{period}_{std_dev}_mid'] = sma
             elif ind == 'kdj':
                 period = params.get('period', 9)
                 signal_period = params.get('signal_period', 3)
+                k_smooth = params.get('k_smooth', signal_period)
+                d_smooth = params.get('d_smooth', signal_period)
                 key = f"kdj_{period}_{signal_period}"
                 if key not in calculated:
-                    code += f"""
-# KDJ ({period}, {signal_period})
-low_min = df['low'].rolling(window={period}).min()
-high_max = df['high'].rolling(window={period}).max()
-rsv = (df['close'] - low_min) / (high_max - low_min) * 100
-df['kdj_{period}_{signal_period}_k'] = rsv.ewm(alpha=1/{signal_period}, adjust=False).mean()
-df['kdj_{period}_{signal_period}_d'] = df['kdj_{period}_{signal_period}_k'].ewm(alpha=1/{signal_period}, adjust=False).mean()
-df['kdj_{period}_{signal_period}_j'] = 3 * df['kdj_{period}_{signal_period}_k'] - 2 * df['kdj_{period}_{signal_period}_d']
-"""
+                    from app.utils.technical_indicators import kdj_codegen
+                    col_prefix = f"kdj_{period}_{signal_period}"
+                    code += kdj_codegen(period, k_smooth, d_smooth, col_prefix)
                     calculated.add(key)
 
             elif ind == 'ma':

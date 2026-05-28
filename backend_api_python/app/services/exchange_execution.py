@@ -199,3 +199,59 @@ def resolve_exchange_config(exchange_config: Dict[str, Any], user_id: int = 1) -
     return merged
 
 
+def coalesce_exchange_config_from_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Build a single exchange_config dict from all common payload shapes.
+
+    Historical clients (and some UI flows) put ``exchange_id`` / ``credential_id``
+    on the request root or inside ``trading_config`` instead of ``exchange_config``.
+    ``TradingExecutor._live_crypto_kline_params`` already reads trading_config as
+    a fallback at runtime; create/update must do the same so live strategies
+    validate and persist the broker binding correctly.
+    """
+    if not isinstance(payload, dict):
+        return {}
+
+    raw_ex = payload.get("exchange_config")
+    ex_cfg: Dict[str, Any] = dict(raw_ex) if isinstance(raw_ex, dict) else {}
+
+    tc = payload.get("trading_config")
+    trading_config = tc if isinstance(tc, dict) else {}
+
+    from app.services.live_trading.factory import merge_root_exchange_config_overlay
+
+    ex_cfg = merge_root_exchange_config_overlay(root=payload, exchange_config=ex_cfg)
+
+    def _first_str(*candidates: Any) -> str:
+        for c in candidates:
+            if c is None:
+                continue
+            s = str(c).strip()
+            if s:
+                return s
+        return ""
+
+    if not _first_str(ex_cfg.get("exchange_id"), ex_cfg.get("exchangeId"), ex_cfg.get("exchange")):
+        hit = _first_str(
+            trading_config.get("exchange_id"),
+            trading_config.get("exchangeId"),
+            trading_config.get("exchange"),
+            payload.get("exchange_id"),
+            payload.get("exchangeId"),
+            payload.get("exchange"),
+        )
+        if hit:
+            ex_cfg["exchange_id"] = hit
+
+    if not _first_str(ex_cfg.get("credential_id"), ex_cfg.get("credentials_id")):
+        cred = _first_str(
+            trading_config.get("credential_id"),
+            trading_config.get("credentials_id"),
+            payload.get("credential_id"),
+            payload.get("credentials_id"),
+        )
+        if cred:
+            ex_cfg["credential_id"] = cred
+
+    return ex_cfg
+
+

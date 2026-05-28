@@ -12,6 +12,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from app.services.backtest import BacktestService
 from app.services.experiment.evolution import StrategyEvolutionService
+from app.services.experiment.overrides import enrich_experiment_candidate, enrich_experiment_overrides
 from app.services.experiment.optimizers import make_optimizer
 from app.services.experiment.prompts import (
     SYSTEM_PROMPT,
@@ -517,7 +518,7 @@ class ExperimentRunnerService:
                     logger.error("structured_tune backtest failed for %s: %s", candidate.get('name'), exc)
                     result = {}
                 score = scorer.score_result(result, regime=regime)
-                ranked.append({
+                ranked.append(enrich_experiment_candidate({
                     'name': candidate['name'],
                     'reasoning': '',
                     'source': candidate['source'],
@@ -525,7 +526,7 @@ class ExperimentRunnerService:
                     'snapshot': candidate['snapshot'],
                     'score': score,
                     'result': self._slim_result(result),
-                })
+                }))
 
         ranked = scorer.rank_results(ranked)
         if oos_start is not None and oos_end is not None:
@@ -560,7 +561,7 @@ class ExperimentRunnerService:
                 'elapsed': elapsed,
                 'error': None,
             }],
-            'rankedStrategies': ranked[:50],
+            'rankedStrategies': [enrich_experiment_candidate(c) for c in ranked[:50]],
             'bestStrategyOutput': self._build_best_output(best),
             'oosValidation': oos_meta,
             'scoringWeights': scorer.resolve_weights(regime),
@@ -922,7 +923,7 @@ class ExperimentRunnerService:
             'name': best.get('name'),
             'score': best.get('score'),
             'source': best.get('source'),
-            'overrides': best.get('overrides'),
+            'overrides': enrich_experiment_overrides(best.get('overrides') or {}),
             'snapshot': best.get('snapshot'),
             'summary': {
                 'totalReturn': result.get('totalReturn'),

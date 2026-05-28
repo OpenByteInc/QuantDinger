@@ -5,8 +5,8 @@
 
   <h1>QuantDinger</h1>
   <h3>プライベート AI クオンツ OS</h3>
-  <p><strong>チャート研究、AI 市場分析、Python インジケーター／ストラテジー、バックテスト、ライブ実行を、自前サーバーと自前 API キーでまとめて運用。</strong></p>
-  <p><em>セルフホスト型クオンツ基盤：アイデアと AI 支援コーディングからペーパー系ワークフロー、取引所接続のライブまで。オプションでマルチユーザーと課金プリミティブ。</em></p>
+  <p><strong>チャート、マルチ LLM リサーチ、Python 戦略、機関級バックテスト、マルチ venue ライブ執行を 1 つの Docker スタックで—完全セルフホスト、自前キー、自前データ。</strong></p>
+  <p><em>オープンソース quant OS：AI 支援コーディング → バックテスト → ペーパー → ライブ（crypto / IBKR / MT5 / Alpaca）、Agent Gateway・MCP 内蔵。</em></p>
 
   <div align="center" style="max-width: 680px; margin: 1.25rem auto 0; padding: 20px 22px 22px; border: 1px solid #d1d9e0; border-radius: 16px;">
     <p style="margin: 0 0 14px; line-height: 1.65;">
@@ -49,6 +49,8 @@
     <img src="https://img.shields.io/github/v/release/brokermr810/QuantDinger?style=flat-square&color=orange&label=Version" alt="Version">
     <img src="https://img.shields.io/badge/Python-3.10%2B%20%7C%20Docker%203.12-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python">
     <img src="https://img.shields.io/badge/Docker-Compose-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker">
+    <img src="https://img.shields.io/badge/Agent%20Gateway-MCP%20Ready-6f42c1?style=flat-square" alt="Agent Gateway">
+    <img src="https://img.shields.io/badge/PostgreSQL-16-336791?style=flat-square&logo=postgresql&logoColor=white" alt="PostgreSQL">
     <img src="https://img.shields.io/github/stars/brokermr810/QuantDinger?style=flat-square&logo=github" alt="Stars">
   </p>
 </div>
@@ -57,22 +59,46 @@
 
 ## 目次
 
-[クイックスタート](#クイックスタート) · [関連リポジトリ](#関連リポジトリ) · [MCP / Agent](#mcp--agent-ゲートウェイ) · [概要](#製品概要) · [機能](#機能ハイライト) · [スクリーンショット](#ビジュアルツアー) · [アーキテクチャ](#アーキテクチャ) · [インストール](#インストールと初回起動) · [ドキュメント](#ドキュメント一覧) · [FAQ](#よくある質問) · [ライセンス](#ライセンス)
+[クイックスタート](#クイックスタート) · [技術ハイライト](#技術ハイライト) · [関連リポジトリ](#関連リポジトリ) · [MCP / Agent](#mcp--agent-ゲートウェイ) · [概要](#製品概要) · [機能](#機能ハイライト) · [スクリーンショット](#ビジュアルツアー) · [アーキテクチャ](#アーキテクチャ) · [インストール](#インストールと初回起動) · [ドキュメント](#ドキュメント一覧) · [FAQ](#よくある質問) · [ライセンス](#ライセンス)
 
 ---
 
-> QuantDinger は **セルフホスト・ローカルファースト** のクオンツ基盤です。**AI 支援リサーチ**、**Python ネイティブ戦略**、**バックテスト**、**ライブ取引**（暗号資産、IBKR 米株、MT5 FX、Alpaca 米株 / ETF / 暗号資産）を **1 つの製品** にまとめます。
+> QuantDinger は **セルフホスト・ローカルファースト** のクオンツ **OS** です。買いボタン付きチャットボットではなく、**マルチ LLM リサーチ**、**Python ネイティブ戦略**、**サーバサイドバックテスト**、**マルチブローカーライブ**（10+ crypto venue、IBKR、MT5、Alpaca）を 1 つの本番グレードスタックに統合します。
+
+<div align="center">
+  <img src="screenshots/ezgif.com-animated-gif-maker.gif" alt="QuantDinger クイックデモ" width="920" style="border-radius: 12px; border: 1px solid #eaeef2;">
+  <p><sub><em>ゼロから起動まで—チャート、AI リサーチ、戦略ワークフローを数分で。</em></sub></p>
+</div>
 
 <div align="center">
   <img src="screenshots/architecture.png" alt="QuantDinger アーキテクチャ" width="960">
-  <p><sub><em>データソースからインジケータ／シグナル／戦略／バックテスト／AI 分析へ、そして実行までのクローズドループ。</em></sub></p>
+  <p><sub><em>五層エンジンのクローズドループ：<strong>アイデア → インジケータ → 戦略 → バックテスト → 最適化 → 執行 → 監視</strong></em></sub></p>
 </div>
+
+## 技術ハイライト
+
+| | QuantDinger の強み |
+|---|-------------------|
+| **フルスタック quant OS** | チャート、IDE、AI、バックテスト、ライブ bot、クイックトレード、ブローカー管理を 1 製品に。 |
+| **Agent ネイティブ** | **Agent Gateway** + PyPI [`quantdinger-mcp`](https://pypi.org/project/quantdinger-mcp/) — Cursor / Claude Code / Codex 連携、監査ログ付き。 |
+| **二重戦略ランタイム** | `IndicatorStrategy`（ベクトル化シグナル）と `ScriptStrategy`（`on_bar` イベント駆動）。 |
+| **マルチ venue** | CCXT crypto、IBKR、MT5、Alpaca — 統合ブローカーアカウントページ。 |
+| **本番インフラ** | PostgreSQL 16 + Redis 7、Worker、GHCR マルチアーキイメージ。 |
+| **セキュリティ** | デフォルト `SECRET_KEY` 拒否、Agent トークンはハッシュ保存、デフォルトはペーパーのみ。 |
 
 ## クイックスタート
 
-**前提:** [Docker](https://docs.docker.com/get-docker/) + Compose、**Git**。**Node.js は不要**（フロントエンドのイメージは GHCR から取得）。
+**前提:** [Docker](https://docs.docker.com/get-docker/) + Compose v2。**Node.js 不要**（GHCR からフロント取得）。
 
-### macOS / Linux
+### 一行インストール（Linux / macOS）
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/brokermr810/QuantDinger/main/install.sh | bash
+```
+
+デフォルト `~/quantdinger`。再実行で最新イメージを pull。→ **`http://localhost:8888`**（`quantdinger` / `123456`、直ちにパスワード変更）。
+
+### 標準：リポジトリをクローン（macOS / Linux）
 
 ```bash
 git clone https://github.com/brokermr810/QuantDinger.git && cd QuantDinger && cp backend_api_python/env.example backend_api_python/.env && chmod +x scripts/generate-secret-key.sh && ./scripts/generate-secret-key.sh && docker-compose up -d --build
@@ -123,7 +149,19 @@ Git for Windows の Bash なら、上記 macOS/Linux の 1 行コマンドが使
 
 ## 製品概要
 
-セルフホスト可能な **AI + Python 戦略 + バックテスト + ライブ** の一体環境。認証情報は **PostgreSQL** と **`.env`** で管理。暗号取引所、IBKR、MT5、Alpaca、LLM は環境変数で接続。
+セルフホスト可能な **AI + Python 戦略 + バックテスト + ライブ** の一体環境。TradingView + Notebook + チャット AI + 取引所 bot の寄せ集めを **1 つの監査可能な Docker スタック** に置き換えます。認証情報は **PostgreSQL** と **`.env`** で管理。
+
+## 機能ハイライト
+
+- **リサーチ & AI** — マルチ LLM、NL→コード、Agent / MCP（scoped token、SSE ジョブ）。
+- **構築** — `IndicatorStrategy` / `ScriptStrategy`、プロ K 線 UI。
+- **検証** — サーバサイドバックテスト（エクイティ、ドローダウン、約定ログ）。
+- **運用** — 10+ crypto、IBKR / MT5 / Alpaca、統合ブローカーアカウント、Telegram / Discord / Webhook。
+- **プラットフォーム** — Docker + GHCR、Postgres 16、Redis 7、OAuth、マルチユーザー、課金スイッチ、AWS Marketplace。
+
+## アーキテクチャ
+
+**設計原則：** 行情取得・戦略/バックテスト・執行を分離。Nginx + Vue SPA、Flask + Gunicorn、PostgreSQL 16、Redis 7。デプロイ：`install.sh` 一行、GHCR ゼロ repo、フル repo Compose、AWS AMI、[SaaS](https://ai.quantdinger.com)。
 
 ## ビジュアルツアー
 
@@ -145,56 +183,6 @@ Git for Windows の Bash なら、上記 macOS/Linux の 1 行コマンドが使
     <td align="center"><img src="screenshots/v34.png" alt="Live" style="border-radius: 6px;"><br/><sub>ライブ戦略・パフォーマンス</sub></td>
   </tr>
 </table>
-
-## 機能ハイライト
-
-- **リサーチ & AI** — マルチ LLM 分析、ウォッチリスト、履歴；NL→コード；**Agent / MCP** 連携。
-- **構築** — `IndicatorStrategy` と `ScriptStrategy`（`on_bar`）；プロ向け K 線 UI。
-- **検証** — サーバサイドバックテスト、エクイティカーブ。
-- **運用** — 暗号執行、クイックトレード、IBKR / MT5 / Alpaca（米株・ETF・暗号資産）；Telegram、メール、Discord、Webhook 等。
-- **プラットフォーム** — Docker Compose、Postgres、Redis、OAuth、マルチユーザー、クレジット / メンバーシップ / USDT 課金スイッチ。
-
-## アーキテクチャ
-
-```mermaid
-flowchart LR
-    U[トレーダー / 運用者]
-
-    subgraph FE[フロント]
-        WEB[Vue]
-        NG[Nginx]
-    end
-
-    subgraph BE[バックエンド]
-        API[Flask API]
-        AI[AI サービス]
-        STRAT[戦略・バックテスト]
-        EXEC[執行]
-    end
-
-    subgraph DATA[データ]
-        PG[(PostgreSQL)]
-        REDIS[(Redis)]
-    end
-
-    subgraph EXT[外部]
-        LLM[LLM]
-        EXCH[取引所]
-        BROKER[IBKR / MT5 / Alpaca]
-    end
-
-    U --> WEB --> NG --> API
-    API --> AI
-    API --> STRAT
-    API --> EXEC
-    AI --> PG
-    STRAT --> PG
-    EXEC --> PG
-    API --> REDIS
-    AI --> LLM
-    EXEC --> EXCH
-    EXEC --> BROKER
-```
 
 ## インストールと初回起動
 

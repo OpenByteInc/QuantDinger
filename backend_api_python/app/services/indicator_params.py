@@ -297,6 +297,39 @@ class IndicatorParamsParser:
         
         return result
 
+    @classmethod
+    def apply_defaults_to_code(cls, indicator_code: str, param_values: Dict[str, Any]) -> str:
+        """
+        Rewrite ``# @param`` default values in indicator source (IDE apply-params).
+
+        Mirrors the QuantDinger-Vue ``applyIndicatorParamsToCode`` logic so the
+        backend can patch code when needed.
+        """
+        if not indicator_code or not param_values:
+            return indicator_code or ""
+
+        lines = (indicator_code or "").split("\n")
+        changed = False
+        for idx, line in enumerate(lines):
+            match = cls.PARAM_PATTERN.match(line.strip())
+            if not match:
+                continue
+            name = match.group(1)
+            if name not in param_values:
+                continue
+            param_type = match.group(2).lower()
+            if param_type == "string":
+                param_type = "str"
+            raw_val = param_values[name]
+            if isinstance(raw_val, bool):
+                val_str = "true" if raw_val else "false"
+            else:
+                val_str = str(raw_val)
+            desc = match.group(4) or ""
+            lines[idx] = f"# @param {name} {param_type} {val_str} {desc}".rstrip()
+            changed = True
+        return "\n".join(lines) if changed else indicator_code
+
 
 class IndicatorCaller:
     """

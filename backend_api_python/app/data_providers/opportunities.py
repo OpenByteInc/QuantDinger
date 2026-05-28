@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import time as _time
-from typing import Any, Dict, List
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Any, Dict, List, Optional
+
+import requests
 
 from app.utils.logger import get_logger
 from app.data_providers import get_cached, set_cached, safe_float
@@ -16,53 +19,145 @@ logger = get_logger(__name__)
 # Price fetchers for opportunity scanning
 # ---------------------------------------------------------------------------
 
+def _fetch_yahoo_chart_quote(symbol: str) -> Optional[Dict[str, Any]]:
+    """US spot quote via Yahoo chart API — lighter than yfinance batch calls."""
+    sym = (symbol or "").strip().upper()
+    if not sym:
+        return None
+    try:
+        resp = requests.get(
+            f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}",
+            params={"interval": "1d", "range": "5d"},
+            headers={"User-Agent": "Mozilla/5.0 (compatible; QuantDinger/1.0)"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        result = (resp.json().get("chart") or {}).get("result") or []
+        if not result:
+            return None
+        meta = result[0].get("meta") or {}
+        price = safe_float(meta.get("regularMarketPrice") or meta.get("previousClose"))
+        prev = safe_float(meta.get("chartPreviousClose") or meta.get("previousClose") or price)
+        if price <= 0:
+            return None
+        change_pct = ((price - prev) / prev * 100.0) if prev > 0 else 0.0
+        return {
+            "last": price,
+            "changePercent": round(change_pct, 2),
+            "previousClose": prev,
+        }
+    except Exception as e:
+        logger.debug("Yahoo chart quote failed for %s: %s", sym, e)
+        return None
+
+
+def _fetch_stooq_us_quote(symbol: str) -> Optional[Dict[str, Any]]:
+    """US spot quote via Stooq (works when Yahoo/yfinance are blocked in Docker)."""
+    sym = f"{(symbol or '').strip().lower()}.us"
+    if not sym or sym == ".us":
+        return None
+    try:
+        resp = requests.get(
+            "https://stooq.com/q/l/",
+            params={"s": sym, "f": "sd2t2ohlcv", "h": "", "e": "csv"},
+            headers={"User-Agent": "Mozilla/5.0 (compatible; QuantDinger/1.0)"},
+            timeout=8,
+        )
+        resp.raise_for_status()
+        lines = [ln for ln in resp.text.strip().splitlines() if ln and not ln.startswith("Symbol")]
+        if not lines:
+            return None
+        parts = lines[-1].split(",")
+        if len(parts) < 7:
+            return None
+        open_px = safe_float(parts[3])
+        close_px = safe_float(parts[6])
+        if close_px <= 0:
+            return None
+        base = open_px if open_px > 0 else close_px
+        change_pct = ((close_px - open_px) / base * 100.0) if base > 0 else 0.0
+        return {"last": close_px, "changePercent": round(change_pct, 2)}
+    except Exception as e:
+        logger.debug("Stooq quote failed for %s: %s", symbol, e)
+        return None
+
+
+def _fetch_single_local_stock_quote(market: str, item: Dict[str, Any], *, fast: bool = False) -> Optional[Dict[str, Any]]:
+    """Fetch one US/CN/HK stock quote row."""
+    from app.data_sources import DataSourceFactory
+    from app.services.symbol_name import resolve_symbol_name
+
+    m = str(market or "").strip()
+    symbol = str((item or {}).get("symbol") or "").strip()
+    if not symbol:
+        return None
+
+    last = 0.0
+    change_pct = 0.0
+    if m == "USStock":
+        yahoo = _fetch_yahoo_chart_quote(symbol)
+        if yahoo:
+            last = safe_float(yahoo.get("last"))
+            change_pct = safe_float(yahoo.get("changePercent"))
+        if last <= 0:
+            stooq = _fetch_stooq_us_quote(symbol)
+            if stooq:
+                last = safe_float(stooq.get("last"))
+                change_pct = safe_float(stooq.get("changePercent"))
+        if last <= 0 and not fast:
+            try:
+                from app.services.kline import KlineService
+                row = KlineService().get_realtime_price(m, symbol)
+                last = safe_float(row.get("price"))
+                change_pct = row.get("changePercent")
+                if change_pct is None:
+                    prev_close = safe_float(row.get("previousClose"))
+                    change_pct = ((last - prev_close) / prev_close * 100.0) if prev_close > 0 else 0.0
+            except Exception as e:
+                logger.debug("Kline realtime price failed for %s:%s: %s", m, symbol, e)
+    else:
+        source = DataSourceFactory.get_source(m)
+        ticker = source.get_ticker(symbol) or {}
+        last = safe_float(ticker.get("last") or ticker.get("close") or ticker.get("price"))
+        change_pct = ticker.get("changePercent")
+        if change_pct is None:
+            prev_close = safe_float(ticker.get("previousClose"))
+            change_pct = ((last - prev_close) / prev_close * 100.0) if prev_close > 0 else 0.0
+
+    if last <= 0:
+        return None
+    return {
+        "symbol": symbol,
+        "name": (item.get("name") or resolve_symbol_name(m, symbol) or symbol).strip(),
+        "price": round(last, 4 if m != "USStock" else 2),
+        "change": round(safe_float(change_pct), 2),
+        "market": m,
+    }
+
+
 def fetch_stock_opportunity_prices() -> List[Dict[str, Any]]:
     """Fetch popular US stock prices for opportunity scanning."""
-    stocks = [
-        {"symbol": "AAPL", "name": "Apple"}, {"symbol": "MSFT", "name": "Microsoft"},
-        {"symbol": "GOOGL", "name": "Alphabet"}, {"symbol": "AMZN", "name": "Amazon"},
-        {"symbol": "TSLA", "name": "Tesla"}, {"symbol": "NVDA", "name": "NVIDIA"},
-        {"symbol": "META", "name": "Meta"}, {"symbol": "NFLX", "name": "Netflix"},
-        {"symbol": "AMD", "name": "AMD"}, {"symbol": "CRM", "name": "Salesforce"},
-        {"symbol": "COIN", "name": "Coinbase"}, {"symbol": "BABA", "name": "Alibaba"},
-        {"symbol": "NIO", "name": "NIO"}, {"symbol": "PLTR", "name": "Palantir"},
-        {"symbol": "INTC", "name": "Intel"},
-    ]
-    try:
-        import yfinance as yf
-        symbols = [s["symbol"] for s in stocks]
-        tickers = yf.Tickers(" ".join(symbols))
-        result = []
-        for stock in stocks:
-            try:
-                ticker = tickers.tickers.get(stock["symbol"])
-                if ticker:
-                    hist = ticker.history(period="2d")
-                    if len(hist) >= 2:
-                        prev_close = float(hist["Close"].iloc[-2])
-                        current = float(hist["Close"].iloc[-1])
-                        change = ((current - prev_close) / prev_close) * 100
-                    elif len(hist) == 1:
-                        current = float(hist["Close"].iloc[-1])
-                        change = 0
-                    else:
-                        continue
-                    result.append({"symbol": stock["symbol"], "name": stock["name"], "price": round(current, 2), "change": round(change, 2)})
-            except Exception as e:
-                logger.debug("Failed to fetch stock %s: %s", stock["symbol"], e)
-        return result
-    except Exception as e:
-        logger.error("Failed to fetch stock opportunity prices: %s", e)
-        return []
+    return fetch_local_stock_opportunity_prices("USStock", limit=15)
 
 
-def fetch_local_stock_opportunity_prices(market: str, limit: int = 15) -> List[Dict[str, Any]]:
-    """Fetch CN/HK stock prices for opportunity scanning."""
+def fetch_local_stock_opportunity_prices(market: str, limit: int = 15, *, fast: bool = False) -> List[Dict[str, Any]]:
+    """Fetch US/CN/HK stock prices for opportunity scanning and heatmaps."""
     m = str(market or "").strip()
-    if m not in ("CNStock", "HKStock"):
+    if m not in ("CNStock", "HKStock", "USStock"):
         return []
 
     _FALLBACK_SYMBOLS = {
+        "USStock": [
+            {"symbol": "AAPL", "name": "Apple"}, {"symbol": "MSFT", "name": "Microsoft"},
+            {"symbol": "GOOGL", "name": "Alphabet"}, {"symbol": "AMZN", "name": "Amazon"},
+            {"symbol": "TSLA", "name": "Tesla"}, {"symbol": "NVDA", "name": "NVIDIA"},
+            {"symbol": "META", "name": "Meta"}, {"symbol": "NFLX", "name": "Netflix"},
+            {"symbol": "AMD", "name": "AMD"}, {"symbol": "CRM", "name": "Salesforce"},
+            {"symbol": "COIN", "name": "Coinbase"}, {"symbol": "JPM", "name": "JPMorgan"},
+            {"symbol": "V", "name": "Visa"}, {"symbol": "INTC", "name": "Intel"},
+            {"symbol": "PLTR", "name": "Palantir"}, {"symbol": "ORCL", "name": "Oracle"},
+            {"symbol": "QCOM", "name": "Qualcomm"},
+        ],
         "CNStock": [
             {"symbol": "600519", "name": "贵州茅台"}, {"symbol": "000001", "name": "平安银行"},
             {"symbol": "300750", "name": "宁德时代"}, {"symbol": "601318", "name": "中国平安"},
@@ -83,42 +178,52 @@ def fetch_local_stock_opportunity_prices(market: str, limit: int = 15) -> List[D
             {"symbol": "09888", "name": "百度集团-SW"}, {"symbol": "01024", "name": "快手-W"},
             {"symbol": "02015", "name": "理想汽车-W"}, {"symbol": "09868", "name": "小鹏汽车-W"},
             {"symbol": "00388", "name": "香港交易所"}, {"symbol": "02269", "name": "药明生物"},
-            {"symbol": "00005", "name": "汇丰控股"},
+            {"symbol": "00005", "name": "汇丰控股"}, {"symbol": "01398", "name": "工商银行"},
+            {"symbol": "00883", "name": "中国海洋石油"},
         ],
     }
 
     try:
         from app.data.market_symbols_seed import get_hot_symbols
-        from app.data_sources import DataSourceFactory
-        from app.services.symbol_name import resolve_symbol_name
 
-        symbols = get_hot_symbols(m, limit=max(int(limit or 15), 1)) or _FALLBACK_SYMBOLS.get(m, [])
-        source = DataSourceFactory.get_source(m)
+        symbols = get_hot_symbols(m, limit=max(int(limit or 15), 1)) or []
+        fallback = _FALLBACK_SYMBOLS.get(m, [])
+        seen = set()
+        merged = []
+        for item in list(symbols) + list(fallback):
+            sym = str((item or {}).get("symbol") or "").strip()
+            if not sym or sym in seen:
+                continue
+            seen.add(sym)
+            merged.append(item)
+        # Pull a few extra symbols so partial upstream failures still yield `limit` rows.
+        fetch_count = max(int(limit or 15), 1) + 4
+        items = merged[:fetch_count]
+        if not items:
+            return []
 
-        result = []
-        for item in symbols[:max(int(limit or 15), 1)]:
+        result: List[Dict[str, Any]] = []
+        if m in ("USStock", "HKStock", "CNStock") and len(items) > 1:
+            workers = min(8, len(items))
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                futures = [pool.submit(_fetch_single_local_stock_quote, m, item, fast=fast) for item in items]
+                for fut in as_completed(futures):
+                    try:
+                        row = fut.result()
+                        if row:
+                            result.append(row)
+                    except Exception as e:
+                        logger.debug("Parallel stock quote failed for %s: %s", m, e)
+            return result[:max(int(limit or 15), 1)]
+
+        for item in items:
             try:
-                symbol = str(item.get("symbol") or "").strip()
-                if not symbol:
-                    continue
-                ticker = source.get_ticker(symbol) or {}
-                last = safe_float(ticker.get("last") or ticker.get("close") or ticker.get("price"))
-                if last <= 0:
-                    continue
-                change_pct = ticker.get("changePercent")
-                if change_pct is None:
-                    prev_close = safe_float(ticker.get("previousClose"))
-                    change_pct = ((last - prev_close) / prev_close * 100.0) if prev_close > 0 else 0.0
-                result.append({
-                    "symbol": symbol,
-                    "name": (item.get("name") or resolve_symbol_name(m, symbol) or symbol).strip(),
-                    "price": round(last, 4),
-                    "change": round(safe_float(change_pct), 2),
-                    "market": m,
-                })
+                row = _fetch_single_local_stock_quote(m, item, fast=fast)
+                if row:
+                    result.append(row)
             except Exception as e:
                 logger.debug("Failed to fetch %s opportunity price %s: %s", m, item.get("symbol"), e)
-        return result
+        return result[:max(int(limit or 15), 1)]
     except Exception as e:
         logger.error("Failed to fetch %s opportunity prices: %s", m, e)
         return []
