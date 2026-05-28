@@ -1345,6 +1345,116 @@ def _parse_balance(raw: Any, exchange_id: str, market_type: str) -> Dict[str, An
     return result
 
 
+def _quick_trade_spot_avg_entry_price(
+    user_id: int,
+    credential_id: int,
+    symbol: str,
+    market_type: str,
+) -> float:
+    """
+    Average cost basis from filled Quick Trade rows (chronological avg-cost).
+    """
+    sym = str(symbol or "").strip()
+    mt = (market_type or "spot").strip().lower()
+    with get_db_connection() as db:
+        cur = db.cursor()
+        cur.execute(
+            """
+            SELECT side, filled_amount, avg_fill_price, price
+            FROM qd_quick_trades
+            WHERE user_id = %s AND credential_id = %s AND symbol = %s AND market_type = %s
+              AND status = 'filled' AND COALESCE(filled_amount, 0) > 0
+            ORDER BY created_at ASC, id ASC
+            """,
+            (int(user_id), int(credential_id), sym, mt),
+        )
+        rows = cur.fetchall() or []
+        cur.close()
+
+    qty = 0.0
+    cost = 0.0
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        side = str(row.get("side") or "").strip().lower()
+        try:
+            filled = float(row.get("filled_amount") or 0.0)
+        except (TypeError, ValueError):
+            filled = 0.0
+        try:
+            px = float(row.get("avg_fill_price") or 0.0)
+        except (TypeError, ValueError):
+            px = 0.0
+        if px <= 0:
+            try:
+                px = float(row.get("price") or 0.0)
+            except (TypeError, ValueError):
+                px = 0.0
+        if filled <= 0 or px <= 0:
+            continue
+        if side == "buy":
+            cost += filled * px
+            qty += filled
+        elif side == "sell" and qty > 0:
+            sell_qty = min(filled, qty)
+            avg = cost / qty
+            cost -= sell_qty * avg
+            qty -= sell_qty
+    if qty > 1e-12 and cost > 0:
+        return cost / qty
+    return 0.0
+
+
+def _enrich_spot_positions(
+    positions: list,
+    *,
+    client: Any,
+    symbol: str,
+    user_id: int,
+    credential_id: int,
+    market_type: str,
+) -> list:
+    """Fill missing spot entry / mark / unrealized PnL for Quick Trade display."""
+    from app.services.live_trading.spot_sizing import fetch_spot_last_price
+
+    if not positions:
+        return positions
+
+    db_avg = _quick_trade_spot_avg_entry_price(
+        user_id, credential_id, symbol, market_type
+    )
+    last_px = fetch_spot_last_price(client, symbol=symbol)
+
+    enriched: list = []
+    for pos in positions:
+        if not isinstance(pos, dict):
+            continue
+        row = dict(pos)
+        entry = float(row.get("entry_price") or 0.0)
+        if entry <= 0 and db_avg > 0:
+            entry = db_avg
+        mark = float(row.get("mark_price") or 0.0)
+        if mark <= 0 and last_px > 0:
+            mark = last_px
+        size = float(row.get("size") or 0.0)
+        side = str(row.get("side") or "long").strip().lower()
+
+        row["entry_price"] = entry
+        if mark > 0:
+            row["mark_price"] = mark
+
+        upl = float(row.get("unrealized_pnl") or 0.0)
+        if abs(upl) < 1e-12 and entry > 0 and mark > 0 and size > 0:
+            if side == "short":
+                upl = (entry - mark) * size
+            else:
+                upl = (mark - entry) * size
+            row["unrealized_pnl"] = upl
+
+        enriched.append(row)
+    return enriched
+
+
 def _fetch_spot_holdings_raw(client: Any, *, symbol: str) -> Dict[str, Any]:
     """
     Spot "position" = base-asset wallet balance for the trading pair.
@@ -1367,16 +1477,17 @@ def _fetch_spot_holdings_raw(client: Any, *, symbol: str) -> Dict[str, Any]:
     qty = total if total > 0 else avail
     if avail <= 0:
         avail = qty
-    return {
-        "data": [
-            {
-                "symbol": display,
-                "bal": qty,
-                "availBal": avail,
-                "side": "long",
-            }
-        ]
+    row: Dict[str, Any] = {
+        "symbol": display,
+        "bal": qty,
+        "availBal": avail,
+        "side": "long",
     }
+    avg_cost = float(holding.get("avg_cost") or 0.0)
+    if avg_cost > 0:
+        row["avgCost"] = avg_cost
+        row["openAvgPx"] = avg_cost
+    return {"data": [row]}
 
 
 def _fetch_exchange_positions_raw(
@@ -1604,6 +1715,15 @@ def get_position():
                 client, exchange_config, symbol=symbol, market_type=market_type
             )
             positions = _parse_positions(raw)
+            if market_type == "spot" and positions:
+                positions = _enrich_spot_positions(
+                    positions,
+                    client=client,
+                    symbol=symbol,
+                    user_id=user_id,
+                    credential_id=credential_id,
+                    market_type=market_type,
+                )
         except Exception as pe:
             logger.warning(f"Position fetch failed: {pe}")
             logger.warning(traceback.format_exc())
@@ -1782,6 +1902,8 @@ def _parse_positions(raw: Any) -> list:
                     or item.get("avgPrice")
                     or item.get("avgCost")
                     or item.get("avgPx")
+                    or item.get("openAvgPx")
+                    or item.get("accAvgPx")
                     or item.get("cost_open")
                     or item.get("trade_avg_price")
                     or 0

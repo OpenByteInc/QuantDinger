@@ -59,16 +59,32 @@ def _pick_free_from_row(row: Dict[str, Any], *keys: str) -> float:
     return 0.0
 
 
-def _spot_holding(total: float, available: float) -> Dict[str, float]:
+def _pick_cost_from_row(row: Dict[str, Any], *keys: str) -> float:
+    for k in keys:
+        if k in row and row.get(k) is not None:
+            try:
+                v = float(row.get(k) or 0.0)
+                if v > 0:
+                    return v
+            except Exception:
+                continue
+    return 0.0
+
+
+def _spot_holding(total: float, available: float, avg_cost: float = 0.0) -> Dict[str, float]:
     t = max(0.0, float(total or 0.0))
     a = max(0.0, float(available or 0.0))
     if t <= 0 and a <= 0:
-        return {"total": 0.0, "available": 0.0}
+        return {"total": 0.0, "available": 0.0, "avg_cost": 0.0}
     if t <= 0:
         t = a
     if a <= 0:
         a = t
-    return {"total": t, "available": a}
+    return {
+        "total": t,
+        "available": a,
+        "avg_cost": max(0.0, float(avg_cost or 0.0)),
+    }
 
 
 def get_spot_base_holding(client: BaseRestClient, *, symbol: str) -> Dict[str, float]:
@@ -79,7 +95,7 @@ def get_spot_base_holding(client: BaseRestClient, *, symbol: str) -> Dict[str, f
     """
     base, _ = _split_base_quote(str(symbol or ""))
     if not base:
-        return {"total": 0.0, "available": 0.0}
+        return {"total": 0.0, "available": 0.0, "avg_cost": 0.0}
     base_u = base.upper()
 
     try:
@@ -114,7 +130,10 @@ def get_spot_base_holding(client: BaseRestClient, *, symbol: str) -> Dict[str, f
                         frozen = _pick_free_from_row(det, "frozenBal")
                         if total <= 0:
                             total = avail + frozen
-                        return _spot_holding(total, avail)
+                        avg_cost = _pick_cost_from_row(
+                            det, "openAvgPx", "accAvgPx", "avgPx", "avgCost"
+                        )
+                        return _spot_holding(total, avail, avg_cost)
     except Exception as e:
         logger.warning("spot base holding (okx): %s", e)
 
@@ -151,7 +170,10 @@ def get_spot_base_holding(client: BaseRestClient, *, symbol: str) -> Dict[str, f
                     total = _pick_free_from_row(row, "total", "balance")
                     if total <= 0:
                         total = avail + frozen
-                    return _spot_holding(total, avail)
+                    avg_cost = _pick_cost_from_row(
+                        row, "averageOpenPrice", "avgOpenPrice", "avgCost", "openAvgPx"
+                    )
+                    return _spot_holding(total, avail, avg_cost)
     except Exception as e:
         logger.warning("spot base holding (bitget): %s", e)
 
@@ -172,7 +194,10 @@ def get_spot_base_holding(client: BaseRestClient, *, symbol: str) -> Dict[str, f
                             coin, "availableToWithdraw", "free", "walletBalance"
                         )
                         total = _pick_free_from_row(coin, "walletBalance", "equity", "availableToWithdraw")
-                        return _spot_holding(total, avail)
+                        avg_cost = _pick_cost_from_row(
+                            coin, "avgPrice", "sessionAvgPrice", "accAvgPx", "avgCost"
+                        )
+                        return _spot_holding(total, avail, avg_cost)
     except Exception as e:
         logger.warning("spot base holding (bybit): %s", e)
 
@@ -229,7 +254,7 @@ def get_spot_base_holding(client: BaseRestClient, *, symbol: str) -> Dict[str, f
     except Exception as e:
         logger.warning("spot base holding (kraken): %s", e)
 
-    return {"total": 0.0, "available": 0.0}
+    return {"total": 0.0, "available": 0.0, "avg_cost": 0.0}
 
 
 def get_spot_free_base_balance(client: BaseRestClient, *, symbol: str) -> float:

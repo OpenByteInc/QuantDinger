@@ -152,10 +152,36 @@ def test_fetch_spot_holdings_raw_with_balance():
     client = MagicMock()
     with patch(
         "app.services.live_trading.spot_sizing.get_spot_base_holding",
-        return_value={"total": 50.0, "available": 48.5},
+        return_value={"total": 50.0, "available": 48.5, "avg_cost": 1.25},
     ):
         raw = _fetch_spot_holdings_raw(client, symbol="APT/USDT")
     out = _parse_positions(raw)
     assert len(out) == 1
     assert out[0]["symbol"] == "APT/USDT"
     assert out[0]["size"] == 50.0
+    assert out[0]["entry_price"] == 1.25
+
+
+def test_enrich_spot_positions_computes_pnl():
+    from app.routes.quick_trade import _enrich_spot_positions
+
+    client = MagicMock()
+    with patch(
+        "app.routes.quick_trade._quick_trade_spot_avg_entry_price",
+        return_value=2.0,
+    ), patch(
+        "app.services.live_trading.spot_sizing.fetch_spot_last_price",
+        return_value=2.5,
+    ):
+        out = _enrich_spot_positions(
+            [{"symbol": "APT/USDT", "side": "long", "size": 10.0, "entry_price": 0, "mark_price": 0}],
+            client=client,
+            symbol="APT/USDT",
+            user_id=1,
+            credential_id=1,
+            market_type="spot",
+        )
+    assert len(out) == 1
+    assert out[0]["entry_price"] == 2.0
+    assert out[0]["mark_price"] == 2.5
+    assert abs(out[0]["unrealized_pnl"] - 5.0) < 1e-9
