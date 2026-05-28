@@ -66,7 +66,7 @@ def is_market_visible(market: str) -> bool:
         return m in whitelist
 
     if m == 'CNStock':
-        return _flag('SHOW_CN_STOCK', 'false')
+        return _flag('SHOW_CN_STOCK', 'true')
     if m == 'HKStock':
         return _flag('SHOW_HK_STOCK', 'true')
     return True

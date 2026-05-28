@@ -815,11 +815,7 @@ class SignalNotifier:
         dialect = _detect_webhook_dialect(url)
         adapted_payload = _adapt_payload_for_dialect(dialect, payload)
 
-        headers: Dict[str, str] = {
-            "Content-Type": "application/json",
-            "User-Agent": "QuantDinger/1.0 (+https://www.quantdinger.com)",
-        }
-
+        headers = {'Content-Type': 'application/json'}
         # Per-strategy header overrides (only meaningful for generic
         # endpoints; vendor bots reject unknown headers either silently
         # or with errors, so we still allow them but warn in logs).

@@ -5,16 +5,13 @@
 # ========================
 # Frontend
 # ========================
-# Frontend source lives in the private QuantDinger-Vue repo. The published
-# `ghcr.io/<owner>/quantdinger-frontend` image is consumed via docker-compose
-# by default. For local source iteration, clone QuantDinger-Vue into the
-# `/QuantDinger-Vue/` slot below and run `docker compose up --build` — that
-# path is referenced by docker-compose.yml's frontend `build.context`
-# directive. Nothing under these paths should ever be committed here.
+# Legacy / private frontend source (not part of this open-source tree)
 /quantdinger_vue/
 /QuantDinger-Vue-src/
-/QuantDinger-Vue/
-/frontend/
+# Build artefacts are committed for Docker-only deployments
+!/frontend/
+!/frontend/dist/
+!/frontend/dist/**
 
 # ========================
 # Environment & Secrets
@@ -28,6 +25,8 @@ backend_api_python/.env
 # IDE & OS
 # ========================
 .idea/
+.cursor/
+.github/
 .vscode/
 *.swp
 *.swo
@@ -43,6 +42,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.egg-info/
+# Only ignore root-level dist/, not frontend/dist/
 /dist/
 build/
 *.egg
@@ -66,6 +66,7 @@ yarn.lock
 # ========================
 *.log
 backend_api_python/logs/
+# Vue build output belongs in frontend/dist/, not under the API package
 backend_api_python/dist/
 
 # MCP server build artifacts (PyPI release output, never committed)
