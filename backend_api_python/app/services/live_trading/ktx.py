@@ -313,18 +313,32 @@ class KtxClient(BaseRestClient):
         return {}
 
     def get_account(self) -> Dict[str, Any]:
-        """Get account assets."""
-        return self._signed_request("GET", "/v1/accounts")
+        """Get wallet account assets (main account)."""
+        return self._signed_request("GET", "/v1/main/accounts")
 
     def get_balance(self) -> Dict[str, Any]:
-        """Alias for get_account."""
+        """Get wallet account assets (main account)."""
         return self.get_account()
 
+    def get_trade_balance(self, *, asset: str = "") -> Dict[str, Any]:
+        """
+        Get trade account assets (futures/margin collateral).
+
+        Args:
+            asset: Optional asset code (e.g. "BTC", "USDT"). 
+                   If empty, returns all assets.
+        """
+        params: Dict[str, Any] = {}
+        if asset:
+            params["asset"] = asset
+        return self._signed_request("GET", "/v1/trade/accounts", params=params if params else None)
+
     def get_positions(self) -> List[Dict[str, Any]]:
-        """KTX futures positions. Spot returns empty list."""
+        """KTX futures positions from trade account. Spot returns empty list."""
         if self.market_type == "spot":
             return []
-        j = self._signed_request("GET", "/v1/trade/accounts")
+        # get_trade_balance returns the full trade account response
+        j = self.get_trade_balance()
         result = (j.get("result") if isinstance(j, dict) else None) or []
         if isinstance(result, dict):
             return [result] if result else []
