@@ -314,8 +314,8 @@ class KtxClient(BaseRestClient):
         return {}
 
     def get_account(self) -> Dict[str, Any]:
-        """Get wallet (main) account assets. Spot alias. Uses POST /v1/main/accounts."""
-        return self.get_spot_balance()
+        """Get wallet (main) account assets via POST /v1/main/accounts."""
+        return self.get_wallet_balance()
 
     def get_balance(self) -> Dict[str, Any]:
         """Get wallet account assets (main account)."""
@@ -372,15 +372,26 @@ class KtxClient(BaseRestClient):
     # Spot-only methods
     # ------------------------------------------------------------------
 
-    def get_spot_balance(self, *, asset: str = "") -> Dict[str, Any]:
+    def get_wallet_balance(self, *, asset: str = "") -> Dict[str, Any]:
         """
-        Get spot (wallet) account assets via POST /v1/main/accounts.
+        Get wallet (main) account assets via POST /v1/main/accounts.
+
+        This is separate from the trade account. In KTX unified account mode,
+        both spot and futures assets live in /v1/trade/accounts.
+        The main/wallet account holds assets not yet transferred to the trade account.
 
         Args:
             asset: Optional asset code (e.g. "BTC", "USDT"). If empty, returns all.
         """
-        body: Optional[Dict[str, Any]] = None if not asset else {"asset": asset}
-        return self._signed_request("POST", "/v1/main/accounts", json_body=body or {})
+        body: Dict[str, Any] = {"asset": asset} if asset else {}
+        return self._signed_request("POST", "/v1/main/accounts", json_body=body)
+
+    def get_spot_balance(self, *, asset: str = "") -> Dict[str, Any]:
+        """
+        Alias for get_trade_balance(). In KTX unified account mode,
+        spot assets are in the trade account (/v1/trade/accounts).
+        """
+        return self.get_trade_balance(asset=asset)
 
     def spot_transfer(self, *, symbol: str, amount: float, direction: str = "WALLET_TRADE") -> Dict[str, Any]:
         """

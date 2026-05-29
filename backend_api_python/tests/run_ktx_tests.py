@@ -292,9 +292,16 @@ class TestKtxRealAPI(unittest.TestCase):
         self.assertIsInstance(result, dict)
 
 
+    def test_real_get_wallet_balance(self):
+        result = self.client.get_wallet_balance()
+        print(f"\n✅ Wallet balance:\n{_J(result)}")
+        self.assertIsInstance(result, dict)
+
+
     def test_real_get_spot_balance(self):
-        result = self.client.get_spot_balance()
-        print(f"\n✅ Spot balance:\n{_J(result)}")
+        # Spot uses trade account in unified mode
+        result = self.client.get_spot_balance(asset="BTC")
+        print(f"\n✅ Spot balance (trade account, BTC):\n{_J(result)}")
         self.assertIsInstance(result, dict)
 
     def test_real_get_ledger(self):
