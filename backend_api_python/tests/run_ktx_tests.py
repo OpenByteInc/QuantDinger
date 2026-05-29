@@ -255,7 +255,14 @@ class TestKtxRealAPI(unittest.TestCase):
         positions = self.client.get_positions()
         print(f"\n✅ Positions ({len(positions)} 个):")
         for p in positions:
-            print(f"   {p.get('asset')}: balance={p.get('balance')}")
+            print(f"   symbol={p.get('symbol')}, side={p.get('side')}, size={p.get('size')}, entry={p.get('entry_price')}")
+        self.assertIsInstance(positions, list)
+
+    def test_real_get_positions_single_symbol(self):
+        positions = self.client.get_positions(symbol="BTC_USDT_SWAP")
+        print(f"\n✅ Positions (BTC only, {len(positions)} 个):")
+        for p in positions:
+            print(f"   {p}")
         self.assertIsInstance(positions, list)
 
     def test_real_get_ticker(self):

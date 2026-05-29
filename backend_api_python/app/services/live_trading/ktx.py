@@ -333,12 +333,33 @@ class KtxClient(BaseRestClient):
             params["asset"] = asset
         return self._signed_request("GET", "/v1/trade/accounts", params=params if params else None)
 
-    def get_positions(self) -> List[Dict[str, Any]]:
-        """KTX futures positions from trade account. Spot returns empty list."""
+    def get_positions(
+        self,
+        *,
+        position_id: str = "",
+        market: str = "",
+        symbol: str = "",
+    ) -> List[Dict[str, Any]]:
+        """
+        Get futures positions.
+
+        Args:
+            position_id: Specific position ID (highest priority).
+            market: Market type, e.g. "lpc" for USDT-M perpetuals.
+            symbol: Trading pair, e.g. "BTC_USDT_SWAP". Must be used with market.
+        """
         if self.market_type == "spot":
             return []
-        # get_trade_balance returns the full trade account response
-        j = self.get_trade_balance()
+        params: Dict[str, Any] = {}
+        if position_id:
+            params["position_id"] = position_id
+        if market:
+            params["market"] = market
+        elif self.market_type == "swap":
+            params["market"] = "lpc"
+        if symbol:
+            params["symbol"] = symbol
+        j = self._signed_request("GET", "/v1/positions", params=params if params else None)
         result = (j.get("result") if isinstance(j, dict) else None) or []
         if isinstance(result, dict):
             return [result] if result else []
