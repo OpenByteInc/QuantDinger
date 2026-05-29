@@ -204,6 +204,7 @@ class CryptoDataSource(BaseDataSource):
         - BTC/USDT:USDT -> BTC/USDT
         - BTC -> BTC/USDT (默认)
         - PI, TRX -> PI/USDT, TRX/USDT
+        - BTC-USDT-SWAP -> BTC/USDT
         """
         if not symbol:
             return '', ''
@@ -216,6 +217,17 @@ class CryptoDataSource(BaseDataSource):
         
         sym = sym.upper()
         
+        # 处理带连接符的格式 (如 BTC-USDT, MU-USDT-SWAP)
+        if '-' in sym:
+            for suffix in ['-SWAP', '-PERP']:
+                if sym.endswith(suffix):
+                    sym = sym[:-len(suffix)]
+            parts = sym.split('-')
+            if len(parts) >= 2:
+                base = parts[0].strip()
+                quote = parts[1].strip()
+                return f"{base}/{quote}", base
+
         # 如果已经有分隔符，直接解析
         if '/' in sym:
             parts = sym.split('/', 1)
@@ -256,12 +268,19 @@ class CryptoDataSource(BaseDataSource):
         quotes_to_try = [preferred_quote] + [q for q in self.COMMON_QUOTES if q != preferred_quote]
         
         for quote in quotes_to_try:
+            # 1. 优先尝试 Spot 现货符号格式
             candidate = f"{base}/{quote}"
             if candidate in markets:
                 market = markets[candidate]
-                # 检查市场是否活跃
                 if market.get('active', True):
                     return candidate
+            
+            # 2. 尝试 Swap 永续合约符号格式 (base/quote:quote)
+            candidate_swap = f"{base}/{quote}:{quote}"
+            if candidate_swap in markets:
+                market = markets[candidate_swap]
+                if market.get('active', True):
+                    return candidate_swap
         
         return None
     
@@ -275,6 +294,24 @@ class CryptoDataSource(BaseDataSource):
         - Coinbase: BTC/USD (通常使用 USD 而不是 USDT)
         - Kraken: XBT/USD (BTC 映射为 XBT)
         """
+        # 优先从已加载的市场列表里匹配
+        if self._ensure_markets_loaded():
+            markets = self._markets_cache or {}
+            # 1. 尝试直接进行大小写及连接符标准化匹配 (如 MU/USDT:USDT, BTC/USDT)
+            cleaned = symbol.strip().upper().replace('-', '/')
+            if cleaned in markets:
+                return cleaned
+            
+            # 2. 如果是带连接符的 swap 格式 (如 MU-USDT-SWAP -> MU/USDT/SWAP)
+            if cleaned.endswith('/SWAP') or cleaned.endswith('/PERP'):
+                parts = cleaned.split('/')
+                if len(parts) >= 3:
+                    base = parts[0]
+                    quote = parts[1]
+                    candidate = f"{base}/{quote}:{quote}"
+                    if candidate in markets:
+                        return candidate
+
         normalized, base = self._normalize_symbol(symbol)
         
         if not normalized or not base:

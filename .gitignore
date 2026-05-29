@@ -8,6 +8,8 @@
 # Legacy / private frontend source (not part of this open-source tree)
 /quantdinger_vue/
 /QuantDinger-Vue-src/
+/QuantDinger-Vue/
+/QuantDinger-Mobile/
 # Build artefacts are committed for Docker-only deployments
 !/frontend/
 !/frontend/dist/
