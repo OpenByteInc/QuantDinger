@@ -55,6 +55,8 @@ def _seed_default_watchlist(db, user_id: int):
 
 class UserService:
     """User management service"""
+
+    _password_changed_column_ready = False
     
     # Available roles (ordered by privilege level)
     ROLES = ['viewer', 'user', 'manager', 'admin']
@@ -67,6 +69,105 @@ class UserService:
         'admin': ['dashboard', 'view', 'indicator', 'backtest', 'strategy', 'portfolio', 'settings', 'user_manage', 'credentials'],
     }
     
+    def ensure_password_changed_column(self) -> None:
+        """Add password_changed_at if missing (idempotent)."""
+        if UserService._password_changed_column_ready:
+            return
+        try:
+            with get_db_connection() as db:
+                cur = db.cursor()
+                cur.execute(
+                    """
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'qd_users' AND column_name = 'password_changed_at'
+                    """
+                )
+                if not cur.fetchone():
+                    cur.execute(
+                        "ALTER TABLE qd_users ADD COLUMN password_changed_at TIMESTAMP NULL"
+                    )
+                    # Existing accounts: assume they already passed initial setup.
+                    cur.execute(
+                        """
+                        UPDATE qd_users
+                        SET password_changed_at = COALESCE(updated_at, created_at, NOW())
+                        WHERE password_changed_at IS NULL
+                        """
+                    )
+                    db.commit()
+                    logger.info("Added password_changed_at column to qd_users (existing rows backfilled)")
+                cur.close()
+            UserService._password_changed_column_ready = True
+        except Exception as e:
+            logger.warning(f"ensure_password_changed_column failed: {e}")
+
+    def mark_password_changed(self, user_id: int) -> None:
+        """Record that the user has set a non-initial password."""
+        self.ensure_password_changed_column()
+        try:
+            with get_db_connection() as db:
+                cur = db.cursor()
+                cur.execute(
+                    """
+                    UPDATE qd_users
+                    SET password_changed_at = NOW(), updated_at = NOW()
+                    WHERE id = ?
+                    """,
+                    (user_id,),
+                )
+                db.commit()
+                cur.close()
+        except Exception as e:
+            logger.warning(f"mark_password_changed failed for user {user_id}: {e}")
+
+    def get_first_user_id(self) -> Optional[int]:
+        """Return the lowest user id (bootstrap / first account created on install)."""
+        try:
+            with get_db_connection() as db:
+                cur = db.cursor()
+                cur.execute("SELECT MIN(id) AS id FROM qd_users")
+                row = cur.fetchone()
+                cur.close()
+            if not row or row.get('id') is None:
+                return None
+            return int(row['id'])
+        except Exception as e:
+            logger.warning(f"get_first_user_id failed: {e}")
+            return None
+
+    def must_change_initial_password(self, user_id: int) -> bool:
+        """
+        True only for the first user (id = MIN(qd_users.id)) when they still use
+        the bootstrap password from deployment. Other admins are never prompted.
+        Code-login users without a password are excluded.
+        """
+        first_id = self.get_first_user_id()
+        if first_id is None or int(user_id) != first_id:
+            return False
+
+        self.ensure_password_changed_column()
+        try:
+            with get_db_connection() as db:
+                cur = db.cursor()
+                cur.execute(
+                    """
+                    SELECT password_hash, password_changed_at
+                    FROM qd_users WHERE id = ?
+                    """,
+                    (user_id,),
+                )
+                row = cur.fetchone()
+                cur.close()
+            if not row:
+                return False
+            password_hash = str(row.get('password_hash') or '').strip()
+            if not password_hash:
+                return False
+            return row.get('password_changed_at') is None
+        except Exception as e:
+            logger.warning(f"must_change_initial_password failed for user {user_id}: {e}")
+            return False
+
     def hash_password(self, password: str) -> str:
         """Hash password using bcrypt (preferred) or SHA256 (fallback)"""
         if HAS_BCRYPT:
@@ -490,11 +591,16 @@ class UserService:
         password_hash = self.hash_password(new_password)
         
         try:
+            self.ensure_password_changed_column()
             with get_db_connection() as db:
                 cur = db.cursor()
                 cur.execute(
-                    "UPDATE qd_users SET password_hash = ?, updated_at = NOW() WHERE id = ?",
-                    (password_hash, user_id)
+                    """
+                    UPDATE qd_users
+                    SET password_hash = ?, password_changed_at = NOW(), updated_at = NOW()
+                    WHERE id = ?
+                    """,
+                    (password_hash, user_id),
                 )
                 db.commit()
                 cur.close()
@@ -520,7 +626,43 @@ class UserService:
             logger.error(f"delete_user failed: {e}")
             return False
     
-    def list_users(self, page: int = 1, page_size: int = 20, search: str = None) -> Dict[str, Any]:
+    @staticmethod
+    def _build_user_list_filter(search: str = None, user_id: int = None) -> tuple:
+        """WHERE clause + params for admin user list (supports exact user id)."""
+        clauses = []
+        params = []
+        if user_id is not None:
+            try:
+                uid = int(user_id)
+            except (TypeError, ValueError):
+                uid = 0
+            if uid > 0:
+                clauses.append("id = ?")
+                params.append(uid)
+        if search and str(search).strip():
+            raw = str(search).strip()
+            like_val = f"%{raw}%"
+            parts = ["username ILIKE ?", "email ILIKE ?", "nickname ILIKE ?"]
+            part_params = [like_val, like_val, like_val]
+            if raw.isdigit():
+                parts.extend(["id = ?", "CAST(id AS TEXT) ILIKE ?"])
+                part_params.extend([int(raw), f"%{raw}%"])
+            else:
+                parts.append("CAST(id AS TEXT) ILIKE ?")
+                part_params.append(f"%{raw}%")
+            clauses.append("(" + " OR ".join(parts) + ")")
+            params.extend(part_params)
+        if not clauses:
+            return "", []
+        return "WHERE " + " AND ".join(clauses), params
+
+    def list_users(
+        self,
+        page: int = 1,
+        page_size: int = 20,
+        search: str = None,
+        user_id: int = None,
+    ) -> Dict[str, Any]:
         """List all users with pagination and optional search"""
         offset = (page - 1) * page_size
         
@@ -528,13 +670,7 @@ class UserService:
             with get_db_connection() as db:
                 cur = db.cursor()
                 
-                # Build WHERE clause for search
-                where_clause = ""
-                params = []
-                if search and search.strip():
-                    search_term = f"%{search.strip()}%"
-                    where_clause = "WHERE username LIKE ? OR email LIKE ? OR nickname LIKE ?"
-                    params = [search_term, search_term, search_term]
+                where_clause, params = self._build_user_list_filter(search, user_id)
                 
                 # Get total count
                 count_sql = f"SELECT COUNT(*) as count FROM qd_users {where_clause}"
@@ -595,18 +731,13 @@ class UserService:
             logger.error(f"list_users failed: {e}")
             return {'items': [], 'total': 0, 'page': 1, 'page_size': page_size, 'total_pages': 0}
 
-    def list_all_users_for_export(self, search: str = None) -> List[Dict[str, Any]]:
+    def list_all_users_for_export(self, search: str = None, user_id: int = None) -> List[Dict[str, Any]]:
         """List all users for export with the same fields as the admin user table."""
         try:
             with get_db_connection() as db:
                 cur = db.cursor()
 
-                where_clause = ""
-                params = []
-                if search and search.strip():
-                    search_term = f"%{search.strip()}%"
-                    where_clause = "WHERE username LIKE ? OR email LIKE ? OR nickname LIKE ?"
-                    params = [search_term, search_term, search_term]
+                where_clause, params = self._build_user_list_filter(search, user_id)
 
                 query_sql = f"""
                     SELECT id, username, email, nickname, avatar, status, role,
@@ -662,6 +793,7 @@ class UserService:
         Ensure at least one admin user exists.
         Creates admin using ADMIN_USER/ADMIN_PASSWORD from env if no users exist.
         """
+        self.ensure_password_changed_column()
         try:
             with get_db_connection() as db:
                 cur = db.cursor()
@@ -671,8 +803,9 @@ class UserService:
                 
                 if count == 0:
                     # Create admin using env credentials
-                    admin_user = os.getenv('ADMIN_USER', 'admin')
-                    admin_password = os.getenv('ADMIN_PASSWORD', 'admin123')
+                    from app.config.settings import Config
+                    admin_user = os.getenv('ADMIN_USER', Config.ADMIN_USER)
+                    admin_password = os.getenv('ADMIN_PASSWORD', Config.ADMIN_PASSWORD)
                     admin_email = os.getenv('ADMIN_EMAIL', 'admin@example.com')
 
                     self.create_user({

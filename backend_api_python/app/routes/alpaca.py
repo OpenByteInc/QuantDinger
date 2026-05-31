@@ -9,7 +9,8 @@ Multi-tenancy: connections are isolated per authenticated user via
 cannot accidentally place orders through someone else's Alpaca account.
 """
 
-from flask import Blueprint, request, jsonify
+from flask import jsonify, request
+from app.openapi.blueprint import HumanBlueprint as Blueprint
 from app.utils.auth import login_required
 from app.utils.logger import get_logger
 from app.utils.broker_session import BrokerSessionRegistry
@@ -17,7 +18,7 @@ from app.services.alpaca_trading import AlpacaClient, AlpacaConfig
 
 logger = get_logger(__name__)
 
-alpaca_bp = Blueprint('alpaca', __name__)
+alpaca_blp = Blueprint('alpaca', __name__)
 
 # Per-user client cache keyed by (user_id, 'alpaca')
 _sessions = BrokerSessionRegistry('alpaca')
@@ -35,10 +36,10 @@ def _placeholder_status():
 
 # ==================== Connection Management ====================
 
-@alpaca_bp.route('/status', methods=['GET'])
+@alpaca_blp.route('/status', methods=['GET'])
 @login_required
 def get_status():
-    """Get connection status. GET /api/alpaca/status"""
+    """Get Alpaca connection status."""
     try:
         client = _sessions.get()
         if client is None:
@@ -49,17 +50,17 @@ def get_status():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
-@alpaca_bp.route('/connect', methods=['POST'])
+@alpaca_blp.route('/connect', methods=['POST'])
 @login_required
 def connect():
     """
-    Connect to Alpaca. POST /api/alpaca/connect
-    Body: {
-        "apiKey": "PK...",        // Required (PK prefix = paper, AK = live)
-        "secretKey": "...",       // Required
-        "paper": true,            // Optional, default true
-        "baseUrl": ""             // Optional, override
-    }
+    Connect to Alpaca.
+
+    Request body:
+        apiKey (required): API key (PK prefix = paper, AK = live)
+        secretKey (required): Secret key
+        paper (optional, default true): Use paper trading
+        baseUrl (optional): Override API base URL
     """
     try:
         data = request.get_json() or {}
@@ -98,10 +99,10 @@ def connect():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
-@alpaca_bp.route('/disconnect', methods=['POST'])
+@alpaca_blp.route('/disconnect', methods=['POST'])
 @login_required
 def disconnect():
-    """Disconnect from Alpaca. POST /api/alpaca/disconnect"""
+    """Disconnect from Alpaca."""
     try:
         _sessions.disconnect_current()
         return jsonify({"success": True, "message": "Disconnected"})
@@ -119,10 +120,10 @@ def _require_connected_client():
     return client, None
 
 
-@alpaca_bp.route('/account', methods=['GET'])
+@alpaca_blp.route('/account', methods=['GET'])
 @login_required
 def get_account():
-    """Get account information. GET /api/alpaca/account"""
+    """Get Alpaca account information."""
     try:
         client, err = _require_connected_client()
         if err is not None:
@@ -133,10 +134,10 @@ def get_account():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
-@alpaca_bp.route('/positions', methods=['GET'])
+@alpaca_blp.route('/positions', methods=['GET'])
 @login_required
 def get_positions():
-    """Get positions. GET /api/alpaca/positions"""
+    """Get Alpaca open positions."""
     try:
         client, err = _require_connected_client()
         if err is not None:
@@ -147,10 +148,10 @@ def get_positions():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
-@alpaca_bp.route('/orders', methods=['GET'])
+@alpaca_blp.route('/orders', methods=['GET'])
 @login_required
 def get_orders():
-    """Get open orders. GET /api/alpaca/orders"""
+    """Get Alpaca open orders."""
     try:
         client, err = _require_connected_client()
         if err is not None:
@@ -163,20 +164,20 @@ def get_orders():
 
 # ==================== Trading ====================
 
-@alpaca_bp.route('/order', methods=['POST'])
+@alpaca_blp.route('/order', methods=['POST'])
 @login_required
 def place_order():
     """
-    Place an order. POST /api/alpaca/order
-    Body: {
-        "symbol": "AAPL",           // Required
-        "side": "buy",              // Required, buy or sell
-        "quantity": 10,             // Required, number of shares
-        "marketType": "USStock",    // Optional, USStock or crypto
-        "orderType": "market",      // Optional, market or limit
-        "price": 150.00,            // Required for limit
-        "extendedHours": false      // Optional, for limit orders pre/post-market
-    }
+    Place an Alpaca order.
+
+    Request body:
+        symbol (required): Ticker, e.g. AAPL
+        side (required): buy or sell
+        quantity (required): Share quantity
+        marketType (optional): USStock or crypto (default USStock)
+        orderType (optional): market or limit (default market)
+        price (required for limit): Limit price
+        extendedHours (optional): Allow extended-hours limit orders
     """
     try:
         client, err = _require_connected_client()
@@ -225,10 +226,10 @@ def place_order():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
-@alpaca_bp.route('/order/<order_id>', methods=['DELETE'])
+@alpaca_blp.route('/order/<order_id>', methods=['DELETE'])
 @login_required
 def cancel_order(order_id):
-    """Cancel order. DELETE /api/alpaca/order/<order_id>"""
+    """Cancel an Alpaca order by ID."""
     try:
         client, err = _require_connected_client()
         if err is not None:
@@ -242,10 +243,15 @@ def cancel_order(order_id):
 
 # ==================== Market Data ====================
 
-@alpaca_bp.route('/quote/<symbol>', methods=['GET'])
+@alpaca_blp.route('/quote/<symbol>', methods=['GET'])
 @login_required
 def get_quote(symbol):
-    """Get real-time quote. GET /api/alpaca/quote/<symbol>?marketType=USStock"""
+    """
+    Get a real-time Alpaca quote.
+
+    Query params:
+        marketType (optional): USStock or crypto (default USStock)
+    """
     try:
         client, err = _require_connected_client()
         if err is not None:
@@ -258,3 +264,6 @@ def get_quote(symbol):
     except Exception as e:
         logger.error(f"Get quote failed: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
+
+# openapi-compat: legacy import name
+alpaca_bp = alpaca_blp

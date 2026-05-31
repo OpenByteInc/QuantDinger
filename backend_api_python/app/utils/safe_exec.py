@@ -54,10 +54,64 @@ _BUILTINS_WHITELIST: Set[str] = {
 }
 
 # Modules allowed in user code via `import xxx`
+# operator is excluded: attrgetter/itemgetter enable dunder introspection escapes.
 SAFE_IMPORT_MODULES: Set[str] = {
     'numpy', 'pandas', 'math', 'json', 'datetime', 'time',
     'collections', 'functools', 'itertools', 'statistics',
-    'decimal', 'fractions', 'operator', 'copy',
+    'decimal', 'fractions', 'copy',
+}
+
+# Dunder names reachable via string-built attribute access (e.g. operator.attrgetter).
+_FORBIDDEN_DUNDER_SUFFIXES: Set[str] = {
+    'builtins__', 'import__', 'class__', 'bases__', 'subclasses__', 'mro__',
+    'globals__', 'code__', 'func__', 'dict__', 'module__', 'getattribute__',
+    'setattr__', 'delattr__', 'init__', 'reduce__', 'getstate__', 'setstate__',
+    'call__', 'getitem__', 'setitem__', 'delitem__', 'iter__', 'next__',
+    # Frame / traceback / closure chains used to reach the un-sandboxed scope.
+    'traceback__', 'closure__', 'defaults__', 'kwdefaults__',
+}
+
+_OPERATOR_ACCESSOR_NAMES: Set[str] = {'attrgetter', 'itemgetter', 'methodcaller'}
+
+# Method names that read/write files, evaluate strings, or pivot to other
+# processes — must be rejected on ANY receiver (df.to_csv, np.array().tofile,
+# pd.read_csv, etc.) because numpy and pandas are intentionally whitelisted.
+_DANGEROUS_METHOD_NAMES: Set[str] = {
+    # pandas read_* — arbitrary file read or SSRF via URL / pickle deser RCE.
+    'read_csv', 'read_table', 'read_fwf', 'read_excel', 'read_xml',
+    'read_html', 'read_json', 'read_pickle', 'read_parquet', 'read_orc',
+    'read_feather', 'read_hdf', 'read_sql', 'read_sql_query',
+    'read_sql_table', 'read_clipboard', 'read_gbq', 'read_sas',
+    'read_spss', 'read_stata',
+    # pandas to_* / ndarray.tofile — arbitrary file write / pickle write.
+    'to_csv', 'to_excel', 'to_xml', 'to_html', 'to_json', 'to_pickle',
+    'to_parquet', 'to_orc', 'to_feather', 'to_hdf', 'to_sql',
+    'to_clipboard', 'to_gbq', 'to_stata', 'to_latex',
+    'tofile',
+    # numpy IO — arbitrary read / write / pickle deser.
+    'save', 'savez', 'savez_compressed', 'savetxt',
+    'load', 'loadtxt', 'genfromtxt', 'fromfile', 'memmap',
+    # String-expression evaluators that execute attacker-controlled code.
+    'eval', 'query',
+    # Frame / introspection accessors should never be invoked.
+    'getframe', 'currentframe', 'stack', 'getouterframes',
+}
+
+# Attribute names whose access leaks frames / closures / code objects, even
+# without dunder syntax.
+_DANGEROUS_FRAME_ATTRS: Set[str] = {
+    'gi_frame', 'gi_code', 'gi_yieldfrom',
+    'cr_frame', 'cr_code', 'cr_await',
+    'ag_frame', 'ag_code', 'ag_await',
+    'f_globals', 'f_locals', 'f_back', 'f_builtins',
+    'f_code', 'f_trace', 'f_lasti', 'f_lineno',
+    'tb_frame', 'tb_next', 'tb_lasti', 'tb_lineno',
+    'func_globals', 'func_code', 'func_closure', 'func_dict',
+}
+
+# Sub-modules of whitelisted packages that expose C/native escapes.
+_DANGEROUS_SUBMODULE_ATTRS: Set[str] = {
+    'ctypeslib', 'distutils', 'f2py',
 }
 
 
@@ -355,6 +409,44 @@ def safe_exec_isolated(
 
 # ── Static validation ──────────────────────────────────────────────────────
 
+def _fold_string_constant(node: Any) -> Optional[str]:
+    """Resolve compile-time string concatenation for sandbox static checks."""
+    import ast
+
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left = _fold_string_constant(node.left)
+        right = _fold_string_constant(node.right)
+        if left is not None and right is not None:
+            return left + right
+    return None
+
+
+def _string_has_forbidden_dunder(text: str) -> bool:
+    """Reject string literals that name introspection / escape dunders."""
+    if not text or '__' not in text:
+        return False
+    lowered = text.lower()
+    for suffix in _FORBIDDEN_DUNDER_SUFFIXES:
+        if suffix in lowered:
+            return True
+    return False
+
+
+def _is_operator_accessor_call(node: Any) -> bool:
+    import ast
+
+    if not isinstance(node, ast.Call):
+        return False
+    func = node.func
+    if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+        return func.value.id == 'operator' and func.attr in _OPERATOR_ACCESSOR_NAMES
+    if isinstance(func, ast.Name):
+        return func.id in _OPERATOR_ACCESSOR_NAMES
+    return False
+
+
 def validate_code_safety(code: str) -> Tuple[bool, Optional[str]]:
     """
     验证代码安全性（正则 + AST 双重检查）
@@ -393,6 +485,8 @@ def validate_code_safety(code: str) -> Tuple[bool, Optional[str]]:
         r'\bimport\s+codeop\b', r'\bimport\s+runpy\b',
         r'\bimport\s+tempfile\b', r'\bimport\s+glob\b',
         r'\bimport\s+pathlib\b', r'\bimport\s+io\b',
+        r'\bimport\s+operator\b',
+        r'\boperator\.(attrgetter|itemgetter|methodcaller)\b',
         r'\bgetattr\s*\(', r'\bsetattr\s*\(', r'\bdelattr\s*\(',
         r'\b__getattribute__\b', r'\b__setattr__\b', r'\b__delattr__\b',
         r'\b__dict__\b', r'\b__class__\b', r'\b__bases__\b',
@@ -402,6 +496,27 @@ def validate_code_safety(code: str) -> Tuple[bool, Optional[str]]:
         r'\bbreakpoint\s*\(',
         r'\b__builtins__\s*[\[.]', r'\b__import__\s*\(',
         r'\bimportlib\b',
+        # pandas / numpy IO and eval — arbitrary file r/w, SSRF, pickle RCE,
+        # or string-expression evaluation. numpy and pandas are intentionally
+        # whitelisted modules, so each dangerous method must be banned by name.
+        r'\.(read_csv|read_table|read_fwf|read_excel|read_xml|read_html|'
+        r'read_json|read_pickle|read_parquet|read_orc|read_feather|read_hdf|'
+        r'read_sql|read_sql_query|read_sql_table|read_clipboard|read_gbq|'
+        r'read_sas|read_spss|read_stata)\s*\(',
+        r'\.(to_csv|to_excel|to_xml|to_html|to_json|to_pickle|to_parquet|'
+        r'to_orc|to_feather|to_hdf|to_sql|to_clipboard|to_gbq|to_stata|'
+        r'to_latex|tofile)\s*\(',
+        r'\b(np|numpy)\.(save|savez|savez_compressed|savetxt|load|loadtxt|'
+        r'genfromtxt|fromfile|memmap|DataSource)\s*\(',
+        r'\.(eval|query)\s*\(',
+        # Frame / traceback / closure chains used to break out of the sandbox.
+        r'\.(gi_frame|gi_code|cr_frame|cr_code|ag_frame|ag_code|'
+        r'f_globals|f_locals|f_back|f_builtins|f_code|f_trace|'
+        r'tb_frame|tb_next|func_globals|func_code|func_closure)\b',
+        # numpy sub-packages that expose C/native escape hatches.
+        r'\b(np|numpy)\.(ctypeslib|distutils|f2py)\b',
+        # sys.settrace / inspect.* could also pivot — block by name.
+        r'\b(sys\._getframe|inspect\.(currentframe|stack|getouterframes|getframeinfo))\b',
     ]
 
     for pattern in dangerous_patterns:
@@ -418,16 +533,20 @@ def validate_code_safety(code: str) -> Tuple[bool, Optional[str]]:
         logger.exception("AST parse failed, rejecting code")
         return False, "代码解析失败"
 
+    # NOTE: these names are checked on attribute calls like `mod.func(...)`.
+    # Names that doubly serve as common user variables (signal/code/io/pickle/
+    # ssl/http) are intentionally excluded here — the `import xxx` regex above
+    # already blocks them from ever being a real module reference, so any
+    # `signal.xxx(...)` call must be a user variable (e.g. MACD `signal`).
     dangerous_modules = {
-        'os', 'sys', 'subprocess', 'shutil', 'signal', 'resource',
+        'os', 'sys', 'subprocess', 'shutil', 'resource', 'operator',
         'pymysql', 'sqlite3', 'psycopg2', 'sqlalchemy',
-        'requests', 'urllib', 'http', 'socket', 'ftplib', 'telnetlib',
-        'smtplib', 'ssl',
-        'pickle', 'cpickle', 'marshal', 'shelve',
+        'requests', 'urllib', 'socket', 'ftplib', 'telnetlib', 'smtplib',
+        'marshal', 'shelve',
         'ctypes', 'cffi',
         'multiprocessing', 'threading', 'concurrent', 'asyncio',
-        'importlib', 'imp', 'builtins', 'code', 'codeop', 'runpy',
-        'tempfile', 'glob', 'pathlib', 'io',
+        'importlib', 'imp', 'builtins', 'codeop', 'runpy',
+        'tempfile', 'glob', 'pathlib',
     }
 
     dangerous_call_names = {
@@ -444,6 +563,10 @@ def validate_code_safety(code: str) -> Tuple[bool, Optional[str]]:
     }
 
     for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            if _string_has_forbidden_dunder(node.value):
+                return False, "检测到危险 dunder 字符串字面量"
+
         if isinstance(node, ast.Import):
             for alias in node.names:
                 root = alias.name.split('.')[0]
@@ -457,14 +580,39 @@ def validate_code_safety(code: str) -> Tuple[bool, Optional[str]]:
                     return False, f"不允许导入模块 '{node.module}'，仅允许: {', '.join(sorted(SAFE_IMPORT_MODULES))}"
 
         elif isinstance(node, ast.Call):
+            if _is_operator_accessor_call(node):
+                return False, "不允许使用 operator.attrgetter/itemgetter/methodcaller"
             if isinstance(node.func, ast.Name) and node.func.id in dangerous_call_names:
                 return False, f"检测到危险函数调用: {node.func.id}()"
             if isinstance(node.func, ast.Attribute):
                 if isinstance(node.func.value, ast.Name) and node.func.value.id in dangerous_modules:
                     return False, f"检测到危险模块调用: {node.func.value.id}.{node.func.attr}"
+                # Block dangerous methods on any receiver. pandas/numpy are
+                # whitelisted modules, so we cannot tell statically whether
+                # `x.to_csv(...)` targets a DataFrame or some local object.
+                # Treat the *method name* itself as poisoned everywhere.
+                if isinstance(node.func.attr, str) and node.func.attr in _DANGEROUS_METHOD_NAMES:
+                    return False, f"检测到危险方法调用: .{node.func.attr}()"
+            for arg in node.args:
+                folded = _fold_string_constant(arg)
+                if folded is not None and _string_has_forbidden_dunder(folded):
+                    return False, "检测到危险 dunder 字符串参数"
 
         elif isinstance(node, ast.Attribute):
             if isinstance(node.attr, str) and node.attr in dangerous_dunder_attrs:
                 return False, f"检测到访问危险属性: .{node.attr}"
+            if isinstance(node.attr, str) and node.attr in _DANGEROUS_FRAME_ATTRS:
+                return False, f"检测到访问 frame/closure 属性: .{node.attr}"
+            if isinstance(node.attr, str) and node.attr in _DANGEROUS_SUBMODULE_ATTRS:
+                if isinstance(node.value, ast.Name) and node.value.id in {'np', 'numpy'}:
+                    return False, f"检测到访问危险子模块: {node.value.id}.{node.attr}"
+            folded = _fold_string_constant(node)
+            if folded is not None and _string_has_forbidden_dunder(folded):
+                return False, "检测到危险 dunder 属性访问"
+
+        elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            folded = _fold_string_constant(node)
+            if folded is not None and _string_has_forbidden_dunder(folded):
+                return False, "检测到危险 dunder 字符串拼接"
 
     return True, None

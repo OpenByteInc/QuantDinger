@@ -135,6 +135,22 @@ def start_pending_order_worker():
         logger.error(f"Failed to start pending order worker: {e}")
 
 
+def start_grid_fill_poller():
+    """Poll exchange for grid resting limit order fills."""
+    import os
+    if os.getenv("ENABLE_GRID_FILL_POLLER", "true").lower() != "true":
+        logger.info("Grid fill poller disabled (ENABLE_GRID_FILL_POLLER=false)")
+        return
+    debug = os.getenv("PYTHON_API_DEBUG", "false").lower() == "true"
+    if debug and os.environ.get("WERKZEUG_RUN_MAIN") != "true":
+        return
+    try:
+        from app.services.grid.poller import get_grid_fill_poller
+        get_grid_fill_poller().start()
+    except Exception as e:
+        logger.error(f"Failed to start grid fill poller: {e}")
+
+
 def start_usdt_order_worker():
     """Start the USDT order background worker.
 
@@ -353,6 +369,9 @@ def create_app(config_name='default'):
 
     setup_logger()
 
+    from app.utils.auth import _configure_jwt_secret_warnings
+    _configure_jwt_secret_warnings()
+
     # ib_insync uses asyncio across Flask + worker threads; without this, IBKR
     # sockets often drop within seconds (nested loop / thread handoff issues).
     try:
@@ -378,24 +397,29 @@ def create_app(config_name='default'):
     from app.routes import register_routes
     register_routes(app)
     
-    # Startup hooks.
-    with app.app_context():
-        start_pending_order_worker()
-        start_portfolio_monitor()
-        start_usdt_order_worker()
-        # Offline calibration to make AI thresholds self-tuning.
-        try:
-            from app.services.ai_calibration import start_ai_calibration_worker
-            start_ai_calibration_worker()
-        except Exception:
-            pass
-        # Reflection worker: validate past decisions, run calibration periodically.
-        try:
-            from app.services.reflection import start_reflection_worker
-            start_reflection_worker()
-        except Exception:
-            pass
-        restore_running_strategies()
+    # Startup hooks (workers, strategy restore). Skipped for OpenAPI export / CI.
+    skip_hooks = os.getenv("SKIP_STARTUP_HOOKS", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+    if not skip_hooks:
+        with app.app_context():
+            start_pending_order_worker()
+            start_grid_fill_poller()
+            start_portfolio_monitor()
+            start_usdt_order_worker()
+            # Offline calibration to make AI thresholds self-tuning.
+            try:
+                from app.services.ai_calibration import start_ai_calibration_worker
+                start_ai_calibration_worker()
+            except Exception:
+                pass
+            # Reflection worker: validate past decisions, run calibration periodically.
+            try:
+                from app.services.reflection import start_reflection_worker
+                start_reflection_worker()
+            except Exception:
+                pass
+            restore_running_strategies()
     
     return app
 

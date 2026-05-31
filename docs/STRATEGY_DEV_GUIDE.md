@@ -1,5 +1,7 @@
 # QuantDinger v3 Python Strategy Development Guide
 
+> **Platform contract (required reading)**: [Signal & Execution Standard v1](./SIGNAL_EXECUTION_STANDARD.md) — backtest/live alignment, two-way vs four-way signals, exit ownership, and release checklist. This guide focuses on tutorials and examples.
+
 This guide is written from a **developer** point of view. Its goal is not only to list the current contracts, but to answer the practical question:
 
 **How do I build an indicator strategy that is clear, backtestable, and ready to become a saved trading strategy?**
@@ -132,9 +134,9 @@ Best practice:
 
 Use `# @strategy` for strategy defaults such as:
 
-- `stopLossPct`: stop-loss ratio, for example `0.03` = 3%
-- `takeProfitPct`: take-profit ratio, for example `0.06` = 6%
-- `entryPct`: fraction of capital to allocate on entry
+- `stopLossPct`: stop-loss ratio, for example `0.03` = **3% adverse underlying price move** (`0.001` = 0.1%)
+- `takeProfitPct`: take-profit ratio, for example `0.06` = **6% favorable price move**
+- `entryPct`: fraction of capital on entry (`1` = **100%**, `0.25` = 25%)
 - `trailingEnabled`
 - `trailingStopPct`
 - `trailingActivationPct`
@@ -172,7 +174,14 @@ Avoid:
 - network access
 - file I/O
 - subprocesses
-- unsafe metaprogramming such as `eval`, `exec`, `open`, or `__import__`
+- unsafe metaprogramming such as `eval`, `exec`, `open`, `__import__`, `getattr`, or `setattr`
+- `import operator` (and dunder-bypass patterns such as string-built `__class__` / `__globals__`)
+
+Allowed `import` roots (anything else is rejected by validation):
+
+`numpy`, `pandas`, `math`, `json`, `datetime`, `time`, `collections`, `functools`, `itertools`, `statistics`, `decimal`, `fractions`, `copy`
+
+`pd`, `np`, and `params` are already injected — you usually do not need `import pandas` / `import numpy`.
 
 ### 3.3 Step 3: Turn raw conditions into clean `buy` / `sell` signals
 
@@ -198,6 +207,31 @@ df['sell'] = (raw_sell.fillna(False) & (~raw_sell.shift(1).fillna(False))).astyp
 ```
 
 This keeps your signals from firing on every bar of the same regime.
+
+#### 3.3.1 How `tradeDirection` maps `buy` / `sell` at execution time
+
+After an indicator is saved as a strategy, the backend normalizes `df['buy']` / `df['sell']` into execution signals. In `both` mode, **do not** treat `buy` as a standalone `close_short` column:
+
+| `tradeDirection` | `buy=True` | `sell=True` |
+|------------------|------------|-------------|
+| `long` | `open_long` | `close_long` |
+| `short` | `close_short` | `open_short` |
+| `both` | `open_long`; if currently short, **close short then open long** | `open_short`; if currently long, **close long then open short** |
+
+Notes:
+
+- `both` matches `BacktestService` `_both_mode`; live execution is aligned with that semantics.
+- Putting short take-profit / stop-loss into `df['buy']` means **exit short and possibly flip long**, not "flat only".
+- For flat-only exits, use `long`/`short`, explicit four-way columns, or `ScriptStrategy` with `ctx.close_position()`.
+
+Typical dual-Keltner style wiring:
+
+```python
+df['buy']  = sig_buy_entry | sig_short_tp | sig_short_sl
+df['sell'] = sig_sell_entry | sig_long_tp | sig_long_sl
+```
+
+If backtests show "close short then open long" on the same bar, that is usually expected under `both`, not a engine bug.
 
 ### 3.4 Step 4: Decide who owns the exit logic
 
@@ -292,6 +326,25 @@ Practical nuance:
 - the normalized strategy snapshot can execute with either `next_bar_open` or `same_bar_close`
 - most indicator workflows should still be designed with a "confirm on close, usually fill on next open" mental model
 - if product settings change the execution timing, rerun the backtest and review fills instead of assuming the semantics stayed the same
+
+#### 3.6.1 Why live entry/exit times can diverge from backtests
+
+| Topic | Indicator backtest | Indicator live (default) |
+|-------|-------------------|-------------------------|
+| Bars | Historical **closed** OHLC | Last bar may be updated with the **latest tick** (`high` / `low` / `close`) |
+| Touch conditions | Known only after the bar closes | May fire earlier on the **forming** bar |
+| Signal evaluation | Bar-by-bar on the backtest timeline | Indicator may be recomputed every tick; `exit_signal_mode=immediate` fires exits right away |
+| Orders per tick | Queued in backtest order | Indicator mode usually **one signal per tick** (closes first) |
+
+If your logic uses `high >= line` / `low <= line`, backtests are often **later** than live; realtime bar updates can trigger **earlier** exits.
+
+Alignment tips:
+
+- Set `signal_mode` and `exit_signal_mode` to **`confirmed`** when you want live to track closed-bar backtests.
+- Do not combine in-indicator TP/SL columns with `# @strategy trailingEnabled true` unless you document which path wins (see §11.7).
+- Before going live, compare backtest fills with logs for `Signal submitted` and `server_trailing_stop`.
+
+If a live close briefly shows amount `0`, the worker **re-syncs exchange positions and resolves size again**; rejection happens only when the exchange is already flat.
 
 ---
 
@@ -945,10 +998,11 @@ Promote to `ScriptStrategy` if:
 Before enabling live trading:
 
 1. Verify exchange, broker, symbol, and credential configuration.
-2. Recheck execution timing assumptions.
-3. Confirm that leverage, direction, and sizing live in the right product configuration layer.
-4. Start with conservative sizing and narrow symbol scope.
-5. Review runtime logs and actual order behavior before scaling up.
+2. Recheck execution timing assumptions (`signal_mode` / `exit_signal_mode` vs backtest — §3.6.1).
+3. Under `tradeDirection both`, confirm `buy` / `sell` flip semantics (§3.3.1) and avoid duplicate indicator + `trailingEnabled` exits (§11.7).
+4. Confirm that leverage, direction, and sizing live in the right product configuration layer.
+5. Start with conservative sizing and narrow symbol scope.
+6. Review runtime logs and actual order behavior (including `server_trailing_stop` and close rejections) before scaling up.
 
 Live trading should be treated as a separate validation stage, not as a continuation of editor-only experimentation.
 
@@ -1104,25 +1158,49 @@ Risky:
 ```python
 # @strategy stopLossPct 0.02
 # @strategy takeProfitPct 0.05
+# @strategy trailingEnabled true
 
 df['sell'] = some_other_exit_condition
+# plus tp/sl flags merged into df['buy'] / df['sell']
 ```
 
-Better:
+Better (pick one primary exit path and comment it):
 
 ```python
-# Primary exit: reverse signal
-# Secondary protection: engine-managed fixed stop-loss / take-profit
-# @strategy stopLossPct 0.02
-# @strategy takeProfitPct 0.05
+# Option A: exits only from indicator signals (touch-based strategies)
+# @strategy trailingEnabled false
 
-df['sell'] = reverse_signal
+# Option B: exits from engine risk (fixed SL/TP/trailing)
+# @strategy trailingEnabled true
+# @strategy trailingStopPct 0.0025
+# @strategy trailingActivationPct 0.0037
+# df['buy'] / df['sell'] should focus on entries only
 ```
 
 Why:
 
-- the combination itself may be valid
-- the real problem is when nobody knows which exit path is supposed to dominate
+- duplicate exits produce `server_trailing_stop` next to indicator closes, timing skew, and sometimes `invalid amount (0.0)` when the position is already flat.
+- `trailingEnabled true` disables conflicting fixed take-profit semantics but **does not** disable your in-code tp/sl booleans.
+- the real problem is when nobody knows which exit path is supposed to dominate.
+
+### 11.8 Putting all tp/sl flags into `buy` / `sell` under `both`
+
+```python
+df['buy']  = entry_long | short_tp | short_sl
+df['sell'] = entry_short | long_tp | long_sl
+# @strategy tradeDirection both
+```
+
+Under `both`, `short_tp` inside `buy` is a **flip-long** intent, not flat-only. For flat-only exits, change `tradeDirection`, use four-way columns, or move to `ScriptStrategy`. Use `confirmed` signal modes if live fires earlier than backtests (§3.6.1).
+
+### 11.9 Live log: `invalid amount (0.0) for close_*`
+
+Common causes:
+
+1. Server trailing/TP already closed the leg; an indicator `close_*` was still submitted.
+2. Local DB lag vs the exchange — the worker retries **sync + exchange size** before rejecting.
+
+Mitigation: §11.7 (one exit owner), §3.3.1 (`both` semantics).
 
 ---
 
@@ -1145,6 +1223,9 @@ Use this section as a fast "what is supported right now?" reference when writing
 Important:
 
 - these keys are for indicator-side strategy defaults
+- **all values use 0–1 decimal ratios** (same as `StrategyConfigParser`, backtest, and live)
+- **stop/take-profit/trailing thresholds are underlying price moves, not divided by leverage**
+- **`entryPct 1` means 100% of available capital**, not 1%
 - do not put `leverage` in `# @strategy`
 - keep exchange, symbol, credentials, and leverage in product configuration
 

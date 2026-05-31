@@ -101,6 +101,91 @@ class StrategyConfigParser:
         return None
 
     @classmethod
+    def normalize_entry_ratio(cls, value: Any, default: float = 1.0) -> float:
+        """Align with BacktestService: @strategy entryPct is a 0–1 capital fraction."""
+        if value is None or value == 0:
+            return float(default)
+        try:
+            entry = float(value)
+        except (TypeError, ValueError):
+            return float(default)
+        if entry > 1:
+            entry = entry / 100.0
+        return max(0.01, min(1.0, entry))
+
+    @classmethod
+    def build_nested_cfg_from_code(cls, code: str) -> Dict[str, Any]:
+        """
+        Build backtest-compatible nested cfg from # @strategy annotations.
+
+        All *_Pct fields are 0–1 ratios (entryPct 1 = 100%, stopLossPct 0.15 = 15%).
+        """
+        parsed = cls.parse(code or "")
+        if not parsed:
+            return {}
+
+        trailing = {
+            "enabled": bool(parsed.get("trailingEnabled", False)),
+            "pct": float(parsed.get("trailingStopPct") or 0),
+            "activationPct": float(parsed.get("trailingActivationPct") or 0),
+        }
+        cfg: Dict[str, Any] = {
+            "risk": {
+                "stopLossPct": float(parsed.get("stopLossPct") or 0),
+                "takeProfitPct": float(parsed.get("takeProfitPct") or 0),
+                "trailing": trailing,
+            },
+            "position": {
+                "entryPct": cls.normalize_entry_ratio(parsed.get("entryPct")),
+            },
+        }
+        if parsed.get("tradeDirection"):
+            cfg["tradeDirection"] = parsed["tradeDirection"]
+        return cfg
+
+    @classmethod
+    def ratio_to_trading_config_percent(cls, ratio: Any) -> float:
+        """Convert 0–1 @strategy ratio to trading_config percent (15 -> 15%, 0.001 -> 0.1%)."""
+        try:
+            n = float(ratio)
+        except (TypeError, ValueError):
+            return 0.0
+        if n <= 0:
+            return 0.0
+        return round(n * 100.0, 6)
+
+    @classmethod
+    def to_trading_config_risk_flat(cls, code: str) -> Dict[str, Any]:
+        """
+        Map # @strategy annotations to flat trading_config risk fields for DB storage.
+
+        Code annotations use 0–1 ratios; trading_config.*_pct stores percent numbers
+        consumed by trading_executor._to_ratio() when code annotations are absent.
+        """
+        parsed = cls.parse(code or "")
+        if not parsed:
+            return {}
+        out: Dict[str, Any] = {}
+        if "stopLossPct" in parsed:
+            out["stop_loss_pct"] = cls.ratio_to_trading_config_percent(parsed["stopLossPct"])
+        if "takeProfitPct" in parsed:
+            out["take_profit_pct"] = cls.ratio_to_trading_config_percent(parsed["takeProfitPct"])
+        if "trailingStopPct" in parsed:
+            out["trailing_stop_pct"] = cls.ratio_to_trading_config_percent(parsed["trailingStopPct"])
+        if "trailingActivationPct" in parsed:
+            out["trailing_activation_pct"] = cls.ratio_to_trading_config_percent(
+                parsed["trailingActivationPct"]
+            )
+        if "trailingEnabled" in parsed:
+            out["trailing_enabled"] = bool(parsed["trailingEnabled"])
+        if "entryPct" in parsed:
+            ep = cls.normalize_entry_ratio(parsed["entryPct"])
+            out["entry_pct"] = min(100.0, max(0.01, cls.ratio_to_trading_config_percent(ep)))
+        if "tradeDirection" in parsed:
+            out["trade_direction"] = parsed["tradeDirection"]
+        return out
+
+    @classmethod
     def generate_annotations(cls, config: Dict[str, Any]) -> str:
         """
         从策略配置字典生成 @strategy 注解行。

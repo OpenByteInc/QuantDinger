@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "quantdinger-mcp"
-version = "0.1.0"
-description = "Model Context Protocol (MCP) server for the QuantDinger Agent Gateway — exposes market data, strategies, backtests and paper trading to AI agents (Cursor, Claude Code, Codex, OpenClaw, NanoBot, ...)."
+version = "0.2.0"
+description = "Model Context Protocol (MCP) server for the QuantDinger Agent Gateway — market data, indicator workspace, strategies, backtests, and experiments for AI agents (Cursor, Claude Code, Codex, OpenClaw, NanoBot, ...)."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }

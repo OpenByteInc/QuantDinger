@@ -185,11 +185,13 @@ class GateSpotClient(_GateBase):
         qty = float(size or 0.0)
         if qty <= 0:
             raise LiveTradingError("Invalid size")
+        # Gate defaults time_in_force to gtc; market orders only accept ioc/fok.
         body: Dict[str, Any] = {
             "currency_pair": to_gate_currency_pair(symbol),
             "side": sd,
             "type": "market",
             "amount": str(qty),
+            "time_in_force": "ioc",
         }
         text = self._format_text(client_order_id)
         if text:

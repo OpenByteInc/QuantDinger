@@ -21,12 +21,15 @@ _BUILTIN_PACK_ANCHOR_NAME = "[Sample] SuperTrend Trend-Following"
 # QuantDinger Indicator IDE contract (the sandbox injects df / pd / np / params):
 #   * top of file declares my_indicator_name / my_indicator_description
 #   * df = df.copy()  -> work on a private copy
-#   * df['buy'] / df['sell'] are boolean Series with length == len(df)
+#   * execution: four-way open_long/close_long/open_short/close_short (preferred)
+#     or legacy df['buy'] / df['sell'] — see SIGNAL_EXECUTION_STANDARD_CN.md
 #   * output dict contains plots / signals; every data list MUST have length == len(df)
 #   * # @strategy ...  default risk controls; can be overridden in the backtest panel
 #   * # @param ... range=a:b:s  auto-detected by the structured parameter tuner
 _SUPERTREND_CODE = r'''# ============================================================
 # [Sample] SuperTrend Trend-Following -- classic ATR channel flip
+# --- QuantDinger execution contract (v1) ---
+# signal_form: four_way    exit_owner: engine    flip_mode: R2
 # ------------------------------------------------------------
 # Idea: build an adaptive band pair (HL2 +/- mult * ATR). The bands
 # can only tighten in the prevailing trend direction; price crossing
@@ -52,9 +55,11 @@ my_indicator_description = (
 )
 
 # ===== Default risk controls (overridable in the backtest panel) =====
+# Unit: 0–1 ratio (0.04 = 4% underlying price move; 0.001 = 0.1%; entryPct 1 = 100% capital)
 # @strategy stopLossPct 0.04
 # @strategy takeProfitPct 0.10
 # @strategy entryPct 1
+# @strategy trailingEnabled false
 # @strategy tradeDirection both
 
 # ===== Tunable params (auto-detected by the structured tuner via range=...) =====
@@ -134,13 +139,15 @@ for i in range(n):
 
     supertrend[i] = final_lower[i] if direction[i] == 1 else final_upper[i]
 
-# --- 5) Edge-triggered signals: direction -1 -> 1 = buy, 1 -> -1 = sell
+# --- 5) Four-way edge-triggered signals on trend flip (R2: close + open same bar)
 prev_direction = np.concatenate([[0], direction[:-1]])
-buy_mask = (direction == 1) & (prev_direction == -1)
-sell_mask = (direction == -1) & (prev_direction == 1)
+flip_long = (direction == 1) & (prev_direction == -1)
+flip_short = (direction == -1) & (prev_direction == 1)
 
-df['buy'] = pd.Series(buy_mask, index=df.index).astype(bool)
-df['sell'] = pd.Series(sell_mask, index=df.index).astype(bool)
+df['open_long'] = pd.Series(flip_long, index=df.index).astype(bool)
+df['open_short'] = pd.Series(flip_short, index=df.index).astype(bool)
+df['close_long'] = pd.Series(flip_short, index=df.index).astype(bool)
+df['close_short'] = pd.Series(flip_long, index=df.index).astype(bool)
 
 # --- 6) Two-colour SuperTrend line: green while long, red while short
 supertrend_up = [float(v) if (d == 1 and not np.isnan(v)) else None
@@ -148,10 +155,10 @@ supertrend_up = [float(v) if (d == 1 and not np.isnan(v)) else None
 supertrend_dn = [float(v) if (d == -1 and not np.isnan(v)) else None
                  for v, d in zip(supertrend, direction)]
 
-buy_marks = [df['low'].iloc[i] * 0.995 if bool(df['buy'].iloc[i]) else None
-             for i in range(n)]
-sell_marks = [df['high'].iloc[i] * 1.005 if bool(df['sell'].iloc[i]) else None
-              for i in range(n)]
+open_long_marks = [df['low'].iloc[i] * 0.995 if bool(df['open_long'].iloc[i]) else None
+                   for i in range(n)]
+open_short_marks = [df['high'].iloc[i] * 1.005 if bool(df['open_short'].iloc[i]) else None
+                    for i in range(n)]
 
 output = {
     'name': my_indicator_name,
@@ -160,8 +167,8 @@ output = {
         {'name': 'SuperTrend Down', 'data': supertrend_dn, 'color': '#FF5252', 'overlay': True},
     ],
     'signals': [
-        {'type': 'buy', 'text': 'B', 'data': buy_marks, 'color': '#00E676'},
-        {'type': 'sell', 'text': 'S', 'data': sell_marks, 'color': '#FF5252'},
+        {'type': 'buy', 'text': 'L', 'data': open_long_marks, 'color': '#00E676'},
+        {'type': 'sell', 'text': 'S', 'data': open_short_marks, 'color': '#FF5252'},
     ],
 }
 '''
@@ -171,7 +178,7 @@ def _builtin_specs() -> List[Dict[str, str]]:
     """内置指标：name / description / code（与指标 IDE、回测引擎约定一致）。
 
     现在只保留一个高质量示例 —— 经典 SuperTrend，作为「新手第一份指标」
-    的标杆样本：注释充分、可调参数化、严格无未来数据、信号边缘触发。
+    的标杆样本：四路信号、契约 v1 注释、可调参数化、严格无未来数据。
     """
     return [
         {

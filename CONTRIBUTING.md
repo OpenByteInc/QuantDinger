@@ -154,6 +154,27 @@ Bug fixes should include a minimal regression test when practical.
 
 ---
 
+## API documentation
+
+QuantDinger uses **OpenAPI 3** as the HTTP contract SSOT.
+
+| Surface | Spec | When to update |
+|---------|------|----------------|
+| Human Web API | [`docs/api/openapi.yaml`](docs/api/openapi.yaml) | Any flask-smorest route in `app/openapi/` |
+| Agent Gateway | [`docs/agent/agent-openapi.json`](docs/agent/agent-openapi.json) | Any `/api/agent/v1` route |
+
+**Regenerate human spec:**
+
+```bash
+cd backend_api_python
+python scripts/export_openapi.py
+```
+
+Read [`docs/API_CONVENTIONS.md`](docs/API_CONVENTIONS.md) before adding Public endpoints.
+CI (`.github/workflows/openapi-ci.yml`) runs Spectral lint, export diff, and oasdiff breaking checks.
+
+---
+
 ## 🔐 Security
 
 Please do not open public issues for security vulnerabilities.

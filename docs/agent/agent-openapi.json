@@ -80,11 +80,41 @@
           "end_date":         { "type": "string", "example": "2024-12-31" },
           "initial_capital":  { "type": "number", "default": 10000 },
           "commission":       { "type": "number", "default": 0.001 },
-          "slippage":         { "type": "number", "default": 0 },
+          "slippage":         { "type": "number", "nullable": true },
           "leverage":         { "type": "integer", "default": 1 },
           "trade_direction":  { "type": "string", "default": "long" },
+          "strictMode":       { "type": "boolean", "default": true, "description": "When true, signals execute on next bar open (live-aligned). When false, uses aggressive MTF/bar path." },
+          "strict_mode":      { "type": "boolean", "description": "Alias for strictMode" },
           "strategy_config":  { "type": "object" },
           "indicator_params": { "type": "object" }
+        }
+      },
+      "IndicatorValidateRequest": {
+        "type": "object",
+        "required": ["code"],
+        "properties": {
+          "code":             { "type": "string" },
+          "indicator_params": { "type": "object" }
+        }
+      },
+      "IndicatorSaveRequest": {
+        "type": "object",
+        "required": ["code"],
+        "properties": {
+          "code":             { "type": "string", "description": "Python indicator source (max 512 KiB)" },
+          "name":             { "type": "string" },
+          "description":      { "type": "string" },
+          "indicator_id":     { "type": "integer", "description": "Update existing row when set" },
+          "validate":         { "type": "boolean", "default": true }
+        }
+      },
+      "IndicatorSummary": {
+        "type": "object",
+        "properties": {
+          "id":          { "type": "integer" },
+          "name":        { "type": "string" },
+          "description": { "type": "string" },
+          "updated_at":  { "type": "string" }
         }
       },
       "OrderRequest": {
@@ -177,6 +207,7 @@
     "/api/agent/v1/strategies/{strategy_id}": {
       "get": {
         "summary": "Get a strategy",
+        "description": "Returns full strategy row for the tenant. Credential-like fields in exchange_config / notification_config are redacted (***) before the response leaves the Gateway.",
         "x-scope-class": "R",
         "parameters": [{ "in": "path", "name": "strategy_id", "required": true, "schema": { "type": "integer" } }],
         "responses": { "200": { "description": "OK" }, "404": { "description": "Not found" } }
@@ -198,6 +229,59 @@
         ],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BacktestRequest" } } } },
         "responses": { "202": { "description": "Queued" } }
+      }
+    },
+    "/api/agent/v1/indicators/authoring-contract": {
+      "get": {
+        "summary": "Indicator I/O contract + starter Python template",
+        "x-scope-class": "R",
+        "responses": { "200": { "description": "OK" } }
+      }
+    },
+    "/api/agent/v1/indicators": {
+      "get": {
+        "summary": "List tenant indicators (compact; no code bodies)",
+        "x-scope-class": "R",
+        "parameters": [
+          { "in": "query", "name": "limit", "required": false, "schema": { "type": "integer", "default": 50, "maximum": 200 } }
+        ],
+        "responses": { "200": { "description": "OK" } }
+      },
+      "post": {
+        "summary": "Save indicator into private library (qd_indicator_codes)",
+        "x-scope-class": "W",
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/IndicatorSaveRequest" } } }
+        },
+        "responses": { "200": { "description": "Saved" }, "400": { "description": "Validation failed or code too large" } }
+      }
+    },
+    "/api/agent/v1/indicators/validate": {
+      "post": {
+        "summary": "Sandbox-validate indicator code without persisting",
+        "x-scope-class": "R",
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/IndicatorValidateRequest" } } }
+        },
+        "responses": { "200": { "description": "Validation result" } }
+      }
+    },
+    "/api/agent/v1/indicators/link-config": {
+      "post": {
+        "summary": "Normalize indicator_config: auto-save embedded code + set indicator_id",
+        "x-scope-class": "W",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object" } } } },
+        "responses": { "200": { "description": "Linked config" } }
+      }
+    },
+    "/api/agent/v1/indicators/{indicator_id}": {
+      "get": {
+        "summary": "Fetch one indicator including Python source",
+        "x-scope-class": "R",
+        "parameters": [{ "in": "path", "name": "indicator_id", "required": true, "schema": { "type": "integer" } }],
+        "responses": { "200": { "description": "OK" }, "404": { "description": "Not found" } }
       }
     },
     "/api/agent/v1/experiments/regime/detect": {

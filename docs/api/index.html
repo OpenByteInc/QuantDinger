@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>QuantDinger Web API</title>
+    <style>
+      body { margin: 0; padding: 0; }
+    </style>
+    <!-- ReDoc 2.5.x standalone bundle expects Node's `process` when resolving $ref -->
+    <script>
+      window.process = { env: {}, browser: true };
+    </script>
+  </head>
+  <body>
+    <div id="redoc-container"></div>
+    <!-- Pin version: `redoc/latest` (2.5.x) breaks in plain browser without the shim above -->
+    <script src="https://cdn.redoc.ly/redoc/v2.4.0/bundles/redoc.standalone.js"></script>
+    <script>
+      Redoc.init(
+        './openapi.yaml',
+        { scrollYOffset: 0, hideDownloadButton: false },
+        document.getElementById('redoc-container')
+      );
+    </script>
+  </body>
+</html>

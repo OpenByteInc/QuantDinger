@@ -1,14 +1,4 @@
-"""Tests for the SaaS / multi-tenant deployment guard on token issuance.
-
-When `QUANTDINGER_DEPLOYMENT_MODE=saas` (or `hosted` / `shared` / ...), an admin
-must NOT be able to issue an Agent token that can route real-money trades:
-
-  * Any request including the `T` scope is rejected with 403 — no silent
-    downgrade, so the operator sees their request was modified.
-  * `paper_only` is force-pinned to `True` regardless of payload.
-
-Self-hosted deployments (env var unset) keep the V3.1.0 behavior unchanged.
-"""
+"""Tests for Agent Token issuance policy on SaaS and self-service routes."""
 from __future__ import annotations
 
 from datetime import datetime
@@ -16,10 +6,8 @@ from datetime import datetime
 import pytest
 
 from app.routes.agent_v1 import admin as admin_routes
+from app.services import agent_token_service
 from app.utils import agent_auth, auth as core_auth
-
-
-# ──────────────────────────── helper-level coverage ────────────────────────────
 
 
 @pytest.mark.parametrize(
@@ -42,20 +30,12 @@ def test_is_saas_mode_recognizes_known_spellings(monkeypatch, raw, expected):
         monkeypatch.delenv("QUANTDINGER_DEPLOYMENT_MODE", raising=False)
     else:
         monkeypatch.setenv("QUANTDINGER_DEPLOYMENT_MODE", raw)
+    assert agent_token_service.is_saas_mode() is expected
     assert admin_routes._is_saas_mode() is expected
-
-
-# ──────────────────────────── route-level integration ──────────────────────────
 
 
 @pytest.fixture
 def admin_authed(monkeypatch):
-    """Stub the JWT verifier so /admin/* routes accept any bearer string.
-
-    Patches `verify_token` rather than the decorators themselves — that way the
-    real `login_required` + `admin_required` code paths still run (they just
-    see an admin payload), so we exercise the same chain production uses.
-    """
     monkeypatch.setattr(
         core_auth,
         "verify_token",
@@ -65,20 +45,58 @@ def admin_authed(monkeypatch):
 
 
 @pytest.fixture
+def user_authed(monkeypatch):
+    monkeypatch.setattr(
+        core_auth,
+        "verify_token",
+        lambda _raw: {"sub": "alice", "user_id": 7, "role": "user"},
+    )
+    yield {"user_id": 7}
+
+
+@pytest.fixture
 def stub_db_for_issue(monkeypatch):
-    """Make `INSERT INTO qd_agent_tokens` succeed without a live Postgres."""
     class _StubCursor:
         def __init__(self):
             self._row = None
+            self._last_sql = ""
 
-        def execute(self, _sql, _params=None):
-            self._row = {"id": 1, "created_at": datetime(2026, 5, 2, 0, 0, 0)}
+        def execute(self, sql, _params=None):
+            self._last_sql = (sql or "").upper()
 
         def fetchone(self):
-            return self._row
+            if "INSERT" in self._last_sql:
+                return {"id": 1, "created_at": datetime(2026, 5, 2, 0, 0, 0)}
+            if "SELECT" in self._last_sql and "TOKEN_HASH" in self._last_sql:
+                return {"id": 1, "created_at": datetime(2026, 5, 2, 0, 0, 0)}
+            return None
+
+        def fetchall(self):
+            if "FROM QD_AGENT_TOKENS" in self._last_sql:
+                return [{
+                    "id": 1,
+                    "name": "cursor-mcp",
+                    "token_prefix": "qd_agent_ab",
+                    "scopes": "B,R",
+                    "markets": ["*"],
+                    "instruments": ["*"],
+                    "paper_only": True,
+                    "rate_limit_per_min": 60,
+                    "status": "active",
+                    "expires_at": None,
+                    "last_used_at": None,
+                    "created_at": datetime(2026, 5, 2, 0, 0, 0),
+                }]
+            if "FROM QD_AGENT_AUDIT" in self._last_sql:
+                return []
+            return []
 
         def close(self):
             pass
+
+        @property
+        def rowcount(self):
+            return 0
 
     class _StubConn:
         def __enter__(self):
@@ -93,14 +111,26 @@ def stub_db_for_issue(monkeypatch):
         def commit(self):
             pass
 
-    monkeypatch.setattr(admin_routes, "get_db_connection", lambda: _StubConn())
+    monkeypatch.setattr(agent_token_service, "get_db_connection", lambda: _StubConn())
 
 
-def _post_issue(client, payload, *, base_url="http://localhost"):
+def _post_admin_issue(client, payload, *, base_url="http://localhost"):
     return client.post(
         "/api/agent/v1/admin/tokens",
         headers={
-            "Authorization": "Bearer admin-jwt-doesnt-matter",
+            "Authorization": "Bearer admin-jwt",
+            "Content-Type": "application/json",
+        },
+        json=payload,
+        base_url=base_url,
+    )
+
+
+def _post_me_issue(client, payload, *, base_url="http://localhost"):
+    return client.post(
+        "/api/agent/v1/me/tokens",
+        headers={
+            "Authorization": "Bearer user-jwt",
             "Content-Type": "application/json",
         },
         json=payload,
@@ -111,53 +141,141 @@ def _post_issue(client, payload, *, base_url="http://localhost"):
 def test_self_hosted_mode_allows_T_scope(
     client, admin_authed, stub_db_for_issue, monkeypatch
 ):
-    """With no env var set, T-scope tokens issue normally (paper_only respected)."""
     monkeypatch.delenv("QUANTDINGER_DEPLOYMENT_MODE", raising=False)
 
-    resp = _post_issue(client, {
+    resp = _post_admin_issue(client, {
         "name": "selfhost-trader",
         "scopes": "R,T",
         "paper_only": True,
     })
     assert resp.status_code == 200
-    body = resp.get_json()
-    assert body["code"] == 0
-    data = body["data"]
+    data = resp.get_json()["data"]
     assert "T" in data["scopes"]
     assert data["paper_only"] is True
     assert data["token"].startswith(agent_auth.TOKEN_PREFIX)
 
 
-def test_saas_mode_rejects_T_scope_with_403(
+def test_saas_mode_allows_T_scope_paper_only(
     client, admin_authed, stub_db_for_issue, monkeypatch
 ):
-    """Hosted deployment must surface a clear 403 on T-scope, not a silent downgrade."""
     monkeypatch.setenv("QUANTDINGER_DEPLOYMENT_MODE", "saas")
 
-    resp = _post_issue(client, {
-        "name": "saas-trader-attempt",
-        "scopes": "R,T",
-        "paper_only": False,
-    })
-    assert resp.status_code == 403
-    body = resp.get_json()
-    # Error envelope: {code, message, ...}
-    assert body["code"] == 403
-    assert "T-scope" in body["message"] or "live trading" in body["message"].lower()
-
-
-def test_saas_mode_force_pins_paper_only_for_non_T_tokens(
-    client, admin_authed, stub_db_for_issue, monkeypatch
-):
-    """Even without T, hosted mode keeps paper_only=true (defense in depth)."""
-    monkeypatch.setenv("QUANTDINGER_DEPLOYMENT_MODE", "hosted")
-
-    resp = _post_issue(client, {
+    resp = _post_admin_issue(client, {
         "name": "saas-research-bot",
-        "scopes": "R,B",
-        "paper_only": False,  # operator tries to opt out — must still be pinned
+        "scopes": "R,T",
+        "paper_only": True,
     })
     assert resp.status_code == 200
     data = resp.get_json()["data"]
-    assert "T" not in data["scopes"]
+    assert "T" in data["scopes"]
     assert data["paper_only"] is True
+
+
+def test_saas_mode_live_T_requires_ack(
+    client, admin_authed, stub_db_for_issue, monkeypatch
+):
+    monkeypatch.setenv("QUANTDINGER_DEPLOYMENT_MODE", "hosted")
+
+    resp = _post_admin_issue(client, {
+        "name": "saas-live-attempt",
+        "scopes": "R,T",
+        "paper_only": False,
+    })
+    assert resp.status_code == 400
+    assert "ack_live_trading_risk" in resp.get_json()["message"]
+
+
+def test_saas_mode_live_T_with_ack_succeeds(
+    client, admin_authed, stub_db_for_issue, monkeypatch
+):
+    monkeypatch.setenv("QUANTDINGER_DEPLOYMENT_MODE", "saas")
+
+    resp = _post_admin_issue(client, {
+        "name": "saas-live-ack",
+        "scopes": "R,T",
+        "paper_only": False,
+        "ack_live_trading_risk": True,
+    })
+    assert resp.status_code == 200
+    data = resp.get_json()["data"]
+    assert data["paper_only"] is False
+
+
+def test_me_tokens_rejects_C_scope(
+    client, user_authed, stub_db_for_issue, monkeypatch
+):
+    monkeypatch.delenv("QUANTDINGER_DEPLOYMENT_MODE", raising=False)
+
+    resp = _post_me_issue(client, {
+        "name": "user-c-attempt",
+        "scopes": "R,C",
+        "paper_only": True,
+    })
+    assert resp.status_code == 403
+    assert "C-scope" in resp.get_json()["message"]
+
+
+def test_me_tokens_issue_and_policy(client, user_authed, stub_db_for_issue, monkeypatch):
+    monkeypatch.setenv("QUANTDINGER_DEPLOYMENT_MODE", "saas")
+
+    policy = client.get(
+        "/api/agent/v1/me/tokens/policy",
+        headers={"Authorization": "Bearer user-jwt"},
+        base_url="http://localhost",
+    )
+    assert policy.status_code == 200
+    pdata = policy.get_json()["data"]
+    assert pdata["is_saas"] is True
+    assert "T" in pdata["allowed_scopes"]
+    assert "C" not in pdata["allowed_scopes"]
+    assert pdata["risk_disclosure"]["system"]
+
+    resp = _post_me_issue(client, {
+        "name": "cursor-mcp",
+        "scopes": "R,B",
+        "paper_only": True,
+    })
+    assert resp.status_code == 200
+    assert resp.get_json()["data"]["token"].startswith(agent_auth.TOKEN_PREFIX)
+
+    listed = client.get(
+        "/api/agent/v1/me/tokens",
+        headers={"Authorization": "Bearer user-jwt"},
+        base_url="http://localhost",
+    )
+    assert listed.status_code == 200
+
+
+def test_me_revoke_other_users_token_returns_404(client, user_authed, monkeypatch):
+    class _StubCursor:
+        def execute(self, _sql, _params=None):
+            pass
+
+        def close(self):
+            pass
+
+        @property
+        def rowcount(self):
+            return 0
+
+    class _StubConn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def cursor(self):
+            return _StubCursor()
+
+        def commit(self):
+            pass
+
+    monkeypatch.setattr(agent_token_service, "get_db_connection", lambda: _StubConn())
+
+    resp = client.delete(
+        "/api/agent/v1/me/tokens/999",
+        headers={"Authorization": "Bearer user-jwt"},
+        base_url="http://localhost",
+    )
+    assert resp.status_code == 404

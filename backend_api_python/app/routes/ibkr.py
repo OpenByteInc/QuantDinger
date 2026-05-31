@@ -8,7 +8,8 @@ Multi-tenancy: connections are isolated per authenticated user via
 through someone else's IBKR/TWS account.
 """
 
-from flask import Blueprint, request, jsonify
+from flask import jsonify, request
+from app.openapi.blueprint import HumanBlueprint as Blueprint
 from app.utils.auth import login_required
 
 from app.utils.logger import get_logger
@@ -17,7 +18,7 @@ from app.services.ibkr_trading import IBKRClient, IBKRConfig
 
 logger = get_logger(__name__)
 
-ibkr_bp = Blueprint('ibkr', __name__)
+ibkr_blp = Blueprint('ibkr', __name__)
 
 # Per-user client cache keyed by (user_id, 'ibkr')
 _sessions = BrokerSessionRegistry('ibkr')
@@ -43,14 +44,10 @@ def _require_connected_client():
 
 # ==================== Connection Management ====================
 
-@ibkr_bp.route('/status', methods=['GET'])
+@ibkr_blp.route('/status', methods=['GET'])
 @login_required
 def get_status():
-    """
-    Get connection status.
-
-    GET /api/ibkr/status
-    """
+    """Get IBKR connection status."""
     try:
         client = _sessions.get()
         if client is None:
@@ -67,20 +64,18 @@ def get_status():
         }), 500
 
 
-@ibkr_bp.route('/connect', methods=['POST'])
+@ibkr_blp.route('/connect', methods=['POST'])
 @login_required
 def connect():
     """
     Connect to TWS / IB Gateway.
 
-    POST /api/ibkr/connect
-    Body: {
-        "host": "127.0.0.1",      // Optional, default 127.0.0.1
-        "port": 7497,             // Optional, TWS Live:7497, TWS Paper:7496, Gateway Live:4001, Gateway Paper:4002
-        "clientId": 1,            // Optional, default 1
-        "account": "",            // Optional, specify for multi-account
-        "readonly": false         // Optional, readonly mode
-    }
+    Request body:
+        host (optional, default 127.0.0.1): TWS/Gateway host
+        port (optional, default 7497): TWS Live 7497, TWS Paper 7496, Gateway Live 4001, Gateway Paper 4002
+        clientId (optional, default 1): Client ID
+        account (optional): Account for multi-account setups
+        readonly (optional, default false): Read-only mode
     """
     try:
         data = request.get_json() or {}
@@ -122,14 +117,10 @@ def connect():
         }), 500
 
 
-@ibkr_bp.route('/disconnect', methods=['POST'])
+@ibkr_blp.route('/disconnect', methods=['POST'])
 @login_required
 def disconnect():
-    """
-    Disconnect from IBKR.
-
-    POST /api/ibkr/disconnect
-    """
+    """Disconnect from IBKR."""
     try:
         _sessions.disconnect_current()
         return jsonify({
@@ -146,14 +137,10 @@ def disconnect():
 
 # ==================== Account Queries ====================
 
-@ibkr_bp.route('/account', methods=['GET'])
+@ibkr_blp.route('/account', methods=['GET'])
 @login_required
 def get_account():
-    """
-    Get account information.
-
-    GET /api/ibkr/account
-    """
+    """Get IBKR account information."""
     try:
         client, err = _require_connected_client()
         if err is not None:
@@ -171,14 +158,10 @@ def get_account():
         }), 500
 
 
-@ibkr_bp.route('/positions', methods=['GET'])
+@ibkr_blp.route('/positions', methods=['GET'])
 @login_required
 def get_positions():
-    """
-    Get positions.
-
-    GET /api/ibkr/positions
-    """
+    """Get IBKR positions."""
     try:
         client, err = _require_connected_client()
         if err is not None:
@@ -197,14 +180,10 @@ def get_positions():
         }), 500
 
 
-@ibkr_bp.route('/orders', methods=['GET'])
+@ibkr_blp.route('/orders', methods=['GET'])
 @login_required
 def get_orders():
-    """
-    Get open orders.
-
-    GET /api/ibkr/orders
-    """
+    """Get open IBKR orders."""
     try:
         client, err = _require_connected_client()
         if err is not None:
@@ -225,21 +204,19 @@ def get_orders():
 
 # ==================== Trading ====================
 
-@ibkr_bp.route('/order', methods=['POST'])
+@ibkr_blp.route('/order', methods=['POST'])
 @login_required
 def place_order():
     """
-    Place an order.
+    Place an IBKR order.
 
-    POST /api/ibkr/order
-    Body: {
-        "symbol": "AAPL",         // Required, symbol code
-        "side": "buy",            // Required, buy or sell
-        "quantity": 10,           // Required, number of shares
-        "marketType": "USStock",  // Optional, default USStock
-        "orderType": "market",    // Optional, market or limit, default market
-        "price": 150.00           // Required for limit orders
-    }
+    Request body:
+        symbol (required): Ticker, e.g. AAPL
+        side (required): buy or sell
+        quantity (required): Number of shares
+        marketType (optional, default USStock): Market type
+        orderType (optional, default market): market or limit
+        price (required for limit orders): Limit price
     """
     try:
         client, err = _require_connected_client()
@@ -310,14 +287,10 @@ def place_order():
         }), 500
 
 
-@ibkr_bp.route('/order/<int:order_id>', methods=['DELETE'])
+@ibkr_blp.route('/order/<int:order_id>', methods=['DELETE'])
 @login_required
 def cancel_order(order_id: int):
-    """
-    Cancel an order.
-
-    DELETE /api/ibkr/order/<order_id>
-    """
+    """Cancel an IBKR order by ID."""
     try:
         client, err = _require_connected_client()
         if err is not None:
@@ -346,14 +319,10 @@ def cancel_order(order_id: int):
 
 # ==================== Market Data ====================
 
-@ibkr_bp.route('/quote', methods=['GET'])
+@ibkr_blp.route('/quote', methods=['GET'])
 @login_required
 def get_quote():
-    """
-    Get real-time quote.
-
-    GET /api/ibkr/quote?symbol=AAPL&marketType=USStock
-    """
+    """Get real-time IBKR quote (query: symbol, marketType)."""
     try:
         client, err = _require_connected_client()
         if err is not None:
@@ -374,3 +343,6 @@ def get_quote():
             "success": False,
             "error": str(e)
         }), 500
+
+# openapi-compat: legacy import name
+ibkr_bp = ibkr_blp

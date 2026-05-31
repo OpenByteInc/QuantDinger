@@ -5,7 +5,8 @@ Handles login, logout, registration, password reset, and OAuth authentication.
 Supports both multi-user (database) and single-user (legacy) modes.
 """
 import os
-from flask import Blueprint, request, jsonify, g, redirect
+from flask import g, jsonify, redirect, request
+from app.openapi.blueprint import HumanBlueprint as Blueprint
 from urllib.parse import urlencode, urlparse, urlunparse, parse_qsl
 from app.config.settings import Config
 from app.utils.auth import generate_token, login_required, authenticate_legacy
@@ -13,7 +14,7 @@ from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-auth_bp = Blueprint('auth', __name__)
+auth_blp = Blueprint('auth', __name__)
 
 def _build_frontend_login_redirect(frontend_url: str, **params) -> str:
     """
@@ -108,11 +109,20 @@ def _get_user_agent() -> str:
     return request.headers.get('User-Agent', '')[:500]
 
 
+def _userinfo_must_change_initial_password(user_id: int) -> bool:
+    """Whether the UI should prompt the user to change their bootstrap password."""
+    try:
+        from app.services.user_service import get_user_service
+        return get_user_service().must_change_initial_password(int(user_id))
+    except Exception:
+        return False
+
+
 # =============================================================================
 # Security Config Endpoint
 # =============================================================================
 
-@auth_bp.route('/security-config', methods=['GET'])
+@auth_blp.route('/security-config', methods=['GET'])
 def get_security_config():
     """
     Get public security configuration for frontend.
@@ -137,7 +147,7 @@ def get_security_config():
 # Login Endpoint (Enhanced with security)
 # =============================================================================
 
-@auth_bp.route('/login', methods=['POST'])
+@auth_blp.route('/login', methods=['POST'])
 def login():
     """
     User login endpoint.
@@ -249,8 +259,15 @@ def login():
         security.record_login_attempt(username, 'account', True, ip_address, user_agent)
         security.clear_login_attempts(ip_address, 'ip')
         security.clear_login_attempts(username, 'account')
-        security.log_security_event('login_success', user.get('id'), ip_address, user_agent)
-        
+        from app.services.login_notify import notify_successful_login
+        notify_successful_login(
+            user_id=int(user.get('id') or user_id),
+            action='login_success',
+            ip_address=ip_address,
+            user_agent=user_agent,
+            extra_details={'method': 'password'},
+        )
+
         # Build user info for frontend
         userinfo = {
             'id': user.get('id') or user.get('user_id', 1),
@@ -261,7 +278,8 @@ def login():
             'role': {
                 'id': user.get('role', 'admin'),
                 'permissions': _get_permissions(user.get('role', 'admin'))
-            }
+            },
+            'must_change_initial_password': _userinfo_must_change_initial_password(user_id),
         }
         
         return jsonify({
@@ -282,7 +300,7 @@ def login():
 # Email Code Login
 # =============================================================================
 
-@auth_bp.route('/login-code', methods=['POST'])
+@auth_blp.route('/login-code', methods=['POST'])
 def login_with_code():
     """
     Login with email verification code (quick login / register).
@@ -455,9 +473,15 @@ def login_with_code():
         except Exception as e:
             logger.error(f"Failed to update last_login_at for user_id={user.get('id')}: {e}")
         
-        # Log login
-        security.log_security_event('login_via_code', user['id'], ip_address, user_agent)
-        
+        from app.services.login_notify import notify_successful_login
+        notify_successful_login(
+            user_id=int(user['id']),
+            action='login_via_code',
+            ip_address=ip_address,
+            user_agent=user_agent,
+            extra_details={'method': 'email_code', 'is_new_user': bool(is_new_user)},
+        )
+
         return jsonify({
             'code': 1,
             'msg': 'Login successful' + (' (new account created)' if is_new_user else ''),
@@ -488,7 +512,7 @@ def login_with_code():
 # Registration Endpoints
 # =============================================================================
 
-@auth_bp.route('/send-code', methods=['POST'])
+@auth_blp.route('/send-code', methods=['POST'])
 def send_verification_code():
     """
     Send verification code to email.
@@ -578,7 +602,7 @@ def send_verification_code():
         return jsonify({'code': 0, 'msg': 'Failed to send verification code', 'data': None}), 500
 
 
-@auth_bp.route('/register', methods=['POST'])
+@auth_blp.route('/register', methods=['POST'])
 def register():
     """
     Register new user with email verification.
@@ -770,7 +794,7 @@ def register():
         return jsonify({'code': 0, 'msg': 'Registration failed', 'data': None}), 500
 
 
-@auth_bp.route('/reset-password', methods=['POST'])
+@auth_blp.route('/reset-password', methods=['POST'])
 def reset_password():
     """
     Reset password with email verification.
@@ -844,7 +868,7 @@ def reset_password():
         return jsonify({'code': 0, 'msg': 'Password reset failed', 'data': None}), 500
 
 
-@auth_bp.route('/change-password', methods=['POST'])
+@auth_blp.route('/change-password', methods=['POST'])
 @login_required
 def change_password():
     """
@@ -911,7 +935,7 @@ def change_password():
 # OAuth Endpoints
 # =============================================================================
 
-@auth_bp.route('/oauth/google', methods=['GET'])
+@auth_blp.route('/oauth/google', methods=['GET'])
 def oauth_google():
     """Redirect to Google OAuth authorization page.
 
@@ -936,7 +960,7 @@ def oauth_google():
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
 
 
-@auth_bp.route('/oauth/google/callback', methods=['GET'])
+@auth_blp.route('/oauth/google/callback', methods=['GET'])
 def oauth_google_callback():
     """Handle Google OAuth callback"""
     ip_address = _get_client_ip()
@@ -993,10 +1017,15 @@ def oauth_google_callback():
             token_version=new_token_version
         )
         
-        # Log OAuth login
-        security.log_security_event('oauth_login', user_result['id'], ip_address, user_agent,
-                                   {'provider': 'google'})
-        
+        from app.services.login_notify import notify_successful_login
+        notify_successful_login(
+            user_id=int(user_result['id']),
+            action='oauth_login',
+            ip_address=ip_address,
+            user_agent=user_agent,
+            extra_details={'provider': 'google', 'method': 'oauth'},
+        )
+
         # Redirect to frontend with token
         return redirect(_build_frontend_login_redirect(frontend_url, oauth_token=token))
         
@@ -1007,7 +1036,7 @@ def oauth_google_callback():
         return redirect(_build_frontend_login_redirect(frontend_url, oauth_error='server_error'))
 
 
-@auth_bp.route('/oauth/github', methods=['GET'])
+@auth_blp.route('/oauth/github', methods=['GET'])
 def oauth_github():
     """Redirect to GitHub OAuth authorization page.
 
@@ -1030,7 +1059,7 @@ def oauth_github():
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
 
 
-@auth_bp.route('/oauth/github/callback', methods=['GET'])
+@auth_blp.route('/oauth/github/callback', methods=['GET'])
 def oauth_github_callback():
     """Handle GitHub OAuth callback"""
     ip_address = _get_client_ip()
@@ -1085,10 +1114,15 @@ def oauth_github_callback():
             token_version=new_token_version
         )
         
-        # Log OAuth login
-        security.log_security_event('oauth_login', user_result['id'], ip_address, user_agent,
-                                   {'provider': 'github'})
-        
+        from app.services.login_notify import notify_successful_login
+        notify_successful_login(
+            user_id=int(user_result['id']),
+            action='oauth_login',
+            ip_address=ip_address,
+            user_agent=user_agent,
+            extra_details={'provider': 'github', 'method': 'oauth'},
+        )
+
         # Redirect to frontend with token
         return redirect(_build_frontend_login_redirect(frontend_url, oauth_token=token))
         
@@ -1103,13 +1137,13 @@ def oauth_github_callback():
 # Other Endpoints
 # =============================================================================
 
-@auth_bp.route('/logout', methods=['POST'])
+@auth_blp.route('/logout', methods=['POST'])
 def logout():
     """Logout (client removes token; server is stateless)."""
     return jsonify({'code': 1, 'msg': 'Logout successful', 'data': None})
 
 
-@auth_bp.route('/info', methods=['GET'])
+@auth_blp.route('/info', methods=['GET'])
 @login_required
 def get_user_info():
     """Get current user info."""
@@ -1128,11 +1162,12 @@ def get_user_info():
                 logger.warning(f"Failed to get user from database: {e}")
         
         if user_data:
+            uid = user_data.get('id')
             return jsonify({
                 'code': 1,
                 'msg': 'Success',
                 'data': {
-                    'id': user_data.get('id'),
+                    'id': uid,
                     'username': user_data.get('username'),
                     'nickname': user_data.get('nickname', 'User'),
                     'email': user_data.get('email'),
@@ -1141,7 +1176,8 @@ def get_user_info():
                     'role': {
                         'id': user_data.get('role', 'user'),
                         'permissions': _get_permissions(user_data.get('role', 'user'))
-                    }
+                    },
+                    'must_change_initial_password': _userinfo_must_change_initial_password(uid),
                 }
             })
         
@@ -1177,3 +1213,6 @@ def _get_permissions(role: str) -> list:
             return ['dashboard', 'view', 'indicator', 'backtest', 'strategy', 
                     'portfolio', 'settings', 'user_manage', 'credentials']
         return ['dashboard', 'view', 'indicator', 'backtest', 'strategy', 'portfolio']
+
+# openapi-compat: legacy import name
+auth_bp = auth_blp

@@ -4,31 +4,133 @@ This document records version updates, new features, bug fixes, and database mig
 
 ---
 
-## V3.0.7 (2026-05-13) — 代码瘦身：Polymarket 预测市场模块全量下线（含前端）
+## quantdinger-mcp 0.2.0 (2026-05-29) — PyPI package
 
-历史遗留的 **Polymarket 预测市场** 模块整套下线。本次一次性清干净：删 5 个后端文件（worker / batch analyzer / single analyzer / route / data_source）+ 2 个后端测试 + 2 个前端文件（API 客户端 + 弹框组件）+ 计费项 + 3 张数据表 + AI 分析里那段「相关预测市场」prompt 上下文 + AI 资产分析页面的「预测市场 tab」+ 10 个 locales 文件里所有翻译条目，**共减少 ≈ 160 KB / 5600+ 行**。
+Standalone MCP server release (install: `pip install quantdinger-mcp==0.2.0` / `uvx quantdinger-mcp@0.2.0`).
 
-### 🧹 Frontend Removed
+### Added
+- **Indicator workspace tools**: `get_indicator_authoring_contract`, `validate_indicator_code`, `save_indicator`, `list_indicators`, `get_indicator`
+- **Strategy tools**: `create_strategy`, `update_strategy` (blocks `status=running` client-side)
+- **Job helpers**: `list_jobs`, `wait_for_job`, `stream_job_until_done` (bounded SSE)
+- **Experiments**: `submit_experiment_pipeline`, `submit_ai_optimize` (requires `confirm_llm_usage=true`)
+- **Portfolio (read-only)**: `list_portfolio_positions`, `list_paper_orders`
+- **Connectivity**: `check_health` (no token)
+- **Backtest**: `strict_mode`, `strategy_config`, `indicator_params` on `submit_backtest`
 
-- **`ai-asset-analysis` 页面里的「预测市场」tab**：整段 `<a-tab-pane key="polymarket">` 删除，下面挂载的 `<PolymarketAnalysisModal>` 一并删除
-- **粘贴 polymarket.com URL 让 AI 单市场分析**的对话框：`components/PolymarketAnalysisModal/index.vue`（24.8 KB）删除 + 配套 API 客户端 `api/polymarket.js` 删除（之前页面打开时 `/api/polymarket/history?page=1&page_size=20` 报 404 就是源自此处）
-- **`PredictionMarket` 市场枚举**：从 `ai-asset-analysis` 卡片样式、`indicator-ide` 自选标的列表 / 颜色映射 / CSS 类中全部移除
-- **AI 交易雷达**轮播卡片里的 PredictionMarket 分支（`is-prediction` 卡片宽 290px 变体 / `rc-prediction-title` 双行截断标题 / 概率+评分+建议三件套指标项 / 相关 CSS）整段删除，统一回归到「价格 / 24h 涨跌 / 信号」三件套
-- **i18n 多语言翻译**：10 个 locales 文件（ar / de / en / fr / ja / ko / th / vi / zh-CN / zh-TW）共 **1087 行** `polymarket.*` / `PredictionMarket` / `predictionmarket` 翻译条目一次性脚本清除，`node --check` 全部语法 OK
+### Security
+- Response redaction for credential-like JSON fields (`api_key`, `secret`, `passphrase`, …)
+- Indicator Python source capped at **512 KiB** (client + Gateway)
+- Trading (`quick-trade/*`) and admin APIs remain **not exposed** via MCP
 
-### 🧹 Backend Removed
+### Requires
+- QuantDinger backend with Agent Gateway `/api/agent/v1` (indicator routes from this repo)
+- Agent token scopes: **R + W + B** recommended for full indicator workflow
 
-- **后台 LLM worker**：`polymarket_worker.py`（每 30min 调用 OpenAI 批量分析市场）、`polymarket_batch_analyzer.py`、`polymarket_analyzer.py` 全部删除，启动钩子 `start_polymarket_worker()` 移除
-- **API 路由**：`/api/polymarket/*`（含 `/analyze`、`/history`）全部下线，`routes/polymarket.py` 删除 + blueprint 注销
-- **数据源**：`app/data_sources/polymarket.py`（67 KB，CLOB/Gamma API 客户端 + 本地缓存读写）删除
-- **AI 资产分析的 polymarket 上下文段**：`fast_analysis.py` 的 prompt 模板里去掉 `🎯 PREDICTION MARKETS` 段，`market_data_collector.py` 去掉 `include_polymarket` 参数和 `_get_polymarket_events` / `_extract_polymarket_keywords` 私有方法（主分析功能不受影响，只是 prompt 里少一段 30~80 token 的预测市场背景）
-- **计费项**：`billing_service.py` 删除 `cost_polymarket_deep_analysis` 单价、`polymarket_deep_analysis` feature 名映射、`feature_costs` 输出
-- **未消费的孤儿函数**：`data_providers/opportunities.py::analyze_opportunities_polymarket`
-- **测试**：`tests/test_polymarket_slug_lookup.py`、`tests/test_polymarket_url_parsing.py`
+---
+
+## V3.0.17 (2026-05-28) — Login security alerts, account login history, schema consolidation, live-trading hardening
+
+This release focuses on **account security UX**, **cleaner database migrations**, and a large batch of **live / quick-trade reliability** fixes across HTX, spot sizing, and the indicator sandbox.
+
+### 🚀 New Features
+
+#### Login security notifications (new device / new region)
+After a successful sign-in (password, email code, or OAuth), the backend enriches `qd_security_logs` with device fingerprint and best-effort GeoIP, then alerts the user when the sign-in looks unfamiliar:
+- **In-app (browser)** notification via `SignalNotifier` (`signal_type=security_login`)
+- **Email** to the registered address when SMTP is configured
+- First-ever login for an account is recorded but does **not** spam alerts (only subsequent new device / new region events)
+
+#### Account login history (Profile)
+- **API**: `GET /api/users/login-logs?page=&page_size=` (authenticated)
+- **UI**: new **Login history** tab at the end of Profile (`/profile?tab=loginLogs`) — method, device, location, IP, and “new device / new region” badges
+
+#### Initial-password change reminder (bootstrap admin only)
+- New column `qd_users.password_changed_at` (`NULL` = still on the password issued at account creation)
+- Only the **first user** (`MIN(id)`) is prompted to change password after login; OAuth / email-code users without a known password are unaffected
+- Frontend: post-login modal + deep link to `/profile?tab=password`
+
+### 🛠️ Engineering
+
+#### Single source of truth for PostgreSQL schema
+- Incremental files `v3_1_0_*` … `v3_3_1_*` were **merged into** `migrations/init.sql` and removed from the repo
+- Boot still runs the full idempotent `init.sql` via `init_database()`; no separate manual migration files to track
+- Old databases get missing columns via `ALTER TABLE … ADD COLUMN IF NOT EXISTS` blocks inside `init.sql` (trades `close_reason`, grid PnL columns, `qd_agent_jobs.progress`, etc.)
+
+#### Signal execution standard (backtest ↔ live alignment)
+- Documented contract in `docs/SIGNAL_EXECUTION_STANDARD.md` (+ CN)
+- Executor / backtest / trade records aligned on close reasons and sizing semantics; `qd_strategy_trades.close_reason` persisted for analytics
+
+#### Grid bot scaffolding
+- `qd_grid_cells` table and `grid_cells.py` persistence for per-rung ladder state
+- Trade ledger fields `matched_entry_price` / `grid_matched_profit` for realised grid-pair PnL in the UI
+
+#### Indicator sandbox hardening
+- `safe_exec.py` blocks additional file-read / frame-attribute escape paths (e.g. reading `.env` from strategy code)
+- Default indicator template and code-quality checks updated for the four-way signal contract
+
+### 🐛 Bug Fixes
+
+- **HTX USDT-M (V5)**: quick trade / live path — position mode, `reduce_only`, margin pre-check, and clearer Chinese error messages for insufficient margin
+- **Alpaca**: `account.id` as `uuid.UUID` no longer crashes log prefixes / connect flow
+- **Spot sizing**: Binance / Bitget / Bybit spot lot-size and quote-qty paths improved; pending-order worker aligned where applicable
+- **Quick trade**: balance checks and HTX V5 routing fixes
 
 ### 🗄️ Database
 
-`migrations/init.sql` 删除 3 张相关表的 `CREATE TABLE` 与索引，并加入老库一次性清理迁移（全新部署是 no-op）：
+All changes ship inside `migrations/init.sql` (idempotent). On upgrade, **restart the backend** so `init_database()` reapplies `init.sql`. Fresh Docker Postgres still runs the same file once from `docker-entrypoint-initdb.d`.
+
+No standalone `v3_*.sql` files remain in the repository.
+
+### ⚠️ Upgrade Notes
+
+1. **Backend**: `docker compose up -d --build backend` (or restart) so new routes (`/api/users/login-logs`) and `login_notify` logic are loaded — `restart` alone is not enough if the image was built before this tag.
+2. **Frontend**: rebuild or run `npm run dev` with current `QuantDinger-Vue-src`; hard-refresh Profile to see the Login history tab.
+3. **SMTP**: login alert emails require working `SMTP_*` env vars; in-app alerts require browser channel enabled in notification settings.
+4. **Bootstrap admin**: if you need to re-test the initial-password prompt, set `password_changed_at = NULL` only for `id = (SELECT MIN(id) FROM qd_users)`.
+
+### 📂 Key Files
+
+| Area | Path |
+|------|------|
+| Login notify | `backend_api_python/app/services/login_notify.py` |
+| Auth hooks | `backend_api_python/app/routes/auth.py` |
+| Login logs API | `backend_api_python/app/routes/user.py` |
+| Profile UI | `QuantDinger-Vue-src/src/views/profile/index.vue` |
+| Schema | `backend_api_python/migrations/init.sql` |
+| Sandbox | `backend_api_python/app/utils/safe_exec.py` |
+| HTX V5 | `backend_api_python/app/services/live_trading/htx_v5.py`, `htx.py` |
+
+### ✅ Version
+
+Backend `APP_VERSION` and frontend `package.json` / layout fallbacks: **3.0.17** (canonical `VERSION` at repo root). Bump with `python scripts/bump_version.py X.Y.Z`.
+
+---
+
+## V3.0.7 (2026-05-13) — Code slimming: full removal of Polymarket prediction markets module (including frontend)
+
+The legacy **Polymarket prediction markets** module was fully removed. This release cleans it up in one pass: 5 backend files deleted (worker / batch analyzer / single analyzer / route / data_source) + 2 backend tests + 2 frontend files (API client + modal component) + billing items + 3 database tables + the “related prediction markets” prompt context in AI analysis + the “Prediction Markets” tab on the AI asset analysis page + all translation entries across 10 locale files — **≈ 160 KB / 5600+ lines removed in total**.
+
+### 🧹 Frontend Removed
+
+- **“Prediction Markets” tab on the `ai-asset-analysis` page**: entire `<a-tab-pane key="polymarket">` removed, along with the mounted `<PolymarketAnalysisModal>`
+- **Dialog for pasting a polymarket.com URL for single-market AI analysis**: `components/PolymarketAnalysisModal/index.vue` (24.8 KB) deleted + companion API client `api/polymarket.js` deleted (this was the source of the 404 on `/api/polymarket/history?page=1&page_size=20` when the page loaded)
+- **`PredictionMarket` market enum**: removed from `ai-asset-analysis` card styles, `indicator-ide` watchlist / color mapping / CSS classes
+- **AI Trading Radar** carousel PredictionMarket branch (`is-prediction` 290px card variant / `rc-prediction-title` two-line truncated title / probability + score + recommendation trio / related CSS) fully removed; cards now consistently show price / 24h change / signal
+- **i18n translations**: **1087 lines** of `polymarket.*` / `PredictionMarket` / `predictionmarket` entries cleared from 10 locale files (ar / de / en / fr / ja / ko / th / vi / zh-CN / zh-TW) via one-shot script; all pass `node --check`
+
+### 🧹 Backend Removed
+
+- **Background LLM worker**: `polymarket_worker.py` (OpenAI batch market analysis every 30 min), `polymarket_batch_analyzer.py`, `polymarket_analyzer.py` all deleted; startup hook `start_polymarket_worker()` removed
+- **API routes**: all `/api/polymarket/*` endpoints (including `/analyze`, `/history`) retired; `routes/polymarket.py` deleted + blueprint unregistered
+- **Data source**: `app/data_sources/polymarket.py` (67 KB, CLOB/Gamma API client + local cache read/write) deleted
+- **Polymarket context in AI asset analysis**: removed `🎯 PREDICTION MARKETS` section from `fast_analysis.py` prompt template; removed `include_polymarket` parameter and `_get_polymarket_events` / `_extract_polymarket_keywords` private methods from `market_data_collector.py` (core analysis unchanged; prompt simply loses a 30–80 token prediction-market background block)
+- **Billing items**: `billing_service.py` — removed `cost_polymarket_deep_analysis` unit price, `polymarket_deep_analysis` feature name mapping, and `feature_costs` output
+- **Orphan unused function**: `data_providers/opportunities.py::analyze_opportunities_polymarket`
+- **Tests**: `tests/test_polymarket_slug_lookup.py`, `tests/test_polymarket_url_parsing.py`
+
+### 🗄️ Database
+
+`migrations/init.sql` — removed `CREATE TABLE` and indexes for 3 related tables, plus a one-time cleanup migration for existing databases (no-op on fresh deploys):
 
 ```sql
 DROP TABLE IF EXISTS qd_polymarket_asset_opportunities CASCADE;
@@ -38,295 +140,295 @@ DROP TABLE IF EXISTS qd_polymarket_markets CASCADE;
 
 ### ⚠️ Upgrade Notes
 
-- **不需要任何手动迁移**：重启后端时 `init_database()` 会自动跑 init.sql，三张 `qd_polymarket_*` 表会被自动清理；如果你之前没有这三张表（新库），DROP 语句是空操作
-- **前端缓存**：升级后请用户硬刷一次（Ctrl+Shift+R）清掉 `chunk-vendors.*.js` 旧 bundle，否则浏览器加载缓存的旧 JS 还会去请求 `/api/polymarket/history` 报 404
-- **AI 分析效果**：原本 prompt 末尾「相关预测市场事件」段被去掉。该段对最终决策影响很弱（多数标的根本搜不到对应预测市场，且预测市场≠基本面），删除后 LLM 调用平均省 30-80 token，速度略增
-- **AI 交易雷达**：后端 `trading_opportunities` 接口不再返回 `market: 'PredictionMarket'` 的卡片（孤儿扫描器已删），前端轮播只剩股票 / 加密 / 外汇三类机会
-- **第三方 Adanos 情绪 API 的 `polymarket` 情绪源不受影响** —— 那是 Adanos 提供的舆情数据通道，跟本次下线的 Polymarket 模块是完全独立的两件事，保留
+- **No manual migration required**: on backend restart, `init_database()` automatically runs `init.sql` and drops the three `qd_polymarket_*` tables; if those tables never existed (new DB), the DROP statements are no-ops
+- **Frontend cache**: after upgrade, ask users to hard-refresh (Ctrl+Shift+R) to clear cached `chunk-vendors.*.js` bundles; otherwise the browser may still request `/api/polymarket/history` and get 404
+- **AI analysis impact**: the “related prediction market events” block at the end of the prompt was removed. It had minimal effect on final decisions (most symbols have no matching prediction market, and prediction markets ≠ fundamentals); LLM calls save ~30–80 tokens on average with slightly faster responses
+- **AI Trading Radar**: backend `trading_opportunities` no longer returns cards with `market: 'PredictionMarket'` (orphan scanner removed); frontend carousel now shows only stocks / crypto / forex opportunities
+- **Third-party Adanos sentiment API `polymarket` source is unaffected** — that is Adanos’s sentiment data channel, completely independent of the Polymarket module removed here; it remains
 
 ### 💡 Why
 
-后台 LLM 持续在跑但无任何用户出口 = 纯成本：DB 行数、OpenAI token、Python 内存、日志噪声都在白白增长。trim 掉之后，启动日志安静 / 后台线程数 -1 / OpenAI 月账单 -X / DB 体积 -Y（具体取决于历史数据量）。
+Background LLM running continuously with no user-facing outlet = pure cost: DB rows, OpenAI tokens, Python memory, and log noise all growing for nothing. After trimming: quieter startup logs / one fewer background thread / lower OpenAI monthly bill / smaller DB footprint (exact savings depend on historical data volume).
 
 ---
 
-## V3.0.6 (2026-05-13) — USDT 支付重写：单地址 + 金额尾数 + 四链（TRC20 / BEP20 / ERC20 / SOL）
+## V3.0.6 (2026-05-13) — USDT payment rewrite: single address + amount suffix + four chains (TRC20 / BEP20 / ERC20 / SOL)
 
-本版只动了一处但动得很彻底：**USDT 收款系统**。原先是每张订单派生一个独立 TRC20 地址（xpub HD 派生），上线后两个痛点暴露得很猛 —— **(1)** 几十个派生地址的资金归集要逐个发 TRC20 转账，每次烧掉的 Energy/Bandwidth 折合 ≈ 1.5 USDT/笔，月度归集成本 = 订单数 × 1.5 USDT；**(2)** 派生地址只能 TRC20，跨链扩展（用户喊了很久要 BSC / ETH / SOL）改造工作量巨大。本版用「**单地址 + 金额尾数识别**」一次性解了这两个坑，并顺手把链扩展到 4 条。
+This release changes one area thoroughly: **the USDT payment system**. Previously each order got a unique TRC20 address (xpub HD derivation). Two pain points emerged in production — **(1)** consolidating funds from dozens of derived addresses required individual TRC20 transfers, burning ≈ 1.5 USDT per transfer in Energy/Bandwidth, so monthly consolidation cost = order count × 1.5 USDT; **(2)** derived addresses were TRC20-only, making cross-chain expansion (users had long requested BSC / ETH / SOL) a large refactor. This release solves both with **single address + amount-suffix identification** and extends support to 4 chains.
 
 ### 🚀 New Features
 
-#### USDT 支付：单地址 + 金额尾数模型（替换原 xpub 派生）
-核心想法很简单 —— **不再为每张订单造新地址，所有人都付到同一个主钱包地址；订单的唯一身份藏在「金额尾数」里**。比如基础价 $19.9 的月卡，订单 #A 算出来要付 19.901234 USDT，订单 #B 要付 19.905678 USDT，两笔都到主钱包后我们通过尾数把它们认回原订单：
-- **零归集成本**：钱直接进主钱包，再也不需要扫描数十个派生地址做归集转账
-- **额外成本 ≤ 0.01 USDT/单**：尾数最大被夹到 0.01 USDT 以内（默认 6 位精度，slot 空间 10000+），用户视觉上「就是普通付款」
-- **碰撞防御**：`qd_usdt_orders` 上的 `UNIQUE(chain, amount_usdt) WHERE status IN ('pending','paid')` 偏序唯一索引保证活动订单不会撞到同金额；INSERT 触发碰撞时自动重试不同 seed（默认 10 次）
-- **环境变量**：`USDT_AMOUNT_SUFFIX_DECIMALS=6`（建议默认）
+#### USDT payment: single address + amount suffix model (replaces xpub derivation)
+Core idea — **no new address per order; everyone pays to the same main wallet; order identity is encoded in the amount suffix**. Example: a $19.9 monthly plan — order #A pays 19.901234 USDT, order #B pays 19.905678 USDT; both land in the main wallet and we match back to the original order by suffix:
+- **Zero consolidation cost**: funds go directly to the main wallet; no more scanning dozens of derived addresses for consolidation transfers
+- **Extra cost ≤ 0.01 USDT/order**: suffix capped within 0.01 USDT (default 6 decimal places, 10000+ slot space); visually “just a normal payment” for users
+- **Collision defense**: partial unique index `UNIQUE(chain, amount_usdt) WHERE status IN ('pending','paid')` on `qd_usdt_orders` prevents active orders from sharing the same amount; on INSERT collision, auto-retry with a different seed (default 10 attempts)
+- **Environment variable**: `USDT_AMOUNT_SUFFIX_DECIMALS=6` (recommended default)
 
-#### 4 条链一次性全开：TRC20 / BEP20 / ERC20 / SOL
-每条链只需一行环境变量，未配置的链前端自动隐藏：
-- `USDT_TRC20_ADDRESS=Txxx...`、`USDT_BEP20_ADDRESS=0x...`、`USDT_ERC20_ADDRESS=0x...`、`USDT_SOL_ADDRESS=base58...`
-- 总开关 `USDT_PAY_ENABLED_CHAINS=TRC20,BEP20,ERC20,SOL`（任一项不在白名单内的链下单时被拒）
-- 新增 `GET /api/billing/usdt/chains`：返回当前实际可用的链列表（带 `recommended` 徽标 + 典型手续费），UI 据此渲染选择器
-- 推荐链：**BSC（≈$0.30/笔）+ Solana（≈$0.0005/笔）** —— 比 TRC20 还省钱
+#### Four chains enabled at once: TRC20 / BEP20 / ERC20 / SOL
+Each chain needs one env var; unconfigured chains are hidden in the frontend:
+- `USDT_TRC20_ADDRESS=Txxx...`, `USDT_BEP20_ADDRESS=0x...`, `USDT_ERC20_ADDRESS=0x...`, `USDT_SOL_ADDRESS=base58...`
+- Master switch `USDT_PAY_ENABLED_CHAINS=TRC20,BEP20,ERC20,SOL` (orders on chains not in the whitelist are rejected)
+- New `GET /api/billing/usdt/chains`: returns currently available chains (with `recommended` badge + typical fees); UI renders the selector from this
+- Recommended chains: **BSC (≈$0.30/tx) + Solana (≈$0.0005/tx)** — cheaper than TRC20
 
-#### 钱包深链 URI 二维码（imToken / MetaMask / TokenPocket / Phantom 一扫即填金额）
-每条链生成对应协议的标准 URI 并把它编进二维码，主流钱包扫码后会自动把地址+金额都填好，用户不用手输：
-- **EVM (BEP20/ERC20)**：`ethereum:<contract>@<chain_id>/transfer?address=<recipient>&uint256=<raw>` (EIP-681)
-- **Solana**：`solana:<recipient>?amount=...&spl-token=<mint>&label=...&message=...` (Solana Pay)
-- **TRON**：`tron:<recipient>?asset=USDT&amount=<human>` (TP / imToken 支持，旧版 TronLink 退化为读地址)
-- 钱包不识别 URI 时退化为「读地址 + 用户手动填金额」 —— 此时金额复制按钮 + 高亮尾数让用户不会少付
+#### Wallet deep-link URI QR codes (imToken / MetaMask / TokenPocket / Phantom scan-to-fill amount)
+Each chain generates a standard protocol URI embedded in the QR code; mainstream wallets auto-fill address + amount on scan:
+- **EVM (BEP20/ERC20)**: `ethereum:<contract>@<chain_id>/transfer?address=<recipient>&uint256=<raw>` (EIP-681)
+- **Solana**: `solana:<recipient>?amount=...&spl-token=<mint>&label=...&message=...` (Solana Pay)
+- **TRON**: `tron:<recipient>?asset=USDT&amount=<human>` (TP / imToken supported; legacy TronLink falls back to address-only)
+- When wallets don’t recognize the URI, fallback is “read address + user enters amount manually” — amount copy button + highlighted suffix help avoid underpayment
 
-#### 订单页 UI 改造
-- 选链 modal：列出每条链 + 典型手续费 + 推荐徽标 + 一键继续
-- 支付 modal：二维码大字号显示金额，**末几位尾数高亮成红色**（用户最容易漏看的部分），一键复制金额/地址
-- 钱包兼容性 tooltip：根据链类型给出钱包扫码兼容性提示
-- 没配置任何链时弹「请联系管理员配置 USDT_*_ADDRESS」的指引，而不是 500
+#### Order page UI overhaul
+- Chain selection modal: each chain + typical fee + recommended badge + one-click continue
+- Payment modal: QR code with large amount display; **suffix digits highlighted in red** (the part users most often miss), one-click copy amount/address
+- Wallet compatibility tooltip: scan compatibility hints per chain type
+- When no chain is configured, show “contact admin to configure USDT_*_ADDRESS” instead of 500
 
-### 🛠️ 工程改进
+### 🛠️ Engineering Improvements
 
-#### 后端 `app/services/usdt_payment/` 包重构
-原 830 行单文件 `usdt_payment_service.py` 拆为分层包：
-- `chains.py`：链元数据 / URI 构造 / 金额尾数生成（纯函数，100% 单测覆盖）
-- `watchers/`：`tron.py` (TronGrid) / `evm.py` (Etherscan + BscScan 同 endpoint) / `solana.py` (官方 RPC，`getSignaturesForAddress` + `getTransaction` 解析 SPL `preTokenBalances`/`postTokenBalances`)
-- `service.py`：订单创建 + 入账匹配 + worker
-- 旧路径 `app.services.usdt_payment_service` 保留为 shim，所有现有 import 兼容
+#### Backend `app/services/usdt_payment/` package refactor
+Original 830-line monolith `usdt_payment_service.py` split into a layered package:
+- `chains.py`: chain metadata / URI construction / amount suffix generation (pure functions, 100% unit test coverage)
+- `watchers/`: `tron.py` (TronGrid) / `evm.py` (Etherscan + BscScan same endpoint) / `solana.py` (official RPC, `getSignaturesForAddress` + `getTransaction` parsing SPL `preTokenBalances`/`postTokenBalances`)
+- `service.py`: order creation + payment matching + worker
+- Legacy path `app.services.usdt_payment_service` kept as shim; all existing imports remain compatible
 
-#### Watcher 通用约定
-四条链共用同一接口 `find_incoming(address, amount, created_at) -> (IncomingTransfer | None, debug_note)`。**精确金额匹配**（±1 微单位容忍 wallets 的尾零截断）是匹配方案 A 的关键 —— 不再像旧版那样接受过付为匹配，否则尾数识别会失效。
+#### Watcher common contract
+All four chains share the same interface `find_incoming(address, amount, created_at) -> (IncomingTransfer | None, debug_note)`. **Exact amount matching** (±1 micro-unit tolerance for wallet trailing-zero truncation) is key to matching scheme A — no longer accepting overpayment as a match like the old version, which would break suffix identification.
 
-#### DB Schema 演进（向后兼容 + 一次性自愈）
-`migrations/init.sql` 中的 `qd_usdt_orders` 表加 4 列（`currency` / `amount_suffix` / `payment_uri` / `matched_via`）+ 偏序唯一索引；老库通过 `DO $$ ... ALTER TABLE ADD COLUMN IF NOT EXISTS ...` 自愈，不需要任何停机/手工迁移命令。`address_index` 列保留不删，老订单可继续查看。
+#### DB schema evolution (backward compatible + one-time self-heal)
+`qd_usdt_orders` in `migrations/init.sql` gains 4 columns (`currency` / `amount_suffix` / `payment_uri` / `matched_via`) + partial unique index; existing DBs self-heal via `DO $$ ... ALTER TABLE ADD COLUMN IF NOT EXISTS ...` with no downtime or manual migration. `address_index` column retained for legacy order viewing.
 
-#### 15 个新单测 + 130/130 全套绿
-- `tests/test_usdt_payment_chains.py`：金额尾数精度 / 重试发散 / URI 构造（4 条链每条断言独立）/ 链选择器 env 解析（缺地址自动隐藏）
+#### 15 new unit tests + full suite 130/130 green
+- `tests/test_usdt_payment_chains.py`: amount suffix precision / retry divergence / URI construction (per-chain assertions) / chain selector env parsing (missing address auto-hidden)
 
-### 🐛 修复与清理
-- **删除 xpub HD 派生路径**：`bip_utils` 依赖在 USDT 域已无引用（其他场景仍用），新订单完全不走派生
-- **TRC20 USDT 合约硬编码地址修正**：之前 `env.example` 默认值 `TXLAQ63Xg1NAzckPwKHvzw7CSEmLMEqcdj` 是一个无效占位地址（TronGrid 永远返回空 result），改成 TRC20 USDT 官方合约 `TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t`
+### 🐛 Fixes & cleanup
+- **Removed xpub HD derivation path**: `bip_utils` no longer referenced in USDT domain (still used elsewhere); new orders never use derivation
+- **TRC20 USDT contract hardcoded address fix**: previous `env.example` default `TXLAQ63Xg1NAzckPwKHvzw7CSEmLMEqcdj` was an invalid placeholder (TronGrid always returned empty result); changed to official TRC20 USDT contract `TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t`
 
-### 🐞 上线后 hotfix（v3.0.6 内）
+### 🐞 Post-release hotfixes (within v3.0.6)
 
-实战截图发现两个真实痛点，**同版本内**修复：
+Production screenshots surfaced two real issues, **fixed in the same version**:
 
-1. **金额总小数位漂移**（`19.9 → 19.90670000` 八位）
-   `qd_usdt_orders.amount_usdt` 列宽 `NUMERIC(20,8)`，比 `USDT_AMOUNT_SUFFIX_DECIMALS=6` 宽 2 位。`Decimal('19.901234')` 量化到 6 位写入后，Postgres 回填成 `19.90123400`（DB 列宽决定的零填充），前端拆字符串就出来 `19.90 + 123400` 的 8 位显示，与第一次创单时返回的 6 位 `19.901234` 不一致。
-   - 新增 `chains.format_amount_display()`：统一在 API 出口量化到 `suffix_decimals()` 位
-   - `_row_to_dict` / `create_order` 返回值 / `build_payment_uri` 的 URI 金额段全部走这层，前后端永远见到一致的 6 位小数
-   - DB 列宽保留 `(20,8)` 作为未来扩展 `USDT_AMOUNT_SUFFIX_DECIMALS=8` 的余量，不做 schema 迁移
-2. **关闭支付窗口再打开 = 报错**
-   原实现每次点「立即购买」都创建新订单，老 pending 订单留在 DB 里没人管，前端再次开窗时如果偶发后端慢会让用户看到 toast 报错。
-   - `create_order` 加幂等性：先查 `(user_id, plan, chain, status='pending', expires_at > now)` 的活跃订单，存在就**复用同一条**返回（同样金额、同样地址、同样剩余过期时间），不创建新行
-   - 返回结构加 `reused: bool` 字段；前端 confirmChain 看到 `reused=true` 弹一行轻量 toast「检测到您还有一笔未支付订单，已为您继续展示」
-   - 4 个新单测（`test_usdt_payment_idempotency.py`）覆盖：同请求复用 / 不同链不复用 / 不同用户不复用 / 已过期订单不阻塞新建
+1. **Total decimal drift** (`19.9 → 19.90670000` eight digits)
+   `qd_usdt_orders.amount_usdt` column is `NUMERIC(20,8)`, 2 digits wider than `USDT_AMOUNT_SUFFIX_DECIMALS=6`. After `Decimal('19.901234')` quantized to 6 places and written, Postgres pads to `19.90123400` (column width zero-fill); frontend string split showed `19.90 + 123400` as 8 digits, inconsistent with the 6-digit `19.901234` returned at order creation.
+   - Added `chains.format_amount_display()`: uniformly quantize API output to `suffix_decimals()` places
+   - `_row_to_dict` / `create_order` return / `build_payment_uri` URI amount segment all go through this layer; frontend and backend always see consistent 6 decimal places
+   - DB column width kept at `(20,8)` as headroom for future `USDT_AMOUNT_SUFFIX_DECIMALS=8`; no schema migration
+2. **Close payment window and reopen = error**
+   Original flow created a new order on every “Buy now” click; old pending orders lingered in DB; reopening the window after a slow backend could show a toast error.
+   - `create_order` idempotency: first look up active order `(user_id, plan, chain, status='pending', expires_at > now)`; if found, **reuse and return** (same amount, address, remaining expiry) without inserting
+   - Return adds `reused: bool`; frontend `confirmChain` shows light toast “Unpaid order detected — showing existing order” when `reused=true`
+   - 4 new tests (`test_usdt_payment_idempotency.py`): same request reuse / different chain no reuse / different user no reuse / expired order does not block new order
 
-### 📋 升级须知
-1. **重启即可**：DB schema 自治迁移已合入 `init.sql`，不需要手工跑 SQL
-2. **配 env 才生效**：把 `USDT_TRC20_ADDRESS=` 等四个变量改成你的主钱包地址；空着的链前端自动隐藏，不会出现在用户的选项里
-3. **API Key 可选但强烈建议**：Etherscan / BscScan 不配 Key 时走匿名通道（200 次/天），少量订单可用；Solana 默认走官方公开 RPC（足够小流量），高流量建议换 Helius / QuickNode 私有 RPC（`SOLANA_RPC_URL`）
-4. **TRON 合约地址默认值变更**：升级后请用 `env.example` 里的新默认 `TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t`，旧 `.env` 里如果显式配了无效占位务必更新
+### 📋 Upgrade notes
+1. **Restart only**: DB schema self-migration is in `init.sql`; no manual SQL
+2. **Configure env to enable**: set `USDT_TRC20_ADDRESS=` etc. to your main wallet addresses; empty chains are hidden from user options
+3. **API keys optional but recommended**: Etherscan / BscScan without keys use anonymous tier (200/day), fine for low volume; Solana defaults to public RPC (enough for small traffic); high traffic — private RPC via Helius / QuickNode (`SOLANA_RPC_URL`)
+4. **TRON contract default changed**: after upgrade use new default in `env.example` `TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t`; update old `.env` if it explicitly set the invalid placeholder
 
-### 📂 关键文件
-| 文件 | 用途 |
+### 📂 Key files
+| File | Purpose |
 |---|---|
-| `backend_api_python/app/services/usdt_payment/chains.py` | 4 条链元数据 / URI 构造 / 金额尾数 |
-| `backend_api_python/app/services/usdt_payment/watchers/*.py` | 4 条链入账扫描器 |
-| `backend_api_python/app/services/usdt_payment/service.py` | 订单流程 + worker |
-| `backend_api_python/app/services/usdt_payment_service.py` | 向后兼容 shim |
-| `backend_api_python/migrations/init.sql` | `qd_usdt_orders` 新列 + 偏序唯一索引 + 自愈 migration |
-| `backend_api_python/env.example` | 新 env 变量（4 链地址 / 浏览器 Key / 尾数精度） |
-| `backend_api_python/app/routes/billing.py` | 新增 `/usdt/chains`，`/usdt/create` 接收 `chain` 参数 |
-| `QuantDinger-Vue-src/src/views/billing/index.vue` | 选链 modal + URI 二维码 + 尾数高亮 |
+| `backend_api_python/app/services/usdt_payment/chains.py` | 4-chain metadata / URI construction / amount suffix |
+| `backend_api_python/app/services/usdt_payment/watchers/*.py` | 4-chain incoming payment scanners |
+| `backend_api_python/app/services/usdt_payment/service.py` | Order flow + worker |
+| `backend_api_python/app/services/usdt_payment_service.py` | Backward-compatible shim |
+| `backend_api_python/migrations/init.sql` | `qd_usdt_orders` new columns + partial unique index + self-heal migration |
+| `backend_api_python/env.example` | New env vars (4-chain addresses / explorer keys / suffix precision) |
+| `backend_api_python/app/routes/billing.py` | New `/usdt/chains`; `/usdt/create` accepts `chain` param |
+| `QuantDinger-Vue-src/src/views/billing/index.vue` | Chain selection modal + URI QR + suffix highlight |
 | `QuantDinger-Vue-src/src/api/billing.js` | `listUsdtChains()` / `createUsdtOrder(plan, chain)` |
-| `backend_api_python/tests/test_usdt_payment_chains.py` | 15 个新单测 |
+| `backend_api_python/tests/test_usdt_payment_chains.py` | 15 new unit tests |
 
 ---
 
-## V3.0.5 (2026-05-13) — Alpaca / Smart Tuning v2 / IS-OOS 双面板 / 经纪商统一面板 / DB 启动自愈
+## V3.0.5 (2026-05-13) — Alpaca / Smart Tuning v2 / IS-OOS dual panel / unified broker panel / DB startup self-heal
 
-本版合并了过去两周累积的「让回测更科学、让多券商管理更顺手、让本地部署更不容易踩坑」的改动。其中**回测科学性**是这次最值得说的事——之前智能调参在训练段（IS）上给出 +36% 头条数字，用户把参数应用回完整窗口跑出 -24%，这种沉默过拟合是本次重点修复对象。同时新增 **Alpaca Markets** 作为第三家「传统经纪商」适配器，与 IBKR / MT5 平级。
-
-### 🚀 New Features
-
-#### Alpaca Markets 适配器（美股 / ETF / 加密货币 · paper + live）
-作为第三种「传统经纪商」并入 QuantDinger，与 IBKR / MT5 平级（来源 [PR #101](https://github.com/brokermr810/QuantDinger/pull/101)）：
-- **覆盖**：US 股票、ETF、加密货币现货；纸面 (`paper-api.alpaca.markets`) 和真实 (`api.alpaca.markets`) 账户均可
-- **adapter**：`backend_api_python/app/services/alpaca_trading/`（client / symbols / 错误规范化 / OHLCV）
-- **路由**：`/api/alpaca/connect|status|account|positions|orders|symbols`
-- **多租户**：与 IBKR 一起接入新的 `BrokerSessionRegistry`，每个用户独立 client，不再共享全局连接
-- **零 referral 干扰**：审过整个适配器代码，无 referral / partner code 类隐藏标识
-
-#### 统一经纪商账户页面（`/broker-accounts`）
-原先 IBKR / MT5 / Alpaca / 加密货币交易所的连接入口散落在不同位置，现合并为一个统一管理页：
-- 头部摘要 + Alpaca / IBKR / MT5 三个 panel（连接表单 + 账户 KPI + 持仓表 + 挂单表 + 一键撤单）
-- 加密货币交易所凭据作为一张独立卡片列出，复用现有 `ExchangeAccountModal`
-- 前端通过 `src/api/broker.js` 统一各家不一致的端点结构
-
-#### 智能调参 v2（Smart Tuning）—— 多参数策略真正可用
-之前的「智能调参」实际只扫止盈 / 止损 / 杠杆 3 个维度，RSI / MACD / EMA / ATR 这种多参数策略基本无法调参。本版把它做成真正的多维寻优：
-- **P1 · 自动推断 sweep 范围**：指标里写 `# @param rsi_len int 14 RSI period` 就够，不用手写 `range=`，前端基于 default × `[0.5, 0.75, 1, 1.25, 1.75]` 自动生成扫参网格（int 类型自动取整、去重）
-- **P2 ·「可调维度」面板**：在结构化调参卡片里一目了然列出所有维度（带 risk / position / leverage / `@param` declared / `@param` inferred 五色徽标），实时显示完整笛卡尔积大小与候选预算，每个维度都可勾选取消
-- **P3 · 维度爆炸自动切 DE**：完整笛卡尔积 > 候选预算 × 10 时（默认 480），grid 自动切换到 Differential Evolution，避免「扫了等于没扫」，UI 显示蓝色提示「已自动切换到 DE」
-- **P4 · trailing 维度自动加入**：策略 `@strategy trailingEnabled=true` 时，自动追加 `trailing.pct` 和 `trailing.activationPct` 两个扫参维度
-
-#### IS-OOS 双面板 + 应用按钮分流
-解决了一个长期沉默的过拟合陷阱（智能调参在 70% 训练段上给 +36% 头条数字，应用到完整窗口含 30% 验证段后跑出 -24%，但 UI 上完全看不出来）：
-- **最佳候选卡片** 改成 IS / OOS 并排展示，红框警示「OOS 退化 X%，疑似过拟合」
-- **原来的「应用最佳参数」按钮拆成三个动作**：
-  - 应用并在训练段验证（复现 +36% 头条数字）
-  - 应用并在完整窗口跑（含 OOS 段，看真实表现）
-  - 只应用参数（不立即跑回测）
-- 后端 `ExperimentRunnerService._build_best_output` 暴露 `oosSummary` / `oosScore` / `oosDegradation` / `oosOverfit` 给前端
-
-#### Crypto 行情时间框架后端 resample
-当交易所原生不提供某个时间框架（如 OKX 没有 30m）时，后端自动取更细粒度的 OHLCV 数据并按交易所对齐 resample。前端无需关心，13 个新单测覆盖（来源 [PR #104](https://github.com/brokermr810/QuantDinger/pull/104)）。
-
-### 🛠️ 工程改进
-
-#### 数据库启动自治（解决「本地 PG 部署 `relation does not exist` / `权限不够` 满屏」）
-之前本地 PostgreSQL（非 docker）部署必须手工 `psql -f migrations/init.sql` 才能建表，否则 worker 起来满屏 `relation "pending_orders" does not exist` / `qd_strategy_positions 权限不够`；docker 部署不会踩这个坑（容器 entrypoint 自动跑 init.sql）。现在：
-- `init_database()` 每次启动**自动 apply** `migrations/init.sql`（全幂等 `CREATE TABLE IF NOT EXISTS`，docker 二次跑无害）
-- 启动后做一次轻量**权限自检**：对 `qd_users` / `pending_orders` / `qd_strategy_positions` / `qd_strategies_trading` / `qd_analysis_memory` 五个关键表跑 `SELECT 1 LIMIT 0`，任何 `InsufficientPrivilege` 失败立刻打头条 banner 给出 `ALTER TABLE OWNER` 修复配方，而不是让权限错误淹在每秒的 worker 日志里
-- 新 env: `SKIP_AUTO_MIGRATE=true` 作为外部 schema 管理（Flyway / Liquibase / DBA 手工）的逃生口
-
-#### 多租户经纪商会话（`BrokerSessionRegistry`）
-`backend_api_python/app/utils/broker_session.py` 提供按 `(user_id, broker_name)` 缓存的 client 注册表，加 `threading.Lock` 保护。把原本 IBKR / Alpaca 共用全局 `_client` 改为按用户隔离，避免「一个用户重连把所有用户踢下线」。
-
-#### OAuth `FRONTEND_URL` 支持多前端
-`backend_api_python/app/services/oauth_service.py` 现在把 `FRONTEND_URL` 解析为逗号分隔列表：第一个作为默认登录后重定向 origin，全部作为 OAuth 重定向白名单。便于一套后端同时给 `ai.quantdinger.com` + `m.quantdinger.com` 两个域提供服务。
-
-#### 默认指标精简 + SuperTrend 示例国际化
-新用户注册原本默认塞 4 个内置指标，现简化为 **1 个高质量 SuperTrend 示例**：全英文注释 + `@param` 范围标注 + Wilder ATR 平滑、路径依赖 SuperTrend 计算的标准实现，开箱即跑且展示推荐的多参数策略写法。
-
-### 🐛 Bug 修复
-
-- **指标市场综合评分全为 0**（V3.0.4，已合并入本版）：`community_service.py` 读字段拼错（`'overall'` 实际字段是 `'overallScore'`），所有上架策略综合分都显示 0；4 个回归测试补齐
-- **风险-收益分布坐标轴单位错误**：散点图坐标轴单位把已经是百分比的 `totalReturn` / `maxDrawdown` 再乘 100，显示为「百分之好几千」，已修
-- **`runBacktest` 时间窗口覆盖**：方法签名加入 `options.dateRangeOverride`，允许「应用并在训练段验证」这种行为复用完整 `runBacktest` 路径
-- **i18n key 漏写**：调参维度面板部分 label 直接显示 `indicatorIde.stopLossPct` 而不是「止损 (%)」—— 补齐 4 个缺失 key × 10 locale (`stopLossPct` / `takeProfitPct` / `trailingStopPct` / `trailingActivationPct`)，并把 label 解析改用 `$te()`（translation exists 检查）防御未来再有遗漏
-- **Smart Tuning 12 个 IS/OOS 相关 i18n key** 同步铺到 10 个 locale
-
-### ⚙️ 配置变化
-
-| 变量 | 默认 | 作用 |
-|---|---|---|
-| `SKIP_AUTO_MIGRATE` | `false` | 启动时不自动 apply `migrations/init.sql`（外部 schema 管理时设 true） |
-| `FRONTEND_URL` | `http://localhost:8080` | 现支持逗号分隔多个 origin，全部进 OAuth 白名单；第一个作默认重定向 |
-
-### ✅ 测试
-
-新增 14 个回归测试，全套 **115/115 通过**：
-- `tests/test_db_bootstrap.py` —— 6 个（auto-migrate 幂等 / `init.sql` 缺失兜底 / SQL 失败不崩 / `_verify_table_access` 全绿 / 多个权限失败汇总 banner / `SKIP_AUTO_MIGRATE` 逃生口）
-- `tests/test_experiment_services.py::test_evolution_sweeps_indicator_level_params` —— 1 个（确认 `indicator_params.atr_period` 路径走通 snapshot + overrides）
-- `tests/test_experiment_best_output.py` —— 3 个（OOS metrics surfacing：`oosSummary` / `oosScore` / `oosDegradation` / `oosOverfit`）
-- `tests/test_market_indicator_score.py` —— 4 个（综合评分 `'overall'` → `'overallScore'` 拼写错误回归）
-
-ESLint 对所有触及的 `.vue` / `.js` 文件全绿。
-
-### 📦 兼容性 / 升级建议
-
-- **零破坏性升级**：所有 backend 路由、env 变量、数据库表 schema 全部向后兼容
-- **数据库**：首次启动会自动 apply `migrations/init.sql`；如果你的 PG 用户不是表 owner，启动日志里会出 banner 指引你跑一次 `ALTER TABLE ... OWNER TO <user>;` 一键修好
-- **前端**：需要 build `QuantDinger-Vue-src` 并替换 `frontend/dist`（仓库内 `frontend/dist` 已经包含本次构建产物）
-- **Alpaca**：需要在生产 `requirements.txt` 加 `alpaca-py>=0.30.0`，或本地 `pip install alpaca-py`（已在 `backend_api_python/requirements.txt` 中加好）
-
-### 🗂️ 文件改动概览
-
-- 后端：`app/services/alpaca_trading/*`、`app/routes/alpaca.py`、`app/services/experiment/runner.py`、`app/services/builtin_indicators.py`、`app/services/oauth_service.py`、`app/utils/db.py`、`app/utils/broker_session.py`、`app/services/community_service.py`
-- 前端：`src/views/indicator-ide/index.vue`、`src/views/broker-accounts/*`、`src/api/broker.js`、`src/locales/lang/*.js`（10 个 locale + 16 个新 key）
-- 文档：`README.md` + 6 个 `docs/README_*.md`（badge → 3.0.5 / 加入 Alpaca）、`env.example`（新 `SKIP_AUTO_MIGRATE`）
-
----
-
-## V3.1.0 (2026-05-02) — AI Agent Gateway / MCP HTTP / SSE 进度流 / Admin UI
-
-把 QuantDinger 从「只服务人类用户的 Web 产品」扩展成「同时面向人类和 AI Agent 的两栈产品」。给 OpenClaw / NanoBot / Claude Code / Cursor / Codex 这类 Agent 运行时配齐了：受控的 HTTP 网关、按 Scope 的细粒度授权、异步任务 + 实时进度、MCP 接入、Admin 后台运维面板，以及一份机器可读的契约（OpenAPI 3.0）。**所有 Agent 入口默认拒绝实盘交易**——T 类（Trading）即便给到 Agent，也走纸面订单簿，需要管理员显式开启服务器级开关后才可能走真实交易所。
+This release merges two weeks of work: **more rigorous backtesting**, **easier multi-broker management**, and **fewer local deployment pitfalls**. **Backtest rigor** is the headline — smart tuning previously showed +36% headline numbers on the in-sample (IS) segment while applying those params to the full window produced -24%; this silent overfitting is the main fix. Also adds **Alpaca Markets** as the third **traditional broker** adapter, on par with IBKR / MT5.
 
 ### 🚀 New Features
 
-#### Agent Gateway（`/api/agent/v1`）
-全新的、与人类 JWT 完全隔离的机器对机器 API：
-- **Token 模型**：管理员一次性签发 `qd_agent_xxxx` 令牌，存库时只保留 SHA-256 哈希；支持自定义 scopes (`R / W / B / N / C / T`)、市场白名单、品种白名单、`paper_only`、速率上限、过期时间。
-- **Capability Classes**：每个端点声明唯一一个 risk class —— **R**(Read) / **W**(Workspace write) / **B**(Backtest) / **N**(Notify) / **C**(Credentials, admin only) / **T**(Trading, paper-only by default)。
-- **审计日志**：每一次 Agent 调用（成功、被拒、429）都追加到 `qd_agent_audit`，含路由、scope class、状态码、耗时与脱敏后的请求/响应摘要。
-- **速率限制 + 幂等**：基于 token 的进程内滑动窗口；W/B/T 类支持 `Idempotency-Key` 头，重复 key 直接返回原始 job，不再重复执行。
-- **异步任务**：长任务（回测、实验流水线、AI 优化）通过进程内 `ThreadPoolExecutor` 入队，写入 `qd_agent_jobs`，客户端走「提交 → 轮询 / SSE」模式；workers 数和实盘开关都走 env 控制。
-- **Tenant 隔离**：`token → user_id → 资源`；任何 Agent 都看不到其他用户的策略、订单、审计或任务。
+#### Alpaca Markets adapter (US stocks / ETF / crypto · paper + live)
+Third **traditional broker** integrated into QuantDinger, on par with IBKR / MT5 (from [PR #101](https://github.com/brokermr810/QuantDinger/pull/101)):
+- **Coverage**: US stocks, ETFs, crypto spot; both paper (`paper-api.alpaca.markets`) and live (`api.alpaca.markets`) accounts
+- **Adapter**: `backend_api_python/app/services/alpaca_trading/` (client / symbols / error normalization / OHLCV)
+- **Routes**: `/api/alpaca/connect|status|account|positions|orders|symbols`
+- **Multi-tenant**: with IBKR, wired into new `BrokerSessionRegistry` — per-user client, no shared global connection
+- **Zero referral noise**: full adapter review — no referral / partner code hidden identifiers
 
-实现的端点（与 `docs/agent/agent-openapi.json` 一一对应）：
-| 类别 | 路径 | Class | 说明 |
-|---|---|---|---|
-| Health | `GET /health` · `GET /whoami` | – / R | 公开存活 / token 自省 |
-| Markets | `GET /markets` · `/markets/{m}/symbols` · `/klines` · `/price` | R | 行情 |
-| Strategies | `GET /strategies` · `GET/POST/PATCH /strategies/{id}` | R / W | 状态切到 `running` 需 T |
-| Backtests | `POST /backtests` | B | 异步，返回 `job_id` |
-| Experiments | `POST /experiments/{regime/detect, pipeline, structured-tune, ai-optimize}` | B | regime 同步、其余异步 |
-| Jobs | `GET /jobs` · `GET /jobs/{id}` · `GET /jobs/{id}/stream` | R | 列表 / 单查 / **SSE 实时流** |
-| Portfolio | `GET /portfolio/positions` · `/portfolio/paper-orders` | R | 持仓 / 纸面成交 |
-| Quick-Trade | `POST /quick-trade/orders` · `POST /quick-trade/kill-switch` | T | 默认走纸面簿 |
-| Admin | `POST/GET /admin/tokens` · `DELETE /admin/tokens/{id}` · `GET /admin/audit` | – | 仅人类 JWT |
+#### Unified broker accounts page (`/broker-accounts`)
+Previously IBKR / MT5 / Alpaca / crypto exchange connection entry points were scattered; now merged into one management page:
+- Header summary + Alpaca / IBKR / MT5 panels (connection form + account KPIs + positions + open orders + one-click cancel)
+- Crypto exchange credentials as a separate card, reusing existing `ExchangeAccountModal`
+- Frontend `src/api/broker.js` normalizes differing endpoint structures across brokers
 
-#### SSE 实时进度（`GET /api/agent/v1/jobs/{id}/stream`）
-长任务（`ai-optimize` / `structured-tune` / 多轮回测流水线）现在能让 LLM 客户端「边跑边看」：
-- 帧类型：`snapshot`（首帧给基线）→ `progress`（每次 runner `on_progress` 触发）→ `ping`（~15s 心跳，防代理掐线）→ `result`（终态后立刻收尾）。
-- 断点续传：`?since=<seq>` 或标准 `Last-Event-ID` 头。
-- 任务已结束时直接给 `snapshot + result` 后关闭，客户端无需写两套逻辑。
-- Runner 接入约定：`runner(payload, on_progress)` 第二参数自动被探测到，事件同时投递给 SSE 订阅者并写入 `qd_agent_jobs.progress` JSONB（断线重连可读取最新快照）。
+#### Smart Tuning v2 — multi-parameter strategies actually work
+Previous “smart tuning” only swept take-profit / stop-loss / leverage (3 dimensions); RSI / MACD / EMA / ATR multi-param strategies were barely tunable. This release makes it true multi-dimensional optimization:
+- **P1 · Auto-inferred sweep ranges**: write `# @param rsi_len int 14 RSI period` in the indicator — no manual `range=`; frontend auto-builds grid from default × `[0.5, 0.75, 1, 1.25, 1.75]` (int auto-rounded, deduped)
+- **P2 · “Tunable dimensions” panel**: structured tuning card lists all dimensions (risk / position / leverage / `@param` declared / `@param` inferred color badges), live Cartesian product size vs candidate budget; each dimension toggleable
+- **P3 · Dimension explosion auto-switches to DE**: when full Cartesian product > candidate budget × 10 (default 480), grid auto-switches to Differential Evolution; blue UI hint “Automatically switched to DE”
+- **P4 · Trailing dimensions auto-added**: when `@strategy trailingEnabled=true`, auto-append `trailing.pct` and `trailing.activationPct` sweep dimensions
 
-#### MCP Server（`mcp_server/` —— 已发布到 PyPI: [`quantdinger-mcp`](https://pypi.org/project/quantdinger-mcp/)）
-独立 Python 包，把 Agent Gateway 的 R / B 子集包成 Model Context Protocol 工具：
-- 一行装好（任意机器，不用 clone 仓库）：`uvx quantdinger-mcp` / `pipx install quantdinger-mcp` / `pip install quantdinger-mcp`。
-- 三种 transport，由环境变量 `QUANTDINGER_MCP_TRANSPORT` 选：
-  - `stdio`（默认）—— 桌面 IDE（Cursor / Claude Code）以子进程启动
-  - `sse` —— 仅支持 SSE 的客户端
-  - `streamable-http` —— 新版 MCP HTTP 协议，云端 Agent / 远程 IDE 直连
-- HTTP 模式额外读 `QUANTDINGER_MCP_HOST` / `QUANTDINGER_MCP_PORT`。
-- 永远只接 Agent token，**绝不要写人类 JWT 或交易所 Key**。
+#### IS-OOS dual panel + split apply actions
+Fixes a long-silent overfitting trap (smart tuning +36% headline on 70% train segment, -24% on full window including 30% validation — invisible in UI):
+- **Best candidate card** now IS / OOS side-by-side; red alert “OOS degraded X%, possible overfit”
+- **Former “Apply best params” split into three actions**:
+  - Apply and validate on train segment (reproduce +36% headline)
+  - Apply and run on full window (includes OOS — see real performance)
+  - Apply params only (no immediate backtest)
+- Backend `ExperimentRunnerService._build_best_output` exposes `oosSummary` / `oosScore` / `oosDegradation` / `oosOverfit` to frontend
 
-#### 前端 Admin UI：Agent Tokens 面板（仅 admin）
-集成进现有 Vue 后台（与「用户管理」「系统设置」并列）：
-- 路由 `/agent-tokens`，权限 `permission: ['admin']`。
-- **Tokens 标签**：列表（含彩色 scope tag、market 白名单、paper-only / live-eligible 状态、最后使用时间）+ 撤销按钮。
-- **签发弹窗**：scope 多选、市场/品种白名单、速率、过期天数、`paper_only` 开关；勾 T 但关 paper-only 时给红色警告提示需要服务器端 `AGENT_LIVE_TRADING_ENABLED=true`。
-- **Reveal 弹窗**：完整 token **只显示一次**，自带复制到剪贴板。
-- **Audit 标签**：method / route / scope class / status / 耗时；status 用色阶（5xx 红、429 橙、4xx 火、2xx 绿）。
-- i18n：`en-US` + `zh-CN` 各加约 30 个 `agentTokens.*` key，其它语言走英文 fallback。
+#### Crypto timeframe backend resample
+When an exchange lacks a native timeframe (e.g. OKX has no 30m), backend fetches finer OHLCV and exchange-aligned resample. Frontend unchanged; 13 new unit tests (from [PR #104](https://github.com/brokermr810/QuantDinger/pull/104)).
 
-#### 系统架构图
-README 顶部插入了一张端到端架构图（`docs/screenshots/architecture.png`），中英两份 README 同步。
+### 🛠️ Engineering Improvements
 
-### 🛠️ Tooling / Docs
+#### Database startup self-management (fixes local PG `relation does not exist` / `permission denied` spam)
+Previously local PostgreSQL (non-Docker) required manual `psql -f migrations/init.sql` or workers flooded logs with `relation "pending_orders" does not exist` / `qd_strategy_positions permission denied`; Docker avoided this (entrypoint runs init.sql). Now:
+- `init_database()` **auto-applies** `migrations/init.sql` on every startup (idempotent `CREATE TABLE IF NOT EXISTS`; safe to re-run in Docker)
+- Lightweight **permission self-check** after startup: `SELECT 1 LIMIT 0` on five key tables; any `InsufficientPrivilege` triggers headline banner with `ALTER TABLE OWNER` fix recipe instead of drowning in worker logs
+- New env `SKIP_AUTO_MIGRATE=true` escape hatch for external schema management (Flyway / Liquibase / manual DBA)
 
-- `docs/agent/AGENT_ENVIRONMENT_DESIGN.md` —— 三层契约（Documentation → Command → Machine Interface）总览，约束 Cursor / Claude Code / Codex 这类**写代码**的 Agent。
-- `docs/agent/AI_INTEGRATION_DESIGN.md` —— 把 QuantDinger 当**产品**消费的 Agent 设计文档（personas、capability classes、安全、Roadmap、实施进度表）。当前进到 v0.3。
-- `docs/agent/AGENT_QUICKSTART.md` —— 操作手册：从签 token、`/whoami`、读行情、跑回测、SSE 监听到 MCP 接入的逐步 `curl` 例子。
-- `docs/agent/agent-openapi.json` —— OpenAPI 3.0 契约，含所有 `/api/agent/v1/...` 路径 + `x-scope-class` 自定义扩展。
-- `.cursor/skills/quantdinger-agent-workflow/SKILL.md` —— 给 Cursor / Claude Code 用的 Skill，告诉 Agent 在本仓库改代码时的红线、入口、验证方式。
-- `mcp_server/README.md` —— MCP 三种 transport 的部署示例。
+#### Multi-tenant broker sessions (`BrokerSessionRegistry`)
+`backend_api_python/app/utils/broker_session.py` provides client registry cached by `(user_id, broker_name)` with `threading.Lock`. Replaces shared global `_client` for IBKR / Alpaca with per-user isolation — no “one user reconnect kicks everyone offline”.
 
-### ⚙️ Configuration
+#### OAuth `FRONTEND_URL` multi-frontend support
+`backend_api_python/app/services/oauth_service.py` parses `FRONTEND_URL` as comma-separated list: first entry = default post-login redirect origin; all entries = OAuth redirect whitelist. One backend can serve `ai.quantdinger.com` + `m.quantdinger.com`.
 
-新增（全部可选）环境变量，默认即安全：
+#### Default indicators trimmed + SuperTrend example internationalized
+New users previously got 4 built-in indicators; now **1 high-quality SuperTrend example**: full English comments + `@param` range annotations + standard Wilder ATR / path-dependent SuperTrend — ready to run and demonstrates recommended multi-param strategy style.
 
-| 变量 | 默认 | 作用 |
+### 🐛 Bug Fixes
+
+- **Indicator market overall scores all zero** (V3.0.4, merged here): `community_service.py` wrong field (`'overall'` vs `'overallScore'`); all listed strategies showed 0; 4 regression tests added
+- **Risk-return scatter axis unit wrong**: `totalReturn` / `maxDrawdown` already percentages but multiplied by 100 again — “thousands of percent”; fixed
+- **`runBacktest` date range override**: signature adds `options.dateRangeOverride` for “apply and validate on train segment” reusing full `runBacktest` path
+- **Missing i18n keys**: tuning dimension panel showed raw `indicatorIde.stopLossPct` instead of “Stop loss (%)” — added 4 keys × 10 locales; label resolution uses `$te()` (translation exists) guard
+- **Smart Tuning 12 IS/OOS i18n keys** synced to 10 locales
+
+### ⚙️ Configuration Changes
+
+| Variable | Default | Purpose |
 |---|---|---|
-| `AGENT_JOBS_MAX_WORKERS` | `4` | Agent 异步任务线程池大小 |
-| `AGENT_LIVE_TRADING_ENABLED` | `false` | **服务器级实盘开关**。即使某个 token `paper_only=false`，没开这个开关也只走纸面 |
-| `QUANTDINGER_MCP_TRANSPORT` | `stdio` | MCP 客户端连接方式 (`stdio` / `sse` / `streamable-http`) |
-| `QUANTDINGER_MCP_HOST` | `127.0.0.1` | MCP HTTP 模式 bind host |
-| `QUANTDINGER_MCP_PORT` | `8000` | MCP HTTP 模式 bind port |
+| `SKIP_AUTO_MIGRATE` | `false` | Skip auto-apply of `migrations/init.sql` on startup (set true for external schema management) |
+| `FRONTEND_URL` | `http://localhost:8080` | Comma-separated origins; all in OAuth whitelist; first = default redirect |
 
 ### ✅ Tests
 
-- `backend_api_python/tests/test_agent_v1.py` —— 9 个用例：缺 token / 未知 token / inactive / expired token / scope 不足 / 速率限制 / token 生成格式等。
-- `backend_api_python/tests/test_agent_jobs_progress.py` —— 5 个用例：runner 签名探测、有序累积、`since_seq` 续传、idle 超时、跨线程实时投递。
-- `mcp_server/tests/test_transport_resolution.py` —— 4 个用例：默认 transport、别名解析、未知值优雅退出、HTTP settings shim。安装 `mcp` 包后才会跑，否则 `importorskip` 跳过。
+14 new regression tests; full suite **115/115 passing**:
+- `tests/test_db_bootstrap.py` — 6 (auto-migrate idempotency / missing `init.sql` fallback / SQL failure no crash / `_verify_table_access` green / multi-permission failure banner / `SKIP_AUTO_MIGRATE` escape)
+- `tests/test_experiment_services.py::test_evolution_sweeps_indicator_level_params` — 1 (`indicator_params.atr_period` snapshot + overrides path)
+- `tests/test_experiment_best_output.py` — 3 (OOS metrics: `oosSummary` / `oosScore` / `oosDegradation` / `oosOverfit`)
+- `tests/test_market_indicator_score.py` — 4 (`'overall'` → `'overallScore'` typo regression)
 
-后端跑出 **58 passed**（53 个 Gateway 测试 + 5 个 SSE 测试）。
+ESLint green on all touched `.vue` / `.js` files.
+
+### 📦 Compatibility / Upgrade Notes
+
+- **Zero breaking changes**: all backend routes, env vars, DB schema backward compatible
+- **Database**: first startup auto-applies `migrations/init.sql`; if PG user is not table owner, startup banner points to `ALTER TABLE ... OWNER TO <user>;`
+- **Frontend**: build `QuantDinger-Vue-src` and replace `frontend/dist` (repo `frontend/dist` includes this build)
+- **Alpaca**: add `alpaca-py>=0.30.0` to production `requirements.txt`, or `pip install alpaca-py` locally (already in `backend_api_python/requirements.txt`)
+
+### 🗂️ Files Changed Overview
+
+- Backend: `app/services/alpaca_trading/*`, `app/routes/alpaca.py`, `app/services/experiment/runner.py`, `app/services/builtin_indicators.py`, `app/services/oauth_service.py`, `app/utils/db.py`, `app/utils/broker_session.py`, `app/services/community_service.py`
+- Frontend: `src/views/indicator-ide/index.vue`, `src/views/broker-accounts/*`, `src/api/broker.js`, `src/locales/lang/*.js` (10 locales + 16 new keys)
+- Docs: `README.md` + 6× `docs/README_*.md` (badge → 3.0.5 / Alpaca added), `env.example` (new `SKIP_AUTO_MIGRATE`)
+
+---
+
+## V3.1.0 (2026-05-02) — AI Agent Gateway / MCP HTTP / SSE progress stream / Admin UI
+
+Extends QuantDinger from a **Web product for human users only** to a **dual-stack product for humans and AI agents**. Equips Agent runtimes like OpenClaw / NanoBot / Claude Code / Cursor / Codex with: a controlled HTTP gateway, scope-based fine-grained authorization, async jobs + live progress, MCP access, Admin ops panel, and a machine-readable contract (OpenAPI 3.0). **All Agent entry points deny live trading by default** — T-class (Trading) tokens use the paper order book even when granted to agents; real exchange access requires an explicit server-level switch.
+
+### 🚀 New Features
+
+#### Agent Gateway (`/api/agent/v1`)
+Brand-new machine-to-machine API fully isolated from human JWT:
+- **Token model**: admins issue one-time `qd_agent_xxxx` tokens; only SHA-256 hash stored; custom scopes (`R / W / B / N / C / T`), market/instrument allowlists, `paper_only`, rate limits, expiry
+- **Capability classes**: each endpoint declares one risk class — **R**(Read) / **W**(Workspace write) / **B**(Backtest) / **N**(Notify) / **C**(Credentials, admin only) / **T**(Trading, paper-only by default)
+- **Audit log**: every Agent call (success, denial, 429) appended to `qd_agent_audit` with route, scope class, status, duration, redacted request/response summary
+- **Rate limiting + idempotency**: in-process sliding window per token; W/B/T support `Idempotency-Key` — duplicate key returns original job without re-execution
+- **Async jobs**: long tasks (backtest, experiment pipeline, AI optimize) queued via in-process `ThreadPoolExecutor` into `qd_agent_jobs`; clients use submit → poll / SSE; worker count and live switch via env
+- **Tenant isolation**: `token → user_id → resources`; no Agent sees another user’s strategies, orders, audit, or jobs
+
+Implemented endpoints (1:1 with `docs/agent/agent-openapi.json`):
+| Category | Path | Class | Description |
+|---|---|---|---|
+| Health | `GET /health` · `GET /whoami` | – / R | Public liveness / token introspection |
+| Markets | `GET /markets` · `/markets/{m}/symbols` · `/klines` · `/price` | R | Market data |
+| Strategies | `GET /strategies` · `GET/POST/PATCH /strategies/{id}` | R / W | Setting status to `running` requires T |
+| Backtests | `POST /backtests` | B | Async; returns `job_id` |
+| Experiments | `POST /experiments/{regime/detect, pipeline, structured-tune, ai-optimize}` | B | regime sync; others async |
+| Jobs | `GET /jobs` · `GET /jobs/{id}` · `GET /jobs/{id}/stream` | R | List / get / **SSE live stream** |
+| Portfolio | `GET /portfolio/positions` · `/portfolio/paper-orders` | R | Positions / paper fills |
+| Quick-Trade | `POST /quick-trade/orders` · `POST /quick-trade/kill-switch` | T | Paper book by default |
+| Admin | `POST/GET /admin/tokens` · `DELETE /admin/tokens/{id}` · `GET /admin/audit` | – | Human JWT only |
+
+#### SSE live progress (`GET /api/agent/v1/jobs/{id}/stream`)
+Long jobs (`ai-optimize` / `structured-tune` / multi-round backtest pipelines) let LLM clients watch progress live:
+- Frame types: `snapshot` (baseline first frame) → `progress` (each runner `on_progress`) → `ping` (~15s heartbeat against proxy timeouts) → `result` (terminal state then close)
+- Resume: `?since=<seq>` or standard `Last-Event-ID` header
+- Completed jobs emit `snapshot + result` then close — no dual client logic
+- Runner contract: `runner(payload, on_progress)` second arg auto-detected; events to SSE subscribers and `qd_agent_jobs.progress` JSONB (reconnect reads latest snapshot)
+
+#### MCP Server (`mcp_server/` — published on PyPI: [`quantdinger-mcp`](https://pypi.org/project/quantdinger-mcp/))
+Standalone Python package wrapping Agent Gateway R / B subset as Model Context Protocol tools:
+- One-line install (any machine, no repo clone): `uvx quantdinger-mcp` / `pipx install quantdinger-mcp` / `pip install quantdinger-mcp`
+- Three transports via `QUANTDINGER_MCP_TRANSPORT`:
+  - `stdio` (default) — desktop IDE (Cursor / Claude Code) subprocess
+  - `sse` — SSE-only clients
+  - `streamable-http` — new MCP HTTP protocol; cloud Agent / remote IDE direct connect
+- HTTP mode also reads `QUANTDINGER_MCP_HOST` / `QUANTDINGER_MCP_PORT`
+- Agent tokens only — **never use human JWT or exchange keys**
+
+#### Frontend Admin UI: Agent Tokens panel (admin only)
+Integrated into existing Vue admin (alongside User Management / System Settings):
+- Route `/agent-tokens`, permission `permission: ['admin']`
+- **Tokens tab**: list (color scope tags, market allowlist, paper-only / live-eligible, last used) + revoke
+- **Issue modal**: scope multi-select, market/instrument allowlists, rate, expiry days, `paper_only`; red warning when T checked but paper-only off — needs `AGENT_LIVE_TRADING_ENABLED=true`
+- **Reveal modal**: full token **shown once** with copy to clipboard
+- **Audit tab**: method / route / scope class / status / duration; status color scale (5xx red, 429 orange, 4xx amber, 2xx green)
+- i18n: ~30 `agentTokens.*` keys in `en-US` + `zh-CN`; other locales English fallback
+
+#### System architecture diagram
+End-to-end architecture diagram at top of README (`docs/screenshots/architecture.png`); EN + CN READMEs synced.
+
+### 🛠️ Tooling / Docs
+
+- `docs/agent/AGENT_ENVIRONMENT_DESIGN.md` — three-layer contract (Documentation → Command → Machine Interface) for **code-writing** Agents (Cursor / Claude Code / Codex)
+- `docs/agent/AI_INTEGRATION_DESIGN.md` — Agent design doc consuming QuantDinger as a **product** (personas, capability classes, security, roadmap, progress table). Currently v0.3
+- `docs/agent/AGENT_QUICKSTART.md` — ops manual: token issuance, `/whoami`, market data, backtest, SSE watch, MCP setup with step-by-step `curl` examples
+- `docs/agent/agent-openapi.json` — OpenAPI 3.0 contract; all `/api/agent/v1/...` paths + `x-scope-class` extension
+- `.cursor/skills/quantdinger-agent-workflow/SKILL.md` — Skill for Cursor / Claude Code: red lines, entry points, validation in this repo
+- `mcp_server/README.md` — MCP three-transport deployment examples
+
+### ⚙️ Configuration
+
+New optional env vars (secure defaults):
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `AGENT_JOBS_MAX_WORKERS` | `4` | Agent async job thread pool size |
+| `AGENT_LIVE_TRADING_ENABLED` | `false` | **Server-level live trading switch**. Even if token `paper_only=false`, paper only without this |
+| `QUANTDINGER_MCP_TRANSPORT` | `stdio` | MCP client transport (`stdio` / `sse` / `streamable-http`) |
+| `QUANTDINGER_MCP_HOST` | `127.0.0.1` | MCP HTTP bind host |
+| `QUANTDINGER_MCP_PORT` | `8000` | MCP HTTP bind port |
+
+### ✅ Tests
+
+- `backend_api_python/tests/test_agent_v1.py` — 9 cases: missing token / unknown / inactive / expired / insufficient scope / rate limit / token format, etc.
+- `backend_api_python/tests/test_agent_jobs_progress.py` — 5 cases: runner signature detection, ordered accumulation, `since_seq` resume, idle timeout, cross-thread delivery
+- `mcp_server/tests/test_transport_resolution.py` — 4 cases: default transport, alias resolution, unknown graceful exit, HTTP settings shim. Runs when `mcp` installed; else `importorskip`
+
+Backend **58 passed** (53 Gateway + 5 SSE).
 
 ### 🗄️ Database Migration
 
-本版新增 4 张表 + 1 个 JSONB 列，全部由 `agent_auth._ensure_schema` 在第一次接到 Agent 请求时**自动幂等创建**，所以**已运行的部署什么都不做也能正常用**。但建议在升级时统一显式执行下面的 SQL，确保索引齐全：
+This release adds 4 tables + 1 JSONB column, all **auto-created idempotently** by `agent_auth._ensure_schema` on first Agent request — **existing deployments work with no action**. Recommended: run SQL below on upgrade to ensure indexes.
 
 ```sql
 -- ============================================================
@@ -428,75 +530,75 @@ CREATE INDEX IF NOT EXISTS idx_agent_paper_orders_token ON qd_agent_paper_orders
 DO $$ BEGIN RAISE NOTICE '✅ QuantDinger V3.1.0 agent gateway schema migration completed!'; END $$;
 ```
 
-**Docker 一行示例：**
+**Docker one-liner example:**
 
 ```bash
 docker compose exec -T postgres psql -U quantdinger -d quantdinger \
-  -f /app/migrations/init.sql   # 全 idempotent，可重复执行
+  -f /app/migrations/init.sql   # fully idempotent, safe to re-run
 ```
 
-或者把上面的 SQL 单独存盘后：
+Or save the SQL above to a file first:
 
 ```bash
 docker cp /path/to/v3.1.0_agent_gateway.sql quantdinger-db:/tmp/migrate.sql
 docker compose exec -T postgres psql -U quantdinger -d quantdinger -f /tmp/migrate.sql
 ```
 
-**Migration Notes：**
-- 所有语句都用了 `IF NOT EXISTS`，**重复执行安全**。
-- 不修改、不删除任何已有数据。
-- 没设置 `AGENT_LIVE_TRADING_ENABLED=true` 之前，T 类调用永远只写 `qd_agent_paper_orders`，不会触发 `TradingExecutor`。
-- 4 张表都按 `user_id` 做 tenant 隔离；删除用户会级联清理对应的 token / job / paper-order，audit 因为有可能要事后追责，是软关联（`agent_token_id INTEGER`，无外键级联）。
+**Migration Notes:**
+- All statements use `IF NOT EXISTS` — **safe to re-run**
+- No existing data modified or deleted
+- Until `AGENT_LIVE_TRADING_ENABLED=true`, T-class calls only write `qd_agent_paper_orders`; never triggers `TradingExecutor`
+- All 4 tables tenant-isolated by `user_id`; user delete cascades token / job / paper-order; audit is soft-linked (`agent_token_id INTEGER`, no FK cascade) for post-hoc accountability
 
 ### 📦 Files Changed
 
 **Backend (`backend_api_python/`):**
-- `migrations/init.sql` — 新增 Section 30「Agent Gateway」，4 张表 + `progress` JSONB 列 + 索引
-- `app/utils/agent_auth.py` — token 鉴权、scope/allowlist 校验、速率限制、`_audit + _redact`、`with_idempotency`、`_ensure_schema` 运行时建表
-- `app/utils/agent_jobs.py` — 异步 job runner、`on_progress` 探测、SSE 事件环（`deque(maxlen=200)` + `threading.Event`）、`stream_progress(...)` 生成器、`progress` 列持久化
-- `app/routes/agent_v1/__init__.py` + `_helpers.py` + `health.py` + `markets.py` + `strategies.py` + `backtests.py` + `experiments.py` + `jobs.py`(含 SSE) + `portfolio.py` + `quick_trade.py` + `admin.py`
-- `app/routes/__init__.py` — 注册 `agent_v1_bp`
-- `env.example` — 新增 `AGENT_JOBS_MAX_WORKERS`、`AGENT_LIVE_TRADING_ENABLED`
-- `tests/test_agent_v1.py`、`tests/test_agent_jobs_progress.py`
+- `migrations/init.sql` — new Section 30 “Agent Gateway”, 4 tables + `progress` JSONB + indexes
+- `app/utils/agent_auth.py` — token auth, scope/allowlist, rate limit, `_audit + _redact`, `with_idempotency`, `_ensure_schema` runtime DDL
+- `app/utils/agent_jobs.py` — async job runner, `on_progress` detection, SSE event ring (`deque(maxlen=200)` + `threading.Event`), `stream_progress(...)` generator, `progress` persistence
+- `app/routes/agent_v1/__init__.py` + `_helpers.py` + `health.py` + `markets.py` + `strategies.py` + `backtests.py` + `experiments.py` + `jobs.py` (incl. SSE) + `portfolio.py` + `quick_trade.py` + `admin.py`
+- `app/routes/__init__.py` — register `agent_v1_bp`
+- `env.example` — new `AGENT_JOBS_MAX_WORKERS`, `AGENT_LIVE_TRADING_ENABLED`
+- `tests/test_agent_v1.py`, `tests/test_agent_jobs_progress.py`
 
-**MCP server（新增包）：**
-- `mcp_server/pyproject.toml`、`mcp_server/README.md`
-- `mcp_server/src/quantdinger_mcp/{__init__.py, server.py}` — `FastMCP` + `httpx`，三种 transport via env
+**MCP server (new package):**
+- `mcp_server/pyproject.toml`, `mcp_server/README.md`
+- `mcp_server/src/quantdinger_mcp/{__init__.py, server.py}` — `FastMCP` + `httpx`, three transports via env
 - `mcp_server/tests/test_transport_resolution.py`
 
-**前端（`QuantDinger-Vue-src/` + 同步打包到 `frontend/dist/`）：**
+**Frontend (`QuantDinger-Vue-src/` + synced to `frontend/dist/`):**
 - `src/api/agent.js` — Agent admin API client
-- `src/views/agent-tokens/index.vue` — Tokens / Audit 双标签页面
-- `src/config/router.config.js` — 新路由 `/agent-tokens`，`permission: ['admin']`
-- `src/locales/lang/{en-US,zh-CN}.js` — `menu.agentTokens` + 约 30 个 `agentTokens.*` key
-- `frontend/dist/` — 重新打包并替换（101 个文件，约 18.9 MB；含 agent-tokens 路由代码与 zh-CN i18n）
+- `src/views/agent-tokens/index.vue` — Tokens / Audit dual-tab page
+- `src/config/router.config.js` — new route `/agent-tokens`, `permission: ['admin']`
+- `src/locales/lang/{en-US,zh-CN}.js` — `menu.agentTokens` + ~30 `agentTokens.*` keys
+- `frontend/dist/` — rebuilt (101 files, ~18.9 MB; agent-tokens route + zh-CN i18n)
 
-**文档：**
-- `docs/agent/AGENT_ENVIRONMENT_DESIGN.md`、`docs/agent/AI_INTEGRATION_DESIGN.md`（v0.3）、`docs/agent/AGENT_QUICKSTART.md`、`docs/agent/agent-openapi.json`、`docs/agent/README.md`
+**Docs:**
+- `docs/agent/AGENT_ENVIRONMENT_DESIGN.md`, `docs/agent/AI_INTEGRATION_DESIGN.md` (v0.3), `docs/agent/AGENT_QUICKSTART.md`, `docs/agent/agent-openapi.json`, `docs/agent/README.md`
 - `.cursor/skills/quantdinger-agent-workflow/SKILL.md`
-- `README.md` + `docs/README_CN.md` — 顶部插入架构图 + 文档导航补充 Agent 相关链接
-- `docs/screenshots/architecture.png` — 端到端架构图
+- `README.md` + `docs/README_CN.md` — architecture diagram at top + Agent doc nav links
+- `docs/screenshots/architecture.png` — end-to-end architecture diagram
 
 ### 🗑️ Removed
 
-- `.github/dependabot.yml` — 关闭 Dependabot，避免每周冒出 11 个噪音分支（大量 npm `vue-cli` v6 / webpack v5 升级会和当前 Vue 2 + webpack 4 链路硬冲）。
+- `.github/dependabot.yml` — Dependabot disabled to avoid ~11 noisy weekly branches (npm `vue-cli` v6 / webpack v5 upgrades clash with Vue 2 + webpack 4 stack)
 
 ### ⚠️ Operational notes
 
-1. **第一次启动可以不跑 SQL**：Agent Gateway 第一次接到请求时会自动建表（`_ensure_schema`）。但建议升级时统一执行上面的迁移以保证索引齐全。
-2. **实盘开关默认关**：`AGENT_LIVE_TRADING_ENABLED` 不设或非 `true`，T 类 token 即便配置了 `paper_only=false` 也只走 `qd_agent_paper_orders`。这是产品级红线，请勿在文档/代码里弱化。
-3. **签发的 token 不可恢复**：库里只存 SHA-256 hash，前端 reveal 弹窗关掉就找不回了，丢了只能撤销重签。
-4. **MCP HTTP 模式生产部署**：`streamable-http` 默认 bind 到 `127.0.0.1`，对外暴露请显式设 `QUANTDINGER_MCP_HOST=0.0.0.0` 并放到 nginx / 反代后面，**只让带 Agent token 的客户端访问**。
+1. **First startup may skip SQL**: Agent Gateway auto-creates tables on first request (`_ensure_schema`). Still recommended to run migration above on upgrade for complete indexes
+2. **Live switch off by default**: without `AGENT_LIVE_TRADING_ENABLED=true`, T-class tokens with `paper_only=false` still use `qd_agent_paper_orders` only. Product red line — do not weaken in docs/code
+3. **Issued tokens non-recoverable**: DB stores SHA-256 hash only; after reveal modal closes, token is lost — revoke and re-issue
+4. **MCP HTTP production**: `streamable-http` binds `127.0.0.1` by default; for external access set `QUANTDINGER_MCP_HOST=0.0.0.0` behind nginx / reverse proxy — **Agent-token clients only**
 
 ---
 
-## V3.0.2 (2026-04-11) — 多语言文件全量补齐(AI 自动翻译)
+## V3.0.2 (2026-04-11) — Full locale file backfill (AI auto-translation)
 
 ### 🌍 i18n
 
-此前除 `zh-CN` / `en-US` 外,其余 7 个语言文件只有约 2000/4240 条(约 48% 覆盖),大量界面字段会回退到英文或 key 名。这次用 DeepSeek 把全部缺失 key 一次性批量翻译、写回源文件:
+Previously, aside from `zh-CN` / `en-US`, the other 7 locale files had only ~2000/4240 keys (~48% coverage); many UI fields fell back to English or raw key names. This release used DeepSeek to batch-translate all missing keys and write them back:
 
-| 语言 | 修复前 | 修复后 | 新增条目 |
+| Language | Before | After | New entries |
 |---|---|---|---|
 | `ar-SA` Arabic  | 2029 | **4573** | 2541 |
 | `de-DE` German  | 2077 | **4573** | 2491 (+patch) |
@@ -508,27 +610,27 @@ docker compose exec -T postgres psql -U quantdinger -d quantdinger -f /tmp/migra
 | `vi-VN` Vietnamese | 1759 | **4495** | 2734 (+patch) |
 | `zh-TW` Traditional | 3741 | **4499** | 758 |
 
-全部 9 个语言文件相对 `zh-CN` 基准 **missing = 0** ✅
+All 9 locale files vs `zh-CN` baseline: **missing = 0** ✅
 
-### 🛠️ Tooling (新增)
+### 🛠️ Tooling (new)
 
-- **`scripts/i18n-diff.js`** — 扫描所有 locale 文件,以 `zh-CN` 为基准报告 missing / extra keys;支持 `--detail`、`--lang=xx-YY` 查看具体缺失。
-- **`scripts/i18n-fill-ai.js`** — 增量 AI 翻译工具。支持 DeepSeek / Anthropic / OpenAI / OpenRouter 四家 provider,批量(默认 80/batch)+ 并发(默认 6)+ 本地缓存(`scripts/.i18n-cache/`)+ 自动备份(`*.js.bak`),字符串值按安全追加方式写回文件。失败批次 3 次重试 + 部分保留策略。保护占位符 `{foo}`、`<code>…</code>`、换行符 `\n`、HTML 标签、`BTC/ETH/USDT/AI/MT5` 等专有名词。
-- **`scripts/i18n-patch-specials.js`** — 一次性补齐 AI 脚本无法覆盖的特殊 key:空字符串值、嵌套对象值(`trading-assistant.brokerNames`)、中文量词单字(`dashboard.unit.trades` / `.strategies` 等在西语/泰/越留空)。
-- **`scripts/README.md`** — 工具链说明,含典型用法、API Key 配置、成本估算、质量提示。
-- **`.gitignore`** — 忽略 `scripts/.i18n-cache/` 与 `QuantDinger-Vue-src/src/locales/lang/*.bak`。
+- **`scripts/i18n-diff.js`** — scan all locale files; report missing/extra keys vs `zh-CN`; `--detail`, `--lang=xx-YY` for specifics
+- **`scripts/i18n-fill-ai.js`** — incremental AI translation. DeepSeek / Anthropic / OpenAI / OpenRouter; batch (default 80) + concurrency (default 6) + local cache (`scripts/.i18n-cache/`) + auto backup (`*.js.bak`); safe append write-back. Failed batches: 3 retries + partial retain. Preserves `{foo}`, `<code>…</code>`, `\n`, HTML tags, `BTC/ETH/USDT/AI/MT5`, etc.
+- **`scripts/i18n-patch-specials.js`** — one-shot fill for keys AI script misses: empty strings, nested objects (`trading-assistant.brokerNames`), Chinese measure-word singles (`dashboard.unit.trades` / `.strategies` left empty in ES/TH/VI)
+- **`scripts/README.md`** — toolchain docs: usage, API keys, cost estimates, quality tips
+- **`.gitignore`** — ignore `scripts/.i18n-cache/` and `QuantDinger-Vue-src/src/locales/lang/*.bak`
 
-### 翻译质量
+### Translation quality
 
-专用术语已落地行业译法:网格(`neutral/long/short`)、Maker/Taker 指值/市价、加仓/平仓、止盈/止损、浮动盈亏、权益、仓位、挂单、成交等。占位符 / `<code>` 标签 / 代码示例全部保留。单次批量失败率 < 0.2%,失败 key 已由 specials 脚本兜底。
+Domain terms use standard industry wording: grid (`neutral/long/short`), Maker/Taker limit/market, add/close position, TP/SL, floating PnL, equity, position, pending/filled orders, etc. Placeholders / `<code>` / code samples preserved. Batch failure rate < 0.2%; failed keys patched by specials script.
 
-### ⚠️ 已知事项(后续改进)
+### ⚠️ Known follow-ups
 
-- **`ja-JP` / `zh-TW` 等部分"已存在但值是英文"的 key 未被重译**:脚本只填「完全缺失」的 key,不覆写已有值。若要纠正这部分"占位英文",需要单独一次「识别非目标语言内容并重译」的增强扫描。
+- **`ja-JP` / `zh-TW` etc.: some keys “exist but value is English” not re-translated**: script only fills fully missing keys, does not overwrite existing values. Fixing placeholder English needs a separate “detect non-target language and re-translate” pass.
 
 ### 🗄️ Database Migration
 
-无。
+None.
 
 ### 📦 Files Changed
 
@@ -538,78 +640,78 @@ docker compose exec -T postgres psql -U quantdinger -d quantdinger -f /tmp/migra
 
 ---
 
-## V3.0.2 (2026-04-11) — 交易机器人全链路修复(Grid / Martingale / Trend / DCA)
+## V3.0.2 (2026-04-11) — Trading bot end-to-end fixes (Grid / Martingale / Trend / DCA)
 
-### 🐛 Bug Fixes — 交易机器人
+### 🐛 Bug Fixes — Trading bots
 
-针对四类机器人(网格 / 马丁 / 趋势 / 定投)做了从前端配置、脚本模板、后端执行到列表/详情页数据的端到端审计与修复:
+End-to-end audit and fixes for all four bot types (grid / martingale / trend / DCA) from frontend config, script templates, backend execution, to list/detail data:
 
-- **[P0-1] 编辑机器人会清空运行时状态**:`StrategyService.update_strategy` 此前直接用 payload 里的 `trading_config` 整体替换老记录,导致 `script_runtime_state`(马丁 `layer`/`total_cost`、网格 `bp/sp/prev_price`、DCA `total_qty` 等)被一把抹掉,改完参数重启就像换了台新机器人。改为 `{**existing, **incoming}` 浅合并,并保护 `script_runtime_state`、`last_signal_time`、`last_execution_time`、`bot_runtime_stats` 等后端维护的运行时字段。
-- **[P0-2] 网格空头不受预算控制**:旧 `total_spent` 只在买入时累加,卖出开空(中性/做空模式)既不检查也不累加,合约下可以把空头无限放大直至爆仓。重写网格脚本改为 `long_exposure` / `short_exposure` 双路独立核算,BUY 先抵扣空头再开多(做多侧过预算就跳过),SELL 同理。
-- **[P0-3] 马丁/趋势默认 `maker` 限价挂单导致漏触发和重复下单**:马丁每层加仓依赖上一单「已成交」才会更新 `last_entry_price`,挂单未成交时脚本在下一根 K 线用同一价格重新发单,出现一次开仓就下两笔甚至多笔的现象。向导 `buildPayload` 对 `bot_type` 为 `martingale` / `trend` 强制 `order_mode='market'`,网格/DCA 保留用户选择(默认 maker 更省费)。
-- **[P0-4] 网格/DCA 在同一 tick 多笔减仓的本地持仓跟踪错误**:`_script_orders_to_execution_signals` 把脚本传来的 USDT 名义金额直接丢给 `ctx.position.reduce_position/add_position/open_position`(这些方法内部以 qty 单位计数),导致同一 tick 内若先后发 sell + sell,第二笔会被误判为「开空」而不是「继续平多」,发出错误的 `open_short` 信号。修复:把 USDT 金额按 `usdt * leverage / ref_price` 换算成近似 qty 再更新本地 ctx.position(真实下单数量依旧由 `_execute_signal` 按杠杆/市场类型重算,完全不变)。
-- **[P0-5] DCA 频率被 K 线周期吞掉**:`intervalBars = round(freqMin / tfMin)` 当 `freq<tf`(比如 4h 线上选 hourly)会取整到 0,再 `max(1,0)=1`,结果变成「每根 K 线都买」(等于 4 小时 1 次)。把 DCA 脚本改成 **基于真实时间戳** 的 `INTERVAL_SEC = freqMin * 60`,用 `now - last_buy_ts >= INTERVAL_SEC` 判断,彻底与 K 线周期解耦。
+- **[P0-1] Editing bot clears runtime state**: `StrategyService.update_strategy` previously replaced entire `trading_config` from payload, wiping `script_runtime_state` (martingale `layer`/`total_cost`, grid `bp/sp/prev_price`, DCA `total_qty`, etc.) — restart after param change felt like a new bot. Now shallow merge `{**existing, **incoming}` and protect `script_runtime_state`, `last_signal_time`, `last_execution_time`, `bot_runtime_stats`, etc.
+- **[P0-2] Grid shorts not budget-controlled**: old `total_spent` only accumulated on buys; sell-to-open-short (neutral/short modes) neither checked nor accumulated — futures could grow shorts until liquidation. Grid script rewritten with independent `long_exposure` / `short_exposure`; BUY offsets shorts then opens long (skip if long side over budget); SELL symmetric
+- **[P0-3] Martingale/trend default `maker` limit orders caused missed fills and duplicates**: martingale layers depend on prior fill to update `last_entry_price`; unfilled limits re-sent same price next bar — double/multiple orders on one open. Wizard `buildPayload` forces `order_mode='market'` for `martingale` / `trend`; grid/DCA keep user choice (default maker for lower fees)
+- **[P0-4] Grid/DCA multi-reduce same tick local position tracking wrong**: `_script_orders_to_execution_signals` passed USDT notional directly to `ctx.position.reduce_position/add_position/open_position` (qty-based internally) — two sells same tick: second misclassified as open short not continue close long → wrong `open_short`. Fix: convert USDT via `usdt * leverage / ref_price` to approx qty before updating local ctx.position (live order qty still from `_execute_signal` unchanged)
+- **[P0-5] DCA frequency swallowed by bar period**: `intervalBars = round(freqMin / tfMin)` when `freq<tf` (e.g. hourly on 4h chart) rounds to 0, `max(1,0)=1` → buy every bar (4h once). DCA script now **timestamp-based** `INTERVAL_SEC = freqMin * 60`, `now - last_buy_ts >= INTERVAL_SEC` — decoupled from bar period
 
 ### 🔧 Improvements
 
-- **[P1] 机器人列表/详情返回运行时指标**:`list_strategies` / `get_strategy` 通过一次 GROUP BY 批量查 `qd_strategy_trades.profit-commission` 和 `qd_strategy_positions.unrealized_pnl`,在响应里附带 `realized_pnl` / `unrealized_pnl` / `total_pnl` / `current_equity`,前端 KPI 和卡片不再需要自己拼。
-- **[P1] 趋势机器人仓位按实时权益计算**:`_hydrate_script_ctx_from_positions` 在 hydrate 持仓的同时把 `ctx.balance` / `ctx.equity` 刷新为 `initial_capital + 已实现 + 未实现` 的最新值,趋势脚本里 `amt = ctx.balance * POS_PCT` 终于能跟着账户净值走,而不是始终停在初始资金。
-- **[P1] DCA 仓位被外部平掉后自动重置**:DCA 脚本每根 bar 检查 `buy_count>0 且 total_qty>0 但 ctx.position 为空` 的情况,判定为手动/止损平仓并清零累计状态,下一轮定投正常重新开始。
-- **[P1] 网格/DCA 前端参数校验**:`GridConfig` 新增上下限大小校验、等比网格下限>0 校验、以及「每格金额 × 网格数 ≤ 初始资金」校验;`DCAConfig` 新增「单次金额 ≤ 总预算」校验。多语言已补齐 10 种。
+- **[P1] Bot list/detail return runtime metrics**: `list_strategies` / `get_strategy` batch GROUP BY `qd_strategy_trades.profit-commission` and `qd_strategy_positions.unrealized_pnl`; response includes `realized_pnl` / `unrealized_pnl` / `total_pnl` / `current_equity` — frontend KPI/cards no longer assemble manually
+- **[P1] Trend bot sizing from live equity**: `_hydrate_script_ctx_from_positions` refreshes `ctx.balance` / `ctx.equity` to `initial_capital + realized + unrealized`; trend script `amt = ctx.balance * POS_PCT` tracks account NAV not stuck at initial capital
+- **[P1] DCA auto-reset after external close**: each bar DCA checks `buy_count>0 && total_qty>0 but ctx.position empty` → manual/SL close, zero cumulative state, next DCA round starts clean
+- **[P1] Grid/DCA frontend validation**: `GridConfig` — bounds order, geometric grid lower>0, per-cell × grid count ≤ initial capital; `DCAConfig` — single amount ≤ total budget. i18n for 10 languages
 
 ### 🗄️ Database Migration
 
-本次无新增列/表,仅代码层修复。已有部署**不需要**执行任何 SQL。
+No new columns/tables; code-only fixes. Existing deployments **need no SQL**.
 
 ### 📦 Files Changed
 
-- `backend_api_python/app/services/strategy.py` — `update_strategy` 合并逻辑、`_compute_runtime_metrics`、列表/详情附带运行时指标
-- `backend_api_python/app/services/trading_executor.py` — `_script_orders_to_execution_signals` USDT→qty 换算、`_hydrate_script_ctx_from_positions` 刷新 balance/equity
-- `QuantDinger-Vue-src/src/views/trading-bot/components/BotCreateWizard.vue` — 马丁/趋势强制市价
-- `QuantDinger-Vue-src/src/views/trading-bot/components/botScriptTemplates.js` — 网格双路预算、DCA 时间制间隔与外部平仓重置
-- `QuantDinger-Vue-src/src/views/trading-bot/components/configs/GridConfig.vue`、`DCAConfig.vue` — 参数校验
-- `QuantDinger-Vue-src/src/locales/lang/*.js` — 4 条新校验文案 × 10 语言
+- `backend_api_python/app/services/strategy.py` — `update_strategy` merge, `_compute_runtime_metrics`, list/detail runtime metrics
+- `backend_api_python/app/services/trading_executor.py` — `_script_orders_to_execution_signals` USDT→qty, `_hydrate_script_ctx_from_positions` balance/equity refresh
+- `QuantDinger-Vue-src/src/views/trading-bot/components/BotCreateWizard.vue` — martingale/trend forced market orders
+- `QuantDinger-Vue-src/src/views/trading-bot/components/botScriptTemplates.js` — grid dual budget, DCA time-based interval + external close reset
+- `QuantDinger-Vue-src/src/views/trading-bot/components/configs/GridConfig.vue`, `DCAConfig.vue` — param validation
+- `QuantDinger-Vue-src/src/locales/lang/*.js` — 4 new validation strings × 10 languages
 
 ---
 
-## V3.0.2 (2026-04-17) — 指标社区「同步代码」+ Martingale / 回测稳定性
+## V3.0.2 (2026-04-17) — Indicator community “Sync code” + Martingale / backtest stability
 
 ### 🚀 New Features
 
-- **指标社区 · 同步代码**：指标详情弹窗为已购用户在「立即使用」旁新增「同步代码」按钮。发布者更新并重新上架后，已购用户可一键把最新代码拉到自己的本地副本；前端带 `Tooltip`、确认弹窗与「有更新」橙色标记，暗色主题单独适配。
-  - 新接口：`POST /api/community/indicators/<id>/sync`
-  - 详情接口 `GET /api/community/indicators/<id>` 新增字段：`has_update`、`local_copy_id`
-  - 本地副本与原始指标通过新增的 `qd_indicator_codes.source_indicator_id` 建立持久关联；老数据按名称兜底匹配并在首次同步时回填该字段。
-- **交易机器人 · 参数标准化**：Martingale / Grid / Trend / DCA 四类机器人参数统一语义，创建确认页、列表页、详情页展示完全对齐，后端 `bot_display` 统一结构，前端映射大幅简化。
-- **Martingale 重复开仓修复**：策略启动瞬间会立即下两笔单的问题修复（信号去重 + 当次循环内的市值/持仓校验）。
+- **Indicator community · Sync code**: indicator detail modal adds “Sync code” beside “Use now” for purchasers. After publisher updates and re-lists, buyers pull latest code to local copy in one click; frontend has `Tooltip`, confirm dialog, orange “update available” badge; dark theme styled
+  - New endpoint: `POST /api/community/indicators/<id>/sync`
+  - Detail `GET /api/community/indicators/<id>` adds: `has_update`, `local_copy_id`
+  - Local copy linked to market original via new `qd_indicator_codes.source_indicator_id`; legacy data name-matched and backfilled on first sync
+- **Trading bots · Parameter normalization**: Martingale / Grid / Trend / DCA unified semantics; create confirm, list, detail aligned; backend `bot_display` unified structure; frontend mapping simplified
+- **Martingale duplicate open fix**: strategy start instant double-order fixed (signal dedup + in-loop notional/position check)
 
 ### 🐛 Bug Fixes
 
-- **回测日期范围失效**：调整回测起止日期但结果不变的严重问题修复。根因为 `_fetch_kline_data` 在上游数据覆盖不全时会退化为 `df.tail(N)`，忽略 `start_date` 约束。改为严格按「请求区间 ∩ 可用区间」过滤；无交集时直接报错；确需兜底时打印 `WARNING` 并标记 `fallback=True`。新增 `[BacktestRequest]`、`[Backtest] … requested/upstream/effective`、`[CryptoKline] …` 等诊断日志，便于排查数据源覆盖问题。
-- **回测后 K 线 Buy/Sell 标记错位**：指标 IDE 运行回测后，K 线上的 B / S 标记可能整体往后偏移一根 K 线（多时间框架 MTF 模式下尤为明显）。根因有两点：
-  1. 开启 MTF 后，后端执行时间框架（exec_tf）会自动切换到 `1m` 或 `5m`，`trade.time` 记录的是 exec_tf 级时间戳；但前端 K 线显示的是用户选择的信号 TF（如 `1h`）。
-  2. 前端使用「就近」对齐（nearest-snap），当 SL / TP / Trailing 等触发发生在信号 TF 柱的后半段时，会被吸附到**下一根**柱，造成整根柱的错位。
+- **Backtest date range ignored**: changing start/end but same results — fixed. Root cause: `_fetch_kline_data` fell back to `df.tail(N)` when upstream coverage incomplete, ignoring `start_date`. Now strict filter on requested ∩ available range; no overlap → error; fallback logs `WARNING` and sets `fallback=True`. New diagnostic logs: `[BacktestRequest]`, `[Backtest] … requested/upstream/effective`, `[CryptoKline] …`
+- **Backtest Buy/Sell markers misaligned on chart**: after indicator IDE backtest, B/S markers could shift one bar (worse in MTF). Two causes:
+  1. With MTF, backend exec_tf switches to `1m` or `5m`; `trade.time` is exec_tf timestamp; chart shows user signal TF (e.g. `1h`)
+  2. Frontend nearest-snap: SL/TP/trailing triggers in second half of signal bar snap to **next** bar
 
-  修复：
-  - 后端 `_simulate_trading_mtf` 对每笔 trade 新增 `bar_time` 字段 —— 把 exec_tf 时间戳 floor 到信号 TF，得到 trade 实际所属的**图表柱**起点时间（UTC，`'%Y-%m-%d %H:%M'`）。
-  - 前端 `renderBacktestSignals` 改为**优先使用 `trade.bar_time`**（已经是图表柱对齐），并把「就近」改为 **floor-snap**（定位到包含该时间的最后一根 K 线），彻底消除 ±1 根柱的偏移。
-  - 非 MTF 路径无需改动：`trade.time` 本身就等于信号 TF 柱时间，前端回退到 `trade.time` 后依旧正确对齐。
-  - 改动文件：`backend_api_python/app/services/backtest.py`、`QuantDinger-Vue-src/src/views/indicator-ide/index.vue`。
+  Fixes:
+  - Backend `_simulate_trading_mtf` adds `bar_time` per trade — floor exec_tf to signal TF for **chart bar** start (UTC, `'%Y-%m-%d %H:%M'`)
+  - Frontend `renderBacktestSignals` **prefers `trade.bar_time`**; nearest → **floor-snap** (last bar containing time) — eliminates ±1 bar offset
+  - Non-MTF unchanged: `trade.time` equals signal bar time; fallback to `trade.time` still correct
+  - Files: `backend_api_python/app/services/backtest.py`, `QuantDinger-Vue-src/src/views/indicator-ide/index.vue`
 
 ### 🗄️ Database Migration
 
-本次新增一列 + 一个索引，用于指标社区「同步代码」定位买家本地副本：
+One new column + index for indicator community “Sync code” local copy lookup:
 
 ```sql
--- 1. 新列：买家本地副本 -> 市场原始指标 的外键关联（软外键，NULL 兼容老数据）
+-- 1. New column: buyer local copy -> market original indicator link (soft FK, NULL for legacy)
 ALTER TABLE qd_indicator_codes
     ADD COLUMN IF NOT EXISTS source_indicator_id INTEGER;
 
 CREATE INDEX IF NOT EXISTS idx_indicator_codes_source
     ON qd_indicator_codes USING btree (source_indicator_id);
 
--- 2. 可选回填：给已有的已购副本按名称回写 source_indicator_id
---    安全条件：仅写 is_buy=1 且 source_indicator_id IS NULL 的行，按 (买家ID, 原指标名) 匹配
+-- 2. Optional backfill: write source_indicator_id for existing purchased copies by name
+--    Safe: only is_buy=1 AND source_indicator_id IS NULL, match (buyer_id, original name)
 UPDATE qd_indicator_codes lc
 SET    source_indicator_id = p.indicator_id
 FROM   qd_indicator_purchases p
@@ -620,9 +722,9 @@ WHERE  lc.user_id = p.buyer_id
   AND  lc.name = orig.name;
 ```
 
-**已在开发环境 Docker 中执行完毕**（`ALTER TABLE` + `CREATE INDEX` 均返回成功，回填 `UPDATE 4`）。新库使用当前仓库中的 `migrations/init.sql` 初始化已包含该列定义，无需重复执行。
+**Already executed in dev Docker** (`ALTER TABLE` + `CREATE INDEX` success, backfill `UPDATE 4`). Fresh DBs from current `migrations/init.sql` include column — no repeat needed.
 
-**在已有库上手动执行（Docker 一行示例）：**
+**Manual run on existing DB (Docker one-liner):**
 
 ```bash
 docker compose exec -T postgres psql -U quantdinger -d quantdinger <<'SQL'
@@ -639,22 +741,22 @@ WHERE lc.user_id = p.buyer_id
 SQL
 ```
 
-> 服务启动时 `CommunityService.__init__` 亦带 `ADD COLUMN IF NOT EXISTS`，作为冗余保障（向后兼容）。
+> `CommunityService.__init__` also runs `ADD COLUMN IF NOT EXISTS` on startup as redundant safeguard (backward compatible).
 
 ### 🎨 Frontend / i18n
 
-- `QuantDinger-Vue-src/package.json`、`src/config/defaultSettings.js`、`src/layouts/BasicLayout.vue` 版本号 `3.0.1 → 3.0.2`；`README.md` 与 `docs/README_CN.md` 版本徽章同步。
-- `zh-CN / zh-TW / en-US` 新增 12 条 `community.sync*` / `community.hasUpdate` / `community.already_latest` 等 i18n key；其他语言沿用英文 fallback。
-- 重新执行 `npm run build` 并同步 `dist/` 至 `frontend/dist/`，`docker compose build frontend` 已重打镜像。
-- **补丁**：回测 Buy/Sell 标记错位修复后再次 `npm run build` + 同步 `frontend/dist/` + `docker compose build backend frontend && up -d backend frontend`，无需额外数据库变更。
+- `QuantDinger-Vue-src/package.json`, `src/config/defaultSettings.js`, `src/layouts/BasicLayout.vue` version `3.0.1 → 3.0.2`; `README.md` and `docs/README_CN.md` badges synced
+- `zh-CN / zh-TW / en-US`: 12 new `community.sync*` / `community.hasUpdate` / `community.already_latest` i18n keys; other locales English fallback
+- Re-ran `npm run build`, synced `dist/` to `frontend/dist/`, `docker compose build frontend`
+- **Patch**: after Buy/Sell marker fix, again `npm run build` + sync `frontend/dist/` + `docker compose build backend frontend && up -d backend frontend`; no extra DB changes
 
 ---
 
-## 2026-04-07 — 数据库：`qd_market_symbols` 补充 A股 / H股热门标的
+## 2026-04-07 — Database: `qd_market_symbols` A-share / H-share hot symbols seed
 
-已在 **Docker** 内对运行中的 PostgreSQL 执行完毕（`INSERT 0 20`）。**新库**若使用当前仓库中的 `migrations/init.sql` 初始化，已包含同批种子数据，无需重复执行。
+Already executed in running PostgreSQL inside **Docker** (`INSERT 0 20`). **Fresh DBs** initialized from current repo `migrations/init.sql` include the same seed — no repeat needed.
 
-**在已有库上手动执行（等价 SQL，可重复执行，`ON CONFLICT DO NOTHING`）：**
+**Manual run on existing DB (equivalent SQL, idempotent, `ON CONFLICT DO NOTHING`):**
 
 ```sql
 INSERT INTO qd_market_symbols (market, symbol, name, exchange, currency, is_active, is_hot, sort_order) VALUES
@@ -681,7 +783,7 @@ INSERT INTO qd_market_symbols (market, symbol, name, exchange, currency, is_acti
 ON CONFLICT (market, symbol) DO NOTHING;
 ```
 
-**Docker 一行示例（文件需 UTF-8）：**
+**Docker one-liner (file must be UTF-8):**
 
 ```bash
 docker cp backend_api_python/migrations/<your>.sql quantdinger-db:/tmp/migrate.sql
@@ -692,9 +794,9 @@ docker compose exec -T postgres psql -U quantdinger -d quantdinger -f /tmp/migra
 
 ## V3.0.1 (2026-04-05) — Frontend / docs
 
-- **前端版本**：私有 Vue 仓库 `package.json`、页脚展示与 `frontend/VERSION` 统一为 **3.0.1**。
-- **文档**：根目录 `README.md` 与 `docs/README_CN.md` 补充 QuantDinger 专属交易所邀请注册链接表（与个人中心「开户」一致），版本徽章更新为 3.0.1。
-- **回测中心**：暗黑主题下图标与「添加标的」等弹窗样式对齐（`a-icon`、图表标题区、Modal 挂载层）。
+- **Frontend version**: private Vue repo `package.json`, footer display, and `frontend/VERSION` unified at **3.0.1**.
+- **Docs**: root `README.md` and `docs/README_CN.md` add QuantDinger exchange referral signup links (same as Profile “Open account”); version badge → 3.0.1.
+- **Backtest Center**: dark theme icon and “Add symbol” modal styling aligned (`a-icon`, chart title area, Modal mount layer).
 
 ---
 
@@ -702,25 +804,25 @@ docker compose exec -T postgres psql -U quantdinger -d quantdinger -f /tmp/migra
 
 ### 🚀 New Features
 
-- **真实策略回测主链路**: 新增基于 `strategyId` 的策略回测入口，支持已保存的 `IndicatorStrategy` 与 `ScriptStrategy`，不再只是“取指标再跑一次指标回测”。
-- **策略快照解析层**: 后端新增统一策略快照解析逻辑，把 `indicator_config`、`trading_config`、`strategy_code` 解析为可回测的标准输入。
-- **策略回测历史与详情**: 回测记录现在可区分 `indicator` / `strategy_indicator` / `strategy_script`，并支持策略回测历史、详情查看和 AI 修正建议链路。
-- **交易助手联动回测中心**: 交易助手中的策略项新增回测跳转入口，可直接带 `strategy_id` 进入回测中心。
+- **Real strategy backtest main path**: new backtest entry by `strategyId` for saved `IndicatorStrategy` and `ScriptStrategy` — not just “fetch indicator and run indicator backtest again”
+- **Strategy snapshot resolution layer**: unified backend snapshot parsing of `indicator_config`, `trading_config`, `strategy_code` into standard backtest input
+- **Strategy backtest history and detail**: runs distinguish `indicator` / `strategy_indicator` / `strategy_script`; strategy history, detail view, and AI correction suggestion flow supported
+- **Trading Assistant → Backtest Center**: strategy items add backtest link with `strategy_id` into Backtest Center
 
 ### 🐛 Bug Fixes
 
-- Fixed the previous “策略回测” pseudo-flow that only reused `/api/indicator/backtest` and could not faithfully replay stored strategies.
+- Fixed the previous strategy backtest pseudo-flow that only reused `/api/indicator/backtest` and could not faithfully replay stored strategies.
 - Fixed strategy backtest history semantics so records can be linked to concrete strategies instead of only relying on `indicator_id`.
 - Fixed strategy backtest UI entry restoration in Backtest Center and wired the strategy selector/history drawer to real backend endpoints.
 
 ### 🎨 UI/UX Improvements
 
-- Restored the `回测中心 -> 策略回测` tab with strategy summary cards and environment override controls.
+- Restored the Backtest Center → Strategy Backtest tab with strategy summary cards and environment override controls.
 - Unified strategy backtest history display with the existing run viewer and AI suggestion modal.
 
 ### 📋 Database Migration
 
-**在已有 PostgreSQL 库上执行（新库若已通过更新后的 `migrations/init.sql` 初始化则无需再执行）：**
+**Run on existing PostgreSQL database (skip if fresh DB already initialized from updated `migrations/init.sql`):**
 
 ```sql
 -- ============================================================
@@ -783,15 +885,15 @@ CREATE INDEX IF NOT EXISTS idx_backtest_equity_points_run_id ON qd_backtest_equi
 
 ### 🚀 New Features
 
-- **User profile IANA timezone (`qd_users.timezone`)**: 个人资料可保存时区（IANA 标识，如 `Asia/Shanghai`）；为空表示跟随浏览器。登录态 `/api/auth/info`、资料接口与前端 AI 分析页等时间展示会按该时区调用 `toLocaleString(..., { timeZone })`（非法或空则回退本机时区）。
+- **User profile IANA timezone (`qd_users.timezone`)**: profile can save timezone (IANA id, e.g. `Asia/Shanghai`); empty = follow browser. Authenticated `/api/auth/info`, profile APIs, and frontend AI analysis pages use `toLocaleString(..., { timeZone })` (invalid/empty falls back to local timezone).
 
 ### 📋 Database Migration
 
-**在已有 PostgreSQL 库上执行（新库若已通过更新后的 `migrations/init.sql` 初始化则无需再执行）：**
+**Run on existing PostgreSQL database (skip if fresh DB already initialized from updated `migrations/init.sql`):**
 
 ```sql
 -- ============================================================
--- QuantDinger V2.2.3 — qd_users.timezone（用户资料时区）
+-- QuantDinger V2.2.3 — qd_users.timezone (user profile timezone)
 -- ============================================================
 
 DO $$
@@ -808,13 +910,13 @@ BEGIN
 END $$;
 ```
 
-**仅当列不存在时的一行式写法（自行确认无列后再执行）：**
+**One-liner when column does not exist (confirm column missing before running):**
 
 ```sql
 ALTER TABLE qd_users ADD COLUMN IF NOT EXISTS timezone VARCHAR(64) DEFAULT '';
 ```
 
-> 说明：`ALTER TABLE ... ADD COLUMN IF NOT EXISTS` 需 **PostgreSQL 11+**（本仓库 Docker 默认 `postgres:16` 可用）；与上面 `DO` 块二选一即可。
+> Note: `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` requires **PostgreSQL 11+** (repo Docker default `postgres:16` works); use either the `DO` block or one-liner above, not both.
 
 ---
 
@@ -853,24 +955,24 @@ ALTER TABLE qd_users ADD COLUMN IF NOT EXISTS timezone VARCHAR(64) DEFAULT '';
 -- Polymarket Prediction Markets Integration
 -- ============================================================
 
--- 预测市场表（缓存）
+-- Prediction markets table (cache)
 CREATE TABLE IF NOT EXISTS qd_polymarket_markets (
     id SERIAL PRIMARY KEY,
     market_id VARCHAR(255) UNIQUE NOT NULL,
     question TEXT,
     category VARCHAR(100),  -- crypto, politics, economics, sports
-    current_probability DECIMAL(5,2),  -- YES概率（0-100）
+    current_probability DECIMAL(5,2),  -- YES probability (0-100)
     volume_24h DECIMAL(20,2),
     liquidity DECIMAL(20,2),
     end_date_iso TIMESTAMP,
     status VARCHAR(50),  -- active, closed, resolved
-    outcome_tokens JSONB,  -- YES/NO价格和交易量
-    slug VARCHAR(255),  -- Polymarket事件slug，用于构建URL
+    outcome_tokens JSONB,  -- YES/NO prices and volume
+    slug VARCHAR(255),  -- Polymarket event slug for URL construction
     created_at TIMESTAMP DEFAULT NOW(),
     updated_at TIMESTAMP DEFAULT NOW()
 );
 
--- 添加slug字段（如果表已存在但字段不存在）
+-- Add slug column if table exists but column missing
 DO $$
 BEGIN
     IF NOT EXISTS (
@@ -886,20 +988,20 @@ CREATE INDEX IF NOT EXISTS idx_polymarket_category ON qd_polymarket_markets(cate
 CREATE INDEX IF NOT EXISTS idx_polymarket_status ON qd_polymarket_markets(status);
 CREATE INDEX IF NOT EXISTS idx_polymarket_updated ON qd_polymarket_markets(updated_at DESC);
 
--- AI分析记录表
+-- AI analysis records
 CREATE TABLE IF NOT EXISTS qd_polymarket_ai_analysis (
     id SERIAL PRIMARY KEY,
     market_id VARCHAR(255) NOT NULL,
-    user_id INTEGER,  -- 可选：用户特定的分析
+    user_id INTEGER,  -- optional: user-specific analysis
     ai_predicted_probability DECIMAL(5,2),
     market_probability DECIMAL(5,2),
-    divergence DECIMAL(5,2),  -- AI - 市场
+    divergence DECIMAL(5,2),  -- AI minus market
     recommendation VARCHAR(20),  -- YES/NO/HOLD
     confidence_score DECIMAL(5,2),
     opportunity_score DECIMAL(5,2),
     reasoning TEXT,
     key_factors JSONB,
-    related_assets TEXT[],  -- 相关资产列表
+    related_assets TEXT[],  -- related asset list
     created_at TIMESTAMP DEFAULT NOW()
 );
 
@@ -907,7 +1009,7 @@ CREATE INDEX IF NOT EXISTS idx_polymarket_analysis_market ON qd_polymarket_ai_an
 CREATE INDEX IF NOT EXISTS idx_polymarket_analysis_opportunity ON qd_polymarket_ai_analysis(opportunity_score DESC);
 CREATE INDEX IF NOT EXISTS idx_polymarket_analysis_user ON qd_polymarket_ai_analysis(user_id);
 
--- 资产交易机会表（基于预测市场生成）
+-- Asset trading opportunities (generated from prediction markets)
 CREATE TABLE IF NOT EXISTS qd_polymarket_asset_opportunities (
     id SERIAL PRIMARY KEY,
     market_id VARCHAR(255) NOT NULL,
@@ -916,7 +1018,7 @@ CREATE TABLE IF NOT EXISTS qd_polymarket_asset_opportunities (
     signal VARCHAR(20),  -- BUY/SELL/HOLD
     confidence DECIMAL(5,2),
     reasoning TEXT,
-    entry_suggestion JSONB,  -- 入场建议
+    entry_suggestion JSONB,  -- entry suggestion
     created_at TIMESTAMP DEFAULT NOW()
 );
 
@@ -981,7 +1083,7 @@ END $$;
 - **Market Order Default**: Changed default order mode to market order for reliable execution
 - **Billing Config i18n**: All billing configuration items fully multi-language supported
 
-#### Quick Trade Panel (闪电交易) 🆕
+#### Quick Trade Panel (Lightning Trade) 🆕
 - **Side-Sliding Drawer**: Professional trading panel slides in from the right, allowing instant order placement without leaving the analysis page
 - **Multi-Exchange Support**: Select from saved exchange credentials (Binance, OKX, Bitget, Bybit, etc.) with real-time balance display
 - **Long/Short Toggle**: Color-coded direction buttons with one-click switching

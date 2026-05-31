@@ -142,6 +142,44 @@ class BinanceSpotClient(BaseRestClient):
                 return s if s else "0"
 
     @staticmethod
+    def _decimal_places_from_step(step: Decimal) -> Optional[int]:
+        """Infer max decimal places from a Binance LOT stepSize string."""
+        try:
+            st = Decimal(step)
+        except Exception:
+            return None
+        if st <= 0:
+            return None
+        try:
+            normalized = st.normalize()
+            step_str = str(normalized)
+            if "." in step_str:
+                return min(18, max(0, len(step_str.split(".")[1])))
+            return 0
+        except Exception:
+            return None
+
+    @staticmethod
+    def _pick_lot_filter(fdict: Dict[str, Any], *, for_market: bool) -> Dict[str, Any]:
+        """
+        Choose LOT_SIZE / MARKET_LOT_SIZE filter.
+
+        Binance often sets MARKET_LOT_SIZE.stepSize to 0; in that case we must fall
+        back to LOT_SIZE or market orders fail LOT_SIZE (-1013).
+        """
+        lot = fdict.get("LOT_SIZE") if isinstance(fdict.get("LOT_SIZE"), dict) else {}
+        if not for_market:
+            return lot or {}
+        market = fdict.get("MARKET_LOT_SIZE") if isinstance(fdict.get("MARKET_LOT_SIZE"), dict) else {}
+        try:
+            mstep = Decimal(str((market or {}).get("stepSize") or "0"))
+        except Exception:
+            mstep = Decimal("0")
+        if mstep > 0:
+            return market
+        return lot or {}
+
+    @staticmethod
     def _floor_to_step(value: Decimal, step: Decimal) -> Decimal:
         if step is None:
             return value
@@ -302,8 +340,13 @@ class BinanceSpotClient(BaseRestClient):
                     fdict[str(f.get("filterType"))] = f
         # Also keep precision metadata when available (used to avoid -1111).
         try:
-            qty_prec = first.get("baseAssetPrecision") if isinstance(first, dict) else None
-            # For spot, price precision is typically quotePrecision/quoteAssetPrecision.
+            # ``quantityPrecision`` is the order qty field; ``baseAssetPrecision`` is
+            # wallet precision and is often looser than LOT_SIZE (causes -1013).
+            qty_prec = None
+            if isinstance(first, dict):
+                qty_prec = first.get("quantityPrecision")
+                if qty_prec is None:
+                    qty_prec = first.get("baseAssetPrecision")
             price_prec = None
             if isinstance(first, dict):
                 price_prec = first.get("quotePrecision")
@@ -366,6 +409,53 @@ class BinanceSpotClient(BaseRestClient):
             return Decimal("0")
         return px
 
+    def _normalize_quote_order_qty(self, *, symbol: str, quote_amount: float) -> Tuple[Decimal, Optional[int]]:
+        """
+        Normalize ``quoteOrderQty`` (USDT notional) for spot MARKET BUY.
+
+        Binance only enforces ``MIN_NOTIONAL`` / ``NOTIONAL`` on this field;
+        we still cap the precision so the wire body never carries scientific
+        notation or 18 trailing zeros (which sometimes triggers ``-1100``).
+        """
+        amt = self._to_dec(quote_amount)
+        if amt <= 0:
+            return (Decimal("0"), None)
+        fdict: Dict[str, Any] = {}
+        try:
+            fdict = self.get_symbol_filters(symbol=symbol) or {}
+        except Exception:
+            fdict = {}
+
+        # Pull min-notional from either NOTIONAL or legacy MIN_NOTIONAL.
+        min_notional = Decimal("0")
+        for key in ("NOTIONAL", "MIN_NOTIONAL"):
+            filt = fdict.get(key) if isinstance(fdict.get(key), dict) else None
+            if not filt:
+                continue
+            for f in ("minNotional", "notional"):
+                v = self._to_dec((filt or {}).get(f) or "0")
+                if v > 0:
+                    min_notional = v
+                    break
+            if min_notional > 0:
+                break
+
+        # Use ``quotePrecision`` (USDT decimals); default 8 (Binance accepts up to 8).
+        quote_precision = None
+        try:
+            meta = fdict.get("_meta") or {}
+            if isinstance(meta, dict) and meta.get("pricePrecision") is not None:
+                quote_precision = int(meta.get("pricePrecision"))
+        except Exception:
+            quote_precision = None
+        if quote_precision is None or quote_precision < 0 or quote_precision > 8:
+            quote_precision = 8
+
+        amt = self._floor_to_precision(amt, quote_precision)
+        if min_notional > 0 and amt < min_notional:
+            return (Decimal("0"), quote_precision)
+        return (amt, quote_precision)
+
     def _normalize_quantity(self, *, symbol: str, quantity: float, for_market: bool) -> Tuple[Decimal, Optional[int]]:
         """
         Normalize spot order quantity using LOT_SIZE / MARKET_LOT_SIZE filters (best-effort).
@@ -382,48 +472,27 @@ class BinanceSpotClient(BaseRestClient):
         except Exception:
             fdict = {}
 
-        key = "MARKET_LOT_SIZE" if for_market else "LOT_SIZE"
-        filt = fdict.get(key) or fdict.get("LOT_SIZE") or {}
+        filt = self._pick_lot_filter(fdict, for_market=for_market)
 
         step = self._to_dec((filt or {}).get("stepSize") or "0")
         min_qty = self._to_dec((filt or {}).get("minQty") or "0")
 
         if step > 0:
             q = self._floor_to_step(q, step)
-        
-        # Enforce quantity precision cap (Binance may reject quantities with too many decimals: -1111).
-        # First try to get precision from metadata
-        qty_precision = None
+
+        step_precision = self._decimal_places_from_step(step)
+        qty_precision = step_precision
         try:
             meta = fdict.get("_meta") or {}
-            if isinstance(meta, dict):
-                qty_precision = meta.get("quantityPrecision")
+            if isinstance(meta, dict) and meta.get("quantityPrecision") is not None:
+                meta_prec = int(meta.get("quantityPrecision"))
+                if step_precision is None:
+                    qty_precision = meta_prec
+                else:
+                    qty_precision = min(meta_prec, step_precision)
         except Exception:
             pass
-        
-        # If precision not available, infer from stepSize
-        if qty_precision is None and step > 0:
-            try:
-                # stepSize like "0.001" means 3 decimal places
-                # Use normalize() to remove trailing zeros, then count decimal places
-                step_normalized = step.normalize()
-                step_str = str(step_normalized)
-                if '.' in step_str:
-                    # Count decimal places after removing trailing zeros
-                    decimal_part = step_str.split('.')[1]
-                    qty_precision = len(decimal_part)
-                    # Ensure precision is at least 0 and at most 18
-                    if qty_precision < 0:
-                        qty_precision = 0
-                    if qty_precision > 18:
-                        qty_precision = 18
-                else:
-                    # If stepSize is 1 or larger, precision is 0
-                    qty_precision = 0
-            except Exception:
-                pass
-        
-        # Apply precision limit
+
         if qty_precision is not None:
             q = self._floor_to_precision(q, qty_precision)
         
@@ -487,34 +556,64 @@ class BinanceSpotClient(BaseRestClient):
         *,
         symbol: str,
         side: str,
-        quantity: float,
+        quantity: float = 0.0,
+        quote_order_qty: float = 0.0,
         client_order_id: Optional[str] = None,
     ) -> LiveOrderResult:
+        """
+        Place a spot MARKET order.
+
+        - SELL: requires ``quantity`` (base asset, e.g. 0.001 BTC).
+        - BUY:  prefer ``quote_order_qty`` (USDT notional) so we sidestep
+                LOT_SIZE / MIN_NOTIONAL arithmetic; falls back to ``quantity``
+                when only base is supplied.
+        """
         sym = to_binance_futures_symbol(symbol)
         sd = (side or "").upper()
         if sd not in ("BUY", "SELL"):
             raise LiveTradingError(f"Invalid side: {side}")
-        q_req = float(quantity or 0.0)
-        q_dec, qty_precision = self._normalize_quantity(symbol=symbol, quantity=q_req, for_market=True)
-        if float(q_dec or 0) <= 0:
-            raise LiveTradingError(f"Invalid quantity (below step/minQty): requested={q_req}")
 
         params: Dict[str, Any] = {
             "symbol": sym,
             "side": sd,
             "type": "MARKET",
-            "quantity": self._dec_str(q_dec, strict_precision=qty_precision),
         }
+
+        debug_extra = ""
+        if sd == "BUY" and float(quote_order_qty or 0.0) > 0:
+            q_req = float(quote_order_qty)
+            q_dec, quote_precision = self._normalize_quote_order_qty(
+                symbol=symbol, quote_amount=q_req
+            )
+            if float(q_dec or 0) <= 0:
+                raise LiveTradingError(
+                    f"Invalid quoteOrderQty (below MIN_NOTIONAL or precision): requested={q_req}"
+                )
+            params["quoteOrderQty"] = self._dec_str(q_dec, strict_precision=quote_precision)
+            debug_extra = (
+                f"mode=quoteOrderQty quote_req={q_req} "
+                f"quote_norm={self._dec_str(q_dec, strict_precision=quote_precision)}"
+            )
+        else:
+            q_req = float(quantity or 0.0)
+            q_dec, qty_precision = self._normalize_quantity(
+                symbol=symbol, quantity=q_req, for_market=True
+            )
+            if float(q_dec or 0) <= 0:
+                raise LiveTradingError(f"Invalid quantity (below step/minQty): requested={q_req}")
+            params["quantity"] = self._dec_str(q_dec, strict_precision=qty_precision)
+            debug_extra = (
+                f"mode=quantity qty_req={q_req} "
+                f"qty_norm={self._dec_str(q_dec, strict_precision=qty_precision)}"
+            )
+
         client_order_id_norm = self._format_client_order_id(client_order_id)
         if client_order_id_norm:
             params["newClientOrderId"] = client_order_id_norm
         try:
             raw = self._signed_request("POST", "/api/v3/order", params=params)
         except LiveTradingError as e:
-            raise LiveTradingError(
-                f"{e} | debug: symbol={sym} side={sd} "
-                f"qty_req={q_req} qty_norm={self._dec_str(q_dec, strict_precision=qty_precision)}"
-            )
+            raise LiveTradingError(f"{e} | debug: symbol={sym} side={sd} {debug_extra}")
         return LiveOrderResult(
             exchange_id="binance",
             exchange_order_id=str(raw.get("orderId") or raw.get("clientOrderId") or ""),

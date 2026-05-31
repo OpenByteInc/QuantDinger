@@ -15,12 +15,14 @@ Endpoints:
 from __future__ import annotations
 
 import json
+import re
 import time
 import traceback
 import uuid
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional, Optional
 
-from flask import Blueprint, g, jsonify, request
+from flask import g, jsonify, request
+from app.openapi.blueprint import HumanBlueprint as Blueprint
 
 from app.utils.db import get_db_connection
 from app.utils.logger import get_logger
@@ -36,7 +38,10 @@ _FRIENDLY_ERROR_PATTERNS = [
     (_re.compile(r"INSUFFICIENT[_ ]?AVAILABLE|insufficient.{0,20}(balance|margin|fund)|margin.{0,30}while available|not enough|资金不足", _re.IGNORECASE),
      "quickTrade.errorHints.insufficientBalance"),
     # Invalid size / quantity
-    (_re.compile(r"invalid.{0,10}size|invalid.{0,10}(qty|quantity|amount|volume)|Order size.{0,20}(too small|below|minimum)|MIN_NOTIONAL", _re.IGNORECASE),
+    (_re.compile(
+        r"invalid.{0,10}size|invalid.{0,10}(qty|quantity|amount|volume)|Order size.{0,20}(too small|below|minimum)|MIN_NOTIONAL|too many decimals|170137",
+        _re.IGNORECASE,
+    ),
      "quickTrade.errorHints.invalidSize"),
     # Invalid price
     (_re.compile(r"invalid.{0,10}price|price.{0,20}(deviate|deviation|exceed|out of range)", _re.IGNORECASE),
@@ -67,7 +72,97 @@ def _parse_trade_error_hint(error_str: str) -> str:
             return hint_key
     return ""
 
-quick_trade_bp = Blueprint('quick_trade', __name__)
+
+def _extract_request_ip_from_exchange_error(err: str) -> str:
+    m = re.search(r"Current request IP\s+([0-9a-fA-F.:]+)", str(err or ""), re.IGNORECASE)
+    return (m.group(1) or "").strip() if m else ""
+
+
+def _exchange_error_user_message(*, exchange_id: str, err: str) -> Dict[str, str]:
+    """
+    Map raw exchange errors to UI-friendly text + optional i18n hint key.
+    """
+    s = str(err or "").strip()
+    low = s.lower()
+    ex = (exchange_id or "").strip().lower()
+    if not s:
+        return {"message": "", "hint_key": ""}
+    if "40018" in s or "invalid ip" in low:
+        ip = _extract_request_ip_from_exchange_error(s)
+        if ex == "bitget":
+            msg = (
+                f"Bitget API 拒绝：当前出口 IP 未加入白名单"
+                f"{('（' + ip + '）') if ip else ''}。"
+                f"请在 Bitget → API 管理 → 编辑密钥 → IP 白名单中加入该 IP，或暂时关闭 IP 限制。"
+            )
+        else:
+            msg = (
+                f"交易所 API 拒绝：IP 未在白名单内"
+                f"{('（' + ip + '）') if ip else ''}，请在交易所 API 设置中添加该 IP。"
+            )
+        return {"message": msg, "hint_key": "quickTrade.errorHints.ipWhitelist", "request_ip": ip}
+    if "balance_not_enough" in low or "not enough balance" in low:
+        return {
+            "message": (
+                "账户余额不足。Gate 等平台现货与合约钱包分开，"
+                "若合约有余额但现货为 0，请先在交易所把 USDT 划转到现货账户。"
+            ),
+            "hint_key": "quickTrade.errorHints.insufficientBalance",
+        }
+    if "account-frozen-balance-insufficient" in low or "balance is not enough, left" in low:
+        return {
+            "message": (
+                "现货可用 USDT 不足（部分资金可能被冻结或挂单占用）。"
+                "请减小下单金额或释放冻结余额后重试。"
+            ),
+            "hint_key": "quickTrade.errorHints.insufficientBalance",
+        }
+    if "insufficient margin" in low:
+        return {
+            "message": (
+                "合约保证金不足：账户可用 USDT 不够覆盖本次开仓所需的保证金。"
+                "请减小下单金额、提高杠杆，或先向合约账户充值/划转 USDT 后重试。"
+            ),
+            "hint_key": "quickTrade.errorHints.insufficientBalance",
+        }
+    hint_key = _parse_trade_error_hint(s)
+    return {"message": s[:500], "hint_key": hint_key}
+
+
+def _merge_balance_leg_errors(
+    swap_bal: Dict[str, Any],
+    spot_bal: Dict[str, Any],
+    *,
+    exchange_id: str = "",
+) -> Dict[str, str]:
+    """Collect leg errors and return top-level error fields for the API response."""
+    parts: List[str] = []
+    hint_keys: List[str] = []
+    request_ip = ""
+    for leg in (swap_bal, spot_bal):
+        if not isinstance(leg, dict):
+            continue
+        raw_err = str(leg.get("error") or "").strip()
+        if not raw_err:
+            continue
+        meta = _exchange_error_user_message(exchange_id=exchange_id, err=raw_err)
+        if meta.get("message"):
+            parts.append(str(meta["message"]))
+        if meta.get("hint_key"):
+            hint_keys.append(str(meta["hint_key"]))
+        if meta.get("request_ip"):
+            request_ip = str(meta["request_ip"])
+    if not parts:
+        return {}
+    return {
+        "error": parts[0],
+        "errors": parts,
+        "error_hint_key": hint_keys[0] if hint_keys else "",
+        "request_ip": request_ip,
+    }
+
+
+quick_trade_blp = Blueprint('quick_trade', __name__)
 
 
 # ────────── helpers ──────────
@@ -127,7 +222,13 @@ def _convert_usdt_to_base_qty(client, symbol: str, usdt_amount: float, market_ty
                 try:
                     ticker = client.get_ticker(symbol=symbol)
                     if isinstance(ticker, dict):
-                        current_price = float(ticker.get("last") or ticker.get("lastPx") or ticker.get("close") or ticker.get("price") or 0)
+                        for _pk in ("last", "lastPr", "lastPx", "lastPrice", "close", "price"):
+                            try:
+                                current_price = float(ticker.get(_pk) or 0)
+                            except Exception:
+                                current_price = 0.0
+                            if current_price > 0:
+                                break
                 except Exception:
                     current_price = 0.0
 
@@ -451,7 +552,7 @@ def _record_quick_trade(
 
 # ────────── endpoints ──────────
 
-@quick_trade_bp.route('/place-order', methods=['POST'])
+@quick_trade_blp.route('/place-order', methods=['POST'])
 @login_required
 def place_order():
     """
@@ -545,6 +646,72 @@ def place_order():
         # For limit orders, use the provided price; for market orders, fetch current price
         limit_price_for_conversion = price if order_type == "limit" and price > 0 else 0.0
         base_qty = _convert_usdt_to_base_qty(client, symbol, usdt_amount, market_type, limit_price_for_conversion)
+
+        quote_for_buy = 0.0
+        if market_type == "spot":
+            from app.services.live_trading.spot_sizing import (
+                fetch_spot_last_price,
+                normalize_spot_base_quantity,
+                normalize_spot_quote_amount,
+                scale_spot_open_notional,
+            )
+            from app.services.live_trading.bitget_spot import BitgetSpotClient
+
+            if order_type == "market" and side == "buy":
+                quote_for_buy = normalize_spot_quote_amount(
+                    client,
+                    symbol=symbol,
+                    quote_amount=scale_spot_open_notional(usdt_amount),
+                )
+                if quote_for_buy <= 0:
+                    return jsonify(
+                        {
+                            "code": 0,
+                            "msg": "订单金额低于交易所最小下单要求，请增大 USDT 金额",
+                        }
+                    ), 400
+                if not isinstance(client, BitgetSpotClient):
+                    base_qty = normalize_spot_base_quantity(
+                        client, symbol=symbol, quantity=base_qty, for_market=True
+                    )
+            else:
+                base_qty = normalize_spot_base_quantity(
+                    client, symbol=symbol, quantity=base_qty, for_market=(order_type == "market")
+                )
+            if base_qty <= 0 and quote_for_buy <= 0:
+                px = fetch_spot_last_price(client, symbol=symbol)
+                hint = f"（无法获取 {symbol} 价格，请检查 API 或交易对）" if px <= 0 else ""
+                return jsonify(
+                    {
+                        "code": 0,
+                        "msg": f"订单数量低于交易所最小下单量，请增大金额或检查交易对规则{hint}",
+                    }
+                ), 400
+
+            if side == "buy":
+                need_quote = float(quote_for_buy or 0) if quote_for_buy > 0 else float(usdt_amount or 0)
+                if need_quote > 0:
+                    try:
+                        bal = _fetch_balance_raw(
+                            client,
+                            exchange_id=exchange_id,
+                            market_type="spot",
+                            exchange_config=exchange_config,
+                        )
+                        avail = float(bal.get("available") or 0)
+                        if need_quote > avail + 1e-6:
+                            return jsonify(
+                                {
+                                    "code": 0,
+                                    "msg": (
+                                        f"现货 USDT 可用不足：约需 {need_quote:.4f} USDT，"
+                                        f"当前可用 {avail:.4f} USDT"
+                                    ),
+                                    "error_hint": "quickTrade.errorHints.insufficientBalance",
+                                }
+                            ), 400
+                    except Exception as be:
+                        logger.warning("spot buy balance pre-check skipped: %s", be)
         
         # Validate conversion: if base_qty equals usdt_amount, conversion likely failed
         # For swap markets, base_qty should be much smaller than usdt_amount (e.g., 100 USDT -> 0.033 ETH)
@@ -587,6 +754,43 @@ def place_order():
             except Exception as le:
                 logger.warning(f"set_leverage failed (non-fatal): {le}")
 
+        # ---- swap margin pre-check ----
+        # 50 USDT notional at leverage=1 needs ~50 USDT collateral. Many users
+        # only see the i18n hint after the exchange rejects the order. Compute
+        # the rough margin requirement up-front so we can short-circuit with
+        # an actionable message that includes account/balance numbers.
+        if market_type != "spot" and order_type == "market":
+            try:
+                ref_price = price if price > 0 else 0.0
+                if ref_price <= 0 and usdt_amount > 0 and base_qty > 0:
+                    ref_price = float(usdt_amount) / float(base_qty)
+                notional_usdt = float(base_qty or 0) * float(ref_price or 0)
+                if notional_usdt <= 0:
+                    notional_usdt = float(usdt_amount or 0)
+                lev = max(int(leverage or 1), 1)
+                # Add a small safety buffer (taker fee + funding accrual + slippage)
+                est_margin = (notional_usdt / lev) * 1.05
+                bal = _fetch_balance_raw(
+                    client,
+                    exchange_id=exchange_id,
+                    market_type="swap",
+                    exchange_config=exchange_config,
+                )
+                avail = float(bal.get("available") or 0)
+                if avail > 0 and est_margin > avail:
+                    return jsonify({
+                        "code": 0,
+                        "msg": (
+                            f"合约保证金不足：{notional_usdt:.2f} USDT 名义价值"
+                            f"在 {lev}x 杠杆下需要约 {est_margin:.2f} USDT 保证金，"
+                            f"当前合约账户可用仅 {avail:.2f} USDT。"
+                            f"请减小下单金额、提高杠杆，或向合约账户充值后重试。"
+                        ),
+                        "error_hint": "quickTrade.errorHints.insufficientBalance",
+                    }), 400
+            except Exception as pe:
+                logger.warning("swap margin pre-check skipped: %s", pe)
+
         # ---- place order ----
         # Generate client_order_id: OKX clOrdId requirements: 1-32 chars, alphanumeric, underscore, hyphen only
         timestamp_suffix = str(int(time.time()))[-6:]  # Last 6 digits of timestamp
@@ -614,6 +818,7 @@ def place_order():
                 market_type=market_type,
                 exchange_config=exchange_config,
                 client_order_id=client_order_id,
+                quote_amount=quote_for_buy,
             )
         else:
             # Limit orders: use direct client call (execution.py doesn't handle limit orders)
@@ -719,10 +924,10 @@ def place_order():
             pass
 
         err_str = str(e)
-        hint = _parse_trade_error_hint(err_str)
-        resp: Dict[str, Any] = {"code": 0, "msg": err_str}
-        if hint:
-            resp["error_hint"] = hint
+        err_meta = _exchange_error_user_message(exchange_id=exchange_id, err=err_str)
+        resp: Dict[str, Any] = {"code": 0, "msg": err_meta.get("message") or err_str}
+        if err_meta.get("hint_key"):
+            resp["error_hint"] = err_meta["hint_key"]
         return jsonify(resp), 500
 
 
@@ -778,64 +983,157 @@ def _limit_order_kwargs(client, symbol, amount, price, side, market_type, client
     return {"size": amount, "price": price, "client_order_id": client_order_id}
 
 
-@quick_trade_bp.route('/balance', methods=['GET'])
+def _empty_balance_dict() -> Dict[str, Any]:
+    return {"available": 0.0, "total": 0.0, "currency": "USDT"}
+
+
+def _fetch_balance_raw(
+    client: Any,
+    *,
+    exchange_id: str,
+    market_type: str,
+    exchange_config: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Fetch and parse USDT available balance for one market type (spot or swap)."""
+    from app.services.live_trading.bitget import BitgetMixClient
+    from app.services.live_trading.bitget_spot import BitgetSpotClient
+    from app.services.live_trading.bybit import BybitClient
+
+    ex0 = (exchange_id or "").strip().lower()
+    mt0 = (market_type or "swap").strip().lower()
+    cfg = exchange_config if isinstance(exchange_config, dict) else {}
+    result = _empty_balance_dict()
+    raw: Any = None
+
+    try:
+        if isinstance(client, BitgetSpotClient) and hasattr(client, "get_assets"):
+            raw = client.get_assets()
+            return _parse_balance(raw, exchange_id, market_type)
+        if hasattr(client, "get_balance"):
+            raw = client.get_balance()
+            return _parse_balance(raw, exchange_id, market_type)
+        if hasattr(client, "get_account"):
+            raw = client.get_account()
+            return _parse_balance(raw, exchange_id, market_type)
+        if hasattr(client, "get_accounts"):
+            if isinstance(client, BitgetMixClient):
+                pt = str(cfg.get("product_type") or cfg.get("productType") or "USDT-FUTURES")
+                raw = client.get_accounts(product_type=pt)
+            else:
+                raw = client.get_accounts()
+            return _parse_balance(raw, exchange_id, market_type)
+        if hasattr(client, "get_wallet_balance"):
+            if isinstance(client, BybitClient):
+                acct_types = ("UNIFIED", "SPOT") if mt0 == "spot" else ("UNIFIED", "CONTRACT", "FUND")
+                for acct_type in acct_types:
+                    try:
+                        raw = client.get_wallet_balance(account_type=acct_type)
+                        parsed = _parse_balance(raw, exchange_id, market_type)
+                        if float(parsed.get("available") or 0) > 0 or float(parsed.get("total") or 0) > 0:
+                            return parsed
+                        result = parsed
+                    except Exception:
+                        continue
+                return result
+            raw = client.get_wallet_balance()
+            return _parse_balance(raw, exchange_id, market_type)
+        if ex0 == "bitget" and mt0 == "spot" and hasattr(client, "get_assets"):
+            raw = client.get_assets()
+            return _parse_balance(raw, exchange_id, market_type)
+    except Exception as be:
+        logger.warning("Balance fetch failed (%s/%s): %s", ex0, mt0, be)
+        result = _empty_balance_dict()
+        result["error"] = str(be)
+        return result
+
+    logger.warning(
+        "No balance API on client %s for %s/%s",
+        type(client).__name__,
+        ex0,
+        mt0,
+    )
+    return result
+
+
+@quick_trade_blp.route('/balance', methods=['GET'])
 @login_required
 def get_balance():
     """
     Get available balance from exchange.
 
-    Query: credential_id (int), market_type (str, default "swap")
+    Query: credential_id (int), market_type (str, default "swap") — active leg for ``available``/``total``.
+
+    Response also includes ``swap`` and ``spot`` so the UI can show both account types.
     """
     try:
         user_id = g.user_id
         credential_id = request.args.get("credential_id", type=int)
         market_type = request.args.get("market_type", "swap").strip().lower()
+        if market_type in ("futures", "future", "perp", "perpetual"):
+            market_type = "swap"
 
         if not credential_id:
             return jsonify({"code": 0, "msg": "Missing credential_id"}), 400
 
-        exchange_config = _build_exchange_config(credential_id, user_id, {"market_type": market_type})
-        exchange_id = (exchange_config.get("exchange_id") or "").strip().lower()
+        base_cfg = _build_exchange_config(credential_id, user_id, {})
+        exchange_id = (base_cfg.get("exchange_id") or "").strip().lower()
         qt_rej = _reject_quick_trade_if_desktop_broker(exchange_id)
         if qt_rej is not None:
             return qt_rej
 
-        client = _create_client(exchange_config, market_type=market_type)
+        swap_bal = _empty_balance_dict()
+        spot_bal = _empty_balance_dict()
 
-        balance_data = {"available": 0, "total": 0, "currency": "USDT"}
-
-        try:
-            raw = None
-            if hasattr(client, "get_balance"):
-                raw = client.get_balance()
-                balance_data = _parse_balance(raw, exchange_id, market_type)
-            elif hasattr(client, "get_account"):
-                raw = client.get_account()
-                balance_data = _parse_balance(raw, exchange_id, market_type)
-            elif hasattr(client, "get_accounts"):
-                from app.services.live_trading.bitget import BitgetMixClient
-
-                if isinstance(client, BitgetMixClient):
-                    pt = str(exchange_config.get("product_type") or exchange_config.get("productType") or "USDT-FUTURES")
-                    raw = client.get_accounts(product_type=pt)
+        for mt in ("swap", "spot"):
+            try:
+                cfg = _build_exchange_config(credential_id, user_id, {"market_type": mt})
+                client = _create_client(cfg, market_type=mt)
+                parsed = _fetch_balance_raw(
+                    client,
+                    exchange_id=exchange_id,
+                    market_type=mt,
+                    exchange_config=cfg,
+                )
+                if mt == "spot":
+                    spot_bal = parsed
                 else:
-                    raw = client.get_accounts()
-                balance_data = _parse_balance(raw, exchange_id, market_type)
-            elif hasattr(client, "get_wallet_balance"):
-                raw = client.get_wallet_balance()
-                balance_data = _parse_balance(raw, exchange_id, market_type)
-            elif (exchange_id or "").lower() == "bitget" and market_type == "spot" and hasattr(client, "get_assets"):
-                raw = client.get_assets()
-                balance_data = _parse_balance(raw, exchange_id, market_type)
-            logger.info(
-                "Balance for %s/%s: available=%.4f total=%.4f (raw keys=%s)",
-                exchange_id, market_type,
-                balance_data.get("available", 0), balance_data.get("total", 0),
-                list(raw.keys()) if isinstance(raw, dict) else type(raw).__name__,
-            )
-        except Exception as be:
-            logger.warning(f"Balance fetch failed: {be}")
-            balance_data["error"] = str(be)
+                    swap_bal = parsed
+                logger.info(
+                    "Balance for %s/%s: available=%.4f total=%.4f",
+                    exchange_id,
+                    mt,
+                    float(parsed.get("available") or 0),
+                    float(parsed.get("total") or 0),
+                )
+            except Exception as be:
+                logger.warning("Balance leg failed (%s/%s): %s", exchange_id, mt, be)
+                leg = _empty_balance_dict()
+                leg["error"] = str(be)
+                if mt == "spot":
+                    spot_bal = leg
+                else:
+                    swap_bal = leg
+
+        active = spot_bal if market_type == "spot" else swap_bal
+        balance_data = {
+            "available": float(active.get("available") or 0),
+            "total": float(active.get("total") or 0),
+            "currency": str(active.get("currency") or "USDT"),
+            "market_type": market_type,
+            "swap": swap_bal,
+            "spot": spot_bal,
+        }
+        err_meta = _merge_balance_leg_errors(swap_bal, spot_bal, exchange_id=exchange_id)
+        if not err_meta and active.get("error"):
+            err_meta = _exchange_error_user_message(exchange_id=exchange_id, err=str(active.get("error")))
+            if err_meta.get("message"):
+                balance_data["error"] = err_meta["message"]
+            if err_meta.get("hint_key"):
+                balance_data["error_hint_key"] = err_meta["hint_key"]
+            if err_meta.get("request_ip"):
+                balance_data["request_ip"] = err_meta["request_ip"]
+        elif err_meta:
+            balance_data.update(err_meta)
 
         return jsonify({"code": 1, "msg": "success", "data": balance_data})
     except Exception as e:
@@ -891,13 +1189,24 @@ def _parse_balance(raw: Any, exchange_id: str, market_type: str) -> Dict[str, An
             ex = (exchange_id or "").lower()
             # Gate.io USDT perpetual: GET /api/v4/futures/usdt/accounts — flat object (values often strings)
             if ex == "gate" and mt0 != "spot":
-                if any(k in raw for k in ("available", "total", "cross_available", "cross_margin_balance")):
-                    av = raw.get("available") or raw.get("available_balance") or raw.get("cross_available")
+                gate_keys = (
+                    "available", "total", "cross_available", "cross_margin_balance",
+                    "available_margin", "margin_available",
+                )
+                if any(k in raw for k in gate_keys):
+                    av = (
+                        raw.get("available")
+                        or raw.get("available_balance")
+                        or raw.get("cross_available")
+                        or raw.get("available_margin")
+                        or raw.get("margin_available")
+                    )
                     tot = (
                         raw.get("total")
                         or raw.get("total_balance")
                         or raw.get("cross_margin_balance")
                         or raw.get("equity")
+                        or raw.get("margin_balance")
                     )
                     result["available"] = _num(av)
                     result["total"] = _num(tot) if tot is not None and str(tot).strip() != "" else result["available"]
@@ -980,10 +1289,16 @@ def _parse_balance(raw: Any, exchange_id: str, market_type: str) -> Dict[str, An
                             for c in coins:
                                 if str(c.get("coin") or "").upper() == "USDT":
                                     wb = _num(c.get("walletBalance"))
-                                    avail = _num(c.get("availableToWithdraw")) or wb
+                                    avail = _num(
+                                        c.get("availableBalance")
+                                        or c.get("availableToWithdraw")
+                                        or c.get("free")
+                                    ) or wb
+                                    eq = _num(c.get("equity")) or wb
                                     result["available"] = avail
-                                    result["total"] = wb if wb > 0 else avail
-                                    return result
+                                    result["total"] = eq if eq > 0 else (wb if wb > 0 else avail)
+                                    if result["available"] > 0 or result["total"] > 0:
+                                        return result
             # HTX spot
             if isinstance(data, dict) and isinstance(data.get("list"), list):
                 for item in data.get("list") or []:
@@ -1031,6 +1346,151 @@ def _parse_balance(raw: Any, exchange_id: str, market_type: str) -> Dict[str, An
     return result
 
 
+def _quick_trade_spot_avg_entry_price(
+    user_id: int,
+    credential_id: int,
+    symbol: str,
+    market_type: str,
+) -> float:
+    """
+    Average cost basis from filled Quick Trade rows (chronological avg-cost).
+    """
+    sym = str(symbol or "").strip()
+    mt = (market_type or "spot").strip().lower()
+    with get_db_connection() as db:
+        cur = db.cursor()
+        cur.execute(
+            """
+            SELECT side, filled_amount, avg_fill_price, price
+            FROM qd_quick_trades
+            WHERE user_id = %s AND credential_id = %s AND symbol = %s AND market_type = %s
+              AND status = 'filled' AND COALESCE(filled_amount, 0) > 0
+            ORDER BY created_at ASC, id ASC
+            """,
+            (int(user_id), int(credential_id), sym, mt),
+        )
+        rows = cur.fetchall() or []
+        cur.close()
+
+    qty = 0.0
+    cost = 0.0
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        side = str(row.get("side") or "").strip().lower()
+        try:
+            filled = float(row.get("filled_amount") or 0.0)
+        except (TypeError, ValueError):
+            filled = 0.0
+        try:
+            px = float(row.get("avg_fill_price") or 0.0)
+        except (TypeError, ValueError):
+            px = 0.0
+        if px <= 0:
+            try:
+                px = float(row.get("price") or 0.0)
+            except (TypeError, ValueError):
+                px = 0.0
+        if filled <= 0 or px <= 0:
+            continue
+        if side == "buy":
+            cost += filled * px
+            qty += filled
+        elif side == "sell" and qty > 0:
+            sell_qty = min(filled, qty)
+            avg = cost / qty
+            cost -= sell_qty * avg
+            qty -= sell_qty
+    if qty > 1e-12 and cost > 0:
+        return cost / qty
+    return 0.0
+
+
+def _enrich_spot_positions(
+    positions: list,
+    *,
+    client: Any,
+    symbol: str,
+    user_id: int,
+    credential_id: int,
+    market_type: str,
+) -> list:
+    """Fill missing spot entry / mark / unrealized PnL for Quick Trade display."""
+    from app.services.live_trading.spot_sizing import fetch_spot_last_price
+
+    if not positions:
+        return positions
+
+    db_avg = _quick_trade_spot_avg_entry_price(
+        user_id, credential_id, symbol, market_type
+    )
+    last_px = fetch_spot_last_price(client, symbol=symbol)
+
+    enriched: list = []
+    for pos in positions:
+        if not isinstance(pos, dict):
+            continue
+        row = dict(pos)
+        entry = float(row.get("entry_price") or 0.0)
+        if entry <= 0 and db_avg > 0:
+            entry = db_avg
+        mark = float(row.get("mark_price") or 0.0)
+        if mark <= 0 and last_px > 0:
+            mark = last_px
+        size = float(row.get("size") or 0.0)
+        side = str(row.get("side") or "long").strip().lower()
+
+        row["entry_price"] = entry
+        if mark > 0:
+            row["mark_price"] = mark
+
+        upl = float(row.get("unrealized_pnl") or 0.0)
+        if abs(upl) < 1e-12 and entry > 0 and mark > 0 and size > 0:
+            if side == "short":
+                upl = (entry - mark) * size
+            else:
+                upl = (mark - entry) * size
+            row["unrealized_pnl"] = upl
+
+        enriched.append(row)
+    return enriched
+
+
+def _fetch_spot_holdings_raw(client: Any, *, symbol: str) -> Dict[str, Any]:
+    """
+    Spot "position" = base-asset wallet balance for the trading pair.
+
+    Returns the same ``{"data": [row, ...]}`` envelope as derivative position APIs.
+    """
+    from app.services.live_trading.spot_sizing import get_spot_base_holding
+    from app.services.live_trading.symbols import _split_base_quote
+
+    sym = str(symbol or "").strip()
+    base, quote = _split_base_quote(sym)
+    if not base:
+        return {"data": []}
+    display = sym if sym else f"{base}/{quote or 'USDT'}"
+    holding = get_spot_base_holding(client, symbol=display)
+    total = float(holding.get("total") or 0.0)
+    avail = float(holding.get("available") or 0.0)
+    if total <= 0 and avail <= 0:
+        return {"data": []}
+    qty = total if total > 0 else avail
+    if avail <= 0:
+        avail = qty
+    row: Dict[str, Any] = {
+        "symbol": display,
+        "bal": qty,
+        "availBal": avail,
+        "side": "long",
+    }
+    avg_cost = float(holding.get("avg_cost") or 0.0)
+    if avg_cost > 0:
+        row["avgCost"] = avg_cost
+        row["openAvgPx"] = avg_cost
+    return {"data": [row]}
+
+
 def _fetch_exchange_positions_raw(
     client: Any,
     exchange_config: Dict[str, Any],
@@ -1045,12 +1505,14 @@ def _fetch_exchange_positions_raw(
     or need extra args (Bitget ``product_type``, OKX ``inst_type``). Centralize here.
     """
     from app.services.live_trading.binance import BinanceFuturesClient
+    from app.services.live_trading.binance_spot import BinanceSpotClient
     from app.services.live_trading.bitget import BitgetMixClient
+    from app.services.live_trading.bitget_spot import BitgetSpotClient
     from app.services.live_trading.bybit import BybitClient
     from app.services.live_trading.deepcoin import DeepcoinClient
-    from app.services.live_trading.gate import GateUsdtFuturesClient
+    from app.services.live_trading.gate import GateSpotClient, GateUsdtFuturesClient
     from app.services.live_trading.htx import HtxClient
-    from app.services.live_trading.kucoin import KucoinFuturesClient
+    from app.services.live_trading.kucoin import KucoinFuturesClient, KucoinSpotClient
     from app.services.live_trading.okx import OkxClient
     from app.services.live_trading.symbols import (
         to_bybit_symbol,
@@ -1062,14 +1524,15 @@ def _fetch_exchange_positions_raw(
 
     mt = (market_type or "swap").strip().lower()
 
+    if mt == "spot" and isinstance(
+        client, (BinanceSpotClient, BitgetSpotClient, KucoinSpotClient, OkxClient)
+    ):
+        return _fetch_spot_holdings_raw(client, symbol=symbol)
+
     if isinstance(client, OkxClient):
-        if mt == "spot":
-            inst_id = to_okx_spot_inst_id(symbol)
-            inst_type = "SPOT"
-        else:
-            inst_id = to_okx_swap_inst_id(symbol)
-            inst_type = "SWAP"
-        return client.get_positions(inst_id=inst_id, inst_type=inst_type)
+        inst_id = to_okx_swap_inst_id(symbol)
+        raw = client.get_positions(inst_id=inst_id, inst_type="SWAP")
+        return _normalize_okx_positions_raw(raw)
 
     if isinstance(client, BinanceFuturesClient):
         return client.get_positions(symbol=symbol)
@@ -1078,7 +1541,42 @@ def _fetch_exchange_positions_raw(
         pt = str(exchange_config.get("product_type") or exchange_config.get("productType") or "USDT-FUTURES")
         return client.get_positions(product_type=pt, symbol=symbol)
 
+    if isinstance(client, GateSpotClient) and mt == "spot":
+        raw_accounts = client.get_accounts()
+        items = raw_accounts if isinstance(raw_accounts, list) else []
+        base_asset = ""
+        if symbol:
+            base_asset = str(symbol).split("/", 1)[0].split(":", 1)[0].strip().upper()
+        rows = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            ccy = str(item.get("currency") or "").upper()
+            if base_asset and ccy != base_asset:
+                continue
+            try:
+                av = float(item.get("available") or item.get("available_balance") or 0)
+            except Exception:
+                av = 0.0
+            try:
+                lk = float(item.get("locked") or item.get("freeze") or 0)
+            except Exception:
+                lk = 0.0
+            total = av + lk
+            if total <= 0:
+                continue
+            rows.append(
+                {
+                    "symbol": f"{ccy}/USDT",
+                    "bal": total,
+                    "availBal": av,
+                }
+            )
+        return {"data": rows}
+
     if isinstance(client, BybitClient):
+        if mt == "spot" or getattr(client, "category", "") == "spot":
+            return client.get_spot_holdings(symbol=symbol)
         # Bybit v5 requires symbol or settleCoin; query the contract directly.
         raw = client.get_positions(symbol=symbol)
         lst = (((raw or {}).get("result") or {}).get("list")) if isinstance(raw, dict) else None
@@ -1113,6 +1611,9 @@ def _fetch_exchange_positions_raw(
                 base_amt = client.contracts_signed_to_base_qty(contract=c, contracts_signed=ct_sz)
                 if base_amt > 0:
                     q["positionAmt"] = base_amt
+                    # Preserve direction for _parse_positions — Gate encodes short as
+                    # negative contract size but positionAmt is always positive.
+                    q["positionSide"] = "LONG" if ct_sz > 0 else "SHORT"
             out.append(q)
         logger.info("Gate filtered positions for %s: %d items, sizes=%s", c, len(out),
                      [(p.get("size"), p.get("positionAmt")) for p in out])
@@ -1132,6 +1633,8 @@ def _fetch_exchange_positions_raw(
         return {"data": filtered}
 
     if isinstance(client, HtxClient):
+        if mt == "spot":
+            return client.get_positions(symbol=symbol)
         raw = client.get_positions(symbol=symbol)
         data = (raw.get("data") if isinstance(raw, dict) else None) or []
         if not isinstance(data, list):
@@ -1176,10 +1679,13 @@ def _fetch_exchange_positions_raw(
     if hasattr(client, "get_position"):
         return client.get_position(symbol=symbol)
 
+    if mt == "spot":
+        return _fetch_spot_holdings_raw(client, symbol=symbol)
+
     return None
 
 
-@quick_trade_bp.route('/position', methods=['GET'])
+@quick_trade_blp.route('/position', methods=['GET'])
 @login_required
 def get_position():
     """
@@ -1210,6 +1716,15 @@ def get_position():
                 client, exchange_config, symbol=symbol, market_type=market_type
             )
             positions = _parse_positions(raw)
+            if market_type == "spot" and positions:
+                positions = _enrich_spot_positions(
+                    positions,
+                    client=client,
+                    symbol=symbol,
+                    user_id=user_id,
+                    credential_id=credential_id,
+                    market_type=market_type,
+                )
         except Exception as pe:
             logger.warning(f"Position fetch failed: {pe}")
             logger.warning(traceback.format_exc())
@@ -1219,6 +1734,115 @@ def get_position():
     except Exception as e:
         logger.error(f"get_position failed: {e}")
         return jsonify({"code": 0, "msg": str(e)}), 500
+
+
+def _normalize_okx_positions_raw(raw: Any) -> Any:
+    """
+    OKX net-mode rows use ``posSide=net`` with a *signed* ``pos`` (negative = short).
+    Attach ``positionSide`` so downstream parsers never default to long when posSide
+    is present but not literally ``long``/``short``.
+    """
+    if not isinstance(raw, dict):
+        return raw
+    data = raw.get("data")
+    if not isinstance(data, list):
+        return raw
+    out_rows = []
+    for item in data:
+        if not isinstance(item, dict):
+            out_rows.append(item)
+            continue
+        row = dict(item)
+        ps = str(row.get("posSide") or "").strip().lower()
+        if ps in ("long", "short"):
+            row.setdefault("positionSide", ps.upper())
+        elif ps == "net":
+            signed = None
+            for key in ("pos", "availPos", "posAmt"):
+                try:
+                    v = float(row.get(key) or 0)
+                except (TypeError, ValueError):
+                    continue
+                if abs(v) > 1e-10:
+                    signed = v
+                    break
+            if signed is not None:
+                row["positionSide"] = "SHORT" if signed < 0 else "LONG"
+        out_rows.append(row)
+    out = dict(raw)
+    out["data"] = out_rows
+    return out
+
+
+def _extract_signed_position_qty(item: dict) -> float:
+    """Return signed position qty; OKX ``pos`` must be checked before abs-only fields."""
+    for key in (
+        "pos", "positionAmt", "posAmt", "size", "currentQty", "volume",
+        "contracts", "total", "current_qty", "availPos",
+        "bal", "balance", "walletBalance", "equity", "cashBal", "qty",
+        "availBal", "free", "available",
+    ):
+        try:
+            v = float(item.get(key) or 0)
+        except (TypeError, ValueError):
+            continue
+        if abs(v) > 1e-10:
+            return v
+    return 0.0
+
+
+def _infer_position_side_from_row(item: dict) -> str:
+    """Map heterogeneous exchange position rows to ``long`` / ``short``."""
+    psu = str(item.get("positionSide") or item.get("position_side") or "").strip().upper()
+    if psu == "SHORT":
+        return "short"
+    if psu == "LONG":
+        return "long"
+
+    pos_side = str(item.get("posSide") or "").strip().lower()
+    if pos_side in ("long", "short"):
+        return pos_side
+
+    # OKX 买卖模式 (net_mode): posSide=net, sign lives on pos / availPos
+    if pos_side == "net":
+        signed = _extract_signed_position_qty(item)
+        if signed < -1e-10:
+            return "short"
+        if signed > 1e-10:
+            return "long"
+
+    hold = str(item.get("holdSide") or "").strip().lower()
+    if hold in ("long", "short"):
+        return hold
+
+    try:
+        idx = int(item.get("positionIdx") or 0)
+        if idx == 1:
+            return "long"
+        if idx == 2:
+            return "short"
+    except (TypeError, ValueError):
+        pass
+
+    exch_side = str(item.get("side") or "").strip().lower()
+    if exch_side in ("sell", "s", "short"):
+        return "short"
+    if exch_side in ("buy", "b", "long"):
+        return "long"
+
+    direction = str(item.get("direction") or "").strip().lower()
+    if direction in ("sell", "short", "open_short"):
+        return "short"
+    if direction in ("buy", "long", "open_long"):
+        return "long"
+
+    # Signed quantity fallbacks (Binance one-way, Gate, KuCoin, …)
+    signed = _extract_signed_position_qty(item)
+    if signed < -1e-10:
+        return "short"
+    if signed > 1e-10:
+        return "long"
+    return "long"
 
 
 def _parse_positions(raw: Any) -> list:
@@ -1260,56 +1884,13 @@ def _parse_positions(raw: Any) -> list:
                         if len(parts) == 2 and parts[0] and parts[1]:
                             display_symbol = f"{parts[0]}/{parts[1]}"
                         break
-            # For OKX, position size can be in different fields
-            # SWAP: posAmt, pos
-            # Binance futures: positionAmt
-            # SPOT: bal (balance), availBal (available balance)
-            size = float(
-                item.get("positionAmt")
-                or item.get("posAmt")
-                or item.get("pos")
-                or item.get("total")
-                or item.get("currentQty")
-                or item.get("available")
-                or item.get("size")
-                or item.get("contracts")
-                or item.get("bal")
-                or item.get("availBal")
-                or item.get("volume")
-                or item.get("current_qty")
-                or 0
-            )
+            # For OKX, pos is signed in net_mode — read before abs-only aliases.
+            size = _extract_signed_position_qty(item)
             if abs(size) < 1e-10:
                 continue
-            
-            # Binance hedge: positionSide LONG/SHORT with positive positionAmt; one-way: BOTH + signed amt
-            side = "long"
-            psu = str(item.get("positionSide", "")).strip().upper()
-            if psu == "SHORT":
-                side = "short"
-            elif psu == "LONG":
-                side = "long"
-            elif item.get("posSide"):
-                pos_side = str(item.get("posSide", "")).strip().lower()
-                if pos_side in ("long", "short"):
-                    side = pos_side
-            elif str(item.get("holdSide") or "").strip().lower() == "short":
-                side = "short"
-            elif str(item.get("holdSide") or "").strip().lower() == "long":
-                side = "long"
-            elif str(item.get("side") or "").strip().lower() in ("sell", "s"):
-                side = "short"
-            elif str(item.get("side") or "").strip().lower() in ("buy", "b"):
-                side = "long"
-            elif size < 0:
-                side = "short"
-            elif item.get("direction"):
-                dir_side = str(item.get("direction") or "").strip().lower()
-                if dir_side in ("buy", "long"):
-                    side = "long"
-                elif dir_side in ("sell", "short"):
-                    side = "short"
-            
+
+            side = _infer_position_side_from_row(item)
+
             result.append({
                 "symbol": display_symbol,
                 "side": side,
@@ -1322,6 +1903,8 @@ def _parse_positions(raw: Any) -> list:
                     or item.get("avgPrice")
                     or item.get("avgCost")
                     or item.get("avgPx")
+                    or item.get("openAvgPx")
+                    or item.get("accAvgPx")
                     or item.get("cost_open")
                     or item.get("trade_avg_price")
                     or 0
@@ -1395,7 +1978,7 @@ def _quick_trade_net_base_qty(
     return max(0.0, float(net))
 
 
-@quick_trade_bp.route('/close-position', methods=['POST'])
+@quick_trade_blp.route('/close-position', methods=['POST'])
 @login_required
 def close_position():
     """
@@ -1589,6 +2172,7 @@ def close_position():
             market_type=market_type,
             exchange_config=exchange_config,
             client_order_id=client_order_id,
+            quote_amount=0,
         )
         
         # ---- extract result ----
@@ -1681,7 +2265,7 @@ def close_position():
         return jsonify(resp), 500
 
 
-@quick_trade_bp.route('/history', methods=['GET'])
+@quick_trade_blp.route('/history', methods=['GET'])
 @login_required
 def get_history():
     """
@@ -1742,3 +2326,6 @@ def get_history():
     except Exception as e:
         logger.error(f"get_history failed: {e}")
         return jsonify({"code": 0, "msg": str(e)}), 500
+
+# openapi-compat: legacy import name
+quick_trade_bp = quick_trade_blp

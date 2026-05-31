@@ -1,12 +1,13 @@
 """
-Settings API - 读取和保存 .env 配置
+Settings API — read and write .env configuration.
 
 Admin-only endpoints for system configuration management.
 """
 import os
 import re
 import importlib
-from flask import Blueprint, request, jsonify
+from flask import jsonify, request
+from app.openapi.blueprint import HumanBlueprint as Blueprint
 from app._version import APP_VERSION
 from app.utils.logger import get_logger
 from app.utils.config_loader import clear_config_cache
@@ -15,7 +16,7 @@ from dotenv import load_dotenv
 
 logger = get_logger(__name__)
 
-settings_bp = Blueprint('settings', __name__)
+settings_blp = Blueprint('settings', __name__)
 
 # .env 文件路径
 ENV_FILE_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), '.env')
@@ -897,11 +898,11 @@ CONFIG_SCHEMA = {
                 'type': 'select',
                 'options': [
                     {'value': '', 'label': 'Single-tenant / self-hosted'},
-                    {'value': 'saas', 'label': 'SaaS / hosted (force paper_only)'},
+                    {'value': 'saas', 'label': 'SaaS / hosted (multi-tenant)'},
                     {'value': 'hosted', 'label': 'Hosted (alias of saas)'},
                 ],
                 'default': '',
-                'description': 'Set to "saas" on multi-tenant hosted instances. This force-pins agent tokens to paper_only and refuses any T-scope token issuance.'
+                'description': 'Set to "saas" on multi-tenant hosted instances. Users self-manage Agent Tokens in Profile; T scope is allowed with in-app risk disclosure. Live trading still requires AGENT_LIVE_TRADING_ENABLED.'
             },
             {
                 'key': 'AGENT_JOBS_MAX_WORKERS',
@@ -1457,11 +1458,11 @@ def _schema_with_advanced_flags():
     return annotated
 
 
-@settings_bp.route('/schema', methods=['GET'])
+@settings_blp.route('/schema', methods=['GET'])
 @login_required
 @admin_required
 def get_settings_schema():
-    """获取配置项定义 (admin only)"""
+    """Return settings schema definition (admin only)."""
     return jsonify({
         'code': 1,
         'msg': 'success',
@@ -1469,7 +1470,7 @@ def get_settings_schema():
     })
 
 
-@settings_bp.route('/public-config', methods=['GET'])
+@settings_blp.route('/public-config', methods=['GET'])
 @login_required
 def get_public_config():
     """Return non-sensitive config values needed by frontend widgets."""
@@ -1510,7 +1511,7 @@ def _brand_env(name: str, default: str = '') -> str:
     return _BRAND_DEFAULTS.get(default, '')
 
 
-@settings_bp.route('/brand-config', methods=['GET'])
+@settings_blp.route('/brand-config', methods=['GET'])
 def get_brand_config():
     """Public, no-auth endpoint exposing branding / legal / contact info.
 
@@ -1568,11 +1569,11 @@ def get_brand_config():
     })
 
 
-@settings_bp.route('/values', methods=['GET'])
+@settings_blp.route('/values', methods=['GET'])
 @login_required
 @admin_required
 def get_settings_values():
-    """获取当前配置值 - 包括敏感信息（真实值）(admin only)"""
+    """Return current settings values including secrets (admin only)."""
     env_values = read_env_file()
     
     # 构建返回数据，返回真实值
@@ -1594,11 +1595,11 @@ def get_settings_values():
     })
 
 
-@settings_bp.route('/save', methods=['POST'])
+@settings_blp.route('/save', methods=['POST'])
 @login_required
 @admin_required
 def save_settings():
-    """保存配置 (admin only)"""
+    """Save settings to .env (admin only)."""
     try:
         data = request.get_json()
         if not data:
@@ -1655,11 +1656,11 @@ def save_settings():
         return jsonify({'code': 0, 'msg': f'Save failed: {str(e)}'})
 
 
-@settings_bp.route('/openrouter-balance', methods=['GET'])
+@settings_blp.route('/openrouter-balance', methods=['GET'])
 @login_required
 @admin_required
 def get_openrouter_balance():
-    """查询 OpenRouter 账户余额 (admin only)"""
+    """Query OpenRouter account balance (admin only)."""
     try:
         import requests
         from app.config.api_keys import APIKeys
@@ -1733,11 +1734,11 @@ def get_openrouter_balance():
         })
 
 
-@settings_bp.route('/test-connection', methods=['POST'])
+@settings_blp.route('/test-connection', methods=['POST'])
 @login_required
 @admin_required
 def test_connection():
-    """测试API连接 (admin only)"""
+    """Test third-party API connectivity (admin only)."""
     try:
         data = request.get_json()
         service = data.get('service')
@@ -1772,3 +1773,6 @@ def test_connection():
     except Exception as e:
         logger.error(f"Connection test failed: {e}")
         return jsonify({'code': 0, 'msg': f'Test failed: {str(e)}'})
+
+# openapi-compat: legacy import name
+settings_bp = settings_blp

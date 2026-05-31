@@ -8,7 +8,8 @@ import csv
 import json
 from io import StringIO
 import re
-from flask import Blueprint, request, jsonify, g, Response
+from flask import Response, g, jsonify, request
+from app.openapi.blueprint import HumanBlueprint as Blueprint
 from app.services.user_service import get_user_service
 from app.utils.auth import login_required, admin_required
 from app.utils.db import get_db_connection
@@ -17,6 +18,16 @@ from app.utils.logger import get_logger
 logger = get_logger(__name__)
 
 _PROFILE_TIMEZONE_RE = re.compile(r'^[A-Za-z0-9_/+\-.]+$')
+
+
+def _parse_positive_int(value) -> int:
+    """Parse query-string int; return 0 when missing/invalid."""
+    if value is None or value == '':
+        return 0
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _ensure_chart_templates_column():
@@ -35,10 +46,10 @@ def _ensure_chart_templates_column():
     except Exception as e:
         logger.warning(f"ensure chart_templates column skipped: {e}")
 
-user_bp = Blueprint('user_manage', __name__)
+user_blp = Blueprint('user_manage', __name__)
 
 
-@user_bp.route('/list', methods=['GET'])
+@user_blp.route('/list', methods=['GET'])
 @login_required
 @admin_required
 def list_users():
@@ -48,15 +59,21 @@ def list_users():
     Query params:
         page: int (default 1)
         page_size: int (default 20, max 100)
-        search: str (optional, search by username/email/nickname)
+        search: str (optional, search by username/email/nickname/id)
+        user_id: int (optional, exact user id filter)
     """
     try:
         page = request.args.get('page', 1, type=int)
         page_size = request.args.get('page_size', 20, type=int)
         search = request.args.get('search', '', type=str)
+        user_id = _parse_positive_int(request.args.get('user_id'))
+        if user_id <= 0:
+            user_id = None
         page_size = min(100, max(1, page_size))
         
-        result = get_user_service().list_users(page=page, page_size=page_size, search=search)
+        result = get_user_service().list_users(
+            page=page, page_size=page_size, search=search, user_id=user_id,
+        )
         
         return jsonify({
             'code': 1,
@@ -68,14 +85,17 @@ def list_users():
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
 
 
-@user_bp.route('/export', methods=['GET'])
+@user_blp.route('/export', methods=['GET'])
 @login_required
 @admin_required
 def export_users():
     """Export all users as an Excel-friendly CSV file (admin only)."""
     try:
         search = request.args.get('search', '', type=str)
-        users = get_user_service().list_all_users_for_export(search=search)
+        user_id = _parse_positive_int(request.args.get('user_id'))
+        if user_id <= 0:
+            user_id = None
+        users = get_user_service().list_all_users_for_export(search=search, user_id=user_id)
 
         output = StringIO()
         output.write('\ufeff')
@@ -116,7 +136,7 @@ def export_users():
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
 
 
-@user_bp.route('/detail', methods=['GET'])
+@user_blp.route('/detail', methods=['GET'])
 @login_required
 @admin_required
 def get_user_detail():
@@ -140,7 +160,7 @@ def get_user_detail():
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
 
 
-@user_bp.route('/create', methods=['POST'])
+@user_blp.route('/create', methods=['POST'])
 @login_required
 @admin_required
 def create_user():
@@ -171,7 +191,7 @@ def create_user():
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
 
 
-@user_bp.route('/update', methods=['PUT'])
+@user_blp.route('/update', methods=['PUT'])
 @login_required
 @admin_required
 def update_user():
@@ -205,7 +225,7 @@ def update_user():
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
 
 
-@user_bp.route('/delete', methods=['DELETE'])
+@user_blp.route('/delete', methods=['DELETE'])
 @login_required
 @admin_required
 def delete_user():
@@ -230,7 +250,7 @@ def delete_user():
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
 
 
-@user_bp.route('/reset-password', methods=['POST'])
+@user_blp.route('/reset-password', methods=['POST'])
 @login_required
 @admin_required
 def reset_user_password():
@@ -265,7 +285,7 @@ def reset_user_password():
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
 
 
-@user_bp.route('/roles', methods=['GET'])
+@user_blp.route('/roles', methods=['GET'])
 @login_required
 @admin_required
 def get_roles():
@@ -289,7 +309,7 @@ def get_roles():
 
 # ==================== Billing Management (Admin) ====================
 
-@user_bp.route('/set-credits', methods=['POST'])
+@user_blp.route('/set-credits', methods=['POST'])
 @login_required
 @admin_required
 def set_user_credits():
@@ -327,7 +347,7 @@ def set_user_credits():
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
 
 
-@user_bp.route('/set-vip', methods=['POST'])
+@user_blp.route('/set-vip', methods=['POST'])
 @login_required
 @admin_required
 def set_user_vip():
@@ -385,7 +405,7 @@ def set_user_vip():
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
 
 
-@user_bp.route('/credits-log', methods=['GET'])
+@user_blp.route('/credits-log', methods=['GET'])
 @login_required
 @admin_required
 def get_user_credits_log():
@@ -418,7 +438,28 @@ def get_user_credits_log():
 
 # Self-service endpoints (accessible by any logged-in user)
 
-@user_bp.route('/profile', methods=['GET'])
+@user_blp.route('/login-logs', methods=['GET'])
+@login_required
+def get_login_logs():
+    """Paginated account login history (password / email code / OAuth)."""
+    try:
+        user_id = getattr(g, 'user_id', None)
+        if not user_id:
+            return jsonify({'code': 0, 'msg': 'Not authenticated', 'data': None}), 401
+
+        page = int(request.args.get('page') or 1)
+        page_size = int(request.args.get('page_size') or 20)
+
+        from app.services.login_notify import list_login_logs
+
+        data = list_login_logs(int(user_id), page=page, page_size=page_size)
+        return jsonify({'code': 1, 'msg': 'success', 'data': data})
+    except Exception as e:
+        logger.error(f"get_login_logs failed: {e}")
+        return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
+
+
+@user_blp.route('/profile', methods=['GET'])
 @login_required
 def get_profile():
     """Get current user's profile with billing info and notification settings"""
@@ -473,7 +514,7 @@ def get_profile():
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
 
 
-@user_bp.route('/profile/update', methods=['PUT'])
+@user_blp.route('/profile/update', methods=['PUT'])
 @login_required
 def update_profile():
     """
@@ -525,7 +566,7 @@ def update_profile():
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
 
 
-@user_bp.route('/my-credits-log', methods=['GET'])
+@user_blp.route('/my-credits-log', methods=['GET'])
 @login_required
 def get_my_credits_log():
     """
@@ -554,7 +595,7 @@ def get_my_credits_log():
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
 
 
-@user_bp.route('/my-referrals', methods=['GET'])
+@user_blp.route('/my-referrals', methods=['GET'])
 @login_required
 def get_my_referrals():
     """
@@ -637,7 +678,7 @@ def get_my_referrals():
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
 
 
-@user_bp.route('/notification-settings', methods=['GET'])
+@user_blp.route('/notification-settings', methods=['GET'])
 @login_required
 def get_notification_settings():
     """
@@ -693,7 +734,7 @@ def get_notification_settings():
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
 
 
-@user_bp.route('/notification-settings', methods=['PUT'])
+@user_blp.route('/notification-settings', methods=['PUT'])
 @login_required
 def update_notification_settings():
     """
@@ -768,7 +809,7 @@ def update_notification_settings():
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
 
 
-@user_bp.route('/chart-templates', methods=['GET'])
+@user_blp.route('/chart-templates', methods=['GET'])
 @login_required
 def get_chart_templates():
     """Get current user's indicator chart templates."""
@@ -805,7 +846,7 @@ def get_chart_templates():
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
 
 
-@user_bp.route('/chart-templates', methods=['POST'])
+@user_blp.route('/chart-templates', methods=['POST'])
 @login_required
 def save_chart_template():
     """Create or update a user's indicator chart template."""
@@ -908,7 +949,7 @@ def save_chart_template():
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
 
 
-@user_bp.route('/chart-templates', methods=['DELETE'])
+@user_blp.route('/chart-templates', methods=['DELETE'])
 @login_required
 def delete_chart_template():
     """Delete a user's chart template by id."""
@@ -953,7 +994,7 @@ def delete_chart_template():
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
 
 
-@user_bp.route('/notification-settings/test', methods=['POST'])
+@user_blp.route('/notification-settings/test', methods=['POST'])
 @login_required
 def test_notification_settings():
     """
@@ -1033,7 +1074,7 @@ def test_notification_settings():
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
 
 
-@user_bp.route('/change-password', methods=['POST'])
+@user_blp.route('/change-password', methods=['POST'])
 @login_required
 def change_password():
     """
@@ -1198,7 +1239,7 @@ def _batch_load_credential_exchange_map(credential_ids: set) -> dict:
     return credential_map
 
 
-@user_bp.route('/system-strategies', methods=['GET'])
+@user_blp.route('/system-strategies', methods=['GET'])
 @login_required
 @admin_required
 def get_system_strategies():
@@ -1211,7 +1252,9 @@ def get_system_strategies():
         page_size: int (default 20, max 100)
         status: str (optional, filter by status: running/stopped/all)
         execution_mode: str (optional, live/signal — omit or all for any)
-        search: str (optional, search by strategy name/symbol/username)
+        search: str (optional, search by strategy name/symbol/username/id)
+        strategy_id: int (optional, exact strategy id)
+        user_id: int (optional, exact owner user id)
         sort_by: str (optional, whitelist; default status+updated_at)
         sort_order: str (optional, asc or desc; default desc when sort_by set)
     """
@@ -1221,6 +1264,8 @@ def get_system_strategies():
         status_filter = request.args.get('status', '', type=str).strip().lower()
         execution_filter = request.args.get('execution_mode', '', type=str).strip().lower()
         search = request.args.get('search', '', type=str).strip()
+        strategy_id_filter = _parse_positive_int(request.args.get('strategy_id'))
+        user_id_filter = _parse_positive_int(request.args.get('user_id'))
         sort_by = request.args.get('sort_by', '', type=str).strip().lower()
         sort_order = request.args.get('sort_order', 'desc', type=str).strip().lower()
         if sort_order not in ('asc', 'desc'):
@@ -1267,12 +1312,29 @@ def get_system_strategies():
                 conditions.append("s.execution_mode = ?")
                 params.append(execution_filter)
 
+            if strategy_id_filter > 0:
+                conditions.append("s.id = ?")
+                params.append(strategy_id_filter)
+
+            if user_id_filter > 0:
+                conditions.append("s.user_id = ?")
+                params.append(user_id_filter)
+
             if search:
-                conditions.append(
-                    "(s.strategy_name ILIKE ? OR s.symbol ILIKE ? OR u.username ILIKE ? OR u.nickname ILIKE ?)"
-                )
                 like_val = f"%{search}%"
-                params.extend([like_val, like_val, like_val, like_val])
+                if search.isdigit():
+                    num = int(search)
+                    conditions.append(
+                        "(s.id = ? OR s.user_id = ? OR s.strategy_name ILIKE ? OR s.symbol ILIKE ? "
+                        "OR u.username ILIKE ? OR u.nickname ILIKE ?)"
+                    )
+                    params.extend([num, num, like_val, like_val, like_val, like_val])
+                else:
+                    conditions.append(
+                        "(s.strategy_name ILIKE ? OR s.symbol ILIKE ? OR u.username ILIKE ? OR u.nickname ILIKE ?"
+                        " OR CAST(s.id AS TEXT) ILIKE ? OR CAST(s.user_id AS TEXT) ILIKE ?)"
+                    )
+                    params.extend([like_val, like_val, like_val, like_val, like_val, like_val])
 
             where_clause = ""
             if conditions:
@@ -1563,6 +1625,103 @@ def get_system_strategies():
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
 
 
+@user_blp.route('/system-strategies/toggle', methods=['POST'])
+@login_required
+@admin_required
+def admin_toggle_system_strategy():
+    """
+    Start or stop any strategy (admin only).
+
+    Query/body:
+        id / strategy_id: strategy primary key
+        action: optional ``start`` | ``stop`` — omit to toggle current status
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        strategy_id = (
+            request.args.get('id', type=int)
+            or data.get('strategy_id')
+            or data.get('id')
+        )
+        try:
+            strategy_id = int(strategy_id)
+        except (TypeError, ValueError):
+            strategy_id = 0
+        if strategy_id <= 0:
+            return jsonify({'code': 0, 'msg': 'Missing strategy id', 'data': None}), 400
+
+        action = str(data.get('action') or request.args.get('action') or '').strip().lower()
+
+        from app import get_trading_executor
+        from app.routes.strategy import get_strategy_service
+
+        svc = get_strategy_service()
+        st = svc.get_strategy(strategy_id)
+        if not st:
+            return jsonify({'code': 0, 'msg': 'Strategy not found', 'data': None}), 404
+
+        strategy_type = svc.get_strategy_type(strategy_id)
+        if strategy_type == 'PromptBasedStrategy':
+            return jsonify({
+                'code': 0,
+                'msg': 'AI strategy has been removed; cannot start/stop',
+                'data': None,
+            }), 400
+
+        current = str(st.get('status') or 'stopped').strip().lower()
+        if action in ('start', 'running', 'run'):
+            target = 'running'
+        elif action in ('stop', 'stopped', 'halt'):
+            target = 'stopped'
+        else:
+            target = 'stopped' if current == 'running' else 'running'
+
+        executor = get_trading_executor()
+        admin_user_id = getattr(g, 'user_id', None)
+
+        if target == 'running':
+            svc.update_strategy_status(strategy_id, 'running')
+            ok = executor.start_strategy(strategy_id)
+            if not ok:
+                svc.update_strategy_status(strategy_id, 'stopped')
+                detail = getattr(executor, '_last_start_failure', '') or ''
+                msg = 'Failed to start strategy executor'
+                if detail:
+                    msg = f'{msg}: {detail}'
+                return jsonify({'code': 0, 'msg': msg, 'data': {'status': 'stopped'}}), 500
+            alive, hint = executor.wait_strategy_running(strategy_id, timeout=3.0)
+            if not alive:
+                svc.update_strategy_status(strategy_id, 'stopped')
+                msg = f'策略启动后立即退出: {hint}'
+                return jsonify({
+                    'code': 0,
+                    'msg': msg,
+                    'data': {'id': strategy_id, 'status': 'stopped', 'detail': hint},
+                }), 500
+            logger.info(
+                'Admin %s started strategy %s (owner user_id=%s)',
+                admin_user_id, strategy_id, st.get('user_id'),
+            )
+        else:
+            executor.stop_strategy(strategy_id)
+            svc.update_strategy_status(strategy_id, 'stopped')
+            logger.info(
+                'Admin %s stopped strategy %s (owner user_id=%s)',
+                admin_user_id, strategy_id, st.get('user_id'),
+            )
+
+        return jsonify({
+            'code': 1,
+            'msg': 'Started successfully' if target == 'running' else 'Stopped successfully',
+            'data': {'id': strategy_id, 'status': target},
+        })
+    except Exception as e:
+        logger.error(f"admin_toggle_system_strategy failed: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
+
+
 # ==================== Admin Orders ====================
 
 
@@ -1591,7 +1750,7 @@ def _ensure_usdt_admin_columns():
         logger.debug("ensure_usdt_admin_columns skipped: %s", exc)
 
 
-@user_bp.route('/admin-orders', methods=['GET'])
+@user_blp.route('/admin-orders', methods=['GET'])
 @login_required
 @admin_required
 def get_admin_orders():
@@ -1742,7 +1901,7 @@ def get_admin_orders():
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
 
 
-@user_bp.route('/admin-orders/<int:order_id>/manual-confirm', methods=['POST'])
+@user_blp.route('/admin-orders/<int:order_id>/manual-confirm', methods=['POST'])
 @login_required
 @admin_required
 def manual_confirm_order(order_id: int):
@@ -1905,7 +2064,7 @@ def manual_confirm_order(order_id: int):
 
 # ==================== Admin AI Analysis Stats ====================
 
-@user_bp.route('/admin-ai-stats', methods=['GET'])
+@user_blp.route('/admin-ai-stats', methods=['GET'])
 @login_required
 @admin_required
 def get_admin_ai_stats():
@@ -2149,7 +2308,7 @@ def get_admin_ai_stats():
 
 # ==================== Admin User Dashboard Stats ====================
 
-@user_bp.route('/admin/stats', methods=['GET'])
+@user_blp.route('/admin/stats', methods=['GET'])
 @login_required
 @admin_required
 def get_admin_user_stats():
@@ -2168,3 +2327,5 @@ def get_admin_user_stats():
         import traceback
         logger.error(traceback.format_exc())
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
+# openapi-compat: legacy import name
+user_bp = user_blp

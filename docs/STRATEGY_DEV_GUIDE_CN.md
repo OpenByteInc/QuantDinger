@@ -1,5 +1,7 @@
 # QuantDinger Python v3 策略开发指南
 
+> **平台级契约（必读）**：[信号与执行标准 v1](./SIGNAL_EXECUTION_STANDARD_CN.md) — 适用于所有指标策略的回测/实盘对齐、两路/四路选型、退出负责人与上线清单。本指南侧重教程与示例。
+
 这份指南不是单纯罗列接口，而是站在**策略开发者**视角，回答一个更实际的问题：
 
 **到底应该怎么写一个结构清晰、能回测、能落地成平台策略的指标策略？**
@@ -132,9 +134,9 @@ my_indicator_description = "Buy pullbacks in an uptrend and exit on weakness."
 
 `# @strategy` 用来定义策略默认配置，比如：
 
-- `stopLossPct`：止损比例，例如 `0.03` 表示 3%
-- `takeProfitPct`：止盈比例，例如 `0.06` 表示 6%
-- `entryPct`：开仓资金占比
+- `stopLossPct`：止损比例，例如 `0.03` 表示 **标的价格下跌 3%** 触发（0–1 小数；`0.001` = 0.1%）
+- `takeProfitPct`：止盈比例，例如 `0.06` 表示 **标的价格上涨 6%** 触发
+- `entryPct`：开仓资金占比（0–1；**`1` = 100%**，`0.25` = 25%）
 - `trailingEnabled`
 - `trailingStopPct`
 - `trailingActivationPct`
@@ -172,7 +174,14 @@ df = df.copy()
 - 网络请求
 - 文件读写
 - 子进程
-- `eval`、`exec`、`open`、`__import__` 这类破坏沙盒边界的模式
+- `eval`、`exec`、`open`、`__import__`、`getattr` / `setattr` 等破坏沙盒边界的模式
+- `import operator`（以及通过字符串拼接访问 `__class__` / `__globals__` 等 dunder 的绕过写法）
+
+允许 `import` 的白名单模块（其余会被校验拒绝）：
+
+`numpy`、`pandas`、`math`、`json`、`datetime`、`time`、`collections`、`functools`、`itertools`、`statistics`、`decimal`、`fractions`、`copy`
+
+环境已预置 `pd`、`np`、`params`，一般无需再 `import pandas` / `import numpy`。
 
 ### 3.3 第三步：把原始条件变成干净的 `buy` / `sell`
 
@@ -198,6 +207,31 @@ df['sell'] = (raw_sell.fillna(False) & (~raw_sell.shift(1).fillna(False))).astyp
 ```
 
 这样可以避免同一段趋势里每根 bar 都重复发信号。
+
+#### 3.3.1 `tradeDirection` 与 `buy` / `sell` 在引擎里如何解释
+
+指标保存为策略后，后端会把 `df['buy']` / `df['sell']` 规范成执行信号。请按下面表格理解，**不要**在 `both` 模式下把 `buy` 当成“单独的平空列”：
+
+| `tradeDirection` | `buy=True` | `sell=True` |
+|------------------|------------|-------------|
+| `long` | 开多 `open_long` | 平多 `close_long` |
+| `short` | 平空 `close_short` | 开空 `open_short` |
+| `both` | 开多 `open_long`；若当前持空则**先平空再开多** | 开空 `open_short`；若当前持多则**先平多再开空** |
+
+要点：
+
+- `both` 与回测 `BacktestService` 的 `_both_mode` 语义一致；实盘不应再拆出独立的 `close_short` / `close_long` 去“辅助”表达平仓。
+- 若你把「空侧止盈 / 空侧止损」写进 `df['buy']`，在 `both` 下表达的是**退出空头并可能反手做多**，不是“只平空、保持空仓”。
+- 若只想平仓、不想反手，请改用 `tradeDirection long/short`、四路布尔列（`open_long` / `close_long` / …），或迁移到 `ScriptStrategy` 用 `ctx.close_position()`。
+
+常见组合写法（双向肯特纳类策略）：
+
+```python
+df['buy']  = sig_buy_entry | sig_short_tp | sig_short_sl
+df['sell'] = sig_sell_entry | sig_long_tp | sig_long_sl
+```
+
+写代码时可以这样自检：回测成交里若出现「平空后立刻开多」，通常就是 `both` 下 `buy=True` 的预期行为，而不是引擎 bug。
 
 ### 3.4 第四步：先决定“谁负责退出”
 
@@ -292,6 +326,25 @@ output = {
 - 标准工作流下，最常见的成交语义仍然是“收盘确认、下一根开盘成交”
 - 但保存后的策略快照，会根据产品配置被规范成 `next_bar_open` 或 `same_bar_close`
 - 如果你改了成交时机配置，不要凭印象判断结果，要重新回测并核对成交明细
+
+#### 3.6.1 实盘与回测为什么会在“开平仓时间”上差很多
+
+| 维度 | 指标回测 | 指标实盘（默认） |
+|------|----------|------------------|
+| K 线 | 历史**已收盘** OHLC | 会用最新价**刷新未收盘 K** 的 `high` / `low` / `close` |
+| 盘中触及 | 只在整根 K 收盘后才知道 high/low | 未收盘 K 上也可能提前触发「触及中轨 / 外轨」类条件 |
+| 信号检查 | 按回测时间轴逐根推进 | 每个 tick 可能重算指标；`exit_signal_mode=immediate` 时平仓类信号可立即下单 |
+| 每 tick 下单 | 按回测队列顺序 | 指标模式通常**每 tick 最多执行 1 个**信号（优先平仓） |
+
+若策略逻辑依赖 `high >= 某线`、`low <= 某线` 这类**盘中触及**，回测往往比实盘**更晚**才出现信号；若未收盘 K 被实时刷新，实盘可能**更早**止盈/止损。
+
+建议（与回测对齐时）：
+
+- 策略配置里将 `signal_mode`、`exit_signal_mode` 设为 **`confirmed`**（只在上一根已收盘 K 上读信号）。
+- 指标内已用 `sig_*_tp` / `sig_*_sl` 表达退出时，避免再开 `# @strategy trailingEnabled true`，否则会出现「指标止盈 + 服务端移动止损」**双重平仓**，并放大时间差。
+- 上线前对比：回测成交时间、实盘日志里的 `Signal submitted` / `server_trailing_stop` 是否成对出现。
+
+实盘平仓若短暂出现「数量为 0」：执行器会**再次同步交易所持仓并重新解析数量**；若交易所确已空仓，才会拒单（例如移动止损已先平掉）。
 
 ---
 
@@ -945,10 +998,11 @@ def on_bar(ctx, bar):
 在真正开启实盘前，至少确认：
 
 1. 交易所 / 经纪商 / 标的 / 凭证配置正确。
-2. 对成交时机的假设已经再次核实。
-3. 杠杆、方向、仓位大小放在了正确的产品配置层。
-4. 先用保守仓位、小范围标的做验证。
-5. 观察运行日志和真实下单行为，再决定是否放大规模。
+2. 对成交时机的假设已经再次核实（`signal_mode` / `exit_signal_mode` 是否与回测一致，见 §3.6.1）。
+3. `tradeDirection both` 时已理解 `buy` / `sell` 的反手语义（§3.3.1），指标内 tp/sl 与 `trailingEnabled` 未重复（§11.7）。
+4. 杠杆、方向、仓位大小放在了正确的产品配置层。
+5. 先用保守仓位、小范围标的做验证。
+6. 观察运行日志和真实下单行为（含 `server_trailing_stop`、拒单原因），再决定是否放大规模。
 
 实盘不是编辑器实验的自然延伸，而是一个单独的验证阶段。
 
@@ -1104,25 +1158,59 @@ if stop_hit:
 ```python
 # @strategy stopLossPct 0.02
 # @strategy takeProfitPct 0.05
+# @strategy trailingEnabled true
 
-df['sell'] = some_other_exit_condition
+df['sell'] = some_other_exit_condition  # 指标内多侧止盈
+# 同时 buy 里还有 sig_short_tp / sig_short_sl …
 ```
 
-更好的写法：
+更好的写法（二选一，并在注释里写清楚）：
 
 ```python
-# Primary exit: reverse signal
-# Secondary protection: engine-managed fixed stop-loss / take-profit
-# @strategy stopLossPct 0.02
-# @strategy takeProfitPct 0.05
+# 方案 A：退出全部由指标信号负责（推荐用于中轨/轨道触及类策略）
+# @strategy trailingEnabled false
+# Primary exit: df['buy'] / df['sell'] 内的 tp/sl 条件
 
-df['sell'] = reverse_signal
+# 方案 B：退出由引擎风控负责（固定止损/止盈/移动止损）
+# @strategy trailingEnabled true
+# @strategy trailingStopPct 0.0025
+# @strategy trailingActivationPct 0.0037
+# df['buy'] / df['sell'] 只负责入场，不要在同 bar 再写 tp/sl
 ```
 
 为什么：
 
-- 两种退出方式并存本身不一定错
-- 真正的问题是没人说得清“到底谁是主退出来源”
+- 两种退出方式并存时，回测与实盘都会执行**先到为准**的那条路径，日志里可能出现 `server_trailing_stop` 与指标 `close_*` 紧挨着，甚至「平仓数量为 0」的拒单（仓位已被移动止损平掉）。
+- `trailingEnabled true` 时，引擎会关闭与移动止损冲突的固定止盈语义；但这**不能**代替你在 `df['buy']`/`df['sell']` 里写的指标内止盈。
+- 真正的问题是没人说得清「主退出」是指标触及，还是 `# @strategy` 服务端风控。
+
+### 11.8 `both` 模式下把止盈/止损全塞进 `buy` / `sell`
+
+容易误解的写法：
+
+```python
+df['buy']  = entry_long | short_tp | short_sl
+df['sell'] = entry_short | long_tp | long_sl
+# @strategy tradeDirection both
+```
+
+需要建立的心智模型：
+
+- `short_tp` / `short_sl` 进入 `buy` 后，在 `both` 下不是「仅平空」，而是**平空并可能开多**（与回测一致）。
+- 若你期望「空侧止盈后保持空仓」，当前 `IndicatorStrategy` + `both` **不适合**，应改 `tradeDirection`、四路信号或 `ScriptStrategy`。
+- 实盘在 `exit_signal_mode=immediate` 时，这类退出可能比回测更早触发；要与回测对齐请用 `confirmed`（见 §3.6.1）。
+
+### 11.9 实盘日志里 `invalid amount (0.0) for close_*`
+
+常见原因：
+
+1. 服务端移动止损/止盈已平仓，指标信号又提交了一次同向 `close_*`。
+2. 本地持仓表滞后于交易所；执行器会先 **sync + 按交易所持仓重算数量**，仍为空才拒单。
+
+处理建议：
+
+- 按 §11.7 避免双重退出；检查是否同时启用 `trailingEnabled` 与指标内 tp/sl。
+- 确认 `tradeDirection both` 下对 `buy`/`sell` 的解释符合 §3.3.1，不要期待单独的 `close_short` 列。
 
 ---
 
@@ -1145,6 +1233,9 @@ df['sell'] = reverse_signal
 要点：
 
 - 这些 key 用于指标侧默认策略配置
+- **数值单位统一为 0–1 小数比例**（与 `StrategyConfigParser`、回测、实盘一致）
+- **止损/止盈/追踪按标的涨跌幅计算，不除以杠杆**（杠杆只影响盈亏金额与爆仓）
+- **`entryPct 1` 表示 100% 可用资金开仓**，不是 1%
 - 不要把 `leverage` 写进 `# @strategy`
 - 交易所、标的、凭证、杠杆都应该放在产品配置层
 

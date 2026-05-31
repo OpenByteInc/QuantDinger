@@ -22,6 +22,10 @@ psycopg2-binary>=2.9.9
 redis>=5.0.0
 # Production WSGI server
 gunicorn>=22.0.0
+# OpenAPI generation (flask-smorest)
+flask-smorest>=0.44.0,<0.48
+marshmallow>=3.24.1,<5
+PyYAML>=6.0
 # Password hashing
 bcrypt>=4.1.0
 # Interactive Brokers trading (optional, for US stock trading via TWS/IB Gateway)

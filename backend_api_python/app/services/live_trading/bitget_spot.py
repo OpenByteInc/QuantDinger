@@ -294,6 +294,20 @@ class BitgetSpotClient(BaseRestClient):
             self._sym_meta_cache[sym] = (now, found)
         return found
 
+    @staticmethod
+    def _precision_to_step(precision: Any) -> Tuple[Decimal, Optional[int]]:
+        """Map Bitget ``quantityPrecision`` / ``quotePrecision`` (decimal places) to step size."""
+        try:
+            places = int(precision)
+        except Exception:
+            return Decimal("0"), None
+        if places < 0 or places > 18:
+            return Decimal("0"), None
+        if places == 0:
+            return Decimal("1"), 0
+        step = Decimal("1") / (Decimal("10") ** Decimal(str(places)))
+        return step, places
+
     def _normalize_base_size(self, *, symbol: str, base_size: float) -> Tuple[Decimal, Optional[int]]:
         """
         Normalize spot base size to lot/step constraints (best-effort).
@@ -311,43 +325,63 @@ class BitgetSpotClient(BaseRestClient):
         except Exception:
             meta = {}
 
-        # Try common fields. If unavailable, keep as-is.
-        step = self._to_dec(meta.get("quantityScale") or meta.get("quantityStep") or meta.get("sizeStep") or meta.get("minTradeIncrement") or "0")
+        # Bitget v2: ``quantityPrecision`` is decimal places (e.g. 6 for BTC), not a step multiplier.
+        step = Decimal("0")
         size_precision = None
+        for key in ("quantityStep", "sizeStep", "minTradeIncrement"):
+            raw = meta.get(key)
+            if raw is not None and str(raw).strip() not in ("", "0"):
+                try:
+                    st = self._to_dec(raw)
+                except Exception:
+                    st = Decimal("0")
+                if st > 0 and st < 1:
+                    step = st
+                    break
         if step <= 0:
-            # Some endpoints expose decimals instead of step.
-            qd = meta.get("quantityPrecision") or meta.get("quantityPlace") or meta.get("sizePlace")
-            try:
-                places = int(qd) if qd is not None else 0
-            except Exception:
-                places = 0
-            if places >= 0 and places <= 18:
-                step = Decimal("1") / (Decimal("10") ** Decimal(str(places)))
-                size_precision = places
+            step, size_precision = self._precision_to_step(
+                meta.get("quantityPrecision") or meta.get("quantityPlace") or meta.get("sizePlace")
+            )
 
         if step > 0:
             req = self._floor_to_step(req, step)
-            # Infer precision from step if not already set
-            if size_precision is None:
-                try:
-                    step_normalized = step.normalize()
-                    step_str = str(step_normalized)
-                    if '.' in step_str:
-                        decimal_part = step_str.split('.')[1]
-                        size_precision = len(decimal_part)
-                        if size_precision < 0:
-                            size_precision = 0
-                        if size_precision > 18:
-                            size_precision = 18
-                    else:
-                        size_precision = 0
-                except Exception:
-                    pass
 
-        mn = self._to_dec(meta.get("minTradeAmount") or meta.get("minTradeNum") or meta.get("minQty") or meta.get("minSize") or "0")
+        mn = self._to_dec(
+            meta.get("minTradeAmount")
+            or meta.get("minTradeNum")
+            or meta.get("minQty")
+            or meta.get("minSize")
+            or "0"
+        )
         if mn > 0 and req < mn:
             return (Decimal("0"), size_precision)
         return (req, size_precision)
+
+    def _normalize_quote_size(self, *, symbol: str, quote_size: float) -> Tuple[Decimal, Optional[int]]:
+        """Normalize USDT (quote) size for market BUY — Bitget ``size`` is quote coin amount."""
+        req = self._to_dec(quote_size)
+        if req <= 0:
+            return (Decimal("0"), None)
+
+        meta: Dict[str, Any] = {}
+        try:
+            meta = self.get_symbol_meta(symbol=symbol) or {}
+        except Exception:
+            meta = {}
+
+        step, quote_precision = self._precision_to_step(
+            meta.get("quotePrecision") or meta.get("pricePrecision")
+        )
+        if step > 0:
+            req = self._floor_to_step(req, step)
+
+        try:
+            min_usdt = self._to_dec(meta.get("minTradeUSDT") or meta.get("minTradeAmount") or "0")
+        except Exception:
+            min_usdt = Decimal("0")
+        if min_usdt > 0 and req < min_usdt:
+            return (Decimal("0"), quote_precision)
+        return (req, quote_precision)
 
     def place_limit_order(self, *, symbol: str, side: str, size: float, price: float, client_order_id: Optional[str] = None) -> LiveOrderResult:
         sym = to_bitget_um_symbol(symbol)
@@ -390,15 +424,18 @@ class BitgetSpotClient(BaseRestClient):
         if req <= 0:
             raise LiveTradingError("Invalid size")
 
-        # For Bitget spot market BUY, many APIs interpret size as quote amount.
-        # Our worker may pass quote-sized value for BUY; do not quantize it as base size.
         if sd == "sell":
             sz_dec, sz_precision = self._normalize_base_size(symbol=symbol, base_size=req)
             if float(sz_dec or 0) <= 0:
                 raise LiveTradingError(f"Invalid size (below step/min): requested={req}")
             sz_str = self._dec_str(sz_dec, strict_precision=sz_precision)
         else:
-            sz_str = str(req)
+            sz_dec, sz_precision = self._normalize_quote_size(symbol=symbol, quote_size=req)
+            if float(sz_dec or 0) <= 0:
+                raise LiveTradingError(
+                    f"Invalid quote size (below minTradeUSDT/precision): requested={req}"
+                )
+            sz_str = self._dec_str(sz_dec, strict_precision=sz_precision)
 
         body: Dict[str, Any] = {
             "side": sd,

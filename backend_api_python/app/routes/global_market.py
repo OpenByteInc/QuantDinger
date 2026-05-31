@@ -25,7 +25,8 @@ from __future__ import annotations
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from flask import Blueprint, jsonify, request
+from flask import jsonify, request
+from app.openapi.blueprint import HumanBlueprint as Blueprint
 
 from app.utils.logger import get_logger
 from app.utils.auth import login_required
@@ -64,7 +65,7 @@ from app.data_providers.opportunities import (
 
 logger = get_logger(__name__)
 
-global_market_bp = Blueprint("global_market", __name__)
+global_market_blp = Blueprint("global_market", __name__)
 
 
 # ============ API Endpoints ============
@@ -107,7 +108,7 @@ def _compute_market_overview():
     return result
 
 
-@global_market_bp.route("/overview", methods=["GET"])
+@global_market_blp.route("/overview", methods=["GET"])
 @login_required
 def market_overview():
     """Get global market overview including indices, forex, crypto, and commodities."""
@@ -122,7 +123,7 @@ def market_overview():
         return jsonify({"code": 0, "msg": str(e), "data": None}), 500
 
 
-@global_market_bp.route("/heatmap", methods=["GET"])
+@global_market_blp.route("/heatmap", methods=["GET"])
 @login_required
 def market_heatmap():
     """Get market heatmap data for crypto, stock sectors, forex, and indices."""
@@ -137,7 +138,7 @@ def market_heatmap():
         return jsonify({"code": 0, "msg": str(e), "data": None}), 500
 
 
-@global_market_bp.route("/news", methods=["GET"])
+@global_market_blp.route("/news", methods=["GET"])
 @login_required
 def market_news():
     """Get financial news from various sources.  Query params: lang ('cn'|'en'|'all')."""
@@ -157,7 +158,7 @@ def market_news():
         return jsonify({"code": 0, "msg": str(e), "data": None}), 500
 
 
-@global_market_bp.route("/calendar", methods=["GET"])
+@global_market_blp.route("/calendar", methods=["GET"])
 @login_required
 def economic_calendar():
     """Get economic calendar events with impact indicators."""
@@ -216,7 +217,7 @@ def _compute_market_sentiment():
     }
 
 
-@global_market_bp.route("/sentiment", methods=["GET"])
+@global_market_blp.route("/sentiment", methods=["GET"])
 @login_required
 def market_sentiment():
     """Get comprehensive market sentiment indicators."""
@@ -231,7 +232,7 @@ def market_sentiment():
         return jsonify({"code": 0, "msg": str(e), "data": None}), 500
 
 
-@global_market_bp.route("/adanos-sentiment", methods=["GET"])
+@global_market_blp.route("/adanos-sentiment", methods=["GET"])
 @login_required
 def adanos_market_sentiment():
     """Get optional Adanos Market Sentiment for selected US stock tickers."""
@@ -301,7 +302,7 @@ def _compute_trading_opportunities():
     return opportunities
 
 
-@global_market_bp.route("/opportunities", methods=["GET"])
+@global_market_blp.route("/opportunities", methods=["GET"])
 @login_required
 def trading_opportunities():
     """Scan for trading opportunities across Crypto, US/CN/HK Stocks, and Forex."""
@@ -328,7 +329,7 @@ def trading_opportunities():
         return jsonify({"code": 0, "msg": str(e), "data": None}), 500
 
 
-@global_market_bp.route("/refresh", methods=["POST"])
+@global_market_blp.route("/refresh", methods=["POST"])
 @login_required
 def refresh_data():
     """Force refresh all market data (clears cache)."""
@@ -338,3 +339,6 @@ def refresh_data():
     except Exception as e:
         logger.error("refresh_data failed: %s", e, exc_info=True)
         return jsonify({"code": 0, "msg": str(e), "data": None}), 500
+
+# openapi-compat: legacy import name
+global_market_bp = global_market_blp

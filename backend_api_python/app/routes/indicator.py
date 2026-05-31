@@ -16,14 +16,15 @@ import re
 import time
 import traceback
 from typing import Any, Dict, List
-from flask import Blueprint, Response, jsonify, request, g
+from flask import Response, g, jsonify, request
+from app.openapi.blueprint import HumanBlueprint as Blueprint
 import pandas as pd
 import numpy as np
 
 from app.utils.db import get_db_connection
 from app.utils.logger import get_logger
 from app.utils.auth import login_required
-from app.services.indicator_params import IndicatorCaller, IndicatorParamsParser
+from app.services.indicator_params import IndicatorParamsParser
 from app.services.indicator_translator import (
     translate_indicator,
     SUPPORTED_LANGUAGES as _SUPPORTED_LANGUAGES_FOR_TRANSLATE,
@@ -32,7 +33,7 @@ import requests
 
 logger = get_logger(__name__)
 
-indicator_bp = Blueprint("indicator", __name__)
+indicator_blp = Blueprint("indicator", __name__)
 
 
 def _now_ts() -> int:
@@ -129,7 +130,7 @@ def _merge_indicator_params(code: str, user_params: Dict[str, Any] | None = None
 
 def _validate_indicator_code_internal(code: str, user_params: Dict[str, Any] | None = None) -> Dict[str, Any]:
     """
-    Shared validation for indicator code generation and verifyCode.
+    Shared validation for indicator code generation and strategy verify-code.
 
     Returns:
       {
@@ -340,7 +341,14 @@ def _indicator_hint_to_text(hint_code: str, params: Dict[str, Any] | None = None
     if hint_code == "MISSING_OUTPUT":
         return "缺少 output 字典。" if is_zh else "Missing output dictionary."
     if hint_code == "MISSING_BUY_SELL_COLUMNS":
-        return "缺少 df['buy'] 或 df['sell'] 信号列。" if is_zh else "Missing df['buy'] or df['sell'] signal columns."
+        return (
+            "缺少执行信号列：请提供四路 open_long/close_long/open_short/close_short，"
+            "或两路 buy/sell。"
+            if is_zh
+            else
+            "Missing execution columns: provide four-way open_long/close_long/open_short/close_short "
+            "or two-way buy/sell."
+        )
     if hint_code == "MISSING_DF_COPY":
         return "缺少 df = df.copy()。" if is_zh else "Missing df = df.copy()."
     if hint_code == "MISSING_INDICATOR_NAME":
@@ -463,7 +471,7 @@ def _indicator_human_summary(
     }
 
 
-@indicator_bp.route("/getIndicators", methods=["GET"])
+@indicator_blp.route("/getIndicators", methods=["GET"])
 @login_required
 def get_indicators():
     """
@@ -505,7 +513,7 @@ def get_indicators():
         return jsonify({"code": 0, "msg": str(e), "data": []}), 500
 
 
-@indicator_bp.route("/saveIndicator", methods=["POST"])
+@indicator_blp.route("/saveIndicator", methods=["POST"])
 @login_required
 def save_indicator():
     """
@@ -538,6 +546,16 @@ def save_indicator():
 
         if not code or not str(code).strip():
             return jsonify({"code": 0, "msg": "code is required", "data": None}), 400
+
+        from app.utils.safe_exec import validate_code_safety
+
+        is_safe_code, unsafe_reason = validate_code_safety(code)
+        if not is_safe_code:
+            return jsonify({
+                "code": 0,
+                "msg": f"Unsafe indicator code: {unsafe_reason}",
+                "data": None,
+            }), 400
 
         # Local dev UX: if name/description not provided, derive from code variables.
         if not name or not description:
@@ -712,7 +730,7 @@ def save_indicator():
         return jsonify({"code": 0, "msg": str(e), "data": None}), 500
 
 
-@indicator_bp.route("/deleteIndicator", methods=["POST"])
+@indicator_blp.route("/deleteIndicator", methods=["POST"])
 @login_required
 def delete_indicator():
     """Delete an indicator by id for the current user."""
@@ -738,62 +756,24 @@ def delete_indicator():
         return jsonify({"code": 0, "msg": str(e), "data": None}), 500
 
 
-@indicator_bp.route("/applyParamDefaults", methods=["POST"])
-@login_required
-def apply_param_defaults():
-    """
-    Apply tuned indicator parameter values into ``# @param`` lines in source code.
-
-    Body: { "code": "...", "indicatorParams": { "sma_short": 11, "sma_long": 35 } }
-    or flat keys: { "indicator_params.sma_short": 11, ... }
-    """
-    try:
-        data = request.get_json() or {}
-        code = str(data.get("code") or "")
-        if not code.strip():
-            return jsonify({"code": 0, "msg": "code is required", "data": None}), 400
-
-        params = data.get("indicatorParams") or data.get("indicator_params") or {}
-        if not isinstance(params, dict):
-            params = {}
-        for key, value in list((data.get("overrides") or {}).items()):
-            k = str(key or "")
-            if k.startswith("indicator_params."):
-                params[k.split(".", 1)[1]] = value
-
-        from app.services.experiment.overrides import enrich_experiment_overrides
-
-        nested = enrich_experiment_overrides({"indicatorParams": params}).get("indicatorParams") or params
-        new_code = IndicatorParamsParser.apply_defaults_to_code(code, nested)
-        changed = new_code != code
-        return jsonify({
-            "code": 1,
-            "msg": "success",
-            "data": {"code": new_code, "changed": changed, "indicatorParams": nested},
-        })
-    except Exception as e:
-        logger.error("apply_param_defaults failed: %s", e, exc_info=True)
-        return jsonify({"code": 0, "msg": str(e), "data": None}), 500
-
-
-@indicator_bp.route("/getIndicatorParams", methods=["GET"])
+@indicator_blp.route("/getIndicatorParams", methods=["GET"])
 @login_required
 def get_indicator_params():
     """
-    获取指标的参数声明
-    
-    用于前端在策略创建时显示可配置的参数表单。
-    
+    Return declared `# @param` fields for an indicator.
+
+    Used by the strategy builder to render a parameter form.
+
     Query params:
-        indicator_id: 指标ID
-        
+        indicator_id: Indicator ID
+
     Returns:
         params: [
             {
                 "name": "ma_fast",
                 "type": "int",
                 "default": 5,
-                "description": "短期均线周期"
+                "description": "Fast MA period"
             },
             ...
         ]
@@ -818,51 +798,7 @@ def get_indicator_params():
         return jsonify({"code": 0, "msg": str(e), "data": None}), 500
 
 
-@indicator_bp.route("/verifyCode", methods=["POST"])
-@login_required
-def verify_code():
-    """
-    Verify/Dry-run indicator code with mock data.
-    Checks for:
-    - Syntax errors
-    - Runtime errors
-    - Output format (must define 'output' dict)
-    """
-    try:
-        data = request.get_json() or {}
-        code = data.get("code") or ""
-        
-        if not code or not str(code).strip():
-            return jsonify({"code": 0, "msg": "Code is empty", "data": None}), 400
-
-        validation = _validate_indicator_code_internal(code, data.get("params") or {})
-        if not validation["success"]:
-            return jsonify({
-                "code": 0,
-                "msg": validation["msg"],
-                "data": {
-                    "type": validation["error_type"],
-                    "details": validation["details"],
-                    "hints": validation.get("hints", []),
-                }
-            })
-
-        return jsonify({
-            "code": 1,
-            "msg": validation["msg"],
-            "data": {
-                "plots_count": validation["plots_count"],
-                "signals_count": validation["signals_count"],
-                "hints": validation.get("hints", []),
-            }
-        })
-
-    except Exception as e:
-        logger.error(f"verify_code failed: {str(e)}", exc_info=True)
-        return jsonify({"code": 0, "msg": f"System Error: {str(e)}", "data": None}), 500
-
-
-@indicator_bp.route("/aiGenerate", methods=["POST"])
+@indicator_blp.route("/aiGenerate", methods=["POST"])
 @login_required
 def ai_generate():
     """
@@ -892,7 +828,7 @@ def ai_generate():
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
-    # QuantDinger indicator IDE: chart render + backtest; must pass server verifyCode + safe_exec rules.
+    # QuantDinger indicator IDE: chart render + backtest; must pass server verify-code + safe_exec rules.
     SYSTEM_PROMPT = """# Role
 
 You write production-ready **QuantDinger** indicator scripts: Python that runs in the Indicator IDE, renders on the K-line chart, and drives **backtest entries/exits** via boolean signals. Code must be syntactically valid, safe for the host sandbox, and match the exact I/O contract below.
@@ -902,6 +838,7 @@ You write production-ready **QuantDinger** indicator scripts: Python that runs i
 - Environment: browser-side Pyodide–style sandbox **or** API verify sandbox: **no network**, no file I/O, no subprocess.
 - **`pd` and `np` are already available.** Do **not** write `import pandas` / `import numpy`. Avoid any `import` unless unavoidable; never import `os`, `sys`, `requests`, `socket`, `subprocess`, `threading`, `sqlite3`, `multiprocessing`, or other I/O/network modules.
 - Do **not** use: `eval`, `exec`, `compile`, `open`, `__import__`, `getattr`/`setattr`/`delattr` on untrusted names, `globals`, `vars`, `dir`, or meta-programming to escape the sandbox. `locals()` is allowed if needed to assemble `output` (backtest/verify allow it); avoid `globals()`.
+- Allowed imports only: `numpy`, `pandas`, `math`, `json`, `datetime`, `time`, `collections`, `functools`, `itertools`, `statistics`, `decimal`, `fractions`, `copy`. **Never** `import operator`.
 - Work **vectorized** with pandas on `df` where possible; avoid O(n) Python loops over every row for core series (rolling/ewm/shift are preferred).
 
 # Series vs ndarray contract (critical — common AI bug source)
@@ -940,20 +877,25 @@ Self-check before returning code: every place where you call `.rolling` / `.fill
 
 # Backtest contract (strict)
 
-The backtest engine reads **boolean** columns on `df`:
+**Preferred (platform default): four-way execution columns**
 
-- `df['buy']` — True on bars where a **new** long entry signal is allowed (edge-triggered).
-- `df['sell']` — True on bars where a **new** exit / short entry signal is allowed (per product semantics).
+- `df['open_long']`, `df['close_long']`, `df['open_short']`, `df['close_short']` — all bool, length `len(df)`.
+- Use an `edge(s)` helper: `s & ~s.shift(1).fillna(False)` on each raw condition.
+- On trend flip bars you MAY set both `close_*` and opposing `open_*` true (flip_mode R2); for tp/sl-only exits use `close_*` alone without mixing tp/sl into `buy`/`sell`.
+- Declare contract header comments: `# signal_form: four_way`, `# exit_owner: engine|indicator`, `# flip_mode: R1|R2`.
+- See `docs/SIGNAL_EXECUTION_STANDARD_CN.md`.
 
-Rules:
+**Legacy two-way** (simple crossover only):
+
+- `df['buy']` / `df['sell']` — edge-triggered; `tradeDirection both` maps buy→open long (flip short first), sell→open short (flip long first). Do **not** use buy/sell for “close only” exits when `both` — use four-way `close_*`.
+
+Rules (both forms):
 
 - Same **index and length** as `df`; dtype boolean (use `.astype(bool)` after fillna).
-- **Edge-trigger (mandatory)** unless the user explicitly asks for repeated signals on consecutive bars:
-  - `raw_buy = (...condition...)`
-  - `buy = raw_buy.fillna(False) & (~raw_buy.shift(1).fillna(False))`
-  - Same pattern for `raw_sell` / `sell`.
-- Signals represent **confirmation on bar close**; the engine fills on the **next bar open** (live-like). Do not implement intrabar lookahead (e.g. do not use the same bar’s `high` to validate a signal that assumes you bought at that bar’s `open` unless the user clearly wants that research mode).
+- **Edge-trigger (mandatory)** unless the user explicitly asks for repeated signals on consecutive bars.
+- Signals represent **confirmation on bar close**; the engine fills on the **next bar open** (live-like). Do not implement intrabar lookahead unless the user clearly wants research mode.
 - Fill NaN from indicators before comparisons; replace division-by-zero (`replace(0, np.nan)` then fill).
+- If you use four-way columns, you do **not** need `df['buy']`/`df['sell']` unless `output['signals']` chart markers require them (markers can use open_long/open_short only).
 
 # Chart output: `output` dict (strict)
 
@@ -1001,11 +943,13 @@ Place **after** name/description lines, **one key per line**, no extra prose on 
 
 Supported keys (parser-enforced):
 
-- `stopLossPct`, `takeProfitPct`: float **0–1** (e.g. `0.03` = 3% on margin PnL semantics as used by the engine).
-- `entryPct`: float **0.01–1.0** (fraction of capital).
+- `stopLossPct`, `takeProfitPct`: float **0–1** = **underlying price move** (e.g. `0.03` = 3% adverse price move; `0.001` = 0.1%). **Not** margin PnL; **do not** divide by leverage.
+- `entryPct`: float **0.01–1.0** = fraction of capital (`1` = 100%, `0.25` = 25%).
 - `trailingEnabled`: `true` or `false`.
-- `trailingStopPct`, `trailingActivationPct`: float **0–1**.
+- `trailingStopPct`, `trailingActivationPct`: float **0–1** = price retracement / activation thresholds (same basis as stop/take-profit).
 - `tradeDirection`: exactly `long`, `short`, or `both`.
+
+**`tradeDirection both` execution semantics:** `df['buy']` → open long (close short first if short); `df['sell']` → open short (close long first if long). Do not document `buy` as a separate close-short column. If the strategy uses in-code tp/sl on `high`/`low` touches, prefer **not** also setting `trailingEnabled true` unless the user explicitly wants engine trailing — see `docs/STRATEGY_DEV_GUIDE.md`.
 
 **Do not** put `leverage` in `@strategy`; users set leverage in the IDE backtest panel.
 
@@ -1035,58 +979,21 @@ Return **only** valid Python source: **no** markdown fences, **no** ` ``` `, **n
 """
 
     def _template_code() -> str:
-        # Fallback template that follows the project expectations.
-        header = (
-            f"my_indicator_name = \"Custom Indicator\"\n"
-            f"my_indicator_description = \"{(prompt or '').replace('\n', ' ')[:200]}\"\n\n"
-        )
-        body = (
-            "# ===== Strategy defaults (single source of truth) =====\n"
-            "# @strategy stopLossPct 0.03            # Hard stop-loss (3%)\n"
-            "# @strategy takeProfitPct 0.06          # Take-profit (6%)\n"
-            "# @strategy entryPct 1.0                # Use 100% of available capital per entry\n"
-            "# @strategy trailingEnabled false       # Set true to enable trailing stop\n"
-            "# @strategy trailingStopPct 0.02        # Trailing distance (2%)\n"
-            "# @strategy trailingActivationPct 0.03  # Activate trailing after +3% in profit\n"
-            "# @strategy tradeDirection long         # long | short | both\n\n"
-            "# ===== Indicator parameters =====\n"
-            "# @param rsi_len int 14 RSI period\n\n"
-            "rsi_len = params.get('rsi_len', 14)\n"
-            "df = df.copy()\n\n"
-            "# Example: robust RSI with edge-triggered buy/sell (no position management, no TP/SL on chart)\n"
-            "delta = df['close'].diff()\n"
-            "gain = delta.clip(lower=0)\n"
-            "loss = (-delta).clip(lower=0)\n"
-            "# Wilder-style smoothing (stable and avoids early NaN explosion)\n"
-            "avg_gain = gain.ewm(alpha=1/rsi_len, adjust=False).mean()\n"
-            "avg_loss = loss.ewm(alpha=1/rsi_len, adjust=False).mean()\n"
-            "rs = avg_gain / avg_loss.replace(0, np.nan)\n"
-            "rsi = 100 - (100 / (1 + rs))\n"
-            "rsi = rsi.fillna(50)\n\n"
-            "# Raw conditions (avoid overly strict filters)\n"
-            "raw_buy = (rsi < 30)\n"
-            "raw_sell = (rsi > 70)\n"
-            "# One-shot signals\n"
-            "buy = (raw_buy.fillna(False) & (~raw_buy.shift(1).fillna(False))).astype(bool)\n"
-            "sell = (raw_sell.fillna(False) & (~raw_sell.shift(1).fillna(False))).astype(bool)\n"
-            "df['buy'] = buy\n"
-            "df['sell'] = sell\n\n"
-            "buy_marks = [df['low'].iloc[i] * 0.995 if bool(df['buy'].iloc[i]) else None for i in range(len(df))]\n"
-            "sell_marks = [df['high'].iloc[i] * 1.005 if bool(df['sell'].iloc[i]) else None for i in range(len(df))]\n\n"
-            "output = {\n"
-            "  'name': my_indicator_name,\n"
-            "  'plots': [\n"
-            "    {'name': 'RSI(14)', 'data': rsi.tolist(), 'color': '#faad14', 'overlay': False}\n"
-            "  ],\n"
-            "  'signals': [\n"
-            "    {'type': 'buy', 'text': 'B', 'data': buy_marks, 'color': '#00E676'},\n"
-            "    {'type': 'sell', 'text': 'S', 'data': sell_marks, 'color': '#FF5252'}\n"
-            "  ]\n"
-            "}\n"
+        from app.services.indicator_default_template import build_default_indicator_template
+
+        desc = (prompt or "").replace("\n", " ")[:200]
+        if not desc:
+            desc = (
+                "双均线四路信号模板：边缘触发 + 引擎风控。"
+                "详见 SIGNAL_EXECUTION_STANDARD_CN.md"
+            )
+        code = build_default_indicator_template(
+            name="Custom Indicator",
+            description=desc,
         )
         if existing:
-            header = "# Existing code was provided as context.\n" + header
-        return header + body
+            code = "# Existing code was provided as context.\n" + code
+        return code
 
     def _generate_code_via_llm() -> str:
         """Use unified LLMService to support all configured providers (OpenRouter, OpenAI, Grok, etc.)."""
@@ -1115,7 +1022,7 @@ Return **only** valid Python source: **no** markdown fences, **no** ` ``` `, **n
                 + existing.strip()
                 + "\n```\n\n# Change request:\n\n"
                 + prompt
-                + "\n\nReturn one full replacement script: same QuantDinger rules (my_indicator_name/description, df = df.copy(), declared @param values must be read via params.get(...), df['buy']/df['sell'], output dict, list lengths == len(df)). "
+                + "\n\nReturn one full replacement script: same QuantDinger rules (my_indicator_name/description, df = df.copy(), declared @param values must be read via params.get(...), four-way OR buy/sell execution columns, output dict, list lengths == len(df)). "
                 "Python only — no markdown, no prose outside the code."
             )
 
@@ -1368,22 +1275,17 @@ Return **only** valid Python source: **no** markdown fences, **no** ` ``` `, **n
     )
 
 
-@indicator_bp.route("/codeQualityHints", methods=["POST"])
+@indicator_blp.route("/codeQualityHints", methods=["POST"])
 @login_required
 def code_quality_hints():
     """
     Heuristic hints + runtime smoke-execution for indicator code.
 
-    POST /api/indicator/codeQualityHints
-    Body:  { "code": "..." }
-    Returns: { "code": 1, "data": { "hints": [ { "severity", "code", "params" } ] } }
+    Request body:
+        code (required): Indicator source code
 
-    The static pass catches structural/@strategy issues. We also do a short
-    sandboxed dry-run against a mock K-line frame so runtime errors (e.g.
-    `AttributeError: 'numpy.ndarray' has no attribute 'rolling'`) surface as
-    hints instead of staying invisible until backtest time. Static `error`
-    hints suppress the dry-run because they would deterministically fail
-    anyway and we want a fast response.
+    Returns hints with severity, code, and params. Static analysis catches
+    structural issues; a sandboxed dry-run surfaces runtime errors before backtest.
     """
     from app.services.indicator_code_quality import analyze_indicator_code_quality
 
@@ -1429,114 +1331,5 @@ def code_quality_hints():
     return jsonify({"code": 1, "data": {"hints": hints}})
 
 
-@indicator_bp.route("/parseStrategyConfig", methods=["POST"])
-@login_required
-def parse_strategy_config():
-    """
-    Parse @strategy annotations from indicator code and return strategy config.
-    POST /api/indicator/parseStrategyConfig
-    Body: { "code": "..." }
-    Returns: { "code": 1, "data": { "strategyConfig": {...}, "indicatorParams": [...] } }
-    """
-    from app.services.indicator_params import StrategyConfigParser, IndicatorParamsParser
-    data = request.get_json() or {}
-    code_str = (data.get("code") or "").strip()
-    strategy_cfg = StrategyConfigParser.parse(code_str) if code_str else {}
-    indicator_params = IndicatorParamsParser.parse_params(code_str) if code_str else []
-    return jsonify({
-        "code": 1,
-        "data": {
-            "strategyConfig": strategy_cfg,
-            "indicatorParams": indicator_params
-        }
-    })
-
-
-@indicator_bp.route("/callIndicator", methods=["POST"])
-@login_required
-def call_indicator():
-    """
-    调用另一个指标（供前端 Pyodide 环境使用）
-    
-    POST /api/indicator/callIndicator
-    Body: {
-        "indicatorRef": int | str,  # 指标ID或名称
-        "klineData": List[Dict],      # K线数据
-        "params": Dict,              # 传递给被调用指标的参数（可选）
-        "currentIndicatorId": int     # 当前指标ID（用于循环依赖检测，可选）
-    }
-    
-    Returns:
-        {
-            "code": 1,
-            "data": {
-                "df": List[Dict],    # 执行后的DataFrame（转换为JSON）
-                "columns": List[str]  # DataFrame的列名
-            }
-        }
-    """
-    try:
-        data = request.get_json() or {}
-        indicator_ref = data.get("indicatorRef")
-        kline_data = data.get("klineData", [])
-        params = data.get("params") or {}
-        current_indicator_id = data.get("currentIndicatorId")
-        
-        if not indicator_ref:
-            return jsonify({
-                "code": 0,
-                "msg": "indicatorRef is required",
-                "data": None
-            }), 400
-        
-        if not kline_data or not isinstance(kline_data, list):
-            return jsonify({
-                "code": 0,
-                "msg": "klineData must be a non-empty list",
-                "data": None
-            }), 400
-        
-        # 获取用户ID
-        user_id = g.user_id
-        
-        # 创建 IndicatorCaller
-        indicator_caller = IndicatorCaller(user_id, current_indicator_id)
-        
-        # 将前端传入的K线数据转换为DataFrame
-        df = pd.DataFrame(kline_data)
-        
-        # 确保必要的列存在
-        required_columns = ['open', 'high', 'low', 'close', 'volume']
-        for col in required_columns:
-            if col not in df.columns:
-                df[col] = 0.0
-        
-        # 转换数据类型
-        df['open'] = df['open'].astype('float64')
-        df['high'] = df['high'].astype('float64')
-        df['low'] = df['low'].astype('float64')
-        df['close'] = df['close'].astype('float64')
-        df['volume'] = df['volume'].astype('float64')
-        
-        # 调用指标
-        result_df = indicator_caller.call_indicator(indicator_ref, df, params)
-        
-        # 将DataFrame转换为JSON格式（前端可以使用的格式）
-        result_dict = result_df.to_dict(orient='records')
-        
-        return jsonify({
-            "code": 1,
-            "msg": "success",
-            "data": {
-                "df": result_dict,
-                "columns": list(result_df.columns)
-            }
-        })
-        
-    except Exception as e:
-        logger.error(f"Error calling indicator: {e}", exc_info=True)
-        return jsonify({
-            "code": 0,
-            "msg": str(e),
-            "data": None
-        }), 500
+# openapi-compat: legacy import name
+indicator_bp = indicator_blp

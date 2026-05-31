@@ -1,7 +1,8 @@
 """
 Trading Strategy API Routes
 """
-from flask import Blueprint, request, jsonify, g
+from flask import g, jsonify, request
+from app.openapi.blueprint import HumanBlueprint as Blueprint
 from datetime import datetime, timezone
 from typing import Optional
 import json
@@ -33,7 +34,7 @@ from app.utils.pnl import (
 
 logger = get_logger(__name__)
 
-strategy_bp = Blueprint('strategy', __name__)
+strategy_blp = Blueprint('strategy', __name__)
 
 
 def _normalize_trade_row_for_api(trade: dict, *, leverage: float = 1.0, market_type: str = "spot") -> dict:
@@ -257,61 +258,6 @@ def _strategy_human_summary(
     }
 
 
-# ---------------------------------------------------------------------------
-# Strategy templates (loaded once from JSON file)
-# ---------------------------------------------------------------------------
-import os as _os
-
-_TEMPLATES_PATH = _os.path.join(_os.path.dirname(__file__), '..', 'data', 'strategy_templates.json')
-_templates_cache = None
-
-
-def _load_templates():
-    global _templates_cache
-    if _templates_cache is None:
-        try:
-            with open(_TEMPLATES_PATH, 'r', encoding='utf-8') as f:
-                _templates_cache = json.load(f)
-        except Exception as e:
-            logger.error("Failed to load strategy templates: %s", e)
-            _templates_cache = []
-    return _templates_cache
-
-
-@strategy_bp.route('/templates', methods=['GET'])
-@login_required
-def list_strategy_templates():
-    """Return pre-built strategy templates for one-click import."""
-    templates = _load_templates()
-    category = request.args.get('category')
-    difficulty = request.args.get('difficulty')
-    if category:
-        templates = [t for t in templates if t.get('category') == category]
-    if difficulty:
-        templates = [t for t in templates if t.get('difficulty') == difficulty]
-    return jsonify({'code': 1, 'msg': 'success', 'data': templates})
-
-
-@strategy_bp.route('/templates/<key>', methods=['GET'])
-@login_required
-def get_strategy_template(key):
-    """Return a single strategy template by key."""
-    templates = _load_templates()
-    for t in templates:
-        if t.get('key') == key:
-            return jsonify({'code': 1, 'msg': 'success', 'data': t})
-    return jsonify({'code': 0, 'msg': 'Template not found'}), 404
-
-
-@strategy_bp.route('/bots/grid-script', methods=['GET'])
-@login_required
-def get_grid_bot_script():
-    """Canonical grid bot ScriptStrategy source (adaptive bounds + waterfall aware)."""
-    from app.services.bot_scripts.grid_template import build_grid_bot_script
-
-    return jsonify({'code': 1, 'msg': 'success', 'data': {'script': build_grid_bot_script()}})
-
-
 # Local mode: avoid heavy initialization during module import.
 # Instantiate services lazily on first use to keep startup clean.
 _strategy_service = None
@@ -331,7 +277,7 @@ def get_backtest_service() -> BacktestService:
     return _backtest_service
 
 
-@strategy_bp.route('/strategies', methods=['GET'])
+@strategy_blp.route('/strategies', methods=['GET'])
 @login_required
 def list_strategies():
     """
@@ -347,7 +293,7 @@ def list_strategies():
         return jsonify({'code': 0, 'msg': str(e), 'data': {'strategies': []}}), 500
 
 
-@strategy_bp.route('/strategies/detail', methods=['GET'])
+@strategy_blp.route('/strategies/detail', methods=['GET'])
 @login_required
 def get_strategy_detail():
     try:
@@ -365,7 +311,7 @@ def get_strategy_detail():
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
 
 
-@strategy_bp.route('/strategies/backtest', methods=['POST'])
+@strategy_blp.route('/strategies/backtest', methods=['POST'])
 @login_required
 def run_strategy_backtest():
     try:
@@ -414,6 +360,11 @@ def run_strategy_backtest():
 
         svc = get_backtest_service()
         result = svc.run_strategy_snapshot(snapshot, start_date=start_date, end_date=end_date)
+        ea = dict(result.get('executionAssumptions') or {})
+        ea['commission'] = round(float(snapshot.get('commission') or 0), 6)
+        ea['slippage'] = round(float(snapshot.get('slippage') or 0), 6)
+        ea['strictMode'] = bool(snapshot.get('strict_mode', True))
+        result['executionAssumptions'] = ea
         run_id = svc.persist_run(
             user_id=user_id,
             indicator_id=snapshot.get('indicator_id'),
@@ -479,7 +430,7 @@ def run_strategy_backtest():
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
 
 
-@strategy_bp.route('/strategies/backtest/history', methods=['GET'])
+@strategy_blp.route('/strategies/backtest/history', methods=['GET'])
 @login_required
 def get_strategy_backtest_history():
     try:
@@ -509,7 +460,7 @@ def get_strategy_backtest_history():
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
 
 
-@strategy_bp.route('/strategies/backtest/get', methods=['GET'])
+@strategy_blp.route('/strategies/backtest/get', methods=['GET'])
 @login_required
 def get_strategy_backtest_run():
     try:
@@ -527,7 +478,7 @@ def get_strategy_backtest_run():
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
 
 
-@strategy_bp.route('/strategies/create', methods=['POST'])
+@strategy_blp.route('/strategies/create', methods=['POST'])
 @login_required
 def create_strategy():
     try:
@@ -544,7 +495,7 @@ def create_strategy():
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
 
 
-@strategy_bp.route('/strategies/batch-create', methods=['POST'])
+@strategy_blp.route('/strategies/batch-create', methods=['POST'])
 @login_required
 def batch_create_strategies():
     """
@@ -581,7 +532,7 @@ def batch_create_strategies():
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
 
 
-@strategy_bp.route('/strategies/batch-start', methods=['POST'])
+@strategy_blp.route('/strategies/batch-start', methods=['POST'])
 @login_required
 def batch_start_strategies():
     """
@@ -627,7 +578,7 @@ def batch_start_strategies():
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
 
 
-@strategy_bp.route('/strategies/batch-stop', methods=['POST'])
+@strategy_blp.route('/strategies/batch-stop', methods=['POST'])
 @login_required
 def batch_stop_strategies():
     """
@@ -672,7 +623,7 @@ def batch_stop_strategies():
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
 
 
-@strategy_bp.route('/strategies/batch-delete', methods=['DELETE'])
+@strategy_blp.route('/strategies/batch-delete', methods=['DELETE'])
 @login_required
 def batch_delete_strategies():
     """
@@ -717,7 +668,7 @@ def batch_delete_strategies():
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
 
 
-@strategy_bp.route('/strategies/update', methods=['PUT'])
+@strategy_blp.route('/strategies/update', methods=['PUT'])
 @login_required
 def update_strategy():
     try:
@@ -736,7 +687,7 @@ def update_strategy():
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
 
 
-@strategy_bp.route('/strategies/delete', methods=['DELETE'])
+@strategy_blp.route('/strategies/delete', methods=['DELETE'])
 @login_required
 def delete_strategy():
     try:
@@ -752,7 +703,7 @@ def delete_strategy():
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
 
 
-@strategy_bp.route('/strategies/trades', methods=['GET'])
+@strategy_blp.route('/strategies/trades', methods=['GET'])
 @login_required
 def get_trades():
     """Get trade records for the current user's strategy."""
@@ -777,12 +728,23 @@ def get_trades():
         market_type = str(trading_config.get("market_type") or st.get("market_type") or "swap").strip().lower()
         if is_derivatives_market(market_type):
             market_type = "swap"
+        from app.services.live_trading.records import ensure_strategy_trades_close_reason_column
+        ensure_strategy_trades_close_reason_column()
+
+        bot_type = str(trading_config.get("bot_type") or "").strip().lower()
+        lang = str(request.args.get("lang") or request.headers.get("Accept-Language") or "zh")[:2].lower()
+        if not lang.startswith("zh"):
+            lang = "en"
+        else:
+            lang = "zh"
         
         with get_db_connection() as db:
             cur = db.cursor()
             cur.execute(
                 """
-                SELECT id, strategy_id, symbol, type, price, amount, value, commission, commission_ccy, profit, created_at
+                SELECT id, strategy_id, symbol, type, price, amount, value,
+                       commission, commission_ccy, profit, close_reason,
+                       matched_entry_price, grid_matched_profit, created_at
                 FROM qd_strategy_trades
                 WHERE strategy_id = ?
                 ORDER BY id DESC
@@ -815,6 +777,8 @@ def get_trades():
                         trade['created_at'] = int(dt.timestamp())
                     except Exception:
                         pass
+            from app.utils.trade_close_reason import enrich_trade_row
+            trade = enrich_trade_row(trade, bot_type=bot_type, lang=lang)
             processed_rows.append(_normalize_trade_row_for_api(trade, leverage=leverage, market_type=market_type))
         
         # Frontend expects data.trades; keep data.items for compatibility with list-style components.
@@ -825,7 +789,7 @@ def get_trades():
         return jsonify({'code': 0, 'msg': str(e), 'data': {'trades': [], 'items': []}}), 500
 
 
-@strategy_bp.route('/strategies/dry-run-deviation', methods=['GET'])
+@strategy_blp.route('/strategies/dry-run-deviation', methods=['GET'])
 @login_required
 def get_dry_run_deviation():
     """Quantify how far live fills drifted from backtest signal closes.
@@ -855,7 +819,7 @@ def get_dry_run_deviation():
         return jsonify({'code': 0, 'msg': str(exc), 'data': None}), 500
 
 
-@strategy_bp.route('/strategies/positions', methods=['GET'])
+@strategy_blp.route('/strategies/positions', methods=['GET'])
 @login_required
 def get_positions():
     """Get position records for the current user's strategy."""
@@ -904,6 +868,28 @@ def get_positions():
             )
             rows = cur.fetchall() or []
             cur.close()
+
+        if not rows:
+            try:
+                from app.services.live_trading.records import rebuild_positions_from_trades
+
+                if rebuild_positions_from_trades(strategy_id):
+                    with get_db_connection() as db:
+                        cur = db.cursor()
+                        cur.execute(
+                            """
+                            SELECT id, strategy_id, symbol, side, size, entry_price, current_price, highest_price,
+                                   unrealized_pnl, pnl_percent, equity, updated_at
+                            FROM qd_strategy_positions
+                            WHERE strategy_id = ?
+                            ORDER BY id DESC
+                            """,
+                            (strategy_id,),
+                        )
+                        rows = cur.fetchall() or []
+                        cur.close()
+            except Exception as e:
+                logger.warning("rebuild_positions_from_trades failed for strategy %s: %s", strategy_id, e)
 
         # Sync current price and PnL on read (frontend polls every few seconds).
         now = int(time.time())
@@ -977,6 +963,59 @@ def get_positions():
         return jsonify({'code': 0, 'msg': str(e), 'data': {'positions': [], 'items': []}}), 500
 
 
+@strategy_blp.route('/strategies/grid-resting-orders', methods=['GET'])
+@login_required
+def get_grid_resting_orders():
+    """List resting grid limit orders tracked for a live grid bot."""
+    try:
+        user_id = g.user_id
+        strategy_id = request.args.get('id', type=int)
+        if not strategy_id:
+            return jsonify({'code': 0, 'msg': 'Missing strategy id parameter', 'data': {'orders': [], 'items': []}}), 400
+
+        st = get_strategy_service().get_strategy(strategy_id, user_id=user_id)
+        if not st:
+            return jsonify({'code': 0, 'msg': 'Strategy not found', 'data': {'orders': [], 'items': []}}), 404
+
+        bot_type = str(st.get('bot_type') or (st.get('trading_config') or {}).get('bot_type') or '').lower()
+        if bot_type != 'grid':
+            return jsonify({'code': 0, 'msg': 'Not a grid strategy', 'data': {'orders': [], 'items': []}}), 400
+
+        status = request.args.get('status', '')
+        limit = request.args.get('limit', default=200, type=int)
+
+        from app.services.grid.resting_orders_repo import GridRestingOrderRepository
+
+        repo = GridRestingOrderRepository()
+        rows = repo.list_for_strategy(strategy_id, status=status, limit=limit or 200)
+        out = []
+        for o in rows:
+            out.append({
+                'id': o.id,
+                'strategy_id': o.strategy_id,
+                'symbol': o.symbol,
+                'cell_index': o.cell_index,
+                'purpose': o.purpose,
+                'side': o.side,
+                'pos_side': o.pos_side,
+                'reduce_only': o.reduce_only,
+                'price': o.price,
+                'quantity': o.quantity,
+                'quote_amount': o.quote_amount,
+                'client_order_id': o.client_order_id,
+                'exchange_order_id': o.exchange_order_id,
+                'status': o.status,
+                'filled_quantity': o.filled_quantity,
+                'avg_fill_price': o.avg_fill_price,
+                'extra': o.extra or {},
+            })
+        return jsonify({'code': 1, 'msg': 'success', 'data': {'orders': out, 'items': out}})
+    except Exception as e:
+        logger.error("get_grid_resting_orders failed: %s", e)
+        logger.error(traceback.format_exc())
+        return jsonify({'code': 0, 'msg': str(e), 'data': {'orders': [], 'items': []}}), 500
+
+
 def _build_strategy_equity_curve(user_id: int, strategy_id: int):
     st = get_strategy_service().get_strategy(strategy_id, user_id=user_id) or {}
     if not st:
@@ -1038,7 +1077,7 @@ def _build_strategy_equity_curve(user_id: int, strategy_id: int):
     return curve, None
 
 
-@strategy_bp.route('/strategies/equityCurve', methods=['GET'])
+@strategy_blp.route('/strategies/equityCurve', methods=['GET'])
 @login_required
 def get_equity_curve():
     """Get equity curve for the current user's strategy."""
@@ -1062,7 +1101,7 @@ def get_equity_curve():
 
 
 
-@strategy_bp.route('/strategies/stop', methods=['POST'])
+@strategy_blp.route('/strategies/stop', methods=['POST'])
 @login_required
 def stop_strategy():
     """
@@ -1116,7 +1155,7 @@ def stop_strategy():
         }), 500
 
 
-@strategy_bp.route('/strategies/start', methods=['POST'])
+@strategy_blp.route('/strategies/start', methods=['POST'])
 @login_required
 def start_strategy():
     """
@@ -1164,6 +1203,16 @@ def start_strategy():
             if detail:
                 msg = f"{msg}: {detail}"
             return jsonify({'code': 0, 'msg': msg, 'data': {'detail': detail} if detail else None}), 500
+
+        alive, hint = executor.wait_strategy_running(strategy_id, timeout=3.0)
+        if not alive:
+            get_strategy_service().update_strategy_status(strategy_id, 'stopped', user_id=user_id)
+            msg = f"策略启动后立即退出: {hint}"
+            return jsonify({
+                'code': 0,
+                'msg': msg,
+                'data': {'detail': hint, 'status': 'stopped'},
+            }), 500
         
         return jsonify({
             'code': 1,
@@ -1181,7 +1230,7 @@ def start_strategy():
         }), 500
 
 
-@strategy_bp.route('/strategies/test-connection', methods=['POST'])
+@strategy_blp.route('/strategies/test-connection', methods=['POST'])
 @login_required
 def test_connection():
     """
@@ -1274,99 +1323,7 @@ def test_connection():
         }), 500
 
 
-@strategy_bp.route('/strategies/get-symbols', methods=['POST'])
-@login_required
-def get_symbols():
-    """
-    Get exchange trading pairs list.
-    
-    Request body:
-        exchange_config: Exchange configuration
-    """
-    try:
-        data = request.get_json() or {}
-        exchange_config = data.get('exchange_config', data)
-        user_id = g.user_id if hasattr(g, 'user_id') else 1
-
-        result = get_strategy_service().get_exchange_symbols(exchange_config, user_id=user_id)
-        
-        if result['success']:
-            return jsonify({
-                'code': 1,
-                'msg': result['message'],
-                'data': {
-                    'symbols': result['symbols']
-                }
-            })
-        else:
-            return jsonify({
-                'code': 0,
-                'msg': result['message'],
-                'data': {
-                    'symbols': []
-                }
-            })
-        
-    except Exception as e:
-        logger.error(f"Failed to fetch symbols: {str(e)}")
-        logger.error(traceback.format_exc())
-        return jsonify({
-            'code': 0,
-            'msg': f'Failed to fetch symbols: {str(e)}',
-            'data': {
-                'symbols': []
-            }
-        }), 500
-
-
-@strategy_bp.route('/strategies/preview-compile', methods=['POST'])
-@login_required
-def preview_compile():
-    """
-    Preview compiled strategy result.
-    """
-    try:
-        data = request.get_json() or {}
-        # strategy_config is passed as 'config'
-        config = data.get('config')
-        
-        if not config:
-             return jsonify({'code': 0, 'msg': 'Missing config'}), 400
-
-        # Compile
-        compiler = StrategyCompiler()
-        try:
-            code = compiler.compile(config)
-        except Exception as e:
-            return jsonify({'code': 0, 'msg': f'Compilation failed: {str(e)}'}), 400
-        
-        # Execute
-        symbol = config.get('symbol', 'BTC/USDT')
-        timeframe = config.get('timeframe', '4h')
-        
-        backtest_service = BacktestService()
-        result = backtest_service.run_code_strategy(
-            code=code,
-            symbol=symbol,
-            timeframe=timeframe,
-            limit=500 
-        )
-        
-        if result.get('error'):
-             return jsonify({'code': 0, 'msg': f"Execution failed: {result['error']}"}), 400
-
-        return jsonify({
-            'code': 1,
-            'msg': 'Success',
-            'data': result
-        })
-        
-    except Exception as e:
-        logger.error(f"Preview failed: {e}")
-        return jsonify({'code': 0, 'msg': str(e)}), 500
-
-
-@strategy_bp.route('/strategies/notifications', methods=['GET'])
+@strategy_blp.route('/strategies/notifications', methods=['GET'])
 @login_required
 def get_strategy_notifications():
     """
@@ -1462,7 +1419,7 @@ def get_strategy_notifications():
         return jsonify({'code': 0, 'msg': str(e), 'data': {'items': []}}), 500
 
 
-@strategy_bp.route('/strategies/notifications/unread-count', methods=['GET'])
+@strategy_blp.route('/strategies/notifications/unread-count', methods=['GET'])
 @login_required
 def get_unread_notification_count():
     """
@@ -1509,7 +1466,7 @@ def get_unread_notification_count():
         return jsonify({'code': 0, 'msg': str(e), 'data': {'unread': 0}}), 500
 
 
-@strategy_bp.route('/strategies/notifications/read', methods=['POST'])
+@strategy_blp.route('/strategies/notifications/read', methods=['POST'])
 @login_required
 def mark_notification_read():
     """Mark a single notification as read for the current user."""
@@ -1542,7 +1499,7 @@ def mark_notification_read():
         return jsonify({'code': 0, 'msg': str(e)}), 500
 
 
-@strategy_bp.route('/strategies/notifications/read-all', methods=['POST'])
+@strategy_blp.route('/strategies/notifications/read-all', methods=['POST'])
 @login_required
 def mark_all_notifications_read():
     """Mark all notifications as read for the current user."""
@@ -1567,7 +1524,7 @@ def mark_all_notifications_read():
         return jsonify({'code': 0, 'msg': str(e)}), 500
 
 
-@strategy_bp.route('/strategies/notifications/clear', methods=['DELETE'])
+@strategy_blp.route('/strategies/notifications/clear', methods=['DELETE'])
 @login_required
 def clear_notifications():
     """Clear all notifications for the current user."""
@@ -1594,7 +1551,7 @@ def clear_notifications():
 
 # ===== Script Strategy Endpoints =====
 
-@strategy_bp.route('/strategies/verify-code', methods=['POST'])
+@strategy_blp.route('/strategies/verify-code', methods=['POST'])
 @login_required
 def verify_strategy_code():
     """Verify script strategy code syntax and safety."""
@@ -1611,7 +1568,7 @@ def verify_strategy_code():
         return jsonify({'success': False, 'message': str(e)})
 
 
-@strategy_bp.route('/strategies/ai-generate', methods=['POST'])
+@strategy_blp.route('/strategies/ai-generate', methods=['POST'])
 @login_required
 def ai_generate_strategy():
     """Generate strategy code or suggest template parameter updates using AI."""
@@ -1776,7 +1733,8 @@ def ai_generate_strategy():
                 "Based on their description AND the real-time market data provided, recommend one of the four bot types and provide optimal parameters.\n\n"
                 "Available bot types and their parameter schemas:\n"
                 "1. grid - Grid Trading: {upperPrice, lowerPrice, gridCount: int(5-100), amountPerGrid, gridMode: 'arithmetic'|'geometric', "
-                "gridDirection: 'long'|'short'|'neutral', adaptiveBounds: true, adaptiveAtrMult: 2.0, waterfallProtection: true, waterfallDropPct: 0.03; "
+                "gridDirection: 'long'|'short'|'neutral', initialPositionPct: 0-100 (initial market position %), "
+                "boundaryAction: 'pause'|'stop_loss'|'hold', adaptiveBounds: true, adaptiveAtrMult: 2.0, waterfallProtection: true, waterfallDropPct: 0.03; "
                 "martingale: waterfallProtection: true, waterfallDropPct: 0.04}\n"
                 "2. martingale - Martingale: {initialAmount: number, multiplier: number(1.1-3.0), maxLayers: int(2-10), priceDropPct: number(1-20), takeProfitPct: number(1-50)}\n"
                 "3. trend - Trend Following: {maPeriod: int(5-200), maType: 'SMA'|'EMA', confirmBars: int(1-5), positionPct: number(10-100), direction: 'long'|'short'|'both'}\n"
@@ -2113,7 +2071,7 @@ Quality rules:
         return jsonify({'code': '', 'msg': str(e), 'params': None, 'debug': None})
 
 
-@strategy_bp.route('/strategies/performance', methods=['GET'])
+@strategy_blp.route('/strategies/performance', methods=['GET'])
 @login_required
 def get_strategy_performance():
     """Get strategy performance metrics (aggregated from equity curve and trades)."""
@@ -2145,7 +2103,7 @@ def get_strategy_performance():
         return jsonify({'code': 0, 'msg': str(e)}), 500
 
 
-@strategy_bp.route('/strategies/logs', methods=['GET'])
+@strategy_blp.route('/strategies/logs', methods=['GET'])
 @login_required
 def get_strategy_logs():
     """Get strategy running logs."""
@@ -2199,3 +2157,5 @@ def get_strategy_logs():
             return jsonify({'code': 1, 'msg': 'success', 'data': []})
         logger.error(f"get_strategy_logs failed: {str(e)}")
         return jsonify({'code': 0, 'msg': str(e)}), 500
+# openapi-compat: legacy import name
+strategy_bp = strategy_blp

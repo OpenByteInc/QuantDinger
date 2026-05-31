@@ -36,6 +36,7 @@ import requests
 
 from app.utils.db import get_db_connection
 from app.utils.logger import get_logger
+from app.utils.notification_display import with_display
 
 logger = get_logger(__name__)
 
@@ -439,6 +440,30 @@ class SignalNotifier:
         rendered = self._render_messages(payload)
         title = rendered.get("title") or ""
         message_plain = rendered.get("plain") or ""
+
+        strategy = (payload or {}).get("strategy") or {}
+        instrument = (payload or {}).get("instrument") or {}
+        sig = (payload or {}).get("signal") or {}
+        order = (payload or {}).get("order") or {}
+        trace = (payload or {}).get("trace") or {}
+        payload = with_display(
+            payload,
+            "signal.trade",
+            {
+                "strategyName": str(strategy.get("name") or ""),
+                "strategyId": int(strategy.get("id") or 0),
+                "symbol": str(instrument.get("symbol") or ""),
+                "signalType": str(sig.get("type") or ""),
+                "action": str(sig.get("action") or "").upper(),
+                "side": str(sig.get("side") or "").upper(),
+                "price": _fmt_float(order.get("ref_price") or 0.0, max_decimals=10),
+                "stake": _fmt_float(order.get("stake_amount") or 0.0, max_decimals=12),
+                "pendingOrderId": int(trace.get("pending_order_id") or 0) or "",
+                "mode": str(trace.get("mode") or ""),
+                "timestampDisplay": str(payload.get("timestamp_display") or ""),
+                "timeLabel": str(payload.get("time_label") or "Time"),
+            },
+        )
 
         results: Dict[str, Dict[str, Any]] = {}
         for ch in channels:
@@ -1123,18 +1148,22 @@ class SignalNotifier:
 
         now = int(time.time())
         iso = datetime.now(timezone.utc).isoformat()
-        test_payload: Dict[str, Any] = {
-            "event": "qd.profile_test",
-            "version": 1,
-            "timestamp": now,
-            "timestamp_iso": iso,
-            "strategy": {"id": 0, "name": "Profile Test"},
-            "instrument": {"symbol": "TEST"},
-            "signal": {"type": "profile_test", "action": "test", "side": ""},
-            "order": {"ref_price": 0.0, "stake_amount": 0.0},
-            "trace": {},
-            "extra": {"kind": "profile_test"},
-        }
+        test_payload: Dict[str, Any] = with_display(
+            {
+                "event": "qd.profile_test",
+                "version": 1,
+                "timestamp": now,
+                "timestamp_iso": iso,
+                "strategy": {"id": 0, "name": "Profile Test"},
+                "instrument": {"symbol": "TEST"},
+                "signal": {"type": "profile_test", "action": "test", "side": ""},
+                "order": {"ref_price": 0.0, "stake_amount": 0.0},
+                "trace": {},
+                "extra": {"kind": "profile_test"},
+            },
+            "profile.test",
+            {},
+        )
 
         results: Dict[str, Dict[str, Any]] = {}
         ch_list = _as_list(channels)
@@ -1154,7 +1183,7 @@ class SignalNotifier:
                         signal_type="profile_test",
                         channels=ch_list,
                         title=title,
-                        message=html_body,
+                        message=plain,
                         payload=test_payload,
                         user_id=int(user_id),
                     )

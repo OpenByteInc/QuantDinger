@@ -15,7 +15,8 @@ import json
 import time
 from typing import Any, Dict, List, Tuple
 
-from flask import Blueprint, jsonify, request, g
+from flask import g, jsonify, request
+from app.openapi.blueprint import HumanBlueprint as Blueprint
 
 from app.utils.db import get_db_connection
 from app.utils.logger import get_logger
@@ -23,7 +24,7 @@ from app.utils.auth import login_required
 
 logger = get_logger(__name__)
 
-dashboard_bp = Blueprint("dashboard", __name__)
+dashboard_blp = Blueprint("dashboard", __name__)
 
 
 def _safe_int(v: Any, default: int) -> int:
@@ -321,7 +322,7 @@ def _compute_strategy_stats(trades: List[Dict[str, Any]], strategies: List[Dict[
     return result
 
 
-@dashboard_bp.route("/summary", methods=["GET"])
+@dashboard_blp.route("/summary", methods=["GET"])
 @login_required
 def summary():
     """
@@ -608,7 +609,7 @@ def summary():
         return jsonify({"code": 0, "msg": str(e), "data": None}), 500
 
 
-@dashboard_bp.route("/pendingOrders", methods=["GET"])
+@dashboard_blp.route("/pendingOrders", methods=["GET"])
 @login_required
 def pending_orders():
     """
@@ -727,7 +728,7 @@ def pending_orders():
         return jsonify({"code": 0, "msg": str(e), "data": None}), 500
 
 
-@dashboard_bp.route("/pendingOrders/<int:order_id>", methods=["DELETE"])
+@dashboard_blp.route("/pendingOrders/<int:order_id>", methods=["DELETE"])
 @login_required
 def delete_pending_order(order_id: int):
     """
@@ -759,3 +760,6 @@ def delete_pending_order(order_id: int):
     except Exception as e:
         logger.error(f"dashboard delete pendingOrders failed: {e}", exc_info=True)
         return jsonify({"code": 0, "msg": str(e), "data": None}), 500
+
+# openapi-compat: legacy import name
+dashboard_bp = dashboard_blp

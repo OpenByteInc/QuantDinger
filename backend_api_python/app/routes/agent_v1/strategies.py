@@ -16,6 +16,7 @@ from flask import request
 
 from . import agent_v1_bp
 from ._helpers import clip_int, envelope, error, get_json_or_400
+from ._security import redact_strategy_row
 
 logger = get_logger(__name__)
 _strategy_service = StrategyService()
@@ -52,7 +53,7 @@ def list_strategies():
 @agent_v1_bp.route("/strategies/<int:strategy_id>", methods=["GET"])
 @agent_required(SCOPE_R)
 def get_strategy(strategy_id: int):
-    """Tenant-scoped strategy lookup."""
+    """Tenant-scoped strategy lookup (includes indicator_config snapshot)."""
     try:
         row = _strategy_service.get_strategy(strategy_id, user_id=current_user_id())
     except Exception as exc:
@@ -60,7 +61,7 @@ def get_strategy(strategy_id: int):
         return error(500, "get_strategy failed", details=str(exc), http=500)
     if not row:
         return error(404, "Strategy not found", http=404)
-    return envelope(row)
+    return envelope(redact_strategy_row(row))
 
 
 @agent_v1_bp.route("/strategies", methods=["POST"])
@@ -82,6 +83,16 @@ def create_strategy():
     payload: dict[str, Any] = dict(body)
     payload["user_id"] = current_user_id()
     payload.setdefault("status", "stopped")  # never auto-start from agent path
+
+    if (payload.get("strategy_type") or "IndicatorStrategy") == "IndicatorStrategy":
+        from app.services.indicator_workspace import link_indicator_config
+        ic = payload.get("indicator_config") or {}
+        if isinstance(ic, dict) and (ic.get("indicator_code") or ic.get("code")):
+            payload["indicator_config"] = link_indicator_config(
+                current_user_id(),
+                ic,
+                auto_save=True,
+            )
 
     try:
         new_id = _strategy_service.create_strategy(payload)

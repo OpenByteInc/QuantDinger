@@ -97,7 +97,7 @@ def load_strategy_configs(strategy_id: int) -> Dict[str, Any]:
         cur = db.cursor()
         cur.execute(
             """
-            SELECT id, user_id, exchange_config, trading_config, market_type, leverage, execution_mode, market_category
+            SELECT id, user_id, symbol, exchange_config, trading_config, market_type, leverage, execution_mode, market_category
             FROM qd_strategies_trading
             WHERE id = %s
             """,
@@ -132,9 +132,14 @@ def load_strategy_configs(strategy_id: int) -> Dict[str, Any]:
 
     user_id = int(row.get("user_id") or 1)
 
+    row_symbol = str(row.get("symbol") or "").strip()
+    tc_symbol = str((trading_config or {}).get("symbol") or "").strip()
+    symbol = row_symbol or tc_symbol
+
     return {
         "strategy_id": int(strategy_id),
         "user_id": user_id,
+        "symbol": symbol,
         "exchange_config": exchange_config if isinstance(exchange_config, dict) else {},
         "trading_config": trading_config if isinstance(trading_config, dict) else {},
         "market_type": market_type,

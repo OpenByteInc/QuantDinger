@@ -120,6 +120,23 @@ output = {'name': 'T', 'plots': [], 'signals': []}
     assert not any(h["code"] == "DECLARED_PARAMS_NOT_READ_VIA_PARAMS_GET" for h in hints)
 
 
+def test_four_way_columns_no_missing_buy_sell_warn():
+    code = """
+my_indicator_name = "T"
+my_indicator_description = "D"
+# @strategy stopLossPct 0.02
+# @strategy takeProfitPct 0.04
+df = df.copy()
+df['open_long'] = False
+df['close_long'] = False
+df['open_short'] = False
+df['close_short'] = False
+output = {'name': 'T', 'plots': [], 'signals': []}
+"""
+    hints = analyze_indicator_code_quality(code)
+    assert not any(h["code"] == "MISSING_BUY_SELL_COLUMNS" for h in hints)
+
+
 def test_where_none_signal_markers_warned():
     code = """
 my_indicator_name = "T"

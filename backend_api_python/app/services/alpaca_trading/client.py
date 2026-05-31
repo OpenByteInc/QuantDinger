@@ -8,7 +8,8 @@ Supports US stocks, ETFs, and crypto on both paper and live accounts.
 import time
 import threading
 from dataclasses import dataclass, field
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Union
+from uuid import UUID
 
 from app.utils.logger import get_logger
 from app.services.alpaca_trading.symbols import normalize_symbol, format_display_symbol, parse_symbol
@@ -18,6 +19,20 @@ logger = get_logger(__name__)
 
 def _market_hint_from_type(market_type: str) -> str:
     return "Crypto" if (market_type or "").strip().lower() == "crypto" else "USStock"
+
+
+def _as_str_id(value: Union[str, UUID, None]) -> str:
+    """Normalize Alpaca ids (alpaca-py may return uuid.UUID for account/order ids)."""
+    if value is None:
+        return ""
+    return str(value)
+
+
+def _id_log_prefix(value: Union[str, UUID, None], length: int = 12) -> str:
+    s = _as_str_id(value)
+    if not s:
+        return ""
+    return s[:length] if len(s) > length else s
 
 
 def _format_alpaca_error(err: Exception, *, context: str = "") -> str:
@@ -147,9 +162,12 @@ class AlpacaClient:
             )
             # Verify by fetching account
             account = self._trading_client.get_account()
-            self._account_id = account.id
+            self._account_id = _as_str_id(account.id)
             mode = "paper" if self.config.paper else "live"
-            logger.info(f"Alpaca connected ({mode}), account={self._account_id[:12]}..., status={account.status}")
+            logger.info(
+                f"Alpaca connected ({mode}), account={_id_log_prefix(self._account_id)}..., "
+                f"status={account.status}"
+            )
             return True
         except Exception as e:
             logger.error("Alpaca connect failed: %s", _format_alpaca_error(e, context="REST account"))
@@ -275,7 +293,7 @@ class AlpacaClient:
         try:
             self._ensure_connected()
             self._trading_client.cancel_order_by_id(order_id)
-            logger.info(f"Alpaca order {order_id[:12]}... cancelled")
+            logger.info(f"Alpaca order {_id_log_prefix(order_id)}... cancelled")
             return True
         except Exception as e:
             logger.error(f"Alpaca cancel order failed: {e}")

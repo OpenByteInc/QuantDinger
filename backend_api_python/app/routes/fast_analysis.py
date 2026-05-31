@@ -3,7 +3,8 @@ Fast Analysis API Routes
 
 New high-performance analysis endpoints that replace the slow multi-agent system.
 """
-from flask import Blueprint, request, jsonify, g
+from flask import g, jsonify, request
+from app.openapi.blueprint import HumanBlueprint as Blueprint
 import threading
 import time
 
@@ -15,7 +16,7 @@ from app.services.billing_service import get_billing_service
 
 logger = get_logger(__name__)
 
-fast_analysis_bp = Blueprint('fast_analysis', __name__)
+fast_analysis_blp = Blueprint('fast_analysis', __name__)
 
 # In-memory in-flight guard to avoid duplicate analysis charges caused by rapid repeated clicks.
 _analysis_inflight_lock = threading.Lock()
@@ -110,23 +111,19 @@ def _release_inflight(key: str):
         _analysis_inflight.pop(key, None)
 
 
-@fast_analysis_bp.route('/analyze', methods=['POST'])
+@fast_analysis_blp.route('/analyze', methods=['POST'])
 @login_required
 def analyze():
     """
     Fast AI analysis for any symbol.
-    
-    POST /api/fast-analysis/analyze
-    Body: {
-        "market": "Crypto" | "USStock" | "Forex" | ...,
-        "symbol": "BTC/USDT" | "AAPL" | ...,
-        "language": "zh-CN" | "en-US" (optional),
-        "model": "openai/gpt-4o" (optional),
-        "timeframe": "1D" (optional)
-    }
-    
-    Returns:
-        Fast analysis result with actionable recommendations.
+
+    Request body:
+        market (required): Crypto, USStock, Forex, etc.
+        symbol (required): e.g. BTC/USDT, AAPL
+        language (optional, default en-US): Response language
+        model (optional): LLM model id, e.g. openai/gpt-4o
+        timeframe (optional, default 1D): Analysis timeframe
+        async_submit (optional): Submit as background task
     """
     try:
         data = request.get_json() or {}
@@ -310,148 +307,7 @@ def analyze():
             pass
 
 
-@fast_analysis_bp.route('/analyze-legacy', methods=['POST'])
-@login_required
-def analyze_legacy():
-    """
-    Fast analysis with legacy format output.
-    For backward compatibility with existing frontend.
-    
-    POST /api/fast-analysis/analyze-legacy
-    Body: Same as /analyze
-    
-    Returns:
-        Result in multi-agent format for frontend compatibility.
-    """
-    try:
-        data = request.get_json() or {}
-        
-        market = (data.get('market') or '').strip()
-        symbol = (data.get('symbol') or '').strip()
-        language = data.get('language', 'en-US')
-        model = data.get('model')
-        timeframe = data.get('timeframe', '1D')
-        
-        if not market or not symbol:
-            return jsonify({
-                'code': 0,
-                'msg': 'market and symbol are required',
-                'data': None
-            }), 400
-
-        # Billing / credits (same behavior as /analyze)
-        user_id = getattr(g, 'user_id', None)
-        if not user_id:
-            return jsonify({'code': 0, 'msg': 'Unauthorized', 'data': None}), 401
-
-        inflight_key = _build_inflight_key(user_id, market, symbol, timeframe)
-        if not _acquire_inflight(inflight_key, ttl_sec=90):
-            return jsonify({
-                'code': 0,
-                'msg': 'Analysis already in progress for this symbol/timeframe. Please wait.',
-                'data': {'in_progress': True}
-            }), 429
-
-        credits_charged = 0
-        remaining_credits = None
-        billing_consumed = False
-        billing = None
-        try:
-            billing = get_billing_service()
-            if billing.is_billing_enabled():
-                credits_charged = int(billing.get_feature_cost('ai_analysis') or 0)
-                if credits_charged > 0:
-                    ok, msg = billing.check_and_consume(
-                        user_id=int(user_id),
-                        feature='ai_analysis',
-                        reference_id=f"fast_analysis_legacy_{market}:{symbol}:{timeframe}"
-                    )
-                    if not ok:
-                        if str(msg or "").startswith('insufficient_credits'):
-                            parts = str(msg).split(':')
-                            cur = float(parts[1]) if len(parts) >= 2 else 0.0
-                            req = float(parts[2]) if len(parts) >= 3 else float(credits_charged)
-                            return jsonify({
-                                'code': 0,
-                                'msg': 'Insufficient credits',
-                                'data': {
-                                    'required': req,
-                                    'current': cur,
-                                    'shortage': max(0.0, req - cur),
-                                }
-                            }), 400
-                        return jsonify({'code': 0, 'msg': f'Failed to deduct credits: {msg}', 'data': None}), 500
-                    billing_consumed = True
-                    try:
-                        remaining_credits = float(billing.get_user_credits(int(user_id)))
-                    except Exception:
-                        remaining_credits = None
-        except Exception as e:
-            logger.warning(f"Billing check failed (skipped): {e}", exc_info=True)
-        
-        service = get_fast_analysis_service()
-        result = service.analyze_legacy_format(
-            market=market,
-            symbol=symbol,
-            language=language,
-            model=model,
-            timeframe=timeframe
-        )
-        
-        if result.get('error'):
-            if billing_consumed and billing and credits_charged > 0:
-                try:
-                    billing.add_credits(
-                        user_id=int(user_id),
-                        amount=int(credits_charged),
-                        action='refund',
-                        remark=f'Auto refund: fast-analysis-legacy failed ({market}:{symbol}:{timeframe})'
-                    )
-                    remaining_credits = float(billing.get_user_credits(int(user_id)))
-                except Exception as re:
-                    logger.error(f"Auto refund failed (legacy): {re}", exc_info=True)
-            return jsonify({
-                'code': 0,
-                'msg': result['error'],
-                'data': result
-            }), 500
-        
-        return jsonify({
-            'code': 1,
-            'msg': 'success',
-            'data': {
-                **(result or {}),
-                'credits_charged': credits_charged,
-                'remaining_credits': remaining_credits,
-            }
-        })
-        
-    except Exception as e:
-        try:
-            if 'billing_consumed' in locals() and billing_consumed and 'billing' in locals() and billing and credits_charged > 0 and 'user_id' in locals() and user_id:
-                billing.add_credits(
-                    user_id=int(user_id),
-                    amount=int(credits_charged),
-                    action='refund',
-                    remark=f'Auto refund: fast-analysis-legacy exception ({market}:{symbol}:{timeframe})'
-                )
-        except Exception:
-            pass
-        logger.error(f"Fast analysis legacy API failed: {e}", exc_info=True)
-        return jsonify({
-            'code': 0,
-            'msg': str(e),
-            'data': None
-        }), 500
-    finally:
-        try:
-            if 'inflight_key' in locals() and inflight_key:
-                _release_inflight(inflight_key)
-        except Exception:
-            pass
-
-
-@fast_analysis_bp.route('/history', methods=['GET'])
+@fast_analysis_blp.route('/history', methods=['GET'])
 @login_required
 def get_history():
     """
@@ -493,7 +349,7 @@ def get_history():
         }), 500
 
 
-@fast_analysis_bp.route('/history/all', methods=['GET'])
+@fast_analysis_blp.route('/history/all', methods=['GET'])
 @login_required
 def get_all_history():
     """
@@ -531,7 +387,7 @@ def get_all_history():
         }), 500
 
 
-@fast_analysis_bp.route('/history/<int:memory_id>', methods=['DELETE'])
+@fast_analysis_blp.route('/history/<int:memory_id>', methods=['DELETE'])
 @login_required
 def delete_history(memory_id: int):
     """
@@ -568,17 +424,15 @@ def delete_history(memory_id: int):
         }), 500
 
 
-@fast_analysis_bp.route('/feedback', methods=['POST'])
+@fast_analysis_blp.route('/feedback', methods=['POST'])
 @login_required
 def submit_feedback():
     """
     Submit user feedback on an analysis.
-    
-    POST /api/fast-analysis/feedback
-    Body: {
-        "memory_id": 123,
-        "feedback": "helpful" | "not_helpful" | "accurate" | "inaccurate"
-    }
+
+    Request body:
+        memory_id (required): Analysis history ID
+        feedback (required): helpful, not_helpful, accurate, or inaccurate
     """
     try:
         data = request.get_json() or {}
@@ -619,7 +473,7 @@ def submit_feedback():
         }), 500
 
 
-@fast_analysis_bp.route('/performance', methods=['GET'])
+@fast_analysis_blp.route('/performance', methods=['GET'])
 @login_required
 def get_performance():
     """
@@ -650,7 +504,7 @@ def get_performance():
         }), 500
 
 
-@fast_analysis_bp.route('/similar-patterns', methods=['GET'])
+@fast_analysis_blp.route('/similar-patterns', methods=['GET'])
 @login_required
 def get_similar_patterns():
     """
@@ -698,3 +552,6 @@ def get_similar_patterns():
             'msg': str(e),
             'data': None
         }), 500
+
+# openapi-compat: legacy import name
+fast_analysis_bp = fast_analysis_blp

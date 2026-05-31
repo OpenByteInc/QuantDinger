@@ -2,8 +2,10 @@ from decimal import Decimal
 from unittest.mock import MagicMock
 
 from app.services.live_trading.binance_spot import BinanceSpotClient
+from app.services.live_trading.bitget_spot import BitgetSpotClient
 from app.services.live_trading.spot_sizing import (
     clamp_spot_close_quantity,
+    prepare_spot_live_order_sizes,
     scale_spot_open_notional,
 )
 
@@ -20,6 +22,23 @@ def test_clamp_spot_close_uses_free_and_normalize():
     assert final == 0.98
     assert meta.get("adjusted") is True
     assert meta.get("exchange_free") == 0.99
+
+
+def test_prepare_spot_live_order_bitget_market_buy_uses_quote():
+    client = MagicMock(spec=BitgetSpotClient)
+    client._normalize_quote_size.return_value = (Decimal("50"), 2)
+    client._normalize_base_size.return_value = (Decimal("100"), 0)
+    base, quote, uses_quote = prepare_spot_live_order_sizes(
+        client,
+        symbol="DOGE/USDT",
+        side="buy",
+        reduce_only=False,
+        base_qty=1000.0,
+        ref_price=0.05,
+    )
+    assert uses_quote is True
+    assert quote == 50.0
+    assert base == 1000.0
 
 
 def test_clamp_spot_close_no_change_when_within_free():

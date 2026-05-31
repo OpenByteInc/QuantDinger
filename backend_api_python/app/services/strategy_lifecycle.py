@@ -58,8 +58,49 @@ def is_fatal_exchange_error(msg: str) -> bool:
         "single-asset collateral mode is temporarily unavailable",
         "disabled ibkr",
         "已关闭 ibkr",
+        "missing okx",
+        "api_key/secret_key",
+        "secret_key/passphrase",
+        "missing api_key",
+        "missing secret",
+        "missing passphrase",
+        "missing credential",
+        "no credential",
+        "exchange credential",
+        "unsupported client for grid",
     )
     return any(t in m for t in tokens)
+
+
+def maybe_auto_stop_on_exchange_error(
+    strategy_id: int,
+    msg: str,
+    *,
+    source: str = "exchange",
+    consecutive_failures: int = 0,
+    consecutive_threshold: int = 5,
+) -> bool:
+    """
+    Stop a live strategy after a fatal exchange/auth error or repeated failures.
+    Returns True if auto-stop was triggered (or already quieted for this run).
+    """
+    sid = int(strategy_id or 0)
+    if sid <= 0:
+        return False
+    reason = (msg or "").strip()
+    if not reason:
+        return False
+    if is_fatal_exchange_error(reason):
+        auto_stop_live_strategy(sid, reason, source=source)
+        return True
+    if consecutive_failures >= max(1, int(consecutive_threshold or 5)):
+        auto_stop_live_strategy(
+            sid,
+            f"Repeated exchange errors ({consecutive_failures}): {reason}",
+            source=source,
+        )
+        return True
+    return False
 
 
 def should_skip_position_sync(strategy_id: int) -> bool:

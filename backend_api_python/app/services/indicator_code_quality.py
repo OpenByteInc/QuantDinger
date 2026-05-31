@@ -25,6 +25,16 @@ def _has_df_buy_sell(code: str) -> bool:
     return False
 
 
+def _has_four_way_signals(code: str) -> bool:
+    c = code or ""
+    cols = ("open_long", "close_long", "open_short", "close_short")
+    return all(re.search(rf"df\s*\[\s*['\"]{col}['\"]\s*\]", c) for col in cols)
+
+
+def _has_execution_signal_columns(code: str) -> bool:
+    return _has_df_buy_sell(code) or _has_four_way_signals(code)
+
+
 def _has_output_dict(code: str) -> bool:
     if re.search(r"\boutput\s*=\s*\{", code or ""):
         return True
@@ -324,8 +334,7 @@ def analyze_indicator_code_quality(code: str) -> List[Dict[str, Any]]:
     if not _has_output_dict(raw):
         hints.append({"severity": "error", "code": "MISSING_OUTPUT", "params": {}})
 
-    trading = _has_df_buy_sell(raw)
-    if not trading:
+    if not _has_execution_signal_columns(raw):
         hints.append({"severity": "warn", "code": "MISSING_BUY_SELL_COLUMNS", "params": {}})
 
     declared_params = _declared_param_names(raw)
@@ -397,6 +406,7 @@ def analyze_indicator_code_quality(code: str) -> List[Dict[str, Any]]:
 
     cfg = StrategyConfigParser.parse(raw)
 
+    trading = _has_execution_signal_columns(raw)
     if trading:
         if not cfg:
             hints.append(

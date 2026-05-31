@@ -51,9 +51,12 @@ class StrategySnapshotResolver:
 
     def _build_strategy_config(self, trading_config: Dict[str, Any]) -> Dict[str, Any]:
         tc = trading_config or {}
-        signal_mode = str(tc.get("signal_mode") or "confirmed").strip().lower()
+        strict = self._to_bool(tc.get("strict_mode", tc.get("strictMode", True)))
+        signal_mode = str(tc.get("signal_mode") or ("confirmed" if strict else "aggressive")).strip().lower()
         signal_timing = "next_bar_open"
         if signal_mode in ("current_bar_close", "close", "same_bar_close"):
+            signal_timing = "same_bar_close"
+        elif not strict and signal_mode == "aggressive":
             signal_timing = "same_bar_close"
 
         return {
@@ -143,21 +146,26 @@ class StrategySnapshotResolver:
         slippage_raw = override.get("slippage")
         if slippage_raw is None:
             slippage_raw = trading_config.get("slippage")
-        strategy_type_early = str(strategy.get("strategy_type") or "IndicatorStrategy").strip() or "IndicatorStrategy"
-        strategy_mode_early = str(strategy.get("strategy_mode") or "signal").strip() or "signal"
-        is_script_early = strategy_type_early == "ScriptStrategy" or strategy_mode_early in ("script", "bot")
-        if commission_raw is None or commission_raw == "":
-            commission_raw = 0.05 if is_script_early else 0
-        if slippage_raw is None or slippage_raw == "":
-            slippage_raw = 0.0
-        commission = self._percent_to_ratio(commission_raw)
-        slippage = self._percent_to_ratio(slippage_raw)
-        trade_direction = str(trading_config.get("trade_direction") or "long").strip().lower() or "long"
-        enable_mtf = self._to_bool(override.get("enableMtf", market.lower() == "crypto"))
+        from app.services.backtest_execution import default_slippage_if_missing
 
-        strategy_type = strategy_type_early
-        strategy_mode = strategy_mode_early
-        is_script = is_script_early
+        strict_mode = self._to_bool(
+            override.get("strictMode", override.get("strict_mode"))
+            if "strictMode" in override or "strict_mode" in override
+            else trading_config.get("strict_mode", trading_config.get("strictMode", True))
+        )
+        if commission_raw is None or commission_raw == "":
+            commission = default_slippage_if_missing(None)
+        else:
+            commission = self._percent_to_ratio(commission_raw)
+        if slippage_raw is None or slippage_raw == "":
+            slippage = default_slippage_if_missing(None)
+        else:
+            slippage = self._percent_to_ratio(slippage_raw)
+        trade_direction = str(trading_config.get("trade_direction") or "long").strip().lower() or "long"
+
+        strategy_type = str(strategy.get("strategy_type") or "IndicatorStrategy").strip() or "IndicatorStrategy"
+        strategy_mode = str(strategy.get("strategy_mode") or "signal").strip() or "signal"
+        is_script = strategy_type == "ScriptStrategy" or strategy_mode in ("script", "bot")
 
         indicator_id = indicator_config.get("indicator_id") or strategy.get("indicator_id")
         indicator_name = indicator_config.get("indicator_name") or ""
@@ -185,7 +193,7 @@ class StrategySnapshotResolver:
             "slippage": slippage,
             "leverage": leverage,
             "trade_direction": trade_direction,
-            "enable_mtf": enable_mtf,
+            "strict_mode": strict_mode,
             "indicator_id": int(indicator_id) if str(indicator_id or "").isdigit() else None,
             "indicator_name": indicator_name,
             "indicator_params": trading_config.get("indicator_params") or {},
@@ -213,7 +221,10 @@ class StrategySnapshotResolver:
                 "riskConfig": strategy_config.get("risk") or {},
                 "positionConfig": strategy_config.get("position") or {},
                 "scaleConfig": strategy_config.get("scale") or {},
-                "executionConfig": strategy_config.get("execution") or {},
+                "executionConfig": {
+                    **(strategy_config.get("execution") or {}),
+                    "strictMode": strict_mode,
+                },
             },
         }
         return snapshot

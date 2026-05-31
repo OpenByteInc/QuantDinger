@@ -90,22 +90,28 @@ class MarketRegimeService:
         low = df['low'].astype(float)
         volume = df['volume'].astype(float) if 'volume' in df.columns else pd.Series(dtype=float)
 
+        n = len(close)
+        vol_window = min(30, n)
+        lookback_bars = min(30, n)
+
         pct = close.pct_change().replace([np.inf, -np.inf], np.nan).fillna(0.0)
         ema_fast = close.ewm(span=10, adjust=False).mean()
         ema_slow = close.ewm(span=30, adjust=False).mean()
         ema_gap_pct = float(abs((ema_fast.iloc[-1] - ema_slow.iloc[-1]) / max(close.iloc[-1], 1e-9)) * 100.0)
         price_change_pct = float(((close.iloc[-1] / max(close.iloc[0], 1e-9)) - 1.0) * 100.0)
-        realized_vol_pct = float(pct.tail(30).std(ddof=0) * np.sqrt(30) * 100.0)
+        realized_vol_pct = float(pct.tail(vol_window).std(ddof=0) * np.sqrt(vol_window) * 100.0)
 
         tr = pd.concat([
             (high - low),
             (high - close.shift(1)).abs(),
             (low - close.shift(1)).abs(),
         ], axis=1).max(axis=1).fillna(0.0)
-        atr_pct = float((tr.tail(14).mean() / max(close.iloc[-1], 1e-9)) * 100.0)
+        atr_pct = float((tr.tail(min(14, n)).mean() / max(close.iloc[-1], 1e-9)) * 100.0)
 
+        ref_idx = max(0, n - lookback_bars)
         directional_efficiency = float(
-            abs(close.iloc[-1] - close.iloc[-30]) / max(close.diff().abs().tail(30).sum(), 1e-9)
+            abs(close.iloc[-1] - close.iloc[ref_idx])
+            / max(close.diff().abs().tail(vol_window).sum(), 1e-9)
         )
 
         if not volume.empty and len(volume.dropna()) >= 20:
@@ -145,7 +151,7 @@ class MarketRegimeService:
         segments: List[Dict[str, Any]] = []
         for start in range(0, len(df), segment_size):
             subset = df.iloc[start:start + segment_size]
-            if len(subset) < 20:
+            if len(subset) < 30:
                 continue
             features = self._extract_features(subset)
             regime_key, confidence = self._classify(features)

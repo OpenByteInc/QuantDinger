@@ -130,6 +130,9 @@ services:
       # Spot full close / open fee buffer (Admin → Settings → Live Trading, or backend_api_python/.env)
       - SPOT_CLOSE_SAFETY_RATIO=${SPOT_CLOSE_SAFETY_RATIO:-0.998}
       - SPOT_OPEN_QUOTE_BUFFER=${SPOT_OPEN_QUOTE_BUFFER:-0.995}
+      # Takes precedence over mounted .env (run.py load_dotenv override=False).
+      # Include :8000 when using Vite dev server alongside this stack.
+      - FRONTEND_URL=${FRONTEND_URL:-http://localhost:8888,http://localhost:8000}
     networks:
       - quantdinger-network
     healthcheck:

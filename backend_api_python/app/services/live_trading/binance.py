@@ -377,48 +377,29 @@ class BinanceFuturesClient(BaseRestClient):
         except Exception:
             fdict = {}
 
-        key = "MARKET_LOT_SIZE" if for_market else "LOT_SIZE"
-        filt = fdict.get(key) or fdict.get("LOT_SIZE") or {}
+        from app.services.live_trading.binance_spot import BinanceSpotClient as _BSC
+
+        filt = _BSC._pick_lot_filter(fdict, for_market=for_market)
 
         step = self._to_dec((filt or {}).get("stepSize") or "0")
         min_qty = self._to_dec((filt or {}).get("minQty") or "0")
 
         if step > 0:
             q = self._floor_to_step(q, step)
-        
-        # Enforce quantity precision cap (Binance may reject quantities with too many decimals: -1111).
-        # First try to get precision from metadata
-        qty_precision = None
+
+        step_precision = _BSC._decimal_places_from_step(step)
+        qty_precision = step_precision
         try:
             meta = fdict.get("_meta") or {}
-            if isinstance(meta, dict):
-                qty_precision = meta.get("quantityPrecision")
+            if isinstance(meta, dict) and meta.get("quantityPrecision") is not None:
+                meta_prec = int(meta.get("quantityPrecision"))
+                if step_precision is None:
+                    qty_precision = meta_prec
+                else:
+                    qty_precision = min(meta_prec, step_precision)
         except Exception:
             pass
-        
-        # If precision not available, infer from stepSize
-        if qty_precision is None and step > 0:
-            try:
-                # stepSize like "0.001" means 3 decimal places
-                # Use normalize() to remove trailing zeros, then count decimal places
-                step_normalized = step.normalize()
-                step_str = str(step_normalized)
-                if '.' in step_str:
-                    # Count decimal places after removing trailing zeros
-                    decimal_part = step_str.split('.')[1]
-                    qty_precision = len(decimal_part)
-                    # Ensure precision is at least 0 and at most 18
-                    if qty_precision < 0:
-                        qty_precision = 0
-                    if qty_precision > 18:
-                        qty_precision = 18
-                else:
-                    # If stepSize is 1 or larger, precision is 0
-                    qty_precision = 0
-            except Exception:
-                pass
-        
-        # Apply precision limit
+
         if qty_precision is not None:
             q = self._floor_to_precision(q, qty_precision)
         

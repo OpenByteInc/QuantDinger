@@ -1,0 +1,19 @@
+extends: spectral:oas
+rules:
+  info-contact: warn
+  info-description: warn
+  operation-description: warn
+  operation-operationId: error
+  operation-tag-defined: error
+  openapi-tags: warn
+  oas3-api-servers: off
+  path-params: error
+
+  qd-require-operation-summary:
+    description: Every operation must have a summary
+    message: "{{property}} must have summary"
+    severity: error
+    given: "$.paths[*][get,post,put,patch,delete,head,options,trace]"
+    then:
+      field: summary
+      function: truthy

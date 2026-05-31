@@ -65,7 +65,7 @@ jobs:
           # Import key modules to verify they are loadable
           from app import create_app
           from app.config import settings
-          from app.routes import health
+          from app.openapi import init_openapi
           
           print('✓ Core modules imported successfully')
           print('✓ No critical import errors detected')
