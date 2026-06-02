@@ -359,6 +359,96 @@ class KtxClient(BaseRestClient):
             return result
         return {}
 
+    # ------------------------------------------------------------------
+    # K-line (candles)
+    # ------------------------------------------------------------------
+
+    # KTX API timeframe → internal timeframe mapping
+    _KLINE_TIMEFRAME_MAP: Dict[str, str] = {
+        "1m": "1m", "3m": "3m", "5m": "5m", "15m": "15m", "30m": "30m",
+        "1H": "1h", "4H": "4h", "1D": "1d", "1W": "1w",
+        # CCXT-style aliases
+        "1h": "1h", "4h": "4h", "1d": "1d", "1w": "1w",
+    }
+
+    def get_kline(
+        self,
+        *,
+        symbol: str,
+        timeframe: str = "1H",
+        limit: int = 500,
+        market: str = "",
+    ) -> List[Dict[str, Any]]:
+        """Fetch OHLCV candles from KTX public API.
+
+        Endpoint: GET /api/v1/candles?symbol=BTC_USDT_SWAP&market=lpc&time_frame=1h&limit=500
+
+        KTX response format::
+
+            {"result": {"t": 3600000, "e": [[open_time, open, high, low, close,
+                                             volume, quote_vol, close_time, count], ...]}}
+
+        Each element in ``e`` is a list of strings (numbers as strings):
+        [0] open_time   – ms epoch
+        [1] open
+        [2] high
+        [3] low
+        [4] close
+        [5] volume      – base currency volume
+        [6] quote_volume – quote currency volume
+        [7] close_time  – ms epoch
+        [8] count       – number of trades
+
+        Args:
+            symbol: Trading pair, e.g. "BTC/USDT". Will be converted via ``to_ktx_symbol``.
+            timeframe: Candle interval, e.g. "1H", "15m", "1D".
+            limit: Max number of candles to return.
+            market: Override market param ("spot"/"lpc"). Defaults to client's market_type.
+
+        Returns:
+            List of dicts with keys: open_time, open, high, low, close, volume (strings).
+            Empty list on failure.
+        """
+        ktx_sym = to_ktx_symbol(symbol, market_type=self.market_type)
+        tf = self._KLINE_TIMEFRAME_MAP.get(timeframe, "1h")
+        params: Dict[str, Any] = {
+            "symbol": ktx_sym,
+            "market": self._ktx_market_param(market),
+            "time_frame": tf,
+            "limit": min(limit, 1000),  # KTX server-side cap
+        }
+        try:
+            j = self._public_request("GET", "/v1/candles", params=params)
+        except Exception as e:
+            logger.warning("KTX get_kline failed for %s %s: %s", symbol, timeframe, e)
+            return []
+
+        result = (j.get("result") if isinstance(j, dict) else None) or None
+        if not isinstance(result, dict):
+            return []
+
+        # KTX returns {"result": {"t": interval_ms, "e": [[...], ...]}}
+        entries = result.get("e") or []
+        if not isinstance(entries, list):
+            return []
+
+        candles: List[Dict[str, Any]] = []
+        for entry in entries:
+            if not isinstance(entry, list) or len(entry) < 6:
+                continue
+            candles.append({
+                "open_time": entry[0],
+                "open": entry[1],
+                "high": entry[2],
+                "low": entry[3],
+                "close": entry[4],
+                "volume": entry[5],
+                "quote_volume": entry[6] if len(entry) > 6 else "",
+                "close_time": entry[7] if len(entry) > 7 else "",
+                "count": entry[8] if len(entry) > 8 else "",
+            })
+        return candles
+
     def get_account(self) -> Dict[str, Any]:
         """Get wallet (main) account assets via POST /v1/main/accounts."""
         return self.get_wallet_balance()

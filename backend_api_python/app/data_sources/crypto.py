@@ -418,7 +418,87 @@ class CryptoDataSource(BaseDataSource):
         except Exception as e:
             logger.warning(f"KTX ticker fetch failed for {symbol}: {e}")
             return {"last": 0, "symbol": symbol}
-    
+
+    def _get_kline_ktx(
+        self,
+        symbol: str,
+        timeframe: str,
+        limit: int,
+        before_time: Optional[int] = None,
+        after_time: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Fetch KTX candles via native KtxClient (no CCXT support for KTX).
+
+        Uses API-key-free public endpoint:
+        GET /api/v1/candles?symbol=BTC_USDT_SWAP&market=lpc&time_frame=1h&limit=500
+        """
+        try:
+            from app.services.live_trading.ktx import KtxClient
+
+            # Resolve market_type from the scoped instance
+            mt = getattr(self, "_scoped_market_type", "swap") or "swap"
+            if mt in ("futures", "future", "perp", "perpetual"):
+                mt = "swap"
+
+            # Ephemeral client for public market data — no real keys needed.
+            client = KtxClient(
+                api_key="__placeholder__",
+                secret_key="__placeholder__",
+                market_type=mt,
+            )
+            raw_candles = client.get_kline(symbol=symbol, timeframe=timeframe, limit=limit)
+            if not raw_candles:
+                logger.warning(f"KTX get_kline returned no candles for {symbol} {timeframe}")
+                return []
+
+            # Normalize KTX candle response to the standard kline format.
+            # KTX candle fields: open_time (ms), open, high, low, close, volume (strings).
+            klines = []
+            for c in raw_candles:
+                try:
+                    ts = int(c.get("open_time", c.get("timestamp", 0)))
+                    if ts > 1e12:  # milliseconds → seconds
+                        ts = int(ts / 1000)
+                    o = float(c.get("open", 0) or 0)
+                    h = float(c.get("high", 0) or 0)
+                    l = float(c.get("low", 0) or 0)
+                    cl = float(c.get("close", 0) or 0)
+                    v = float(c.get("volume", c.get("vol", 0)) or 0)
+                    klines.append(self.format_kline(
+                        timestamp=ts,
+                        open_price=o,
+                        high=h,
+                        low=l,
+                        close=cl,
+                        volume=v,
+                    ))
+                except (ValueError, TypeError):
+                    continue
+
+            # Apply time filters and limit
+            klines = self.filter_and_limit(
+                klines, limit, before_time, after_time,
+                truncate=(after_time is None),
+            )
+
+            # Concise trace
+            if klines:
+                try:
+                    from datetime import datetime as _dt
+                    first_ts = _dt.utcfromtimestamp(klines[0]['time']).isoformat()
+                    last_ts = _dt.utcfromtimestamp(klines[-1]['time']).isoformat()
+                    logger.info(
+                        f"[CryptoKline] {symbol} {timeframe} returned {len(klines)} candles (KTX native), "
+                        f"utc_range={first_ts}~{last_ts}, limit={limit}, before_time={before_time}"
+                    )
+                except Exception:
+                    pass
+
+            return klines
+        except Exception as e:
+            logger.error(f"KTX kline fetch failed for {symbol} {timeframe}: {e}")
+            return []
+
     def get_kline(
         self,
         symbol: str,
@@ -428,6 +508,10 @@ class CryptoDataSource(BaseDataSource):
         after_time: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """获取加密货币K线数据"""
+        # KTX native kline path — CCXT has no KTX, use the native client directly.
+        if (getattr(self, "_scoped_exchange_id", "") or "").strip().lower() == "ktx":
+            return self._get_kline_ktx(symbol, timeframe, limit, before_time, after_time)
+
         klines = []
         
         try:
