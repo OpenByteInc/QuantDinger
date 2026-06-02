@@ -153,6 +153,15 @@ class CryptoDataSource(BaseDataSource):
             config.setdefault("options", {}).update(dict(options))
 
         exchange_id = (ccxt_exchange_id or "").strip().lower()
+
+        # KTX 不在 CCXT 中，已有原生分支（ticker + kline），跳过 CCXT 初始化
+        if exchange_id == "ktx":
+            logger.info("KTX has native client support, skipping CCXT initialization")
+            self.exchange = None
+            self._markets_loaded = False
+            self._markets_cache = None
+            return
+
         if not hasattr(ccxt, exchange_id):
             logger.warning("CCXT exchange '%s' not found, falling back to 'binance'", exchange_id)
             exchange_id = "binance"
