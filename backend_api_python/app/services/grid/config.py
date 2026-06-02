@@ -28,6 +28,16 @@ def _pct(v: Any, default: float = 0.0) -> float:
     return max(0.0, x)
 
 
+def sanitize_grid_bot_params(bot_params: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Neutral grids do not use initial market position; clear stale pct from UI saves."""
+    bp = dict(bot_params) if isinstance(bot_params, dict) else {}
+    direction = str(bp.get("gridDirection") or bp.get("grid_direction") or "long").strip().lower()
+    if direction == "neutral":
+        bp["initialPositionPct"] = 0
+        bp.pop("initial_position_pct", None)
+    return bp
+
+
 @dataclass
 class GridBotConfig:
     upper_price: float
@@ -46,7 +56,7 @@ class GridBotConfig:
     @classmethod
     def from_trading_config(cls, trading_config: Dict[str, Any]) -> "GridBotConfig":
         tc = trading_config if isinstance(trading_config, dict) else {}
-        bp = tc.get("bot_params") if isinstance(tc.get("bot_params"), dict) else {}
+        bp = sanitize_grid_bot_params(tc.get("bot_params") if isinstance(tc.get("bot_params"), dict) else {})
         upper = _float(bp.get("upperPrice") or bp.get("upper_price"), 0.0)
         lower = _float(bp.get("lowerPrice") or bp.get("lower_price"), 0.0)
         direction = str(bp.get("gridDirection") or bp.get("grid_direction") or "long").strip().lower()

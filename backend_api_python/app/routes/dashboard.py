@@ -42,8 +42,10 @@ def _safe_float(v: Any, default: float = 0.0) -> float:
 
 
 def _net_trade_pnl(t: Dict[str, Any]) -> float:
-    """Realised P&L after exchange-synced commission (USDT-margined pairs)."""
-    return _safe_float(t.get("profit"), 0.0) - _safe_float(t.get("commission"), 0.0)
+    """Realised P&L after open + close commissions (USDT-margined pairs)."""
+    from app.utils.trade_net_pnl import net_pnl_for_equity_step
+
+    return float(net_pnl_for_equity_step(t))
 
 
 def _format_datetime(dt: Any) -> Any:
@@ -100,6 +102,19 @@ def _is_bot_strategy(row: Dict[str, Any]) -> bool:
         return mode == "bot"
     except Exception:
         return False
+
+
+def _strategy_bucket(row: Dict[str, Any]) -> str:
+    """Classify a strategy row into signal (indicator) / script / bot."""
+    if _is_bot_strategy(row):
+        return "bot"
+    mode = str((row or {}).get("strategy_mode") or "").strip().lower()
+    if mode == "script":
+        return "script"
+    st = str((row or {}).get("strategy_type") or "").strip()
+    if st == "ScriptStrategy":
+        return "script"
+    return "signal"
 
 
 from app.utils.pnl import calc_pnl_percent, calc_unrealized_pnl
@@ -281,12 +296,14 @@ def _compute_strategy_stats(trades: List[Dict[str, Any]], strategies: List[Dict[
     existing_strategy_ids: set = set()
     sid_to_name: Dict[int, str] = {}
     sid_to_capital: Dict[int, float] = {}
+    sid_to_bucket: Dict[int, str] = {}
     for s in strategies:
         sid = _safe_int(s.get("id"), 0)
         if sid > 0:
             existing_strategy_ids.add(sid)
             sid_to_name[sid] = str(s.get("strategy_name") or f"Strategy_{sid}")
             sid_to_capital[sid] = _safe_float(s.get("initial_capital"), 0.0)
+            sid_to_bucket[sid] = _strategy_bucket(s)
 
     # Group trades by strategy (only for existing strategies)
     sid_to_trades: Dict[int, List[Dict[str, Any]]] = {}
@@ -309,6 +326,7 @@ def _compute_strategy_stats(trades: List[Dict[str, Any]], strategies: List[Dict[
         result.append({
             "strategy_id": sid,
             "strategy_name": sid_to_name.get(sid, f"Strategy_{sid}"),
+            "strategy_bucket": sid_to_bucket.get(sid, "signal"),
             "total_trades": stats["total_trades"],
             "win_rate": stats["win_rate"],
             "profit_factor": stats["profit_factor"],
@@ -345,9 +363,13 @@ def summary():
             strategies = cur.fetchall() or []
             cur.close()
 
-        strategies = [s for s in strategies if not _is_bot_strategy(s)]
         running = [s for s in strategies if (s.get("status") or "").strip().lower() == "running"]
-        indicator_strategy_count = len([s for s in running if (s.get("strategy_type") or "") == "IndicatorStrategy"])
+        running_strategy_count = len(running)
+        running_indicator_count = len([s for s in running if _strategy_bucket(s) == "signal"])
+        running_script_count = len([s for s in running if _strategy_bucket(s) == "script"])
+        running_bot_count = len([s for s in running if _strategy_bucket(s) == "bot"])
+        # Backward-compatible alias: previously only counted running indicator strategies.
+        indicator_strategy_count = running_indicator_count
 
         # "AI strategies" in dashboard card: count strategies that enabled AI analysis/filtering.
         # This aligns with the UI toggle `enable_ai_filter` in trading_config.
@@ -376,7 +398,6 @@ def summary():
                 INNER JOIN qd_strategies_trading s ON s.id = p.strategy_id
                 WHERE p.user_id = ?
                   AND s.user_id = ?
-                  AND COALESCE(LOWER(TRIM(s.strategy_mode)), 'signal') <> 'bot'
                 ORDER BY p.updated_at DESC
                 """,
                 (user_id, user_id)
@@ -426,12 +447,23 @@ def summary():
                 INNER JOIN qd_strategies_trading s ON s.id = t.strategy_id
                 WHERE t.user_id = ?
                   AND s.user_id = ?
-                  AND COALESCE(LOWER(TRIM(s.strategy_mode)), 'signal') <> 'bot'
                   AND t.profit IS NOT NULL
                 """,
                 (user_id, user_id)
             )
             total_trades_all = int((cur.fetchone() or {}).get("cnt") or 0)
+            cur.execute(
+                """
+                SELECT COALESCE(SUM(COALESCE(t.profit, 0) - COALESCE(t.commission, 0)), 0) AS total
+                FROM qd_strategy_trades t
+                INNER JOIN qd_strategies_trading s ON s.id = t.strategy_id
+                WHERE t.user_id = ?
+                  AND s.user_id = ?
+                  AND t.profit IS NOT NULL
+                """,
+                (user_id, user_id)
+            )
+            total_realized_pnl_all = float((cur.fetchone() or {}).get("total") or 0.0)
             cur.close()
 
         with get_db_connection() as db:
@@ -443,7 +475,6 @@ def summary():
                 INNER JOIN qd_strategies_trading s ON s.id = t.strategy_id
                 WHERE t.user_id = ?
                   AND s.user_id = ?
-                  AND COALESCE(LOWER(TRIM(s.strategy_mode)), 'signal') <> 'bot'
                 ORDER BY t.created_at DESC
                 LIMIT 500
                 """,
@@ -473,6 +504,9 @@ def summary():
                 pass
 
         # Compute performance statistics with initial capital for proper drawdown calculation
+        from app.utils.trade_net_pnl import enrich_trades_net_pnl
+
+        enrich_trades_net_pnl(recent_trades)
         perf_stats = _compute_performance_stats(recent_trades, initial_capital=total_initial_capital)
         # For dashboard top card: show all-time total trade count (not limited by LIMIT 500).
         perf_stats["total_trades"] = int(total_trades_all)
@@ -480,8 +514,8 @@ def summary():
         # Compute per-strategy statistics
         strategy_stats = _compute_strategy_stats(recent_trades, strategies)
 
-        # Include realized PnL from trades
-        total_realized_pnl = sum(_net_trade_pnl(t) for t in recent_trades)
+        # All-time realized PnL for equity cards; recent_trades is capped at 500 rows.
+        total_realized_pnl = float(total_realized_pnl_all)
         total_pnl = float(total_unrealized_pnl + total_realized_pnl)
         total_equity = float(total_initial_capital + total_pnl)
 
@@ -584,6 +618,10 @@ def summary():
                 "data": {
                     "ai_strategy_count": int(ai_enabled_strategy_count),
                     "indicator_strategy_count": int(indicator_strategy_count),
+                    "running_strategy_count": int(running_strategy_count),
+                    "running_indicator_count": int(running_indicator_count),
+                    "running_script_count": int(running_script_count),
+                    "running_bot_count": int(running_bot_count),
                     "total_equity": round(total_equity, 2),
                     "total_pnl": round(total_pnl, 2),
                     "total_realized_pnl": round(total_realized_pnl, 2),

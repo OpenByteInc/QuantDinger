@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Dict
 
 from app.services.grid.resting_orders_repo import GridRestingOrder
+from app.services.live_trading.leg_context import resolve_leg_context
 from app.services.live_trading.records import (
     apply_fill_to_local_position,
     normalize_strategy_symbol,
@@ -42,6 +43,12 @@ def apply_grid_fill_to_local_state(
     tc = trading_config if isinstance(trading_config, dict) else {}
     fee_rate = float(tc.get("commission") or 0) / 100.0 or 0.001
 
+    leg = resolve_leg_context(
+        strategy_id=int(strategy_id),
+        symbol=sym,
+        market_type=str(tc.get("market_type") or "swap"),
+        fill_source="grid_poller",
+    )
     try:
         profit, _pos, matched_entry = apply_fill_to_local_position(
             strategy_id=int(strategy_id),
@@ -49,6 +56,7 @@ def apply_grid_fill_to_local_state(
             signal_type=signal_type,
             filled=qty,
             avg_price=px,
+            leg=leg,
         )
         record_trade(
             strategy_id=int(strategy_id),
@@ -61,6 +69,59 @@ def apply_grid_fill_to_local_state(
             close_reason=purpose,
             matched_entry_price=matched_entry,
             grid_matched_profit=profit if profit is not None else None,
+            leg=leg,
         )
     except Exception as e:
         logger.warning("apply_grid_fill sid=%s: %s", strategy_id, e)
+
+
+def record_grid_market_fill(
+    strategy_id: int,
+    symbol: str,
+    signal_type: str,
+    filled_qty: float,
+    avg_price: float,
+    trading_config: Dict[str, Any],
+    *,
+    reason: str = "",
+) -> None:
+    """Record a grid initial/risk market fill into L2/L3 ledgers."""
+    sym = normalize_strategy_symbol(symbol)
+    sig = str(signal_type or "").strip().lower()
+    if not sig:
+        return
+    px = float(avg_price or 0)
+    qty = float(filled_qty or 0)
+    if qty <= 0 or px <= 0:
+        return
+    tc = trading_config if isinstance(trading_config, dict) else {}
+    fee_rate = float(tc.get("commission") or 0) / 100.0 or 0.001
+    leg = resolve_leg_context(
+        strategy_id=int(strategy_id),
+        symbol=sym,
+        market_type=str(tc.get("market_type") or "swap"),
+        fill_source="grid_market",
+    )
+    try:
+        profit, _pos, matched_entry = apply_fill_to_local_position(
+            strategy_id=int(strategy_id),
+            symbol=sym,
+            signal_type=sig,
+            filled=qty,
+            avg_price=px,
+            leg=leg,
+        )
+        record_trade(
+            strategy_id=int(strategy_id),
+            symbol=sym,
+            trade_type=sig,
+            price=px,
+            amount=qty,
+            commission=px * qty * fee_rate,
+            profit=profit,
+            close_reason=str(reason or sig),
+            matched_entry_price=matched_entry,
+            leg=leg,
+        )
+    except Exception as e:
+        logger.warning("record_grid_market_fill sid=%s: %s", strategy_id, e)

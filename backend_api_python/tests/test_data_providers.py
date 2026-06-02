@@ -22,8 +22,36 @@ def test_cache_round_trip():
     assert get_cached("_test_unit") is None
 
 
-def test_economic_calendar_not_empty():
-    from app.data_providers.news import get_economic_calendar
+def test_economic_calendar_not_empty(monkeypatch):
+    from app.data_providers.economic_calendar import get_economic_calendar
+
+    class FakeResponse:
+        @staticmethod
+        def raise_for_status():
+            return None
+
+        @staticmethod
+        def json():
+            return {
+                "economicCalendar": [
+                    {
+                        "event": "US CPI m/m",
+                        "country": "US",
+                        "date": "2026-06-01",
+                        "time": "08:30",
+                        "impact": "high",
+                        "unit": "%",
+                        "estimate": 0.3,
+                        "prev": 0.4,
+                    }
+                ]
+            }
+
+    monkeypatch.setenv("FINNHUB_API_KEY", "test_finnhub_key")
+    monkeypatch.setattr(
+        "app.data_providers.economic_calendar.requests.get",
+        lambda *args, **kwargs: FakeResponse(),
+    )
     events = get_economic_calendar()
     assert isinstance(events, list)
     assert len(events) > 0

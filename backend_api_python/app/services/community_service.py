@@ -225,6 +225,10 @@ class CommunityService:
                 cur.execute("ALTER TABLE qd_indicator_codes ADD COLUMN IF NOT EXISTS source_language VARCHAR(16)")
                 cur.execute("ALTER TABLE qd_indicator_codes ADD COLUMN IF NOT EXISTS name_i18n JSONB")
                 cur.execute("ALTER TABLE qd_indicator_codes ADD COLUMN IF NOT EXISTS description_i18n JSONB")
+                # Asset taxonomy: indicator | script_template | bot_preset
+                cur.execute(
+                    "ALTER TABLE qd_indicator_codes ADD COLUMN IF NOT EXISTS asset_type VARCHAR(32) DEFAULT 'indicator'"
+                )
                 db.commit()
                 cur.close()
         except Exception:
@@ -242,7 +246,8 @@ class CommunityService:
         pricing_type: str = None,  # 'free' / 'paid' / None(all)
         sort_by: str = 'score',    # 'score' / 'newest' / 'hot' / 'price_asc' / 'price_desc' / 'rating'
         user_id: int = None,       # 当前用户ID，用于判断是否已购买
-        accept_language: str = 'en-US'  # 用于挑选 name_i18n / description_i18n
+        accept_language: str = 'en-US',  # 用于挑选 name_i18n / description_i18n
+        asset_type: str = None,    # 'indicator' / 'script_template' / 'bot_preset' / None(all)
     ) -> Dict[str, Any]:
         """获取市场上已发布的指标列表
 
@@ -288,6 +293,11 @@ class CommunityService:
                 elif pricing_type == 'paid':
                     where_clauses.append("(i.pricing_type != 'free' AND i.price > 0)")
 
+                _allowed_asset_types = ('indicator', 'script_template', 'bot_preset')
+                if asset_type and str(asset_type).strip() in _allowed_asset_types:
+                    where_clauses.append("(COALESCE(i.asset_type, 'indicator') = ?)")
+                    params.append(str(asset_type).strip())
+
                 where_sql = " AND ".join(where_clauses)
 
                 # SQL-friendly sorts:
@@ -332,6 +342,7 @@ class CommunityService:
                     cur.execute(f"""
                         SELECT
                             i.id, i.name, i.description, i.pricing_type, i.price, COALESCE(i.vip_free, FALSE) as vip_free,
+                            COALESCE(i.asset_type, 'indicator') as asset_type,
                             i.preview_image, i.purchase_count, i.avg_rating, i.rating_count,
                             i.view_count, i.created_at, i.updated_at,
                             i.source_language, i.name_i18n, i.description_i18n,
@@ -351,6 +362,7 @@ class CommunityService:
                     query_sql = f"""
                         SELECT
                             i.id, i.name, i.description, i.pricing_type, i.price, COALESCE(i.vip_free, FALSE) as vip_free,
+                            COALESCE(i.asset_type, 'indicator') as asset_type,
                             i.preview_image, i.purchase_count, i.avg_rating, i.rating_count,
                             i.view_count, i.created_at, i.updated_at,
                             i.source_language, i.name_i18n, i.description_i18n,
@@ -403,6 +415,7 @@ class CommunityService:
                         'id': row['id'],
                         'name': localized_name,
                         'description': localized_desc[:200] if localized_desc else '',
+                        'asset_type': (row.get('asset_type') if isinstance(row, dict) else None) or 'indicator',
                         'pricing_type': row['pricing_type'] or 'free',
                         'price': float(row['price'] or 0),
                         'vip_free': bool(row.get('vip_free') or False),
@@ -447,7 +460,264 @@ class CommunityService:
         except Exception as e:
             logger.error(f"get_market_indicators failed: {e}")
             return {'items': [], 'total': 0, 'page': 1, 'page_size': page_size, 'total_pages': 0}
-    
+
+    def publish_script_template_from_strategy(
+        self,
+        *,
+        user_id: int,
+        strategy_id: int,
+        code: str,
+        name: str,
+        description: str = '',
+        pricing_type: str = 'free',
+        price: float = 0.0,
+        is_admin: bool = False,
+        existing_indicator_id: int = 0,
+    ) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
+        """Publish a script strategy's code to the marketplace as script_template."""
+        code = (code or '').strip()
+        name = (name or '').strip()
+        if not code:
+            return False, 'code is required', None
+        if not name:
+            return False, 'name is required', None
+
+        pricing_type = (pricing_type or 'free').strip() or 'free'
+        try:
+            price = float(price or 0)
+        except Exception:
+            price = 0.0
+
+        review_status = 'approved' if is_admin else 'pending'
+        now_ts = int(time.time())
+
+        try:
+            with get_db_connection() as db:
+                cur = db.cursor()
+                try:
+                    cur.execute(
+                        "ALTER TABLE qd_indicator_codes ADD COLUMN IF NOT EXISTS asset_type VARCHAR(32) DEFAULT 'indicator'"
+                    )
+                except Exception:
+                    pass
+
+                if existing_indicator_id and existing_indicator_id > 0:
+                    cur.execute(
+                        """
+                        SELECT id FROM qd_indicator_codes
+                        WHERE id = ? AND user_id = ? AND COALESCE(asset_type, 'indicator') = 'script_template'
+                        """,
+                        (existing_indicator_id, user_id),
+                    )
+                    if not cur.fetchone():
+                        cur.close()
+                        return False, 'template not found', None
+                    cur.execute(
+                        """
+                        UPDATE qd_indicator_codes
+                        SET name = ?, code = ?, description = ?,
+                            publish_to_community = 1, pricing_type = ?, price = ?,
+                            asset_type = 'script_template',
+                            review_status = ?, review_note = '', reviewed_at = NOW(), reviewed_by = ?,
+                            updatetime = ?, updated_at = NOW()
+                        WHERE id = ? AND user_id = ?
+                        """,
+                        (
+                            name, code, description, pricing_type, price,
+                            review_status, user_id if is_admin else None,
+                            now_ts, existing_indicator_id, user_id,
+                        ),
+                    )
+                    indicator_id = existing_indicator_id
+                else:
+                    cur.execute(
+                        """
+                        INSERT INTO qd_indicator_codes
+                          (user_id, is_buy, end_time, name, code, description,
+                           publish_to_community, pricing_type, price, asset_type, review_status,
+                           createtime, updatetime, created_at, updated_at)
+                        VALUES (?, 0, 1, ?, ?, ?, 1, ?, ?, 'script_template', ?, ?, ?, NOW(), NOW())
+                        """,
+                        (
+                            user_id, name, code, description, pricing_type, price,
+                            review_status, now_ts, now_ts,
+                        ),
+                    )
+                    indicator_id = int(cur.lastrowid or 0)
+
+                db.commit()
+                cur.close()
+
+            return True, 'success', {
+                'indicator_id': indicator_id,
+                'review_status': review_status,
+                'asset_type': 'script_template',
+                'strategy_id': strategy_id,
+            }
+        except Exception as e:
+            logger.error(f"publish_script_template_from_strategy failed: {e}")
+            return False, str(e), None
+
+    @staticmethod
+    def _parse_json_dict(raw: Any) -> Dict[str, Any]:
+        if isinstance(raw, dict):
+            return dict(raw)
+        if isinstance(raw, str) and raw.strip():
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, dict):
+                    return parsed
+            except Exception:
+                pass
+        return {}
+
+    def _serialize_bot_preset_from_strategy(self, strategy: Dict[str, Any]) -> str:
+        """Pack a bot strategy row into marketplace-safe JSON (no API secrets)."""
+        tc = self._parse_json_dict(strategy.get('trading_config'))
+        ex = self._parse_json_dict(strategy.get('exchange_config'))
+        safe_ex: Dict[str, Any] = {}
+        if ex.get('exchange_id'):
+            safe_ex['exchange_id'] = ex.get('exchange_id')
+
+        clean_tc = {
+            k: v for k, v in tc.items()
+            if k not in ('source_preset_id', 'from_marketplace', 'source_template_id')
+        }
+        bot_type = (
+            clean_tc.get('bot_type')
+            or strategy.get('bot_type')
+            or ''
+        )
+        if bot_type and 'bot_type' not in clean_tc:
+            clean_tc['bot_type'] = bot_type
+
+        preset = {
+            'version': 1,
+            'bot_type': bot_type,
+            'strategy_type': strategy.get('strategy_type') or 'ScriptStrategy',
+            'strategy_mode': 'bot',
+            'market_category': strategy.get('market_category') or 'Crypto',
+            'execution_mode': strategy.get('execution_mode') or 'live',
+            'strategy_code': strategy.get('strategy_code') or '',
+            'trading_config': clean_tc,
+            'exchange_template': safe_ex,
+        }
+        return json.dumps(preset, ensure_ascii=False)
+
+    def _parse_bot_preset_json(self, raw: Any) -> Dict[str, Any]:
+        data = self._parse_json_dict(raw)
+        if not data:
+            raise ValueError('invalid bot preset payload')
+        if not data.get('bot_type') and isinstance(data.get('trading_config'), dict):
+            data['bot_type'] = data['trading_config'].get('bot_type')
+        return data
+
+    def publish_bot_preset_from_strategy(
+        self,
+        *,
+        user_id: int,
+        strategy_id: int,
+        name: str,
+        description: str = '',
+        pricing_type: str = 'free',
+        price: float = 0.0,
+        is_admin: bool = False,
+        existing_indicator_id: int = 0,
+        strategy: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
+        """Publish a bot strategy configuration to the marketplace as bot_preset."""
+        name = (name or '').strip()
+        if not name:
+            return False, 'name is required', None
+        if not strategy:
+            return False, 'strategy not found', None
+
+        strategy_mode = str(strategy.get('strategy_mode') or '').strip().lower()
+        if strategy_mode != 'bot':
+            return False, 'strategy is not a bot', None
+
+        try:
+            preset_code = self._serialize_bot_preset_from_strategy(strategy)
+            self._parse_bot_preset_json(preset_code)
+        except Exception as exc:
+            return False, f'invalid bot preset: {exc}', None
+
+        pricing_type = (pricing_type or 'free').strip() or 'free'
+        try:
+            price = float(price or 0)
+        except Exception:
+            price = 0.0
+
+        review_status = 'approved' if is_admin else 'pending'
+        now_ts = int(time.time())
+
+        try:
+            with get_db_connection() as db:
+                cur = db.cursor()
+                try:
+                    cur.execute(
+                        "ALTER TABLE qd_indicator_codes ADD COLUMN IF NOT EXISTS asset_type VARCHAR(32) DEFAULT 'indicator'"
+                    )
+                except Exception:
+                    pass
+
+                if existing_indicator_id and existing_indicator_id > 0:
+                    cur.execute(
+                        """
+                        SELECT id FROM qd_indicator_codes
+                        WHERE id = ? AND user_id = ? AND COALESCE(asset_type, 'indicator') = 'bot_preset'
+                        """,
+                        (existing_indicator_id, user_id),
+                    )
+                    if not cur.fetchone():
+                        cur.close()
+                        return False, 'preset not found', None
+                    cur.execute(
+                        """
+                        UPDATE qd_indicator_codes
+                        SET name = ?, code = ?, description = ?,
+                            publish_to_community = 1, pricing_type = ?, price = ?,
+                            asset_type = 'bot_preset',
+                            review_status = ?, review_note = '', reviewed_at = NOW(), reviewed_by = ?,
+                            updatetime = ?, updated_at = NOW()
+                        WHERE id = ? AND user_id = ?
+                        """,
+                        (
+                            name, preset_code, description, pricing_type, price,
+                            review_status, user_id if is_admin else None,
+                            now_ts, existing_indicator_id, user_id,
+                        ),
+                    )
+                    indicator_id = existing_indicator_id
+                else:
+                    cur.execute(
+                        """
+                        INSERT INTO qd_indicator_codes
+                          (user_id, is_buy, end_time, name, code, description,
+                           publish_to_community, pricing_type, price, asset_type, review_status,
+                           createtime, updatetime, created_at, updated_at)
+                        VALUES (?, 0, 1, ?, ?, ?, 1, ?, ?, 'bot_preset', ?, ?, ?, NOW(), NOW())
+                        """,
+                        (
+                            user_id, name, preset_code, description, pricing_type, price,
+                            review_status, now_ts, now_ts,
+                        ),
+                    )
+                    indicator_id = int(cur.lastrowid or 0)
+
+                db.commit()
+                cur.close()
+
+            return True, 'success', {
+                'indicator_id': indicator_id,
+                'review_status': review_status,
+                'asset_type': 'bot_preset',
+                'strategy_id': strategy_id,
+            }
+        except Exception as e:
+            logger.error(f"publish_bot_preset_from_strategy failed: {e}")
+            return False, str(e), None
+
     def get_indicator_detail(
         self,
         indicator_id: int,
@@ -469,6 +739,7 @@ class CommunityService:
                         i.preview_image, i.purchase_count, i.avg_rating, i.rating_count,
                         i.view_count, i.publish_to_community, i.created_at, i.updated_at,
                         i.user_id,
+                        COALESCE(i.asset_type, 'indicator') as asset_type,
                         i.source_language, i.name_i18n, i.description_i18n,
                         u.id as author_id, u.username as author_username, 
                         u.nickname as author_nickname, u.avatar as author_avatar
@@ -497,6 +768,7 @@ class CommunityService:
                 your_purchase_time = None
                 has_update = False
                 local_copy_id = None
+                purchased_strategy_id = None
                 if user_id:
                     cur.execute(
                         "SELECT id, price, created_at FROM qd_indicator_purchases "
@@ -512,25 +784,53 @@ class CommunityService:
                             your_purchase_price = 0.0
                         if purchase_row.get('created_at'):
                             your_purchase_time = purchase_row['created_at'].isoformat()
-                        # Look up buyer's local copy so the frontend can tell
-                        # whether a code-sync is needed.
-                        local_copy = self._find_buyer_local_copy(
-                            cur, buyer_id=user_id, indicator_id=indicator_id,
-                            original_name=row['name']
-                        )
-                        if local_copy is not None:
-                            local_copy_id = local_copy['id']
-                            # "Has update" = original code differs from local copy code.
-                            # The detail SELECT above doesn't include the full code blob,
-                            # so fetch it here — only once, only when user has purchased it.
-                            cur.execute(
-                                "SELECT code FROM qd_indicator_codes WHERE id = ?",
-                                (indicator_id,)
+                        asset_type = str(row.get('asset_type') or 'indicator').strip().lower()
+                        if asset_type == 'script_template':
+                            strat = self._find_buyer_strategy_from_template(
+                                cur, buyer_id=user_id, template_id=indicator_id
                             )
-                            original_row = cur.fetchone()
-                            original_code = original_row['code'] if original_row else None
-                            local_code = local_copy.get('code')
-                            has_update = (original_code or '') != (local_code or '')
+                            if strat:
+                                purchased_strategy_id = strat['id']
+                                cur.execute(
+                                    "SELECT code FROM qd_indicator_codes WHERE id = ?",
+                                    (indicator_id,)
+                                )
+                                original_row = cur.fetchone()
+                                original_code = original_row['code'] if original_row else None
+                                local_code = strat.get('strategy_code')
+                                has_update = (original_code or '') != (local_code or '')
+                        elif asset_type == 'bot_preset':
+                            strat = self._find_buyer_strategy_from_preset(
+                                cur, buyer_id=user_id, preset_id=indicator_id
+                            )
+                            if strat:
+                                purchased_strategy_id = strat['id']
+                                cur.execute(
+                                    "SELECT code FROM qd_indicator_codes WHERE id = ?",
+                                    (indicator_id,)
+                                )
+                                original_row = cur.fetchone()
+                                original_code = original_row['code'] if original_row else None
+                                try:
+                                    local_preset = self._serialize_bot_preset_from_strategy(strat)
+                                except Exception:
+                                    local_preset = strat.get('strategy_code') or ''
+                                has_update = (original_code or '') != (local_preset or '')
+                        else:
+                            local_copy = self._find_buyer_local_copy(
+                                cur, buyer_id=user_id, indicator_id=indicator_id,
+                                original_name=row['name']
+                            )
+                            if local_copy is not None:
+                                local_copy_id = local_copy['id']
+                                cur.execute(
+                                    "SELECT code FROM qd_indicator_codes WHERE id = ?",
+                                    (indicator_id,)
+                                )
+                                original_row = cur.fetchone()
+                                original_code = original_row['code'] if original_row else None
+                                local_code = local_copy.get('code')
+                                has_update = (original_code or '') != (local_code or '')
 
                 # 增加浏览次数
                 cur.execute(
@@ -574,7 +874,9 @@ class CommunityService:
                     'your_purchase_time': your_purchase_time,
                     'is_own': row['user_id'] == user_id,
                     'has_update': has_update,
-                    'local_copy_id': local_copy_id
+                    'local_copy_id': local_copy_id,
+                    'asset_type': str(row.get('asset_type') or 'indicator'),
+                    'purchased_strategy_id': purchased_strategy_id,
                 }
                 
         except Exception as e:
@@ -599,7 +901,8 @@ class CommunityService:
                 # 1. 获取指标信息
                 cur.execute("""
                     SELECT id, user_id, name, code, description, pricing_type, price, COALESCE(vip_free, FALSE) as vip_free,
-                           preview_image, is_encrypted
+                           preview_image, is_encrypted,
+                           COALESCE(asset_type, 'indicator') as asset_type
                     FROM qd_indicator_codes
                     WHERE id = ? AND publish_to_community = 1
                 """, (indicator_id,))
@@ -613,6 +916,7 @@ class CommunityService:
                 price = float(indicator['price'] or 0)
                 pricing_type = indicator['pricing_type'] or 'free'
                 vip_free = bool(indicator.get('vip_free') or False)
+                asset_type = str(indicator.get('asset_type') or 'indicator').strip().lower()
                 is_vip, _ = self.billing.get_user_vip_status(buyer_id)
 
                 # VIP-free indicator: VIP users can get it without credits charge
@@ -680,28 +984,75 @@ class CommunityService:
                     VALUES (?, ?, ?, ?, NOW())
                 """, (indicator_id, buyer_id, seller_id, effective_price))
                 
-                # 6. 复制指标到买家账户
-                now_ts = int(time.time())
-                # Get vip_free as boolean from indicator
-                vip_free_value = bool(indicator.get('vip_free') or False)
-                cur.execute("""
-                    INSERT INTO qd_indicator_codes
-                    (user_id, is_buy, end_time, name, code, description,
-                     publish_to_community, pricing_type, price, is_encrypted, preview_image, vip_free,
-                     source_indicator_id,
-                     createtime, updatetime, created_at, updated_at)
-                    VALUES (?, 1, 0, ?, ?, ?, 0, 'free', 0, ?, ?, ?, ?, ?, ?, NOW(), NOW())
-                """, (
-                    buyer_id,
-                    indicator['name'],
-                    indicator['code'],
-                    indicator['description'],
-                    indicator['is_encrypted'] or 0,
-                    indicator['preview_image'],
-                    vip_free_value,  # Use boolean value instead of integer 0
-                    indicator_id,  # source_indicator_id — link back to the original
-                    now_ts, now_ts
-                ))
+                delivered_strategy_id = None
+                if asset_type == 'script_template':
+                    from app.services.strategy import get_strategy_service
+                    delivered_strategy_id = get_strategy_service().create_strategy({
+                        'user_id': buyer_id,
+                        'strategy_name': indicator['name'],
+                        'strategy_type': 'ScriptStrategy',
+                        'strategy_mode': 'script',
+                        'strategy_code': indicator['code'],
+                        'market_category': 'Crypto',
+                        'execution_mode': 'signal',
+                        'notification_config': {'channels': ['browser'], 'targets': {}},
+                        'trading_config': {
+                            'initial_capital': 1000,
+                            'leverage': 5,
+                            'trade_direction': 'both',
+                            'timeframe': '15m',
+                            'market_type': 'swap',
+                            'source_template_id': int(indicator_id),
+                            'from_marketplace': True,
+                            'lifecycle_verified': True,
+                            'script_verified': True,
+                        },
+                    })
+                elif asset_type == 'bot_preset':
+                    from app.services.strategy import get_strategy_service
+                    preset = self._parse_bot_preset_json(indicator['code'])
+                    tc = dict(preset.get('trading_config') or {})
+                    bot_type = preset.get('bot_type') or tc.get('bot_type')
+                    if bot_type and not tc.get('bot_type'):
+                        tc['bot_type'] = bot_type
+                    tc['source_preset_id'] = int(indicator_id)
+                    tc['from_marketplace'] = True
+                    delivered_strategy_id = get_strategy_service().create_strategy({
+                        'user_id': buyer_id,
+                        'strategy_name': indicator['name'],
+                        'strategy_type': preset.get('strategy_type') or 'ScriptStrategy',
+                        'strategy_mode': 'bot',
+                        'strategy_code': preset.get('strategy_code') or '',
+                        'market_category': preset.get('market_category') or 'Crypto',
+                        'execution_mode': preset.get('execution_mode') or 'live',
+                        'exchange_config': {},
+                        'notification_config': {'channels': ['browser'], 'targets': {}},
+                        'marketplace_delivery': True,
+                        'trading_config': tc,
+                    })
+                else:
+                    # 6. 复制指标到买家账户
+                    now_ts = int(time.time())
+                    # Get vip_free as boolean from indicator
+                    vip_free_value = bool(indicator.get('vip_free') or False)
+                    cur.execute("""
+                        INSERT INTO qd_indicator_codes
+                        (user_id, is_buy, end_time, name, code, description,
+                         publish_to_community, pricing_type, price, is_encrypted, preview_image, vip_free,
+                         source_indicator_id,
+                         createtime, updatetime, created_at, updated_at)
+                        VALUES (?, 1, 0, ?, ?, ?, 0, 'free', 0, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+                    """, (
+                        buyer_id,
+                        indicator['name'],
+                        indicator['code'],
+                        indicator['description'],
+                        indicator['is_encrypted'] or 0,
+                        indicator['preview_image'],
+                        vip_free_value,  # Use boolean value instead of integer 0
+                        indicator_id,  # source_indicator_id — link back to the original
+                        now_ts, now_ts
+                    ))
                 
                 # 7. 更新指标购买次数
                 cur.execute("""
@@ -714,7 +1065,14 @@ class CommunityService:
                 cur.close()
                 
                 logger.info(f"User {buyer_id} purchased indicator {indicator_id} for {effective_price} credits (vip_free={vip_free}, is_vip={is_vip})")
-                return True, 'success', {'indicator_name': indicator['name'], 'price': price, 'charged': effective_price, 'vip_free': vip_free}
+                return True, 'success', {
+                    'indicator_name': indicator['name'],
+                    'price': price,
+                    'charged': effective_price,
+                    'vip_free': vip_free,
+                    'asset_type': asset_type,
+                    'strategy_id': delivered_strategy_id,
+                }
                 
         except Exception as e:
             logger.error(f"purchase_indicator failed: {e}")
@@ -784,6 +1142,81 @@ class CommunityService:
 
         return None
 
+    def _parse_trading_config_json(self, raw: Any) -> Dict[str, Any]:
+        if isinstance(raw, dict):
+            return dict(raw)
+        if isinstance(raw, str) and raw.strip():
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, dict):
+                    return parsed
+            except Exception:
+                pass
+        return {}
+
+    def _find_buyer_strategy_from_template(
+        self, cur, buyer_id: int, template_id: int
+    ) -> Optional[Dict[str, Any]]:
+        """Locate a script strategy created from a marketplace script_template."""
+        try:
+            cur.execute(
+                """
+                SELECT id, strategy_name, strategy_code, trading_config
+                FROM qd_strategies_trading
+                WHERE user_id = ? AND strategy_mode = 'script'
+                ORDER BY id DESC
+                """,
+                (int(buyer_id),),
+            )
+            rows = cur.fetchall() or []
+        except Exception:
+            return None
+        tid = str(int(template_id))
+        for row in rows:
+            tc = self._parse_trading_config_json(row.get('trading_config'))
+            if str(tc.get('source_template_id') or '') == tid:
+                return {
+                    'id': row['id'],
+                    'strategy_name': row.get('strategy_name'),
+                    'strategy_code': row.get('strategy_code'),
+                }
+        return None
+
+    def _find_buyer_strategy_from_preset(
+        self, cur, buyer_id: int, preset_id: int
+    ) -> Optional[Dict[str, Any]]:
+        """Locate a bot strategy created from a marketplace bot_preset."""
+        try:
+            cur.execute(
+                """
+                SELECT id, strategy_name, strategy_code, trading_config, strategy_mode,
+                       strategy_type, market_category, execution_mode, exchange_config
+                FROM qd_strategies_trading
+                WHERE user_id = ? AND strategy_mode = 'bot'
+                ORDER BY id DESC
+                """,
+                (int(buyer_id),),
+            )
+            rows = cur.fetchall() or []
+        except Exception:
+            return None
+        pid = str(int(preset_id))
+        for row in rows:
+            tc = self._parse_trading_config_json(row.get('trading_config'))
+            if str(tc.get('source_preset_id') or '') == pid:
+                return {
+                    'id': row['id'],
+                    'strategy_name': row.get('strategy_name'),
+                    'strategy_code': row.get('strategy_code'),
+                    'trading_config': tc,
+                    'strategy_mode': row.get('strategy_mode'),
+                    'strategy_type': row.get('strategy_type'),
+                    'market_category': row.get('market_category'),
+                    'execution_mode': row.get('execution_mode'),
+                    'exchange_config': self._parse_json_dict(row.get('exchange_config')),
+                }
+        return None
+
     def sync_purchased_indicator(self, buyer_id: int, indicator_id: int) -> Tuple[bool, str, Dict[str, Any]]:
         """Refresh a buyer's local copy with the publisher's latest code/description.
 
@@ -813,7 +1246,8 @@ class CommunityService:
                 cur.execute(
                     """
                     SELECT id, user_id, name, code, description, preview_image, is_encrypted,
-                           publish_to_community, updated_at
+                           publish_to_community, updated_at,
+                           COALESCE(asset_type, 'indicator') as asset_type
                     FROM qd_indicator_codes
                     WHERE id = ?
                     """,
@@ -827,7 +1261,95 @@ class CommunityService:
                     cur.close()
                     return False, 'indicator_unpublished', {}
 
-                # 3. Locate buyer's local copy
+                asset_type = str(original.get('asset_type') or 'indicator').strip().lower()
+                if asset_type == 'script_template':
+                    local_strategy = self._find_buyer_strategy_from_template(
+                        cur, buyer_id=buyer_id, template_id=indicator_id
+                    )
+                    if not local_strategy:
+                        cur.close()
+                        return False, 'local_copy_not_found', {}
+                    if (local_strategy.get('strategy_code') or '') == (original.get('code') or ''):
+                        cur.close()
+                        return True, 'already_latest', {
+                            'strategy_id': local_strategy['id'],
+                            'updated': False,
+                        }
+                    cur.execute(
+                        """
+                        UPDATE qd_strategies_trading
+                        SET strategy_code = ?, strategy_name = ?, updated_at = NOW()
+                        WHERE id = ? AND user_id = ?
+                        """,
+                        (
+                            original['code'],
+                            original['name'],
+                            local_strategy['id'],
+                            buyer_id,
+                        ),
+                    )
+                    db.commit()
+                    cur.close()
+                    return True, 'success', {
+                        'strategy_id': local_strategy['id'],
+                        'updated': True,
+                        'indicator_name': original['name'],
+                    }
+
+                if asset_type == 'bot_preset':
+                    local_strategy = self._find_buyer_strategy_from_preset(
+                        cur, buyer_id=buyer_id, preset_id=indicator_id
+                    )
+                    if not local_strategy:
+                        cur.close()
+                        return False, 'local_copy_not_found', {}
+                    try:
+                        preset = self._parse_bot_preset_json(original.get('code'))
+                    except Exception:
+                        cur.close()
+                        return False, 'invalid_preset_payload', {}
+                    tc = dict(preset.get('trading_config') or {})
+                    bot_type = preset.get('bot_type') or tc.get('bot_type')
+                    if bot_type and not tc.get('bot_type'):
+                        tc['bot_type'] = bot_type
+                    tc['source_preset_id'] = int(indicator_id)
+                    tc['from_marketplace'] = True
+                    local_tc = self._parse_trading_config_json(local_strategy.get('trading_config'))
+                    merged_tc = {**local_tc, **tc}
+                    new_code = preset.get('strategy_code') or local_strategy.get('strategy_code') or ''
+                    if (
+                        (local_strategy.get('strategy_code') or '') == new_code
+                        and json.dumps(merged_tc, sort_keys=True, default=str)
+                        == json.dumps(local_tc, sort_keys=True, default=str)
+                    ):
+                        cur.close()
+                        return True, 'already_latest', {
+                            'strategy_id': local_strategy['id'],
+                            'updated': False,
+                        }
+                    cur.execute(
+                        """
+                        UPDATE qd_strategies_trading
+                        SET strategy_code = ?, strategy_name = ?, trading_config = ?, updated_at = NOW()
+                        WHERE id = ? AND user_id = ?
+                        """,
+                        (
+                            new_code,
+                            original['name'],
+                            json.dumps(merged_tc, ensure_ascii=False),
+                            local_strategy['id'],
+                            buyer_id,
+                        ),
+                    )
+                    db.commit()
+                    cur.close()
+                    return True, 'success', {
+                        'strategy_id': local_strategy['id'],
+                        'updated': True,
+                        'indicator_name': original['name'],
+                    }
+
+                # 3. Locate buyer's local copy (indicator assets)
                 local = self._find_buyer_local_copy(
                     cur, buyer_id=buyer_id, indicator_id=indicator_id,
                     original_name=original['name']
@@ -914,6 +1436,7 @@ class CommunityService:
                     SELECT 
                         p.id as purchase_id, p.price as purchase_price, p.created_at as purchase_time,
                         i.id, i.name, i.description, i.preview_image, i.avg_rating,
+                        COALESCE(i.asset_type, 'indicator') as asset_type,
                         u.nickname as seller_nickname, u.avatar as seller_avatar
                     FROM qd_indicator_purchases p
                     LEFT JOIN qd_indicator_codes i ON p.indicator_id = i.id
@@ -923,26 +1446,42 @@ class CommunityService:
                     LIMIT ? OFFSET ?
                 """, (user_id, page_size, offset))
                 rows = cur.fetchall() or []
-                cur.close()
                 
                 items = []
                 for row in rows:
+                    asset_type = str(row.get('asset_type') or 'indicator').strip().lower()
+                    purchased_strategy_id = None
+                    if asset_type == 'script_template' and row.get('id'):
+                        strat = self._find_buyer_strategy_from_template(
+                            cur, buyer_id=user_id, template_id=int(row['id'])
+                        )
+                        if strat:
+                            purchased_strategy_id = strat['id']
+                    elif asset_type == 'bot_preset' and row.get('id'):
+                        strat = self._find_buyer_strategy_from_preset(
+                            cur, buyer_id=user_id, preset_id=int(row['id'])
+                        )
+                        if strat:
+                            purchased_strategy_id = strat['id']
                     items.append({
                         'purchase_id': row['purchase_id'],
                         'purchase_price': float(row['purchase_price'] or 0),
                         'purchase_time': row['purchase_time'].isoformat() if row['purchase_time'] else None,
+                        'purchased_strategy_id': purchased_strategy_id,
                         'indicator': {
                             'id': row['id'],
                             'name': row['name'],
                             'description': row['description'][:100] if row['description'] else '',
                             'preview_image': row['preview_image'] or '',
-                            'avg_rating': float(row['avg_rating'] or 0)
+                            'avg_rating': float(row['avg_rating'] or 0),
+                            'asset_type': asset_type,
                         },
                         'seller': {
                             'nickname': row['seller_nickname'],
                             'avatar': row['seller_avatar'] or '/avatar2.jpg'
                         }
                     })
+                cur.close()
                 
                 return {
                     'items': items,

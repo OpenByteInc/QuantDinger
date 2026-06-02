@@ -724,7 +724,7 @@ CONFIG_SCHEMA = {
                 'required': False,
                 'link': 'https://finnhub.io/register',
                 'link_text': 'settings.link.freeRegister',
-                'description': 'Finnhub API key for US stock data (free tier available)'
+                'description': 'Finnhub API key for US stock data and economic calendar (free tier available)'
             },
             {
                 'key': 'COINGLASS_API_KEY',

@@ -228,6 +228,7 @@ def place_order_from_signal(
             margin_mode=margin_mode,
             reduce_only=reduce_only,
             client_order_id=client_order_id,
+            hold_side=pos_side or ("long" if side == "buy" else "short"),
         )
     if isinstance(client, BinanceSpotClient):
         # Prefer ``quoteOrderQty`` for market BUY (Binance recommended) so we

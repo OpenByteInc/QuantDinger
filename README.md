@@ -56,8 +56,6 @@
     <img src="https://img.shields.io/badge/PostgreSQL-16-336791?style=flat-square&logo=postgresql&logoColor=white" alt="PostgreSQL">
     <img src="https://img.shields.io/github/stars/brokermr810/QuantDinger?style=flat-square&logo=github" alt="Stars">
     <img src="https://img.shields.io/github/forks/brokermr810/QuantDinger?style=flat-square&logo=github&label=Forks" alt="Forks">
-    <a href="docs/metrics/traffic-history.md"><img src="https://img.shields.io/badge/dynamic/json?label=Repo%20Views&query=views_total&url=https://raw.githubusercontent.com/brokermr810/QuantDinger/main/docs/metrics/traffic.json&color=2ea44f&logo=github" alt="Repo Views"></a>
-    <a href="docs/metrics/traffic-history.md"><img src="https://img.shields.io/badge/dynamic/json?label=Git%20Clones&query=clones_total&url=https://raw.githubusercontent.com/brokermr810/QuantDinger/main/docs/metrics/traffic.json&color=0969da&logo=github" alt="Git Clones"></a>
   </p>
   <p style="margin: 10px 0 12px;">
     <a href="https://aws.amazon.com/marketplace/pp/prodview-naanrb7d2mbc6"><img src="https://img.shields.io/badge/AWS%20Marketplace-AMI%20%7C%20CentOS%209-232F3E?style=flat-square&logo=amazonaws&logoColor=white" alt="QuantDinger on AWS Marketplace (ThinkCloud AMI)"></a>

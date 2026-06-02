@@ -856,6 +856,31 @@ Current limitations:
 - script-strategy backtests do not use the indicator MTF execution path
 - strategy backtests expect a valid symbol and non-empty code
 
+### 7.1 Script backtest fill assumptions (not indicator strict mode)
+
+Script backtests have **no** indicator IDE strict/non-strict toggle. The UI label should read:
+
+**Script standard · bar-by-bar · next-bar open fill**
+
+1. Candles are replayed at the strategy timeframe; each closed bar calls `on_bar(ctx, bar)`.
+2. Orders come from `ctx.buy()` / `ctx.sell()` / `ctx.close_position()` inside the script.
+3. The simulator fills at the **next bar open** by default (plus slippage/fees), aligned with `execution.signalTiming = next_bar_open`.
+4. Position size still mainly follows `entryPct` and related trading config, not `amount` alone.
+
+### 7.2 Trading Bot vs ScriptStrategy vs IndicatorStrategy
+
+| Type | Code storage | Entry | Notes |
+|------|--------------|-------|-------|
+| IndicatorStrategy | `qd_indicator_codes.code` | Indicator IDE | `df` + boolean signals |
+| ScriptStrategy | `qd_strategies_trading.strategy_code` | Strategy Studio | `on_init` + `on_bar` |
+| Trading Bot | same `strategy_code`, `strategy_mode=bot` | Bot wizard | Grid live logic is engine-side |
+
+**Clone as Script** (bot detail) copies `strategy_code` into a new ScriptStrategy on **Strategy Studio**, not into Indicator IDE.
+
+- **Grid bots** ship a placeholder script (`on_bar: pass`); the editor may look nearly empty by design.
+- **Martingale / trend / DCA** bots generate full Python templates.
+- If code is missing after clone, refresh and edit again — the app fetches `/api/strategies/detail` for the full `strategy_code`.
+
 ---
 
 ## 8. Best Practices

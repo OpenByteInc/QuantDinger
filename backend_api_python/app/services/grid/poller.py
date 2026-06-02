@@ -11,6 +11,7 @@ from typing import Dict, List, Optional, Tuple
 from app.services.grid.exchange_orders import query_grid_order_fill
 from app.services.grid.resting_orders_repo import GridRestingOrder, GridRestingOrderRepository
 from app.services.grid.runner import get_runner
+from app.services.exchange_execution import resolve_exchange_config
 from app.services.live_trading.factory import create_client
 from app.utils.logger import get_logger
 
@@ -140,7 +141,11 @@ class GridFillPoller:
             client = clients.get(cred_key)
             if client is None:
                 try:
-                    client = create_client(runner.exchange_config, market_type=cfg.market_type)
+                    ex_cfg = resolve_exchange_config(
+                        runner.exchange_config if isinstance(runner.exchange_config, dict) else {},
+                        user_id=int(getattr(runner, "user_id", 0) or 1),
+                    )
+                    client = create_client(ex_cfg, market_type=cfg.market_type)
                     clients[cred_key] = client
                 except Exception as e:
                     logger.debug("grid poller client sid=%s: %s", sid, e)
@@ -156,6 +161,7 @@ class GridFillPoller:
             market_type=market_type,
             exchange_order_id=order.exchange_order_id,
             client_order_id=order.client_order_id,
+            exchange_config=runner.exchange_config if isinstance(runner.exchange_config, dict) else {},
         )
         if status == "unknown":
             return
@@ -220,6 +226,45 @@ class GridFillPoller:
             processed_fill_qty=total_filled,
         )
 
+    def sync_strategy(self, strategy_id: int) -> int:
+        """Poll every open order for one strategy immediately (UI refresh)."""
+        sid = int(strategy_id)
+        open_orders = self._repo.list_open(sid)
+        unprocessed = self._repo.list_unprocessed(sid)
+        merged: Dict[int, GridRestingOrder] = {}
+        for order in open_orders + unprocessed:
+            oid = int(order.id or 0)
+            if oid > 0:
+                merged[oid] = order
+        open_orders = list(merged.values())
+        if not open_orders:
+            return 0
+        runner = get_runner(sid)
+        if not runner:
+            return 0
+        cfg = runner.engine.cfg
+        cred_key = self._credential_key(runner)
+        try:
+            from app.services.exchange_execution import resolve_exchange_config
+            from app.services.live_trading.factory import create_client
+
+            ex_cfg = resolve_exchange_config(
+                runner.exchange_config if isinstance(runner.exchange_config, dict) else {},
+                user_id=int(getattr(runner, "user_id", 0) or 1),
+            )
+            client = create_client(ex_cfg, market_type=cfg.market_type)
+        except Exception as e:
+            logger.debug("grid sync_strategy client sid=%s: %s", sid, e)
+            return 0
+        n = 0
+        for order in open_orders:
+            if not self._allow_credential_request(cred_key):
+                break
+            self._last_poll_by_order[int(order.id or 0)] = time.time()
+            self._poll_order(runner, client, order, cfg.market_type)
+            n += 1
+        return n
+
 
 _poller: Optional[GridFillPoller] = None
 
@@ -229,3 +274,12 @@ def get_grid_fill_poller() -> GridFillPoller:
     if _poller is None:
         _poller = GridFillPoller()
     return _poller
+
+
+def sync_strategy_grid_orders(strategy_id: int) -> int:
+    """
+    Force one exchange poll for all open resting orders of a strategy.
+    Used by the UI refresh button so status/filled qty update immediately.
+    """
+    poller = get_grid_fill_poller()
+    return poller.sync_strategy(int(strategy_id))

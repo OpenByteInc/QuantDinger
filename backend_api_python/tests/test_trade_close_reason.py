@@ -1,5 +1,8 @@
 """Tests for trade close reason codes and API enrichment."""
 from app.utils.trade_close_reason import (
+    GRID_INITIAL_LONG,
+    GRID_LONG_ENTRY,
+    GRID_LONG_EXIT,
     GRID_REDUCE_LONG,
     GRID_WATERFALL_CLOSE,
     SERVER_STOP_LOSS,
@@ -54,3 +57,19 @@ def test_enrich_take_profit_label():
         bot_type="",
     )
     assert row["action_note"] == "止盈平仓"
+
+
+def test_label_grid_resting_purposes():
+    assert label_for_reason(GRID_LONG_ENTRY) == "网格买入开多"
+    assert label_for_reason(GRID_LONG_EXIT) == "网格卖出平多"
+    assert label_for_reason(GRID_INITIAL_LONG) == "初始底仓开多"
+    assert label_for_reason(GRID_INITIAL_LONG, lang="en") == "Initial long position"
+
+
+def test_enrich_grid_entry_fill():
+    row = enrich_trade_row(
+        {"type": "open_long", "close_reason": GRID_LONG_ENTRY},
+        bot_type="grid",
+    )
+    assert row["action_note"] == "网格买入开多"
+    assert row["action_note_en"] == "Grid buy long"

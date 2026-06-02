@@ -900,6 +900,18 @@ class StrategyService:
             'value_key': value_key or ''
         }
 
+    @staticmethod
+    def _sanitize_grid_trading_config(trading_config: Dict[str, Any]) -> Dict[str, Any]:
+        tc = dict(trading_config or {})
+        bot_type = str(tc.get('bot_type') or '').strip().lower()
+        if bot_type != 'grid':
+            return tc
+        from app.services.grid.config import sanitize_grid_bot_params
+
+        bp = tc.get('bot_params') if isinstance(tc.get('bot_params'), dict) else {}
+        tc['bot_params'] = sanitize_grid_bot_params(bp)
+        return tc
+
     def _build_bot_display(self, trading_config: Dict[str, Any]) -> Dict[str, Any]:
         tc = trading_config if isinstance(trading_config, dict) else {}
         bot_type = str(tc.get('bot_type') or '').strip().lower()
@@ -945,20 +957,27 @@ class StrategyService:
             return display
 
         if bot_type == 'grid':
-            display['strategy_params'] = [
+            direction = str(params.get('gridDirection') or 'neutral').strip().lower()
+            grid_items = [
                 self._display_item('upperPrice', 'trading-bot.grid.upperPrice', self._to_float(params.get('upperPrice'), 0.0), 'usdt'),
                 self._display_item('lowerPrice', 'trading-bot.grid.lowerPrice', self._to_float(params.get('lowerPrice'), 0.0), 'usdt'),
                 self._display_item('gridCount', 'trading-bot.grid.gridCount', self._to_int(params.get('gridCount'), 0), 'number'),
                 self._display_item('amountPerGrid', 'trading-bot.grid.amountPerGrid', self._to_float(params.get('amountPerGrid'), 0.0), 'usdt'),
                 self._display_item('gridMode', 'trading-bot.grid.mode', params.get('gridMode') or 'arithmetic', 'enum', f"trading-bot.grid.{params.get('gridMode') or 'arithmetic'}"),
-                self._display_item('gridDirection', 'trading-bot.grid.direction', params.get('gridDirection') or 'neutral', 'enum', f"trading-bot.grid.{params.get('gridDirection') or 'neutral'}"),
-                self._display_item('initialPositionPct', 'trading-bot.grid.initialPositionPct', self._to_float(params.get('initialPositionPct'), 0.0), 'percent'),
+                self._display_item('gridDirection', 'trading-bot.grid.direction', direction, 'enum', f"trading-bot.grid.{direction}"),
+            ]
+            if direction in ('long', 'short'):
+                grid_items.append(
+                    self._display_item('initialPositionPct', 'trading-bot.grid.initialPositionPct', self._to_float(params.get('initialPositionPct'), 0.0), 'percent')
+                )
+            grid_items.append(
                 self._display_item('boundaryAction', 'trading-bot.grid.boundaryAction', params.get('boundaryAction') or 'pause', 'enum', {
                     'pause': 'trading-bot.grid.boundaryPause',
                     'stop_loss': 'trading-bot.grid.boundaryStopLoss',
                     'hold': 'trading-bot.grid.boundaryHold',
-                }.get(params.get('boundaryAction') or 'pause', 'trading-bot.grid.boundaryPause')),
-            ]
+                }.get(params.get('boundaryAction') or 'pause', 'trading-bot.grid.boundaryPause'))
+            )
+            display['strategy_params'] = grid_items
             display['strategy_params'].extend([
                 self._display_item('orderMode', 'trading-bot.grid.orderType', params.get('orderMode') or 'maker', 'enum', 'trading-bot.grid.limitOrder' if (params.get('orderMode') or 'maker') == 'maker' else 'trading-bot.grid.marketOrder'),
                 self._display_item('adaptiveBounds', 'trading-bot.grid.adaptiveBounds', bool(params.get('adaptiveBounds', True)), 'boolean'),
@@ -1096,6 +1115,7 @@ class StrategyService:
                 init_cap = float(r.get('initial_capital') or 0.0)
                 current_equity = max(0.0, init_cap + m['realized_pnl'] + m['unrealized_pnl'])
                 total_pnl = m['realized_pnl'] + m['unrealized_pnl']
+                total_pnl_pct = round(total_pnl / init_cap * 100.0, 2) if init_cap > 0 else 0.0
                 out.append({
                     **r,
                     'exchange_config': ex,
@@ -1107,6 +1127,7 @@ class StrategyService:
                     'realized_pnl': m['realized_pnl'],
                     'unrealized_pnl': m['unrealized_pnl'],
                     'total_pnl': total_pnl,
+                    'total_pnl_pct': total_pnl_pct,
                     'current_equity': current_equity,
                 })
             return out
@@ -1141,6 +1162,7 @@ class StrategyService:
                 r['realized_pnl'] = rp
                 r['unrealized_pnl'] = up
                 r['total_pnl'] = rp + up
+                r['total_pnl_pct'] = round((rp + up) / init_cap * 100.0, 2) if init_cap > 0 else 0.0
                 r['current_equity'] = max(0.0, init_cap + rp + up)
             except Exception:
                 pass
@@ -1172,6 +1194,7 @@ class StrategyService:
         trading_config = _strip_legacy_risk_pct_basis(
             _apply_default_strict_mode(payload.get('trading_config') or {})
         )
+        trading_config = self._sanitize_grid_trading_config(trading_config)
         if strategy_type == 'IndicatorStrategy':
             trading_config = _apply_risk_flat_from_indicator_code(
                 trading_config, indicator_config
@@ -1191,13 +1214,14 @@ class StrategyService:
         # tightening a rule should only need a change in one place.
         from app.services.broker_market_policy import validate_strategy_config
         exchange_id = (resolved_ex_cfg.get('exchange_id') or '').strip().lower() if isinstance(resolved_ex_cfg, dict) else ''
+        marketplace_delivery = bool(payload.get('marketplace_delivery'))
         validate_strategy_config(
             exchange_id=exchange_id,
             market_category=market_category,
             market_type=(trading_config or {}).get('market_type'),
             trade_direction=(trading_config or {}).get('trade_direction'),
             bot_type=(trading_config or {}).get('bot_type'),
-            require_exchange=(execution_mode == 'live'),
+            require_exchange=(execution_mode == 'live') and not marketplace_delivery,
         )
         if market_category == 'MOEX':
             raise ValueError(
@@ -1402,7 +1426,7 @@ class StrategyService:
         """Batch start strategies. If user_id is provided, verify ownership."""
         success_ids = []
         failed_ids = []
-        
+
         for sid in strategy_ids:
             try:
                 self.update_strategy_status(sid, 'running', user_id=user_id)
@@ -1410,7 +1434,7 @@ class StrategyService:
             except Exception as e:
                 logger.error(f"Failed to start strategy {sid}: {e}")
                 failed_ids.append({'id': sid, 'error': str(e)})
-        
+
         return {
             'success': len(success_ids) > 0,
             'success_ids': success_ids,
@@ -1421,7 +1445,7 @@ class StrategyService:
         """Batch stop strategies. If user_id is provided, verify ownership."""
         success_ids = []
         failed_ids = []
-        
+
         for sid in strategy_ids:
             try:
                 self.update_strategy_status(sid, 'stopped', user_id=user_id)
@@ -1429,12 +1453,45 @@ class StrategyService:
             except Exception as e:
                 logger.error(f"Failed to stop strategy {sid}: {e}")
                 failed_ids.append({'id': sid, 'error': str(e)})
-        
+
         return {
             'success': len(success_ids) > 0,
             'success_ids': success_ids,
             'failed_ids': failed_ids
         }
+
+    def patch_trading_config(self, strategy_id: int, patch: Dict[str, Any], user_id: int = None) -> bool:
+        """Merge keys into trading_config without touching other strategy fields."""
+        if not patch or not isinstance(patch, dict):
+            return False
+        existing = self.get_strategy(strategy_id, user_id=user_id)
+        if not existing:
+            return False
+        tc = dict(existing.get('trading_config') or {})
+        tc.update(patch)
+        with get_db_connection() as db:
+            cur = db.cursor()
+            if user_id is not None:
+                cur.execute(
+                    """
+                    UPDATE qd_strategies_trading
+                    SET trading_config = ?, updated_at = NOW()
+                    WHERE id = ? AND user_id = ?
+                    """,
+                    (self._dump_json_or_encrypt(tc, encrypt=False), strategy_id, user_id),
+                )
+            else:
+                cur.execute(
+                    """
+                    UPDATE qd_strategies_trading
+                    SET trading_config = ?, updated_at = NOW()
+                    WHERE id = ?
+                    """,
+                    (self._dump_json_or_encrypt(tc, encrypt=False), strategy_id),
+                )
+            db.commit()
+            cur.close()
+        return True
 
     def batch_delete_strategies(self, strategy_ids: List[int], user_id: int = None) -> Dict[str, Any]:
         """Batch delete strategies. If user_id is provided, verify ownership."""
@@ -1525,6 +1582,8 @@ class StrategyService:
             trading_config = _apply_risk_flat_from_indicator_code(
                 trading_config, indicator_config
             )
+
+        trading_config = self._sanitize_grid_trading_config(trading_config)
 
         # When credential_id is present, strip raw API keys to avoid
         # storing secrets in the strategy record — they live in qd_exchange_credentials.

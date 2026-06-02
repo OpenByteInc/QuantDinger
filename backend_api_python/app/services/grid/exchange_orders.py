@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional, Tuple
 
+from app.services.grid.fill_units import parse_grid_order_fill
 from app.services.live_trading.base import BaseRestClient, LiveOrderResult, LiveTradingError
 from app.services.live_trading.binance import BinanceFuturesClient
 from app.services.live_trading.binance_spot import BinanceSpotClient
@@ -17,10 +18,19 @@ from app.services.live_trading.htx import HtxClient
 from app.services.live_trading.kraken import KrakenClient
 from app.services.live_trading.kraken_futures import KrakenFuturesClient
 from app.services.live_trading.kucoin import KucoinFuturesClient, KucoinSpotClient
-from app.services.live_trading.okx import OkxClient, to_okx_swap_inst_id
+from app.services.live_trading.okx import OkxClient
+from app.services.live_trading.symbols import to_okx_spot_inst_id, to_okx_swap_inst_id
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+def make_grid_initial_client_order_id(strategy_id: int, leg: str = "") -> str:
+    """Stable client oid for grid initial market leg (one per strategy/leg, avoids duplicate opens)."""
+    suffix = str(leg or "").strip().lower()[:1]
+    if suffix not in ("l", "s"):
+        suffix = ""
+    return f"ginit{int(strategy_id) % 100000:05d}{suffix}"[:32]
 
 
 def make_grid_client_order_id(strategy_id: int, cell_index: int, purpose: str) -> str:
@@ -136,6 +146,7 @@ def place_grid_limit_order(
             reduce_only=reduce_only,
             post_only=post_only,
             client_order_id=coid or None,
+            hold_side=pos_side or ("long" if sd == "buy" else "short"),
         )
     if isinstance(client, BitgetSpotClient):
         return client.place_limit_order(
@@ -233,6 +244,167 @@ def place_grid_limit_order(
     raise LiveTradingError(f"Unsupported client for grid limit: {type(client)}")
 
 
+def wait_grid_market_fill(
+    client: BaseRestClient,
+    *,
+    symbol: str,
+    market_type: str,
+    exchange_config: Dict[str, Any],
+    exchange_order_id: str = "",
+    client_order_id: str = "",
+    max_wait_sec: float = 15.0,
+) -> Tuple[float, float]:
+    """Poll until market order fill is known. Returns (filled_qty, avg_price)."""
+    mt = str(market_type or "swap").strip().lower()
+    ex_cfg = exchange_config if isinstance(exchange_config, dict) else {}
+    ex_oid = str(exchange_order_id or "")
+    coid = str(client_order_id or "")
+
+    try:
+        if isinstance(client, BitgetMixClient) and hasattr(client, "wait_for_fill"):
+            product_type = str(ex_cfg.get("product_type") or ex_cfg.get("productType") or "USDT-FUTURES")
+            q = client.wait_for_fill(
+                symbol=str(symbol),
+                product_type=product_type,
+                order_id=ex_oid,
+                client_oid=coid,
+                max_wait_sec=max_wait_sec,
+            )
+            return float(q.get("filled") or 0), float(q.get("avg_price") or 0)
+        if isinstance(client, BitgetSpotClient) and hasattr(client, "wait_for_fill"):
+            q = client.wait_for_fill(
+                symbol=str(symbol),
+                order_id=ex_oid,
+                client_order_id=coid,
+                max_wait_sec=max_wait_sec,
+            )
+            return float(q.get("filled") or 0), float(q.get("avg_price") or 0)
+        if isinstance(client, GateUsdtFuturesClient) and hasattr(client, "wait_for_fill"):
+            contract = to_gate_currency_pair(str(symbol))
+            q = client.wait_for_fill(
+                order_id=ex_oid,
+                contract=contract,
+                max_wait_sec=max_wait_sec,
+            )
+            return float(q.get("filled") or 0), float(q.get("avg_price") or 0)
+        if hasattr(client, "wait_for_fill"):
+            kwargs: Dict[str, Any] = {
+                "max_wait_sec": max_wait_sec,
+            }
+            if ex_oid:
+                kwargs["order_id"] = ex_oid
+            if coid:
+                kwargs["client_order_id"] = coid
+            if "symbol" in client.wait_for_fill.__code__.co_varnames:
+                kwargs["symbol"] = str(symbol)
+            if isinstance(client, OkxClient):
+                kwargs["ord_id"] = ex_oid
+                kwargs["cl_ord_id"] = coid
+                kwargs["market_type"] = mt
+            q = client.wait_for_fill(**kwargs)
+            if isinstance(q, dict):
+                filled = float(q.get("filled") or 0)
+                avg = float(q.get("avg_price") or 0)
+                if filled <= 0:
+                    try:
+                        raw = _fetch_grid_client_order(
+                            client,
+                            symbol=str(symbol),
+                            market_type=str(market_type or "swap"),
+                            exchange_order_id=ex_oid,
+                            client_order_id=coid,
+                            exchange_config=ex_cfg,
+                        )
+                        if isinstance(raw, dict) and raw:
+                            filled, avg, _ = parse_grid_order_fill(
+                                client,
+                                symbol=str(symbol),
+                                market_type=str(market_type or "swap"),
+                                exchange_config=ex_cfg,
+                                data=raw,
+                            )
+                    except Exception as e:
+                        logger.debug("wait_grid_market_fill fallback parse: %s", e)
+                return filled, avg
+    except Exception as e:
+        logger.warning("wait_grid_market_fill: %s", e)
+    return 0.0, 0.0
+
+
+def execute_grid_market_order(
+    client: BaseRestClient,
+    *,
+    symbol: str,
+    signal_type: str,
+    quantity: float,
+    market_type: str,
+    exchange_config: Dict[str, Any],
+    leverage: float = 1.0,
+    max_wait_sec: float = 15.0,
+    client_order_id: Optional[str] = None,
+) -> Tuple[bool, float, float]:
+    """
+    Place a synchronous market order for grid initial/risk paths.
+
+    Returns (filled_ok, filled_qty, avg_price). ``filled_ok`` is True only when
+    exchange reports a non-zero fill (not merely order accepted).
+    """
+    from app.services.live_trading.execution import place_order_from_signal
+
+    sig = str(signal_type or "").strip().lower()
+    qty = float(quantity or 0)
+    if qty <= 0 and not sig.startswith("close_"):
+        return False, 0.0, 0.0
+
+    coid = str(client_order_id or "").strip()
+    if not coid:
+        ts = int(__import__("time").time()) % 100000000
+        coid = f"ginit{ts}"[:32]
+    mt = str(market_type or "swap").strip().lower()
+    try:
+        if isinstance(client, BitgetMixClient) and mt == "swap":
+            ex_cfg = exchange_config if isinstance(exchange_config, dict) else {}
+            product_type = str(ex_cfg.get("product_type") or ex_cfg.get("productType") or "USDT-FUTURES")
+            margin_coin = str(ex_cfg.get("margin_coin") or ex_cfg.get("marginCoin") or "USDT")
+            margin_mode = str(ex_cfg.get("margin_mode") or ex_cfg.get("marginMode") or "cross")
+            pos_side = "long" if sig in ("open_long", "close_long", "add_long", "reduce_long") else "short"
+            try:
+                client.set_leverage(
+                    symbol=str(symbol),
+                    leverage=float(leverage or 1),
+                    margin_coin=margin_coin,
+                    product_type=product_type,
+                    margin_mode=margin_mode,
+                    hold_side=pos_side,
+                )
+            except Exception:
+                pass
+        res = place_order_from_signal(
+            client,
+            signal_type=sig,
+            symbol=str(symbol),
+            amount=qty,
+            market_type=str(market_type or "swap"),
+            exchange_config=exchange_config if isinstance(exchange_config, dict) else {},
+            client_order_id=coid,
+        )
+    except Exception as e:
+        logger.warning("execute_grid_market_order place failed: %s", e)
+        return False, 0.0, 0.0
+
+    ex_oid = str(getattr(res, "exchange_order_id", None) or "")
+    filled, avg = wait_grid_market_fill(
+        client,
+        symbol=str(symbol),
+        market_type=str(market_type or "swap"),
+        exchange_config=exchange_config if isinstance(exchange_config, dict) else {},
+        exchange_order_id=ex_oid,
+        client_order_id=coid,
+        max_wait_sec=max_wait_sec,
+    )
+    return filled > 0, filled, avg
+
+
 def cancel_grid_order(
     client: BaseRestClient,
     *,
@@ -240,14 +412,34 @@ def cancel_grid_order(
     market_type: str,
     exchange_order_id: str = "",
     client_order_id: str = "",
+    exchange_config: Optional[Dict[str, Any]] = None,
 ) -> None:
     mt = str(market_type or "swap").strip().lower()
+    ex_cfg = exchange_config if isinstance(exchange_config, dict) else {}
     if isinstance(client, OkxClient):
         client.cancel_order(
             market_type=mt,
             symbol=str(symbol),
             ord_id=str(exchange_order_id or ""),
             cl_ord_id=str(client_order_id or ""),
+        )
+        return
+    if isinstance(client, BitgetMixClient):
+        product_type = str(ex_cfg.get("product_type") or ex_cfg.get("productType") or "USDT-FUTURES")
+        margin_coin = str(ex_cfg.get("margin_coin") or ex_cfg.get("marginCoin") or "USDT")
+        client.cancel_order(
+            symbol=str(symbol),
+            product_type=product_type,
+            margin_coin=margin_coin,
+            order_id=str(exchange_order_id or ""),
+            client_oid=str(client_order_id or ""),
+        )
+        return
+    if isinstance(client, BitgetSpotClient):
+        client.cancel_order(
+            symbol=str(symbol),
+            order_id=str(exchange_order_id or ""),
+            client_order_id=str(client_order_id or ""),
         )
         return
     if hasattr(client, "cancel_order"):
@@ -257,8 +449,117 @@ def cancel_grid_order(
         if exchange_order_id:
             kwargs["order_id"] = exchange_order_id
         if client_order_id:
-            kwargs["client_order_id"] = client_order_id
+            if "client_oid" in client.cancel_order.__code__.co_varnames:
+                kwargs["client_oid"] = client_order_id
+            else:
+                kwargs["client_order_id"] = client_order_id
         client.cancel_order(**kwargs)
+
+
+def _unwrap_client_order_payload(raw: Any) -> Dict[str, Any]:
+    if not isinstance(raw, dict):
+        return {}
+    data = raw.get("data")
+    if isinstance(data, dict):
+        return data
+    if isinstance(data, list) and data and isinstance(data[0], dict):
+        return data[0]
+    return raw
+
+
+def _parse_grid_order_fill(data: Dict[str, Any]) -> Tuple[float, float, str]:
+    """Legacy generic parser — prefer parse_grid_order_fill() with client context."""
+    if not data:
+        return 0.0, 0.0, "unknown"
+    from app.services.grid.fill_units import order_status_from_data
+
+    filled = float(
+        data.get("baseVolume")
+        or data.get("executedQty")
+        or data.get("cumExecQty")
+        or data.get("filled")
+        or data.get("accFillSz")
+        or data.get("dealSize")
+        or data.get("filled_size")
+        or data.get("trade_volume")
+        or 0
+    )
+    avg = float(
+        data.get("avgPx")
+        or data.get("avgPrice")
+        or data.get("avg_price")
+        or data.get("fill_price")
+        or data.get("trade_avg_price")
+        or data.get("price")
+        or 0
+    )
+    if avg <= 0 and data.get("filled_total") and data.get("filled_amount"):
+        try:
+            filled_amt = float(data.get("filled_amount") or filled or 0)
+            filled_total = float(data.get("filled_total") or 0)
+            if filled_amt > 0 and filled_total > 0:
+                avg = filled_total / filled_amt
+                if filled <= 0:
+                    filled = filled_amt
+        except Exception:
+            pass
+    return filled, avg, order_status_from_data(data)
+
+
+def _fetch_grid_client_order(
+    client: BaseRestClient,
+    *,
+    symbol: str,
+    market_type: str,
+    exchange_order_id: str,
+    client_order_id: str,
+    exchange_config: Dict[str, Any],
+) -> Dict[str, Any]:
+    mt = str(market_type or "swap").strip().lower()
+    oid = str(exchange_order_id or "")
+    coid = str(client_order_id or "")
+    if isinstance(client, OkxClient):
+        inst_id = to_okx_spot_inst_id(symbol) if mt == "spot" else to_okx_swap_inst_id(symbol)
+        return client.get_order(inst_id=inst_id, ord_id=oid, cl_ord_id=coid)
+    if isinstance(client, (BinanceFuturesClient, BinanceSpotClient)):
+        return client.get_order(symbol=str(symbol), order_id=oid, client_order_id=coid)
+    if isinstance(client, BitgetMixClient):
+        product_type = str(
+            exchange_config.get("product_type") or exchange_config.get("productType") or "USDT-FUTURES"
+        )
+        return client.get_order(
+            symbol=str(symbol),
+            order_id=oid,
+            client_order_id=coid,
+            product_type=product_type,
+        )
+    if isinstance(client, BitgetSpotClient):
+        return client.get_order(symbol=str(symbol), order_id=oid, client_order_id=coid)
+    if isinstance(client, BybitClient):
+        return client.get_order(symbol=str(symbol), order_id=oid, client_order_id=coid)
+    if isinstance(client, (GateSpotClient, GateUsdtFuturesClient)):
+        if not oid:
+            return {}
+        return _unwrap_client_order_payload(client.get_order(order_id=oid))
+    if isinstance(client, (KucoinSpotClient, KucoinFuturesClient)):
+        raw = client.get_order(order_id=oid, client_order_id=coid)
+        return _unwrap_client_order_payload(raw)
+    if isinstance(client, DeepcoinClient):
+        return client.get_order(symbol=str(symbol), order_id=oid, client_order_id=coid)
+    if isinstance(client, HtxClient):
+        return client.get_order(symbol=str(symbol), order_id=oid, client_order_id=coid)
+    if hasattr(client, "get_order"):
+        try:
+            raw = client.get_order(symbol=str(symbol), order_id=oid, client_order_id=coid)
+        except TypeError:
+            if oid:
+                raw = client.get_order(order_id=oid)
+            elif coid:
+                raw = client.get_order(client_order_id=coid)
+            else:
+                return {}
+        return _unwrap_client_order_payload(raw)
+    return {}
 
 
 def query_grid_order_fill(
@@ -268,53 +569,30 @@ def query_grid_order_fill(
     market_type: str,
     exchange_order_id: str = "",
     client_order_id: str = "",
+    exchange_config: Optional[Dict[str, Any]] = None,
 ) -> Tuple[float, float, str]:
     """
     Returns (filled_qty, avg_price, status).
     status: open | partial | filled | cancelled | unknown
     """
-    mt = str(market_type or "swap").strip().lower()
+    ex_cfg = exchange_config if isinstance(exchange_config, dict) else {}
     try:
-        if isinstance(client, OkxClient):
-            q = client.get_order(
-                market_type=mt,
+        data = _fetch_grid_client_order(
+            client,
+            symbol=str(symbol),
+            market_type=str(market_type or "swap"),
+            exchange_order_id=str(exchange_order_id or ""),
+            client_order_id=str(client_order_id or ""),
+            exchange_config=ex_cfg,
+        )
+        if isinstance(data, dict) and data:
+            return parse_grid_order_fill(
+                client,
                 symbol=str(symbol),
-                ord_id=str(exchange_order_id or ""),
-                cl_ord_id=str(client_order_id or ""),
+                market_type=str(market_type or "swap"),
+                exchange_config=ex_cfg,
+                data=data,
             )
-            data = (q.get("data") or [{}])[0] if isinstance(q, dict) else {}
-            state = str(data.get("state") or "").lower()
-            filled = float(data.get("accFillSz") or data.get("fillSz") or 0)
-            avg = float(data.get("avgPx") or 0)
-            st = "filled" if state == "filled" else ("cancelled" if state == "canceled" else "open")
-            if filled > 0 and st == "open":
-                st = "partial"
-            return filled, avg, st
-        if isinstance(client, BinanceFuturesClient):
-            q = client.get_order(symbol=str(symbol), order_id=str(exchange_order_id or ""), client_order_id=str(client_order_id or ""))
-            filled = float(q.get("executedQty") or 0)
-            avg = float(q.get("avgPrice") or 0)
-            st_raw = str(q.get("status") or "").upper()
-            if st_raw == "FILLED":
-                return filled, avg, "filled"
-            if st_raw in ("CANCELED", "EXPIRED", "REJECTED"):
-                return filled, avg, "cancelled"
-            return filled, avg, "partial" if filled > 0 else "open"
-        if hasattr(client, "get_order"):
-            q = client.get_order(
-                symbol=str(symbol),
-                order_id=str(exchange_order_id or ""),
-                client_order_id=str(client_order_id or ""),
-            )
-            if isinstance(q, dict):
-                filled = float(q.get("filled") or q.get("filledSize") or q.get("executedQty") or 0)
-                avg = float(q.get("avg_price") or q.get("avgPrice") or q.get("price") or 0)
-                st = str(q.get("status") or q.get("state") or "open").lower()
-                if "fill" in st and "partial" not in st:
-                    return filled, avg, "filled"
-                if "cancel" in st:
-                    return filled, avg, "cancelled"
-                return filled, avg, "partial" if filled > 0 else "open"
     except Exception as e:
         logger.debug("query_grid_order_fill: %s", e)
     return 0.0, 0.0, "unknown"

@@ -1775,74 +1775,15 @@ def _normalize_okx_positions_raw(raw: Any) -> Any:
 
 
 def _extract_signed_position_qty(item: dict) -> float:
-    """Return signed position qty; OKX ``pos`` must be checked before abs-only fields."""
-    for key in (
-        "pos", "positionAmt", "posAmt", "size", "currentQty", "volume",
-        "contracts", "total", "current_qty", "availPos",
-        "bal", "balance", "walletBalance", "equity", "cashBal", "qty",
-        "availBal", "free", "available",
-    ):
-        try:
-            v = float(item.get(key) or 0)
-        except (TypeError, ValueError):
-            continue
-        if abs(v) > 1e-10:
-            return v
-    return 0.0
+    from app.services.live_trading.position_row_parse import extract_signed_position_qty
+
+    return extract_signed_position_qty(item)
 
 
 def _infer_position_side_from_row(item: dict) -> str:
-    """Map heterogeneous exchange position rows to ``long`` / ``short``."""
-    psu = str(item.get("positionSide") or item.get("position_side") or "").strip().upper()
-    if psu == "SHORT":
-        return "short"
-    if psu == "LONG":
-        return "long"
+    from app.services.live_trading.position_row_parse import infer_position_side_from_row
 
-    pos_side = str(item.get("posSide") or "").strip().lower()
-    if pos_side in ("long", "short"):
-        return pos_side
-
-    # OKX 买卖模式 (net_mode): posSide=net, sign lives on pos / availPos
-    if pos_side == "net":
-        signed = _extract_signed_position_qty(item)
-        if signed < -1e-10:
-            return "short"
-        if signed > 1e-10:
-            return "long"
-
-    hold = str(item.get("holdSide") or "").strip().lower()
-    if hold in ("long", "short"):
-        return hold
-
-    try:
-        idx = int(item.get("positionIdx") or 0)
-        if idx == 1:
-            return "long"
-        if idx == 2:
-            return "short"
-    except (TypeError, ValueError):
-        pass
-
-    exch_side = str(item.get("side") or "").strip().lower()
-    if exch_side in ("sell", "s", "short"):
-        return "short"
-    if exch_side in ("buy", "b", "long"):
-        return "long"
-
-    direction = str(item.get("direction") or "").strip().lower()
-    if direction in ("sell", "short", "open_short"):
-        return "short"
-    if direction in ("buy", "long", "open_long"):
-        return "long"
-
-    # Signed quantity fallbacks (Binance one-way, Gate, KuCoin, …)
-    signed = _extract_signed_position_qty(item)
-    if signed < -1e-10:
-        return "short"
-    if signed > 1e-10:
-        return "long"
-    return "long"
+    return infer_position_side_from_row(item)
 
 
 def _parse_positions(raw: Any) -> list:
@@ -1886,6 +1827,14 @@ def _parse_positions(raw: Any) -> list:
                         break
             # For OKX, pos is signed in net_mode — read before abs-only aliases.
             size = _extract_signed_position_qty(item)
+            psu = str(item.get("positionSide") or item.get("position_side") or "").strip().upper()
+            if psu in ("LONG", "SHORT"):
+                try:
+                    amt = abs(float(item.get("positionAmt") or item.get("position_amt") or 0.0))
+                except (TypeError, ValueError):
+                    amt = 0.0
+                if amt > 0:
+                    size = amt if psu == "LONG" else -amt
             if abs(size) < 1e-10:
                 continue
 

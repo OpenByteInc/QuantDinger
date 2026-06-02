@@ -45,6 +45,7 @@ def get_market_indicators():
         keyword = request.args.get('keyword', '').strip()
         pricing_type = request.args.get('pricing_type', '').strip() or None
         sort_by = request.args.get('sort_by', 'score').strip()
+        asset_type = request.args.get('asset_type', '').strip() or None
         
         page_size = min(max(page_size, 1), 50)
         
@@ -63,6 +64,7 @@ def get_market_indicators():
             sort_by=sort_by,
             user_id=g.user_id,
             accept_language=accept_lang,
+            asset_type=asset_type,
         )
         
         return jsonify({'code': 1, 'msg': 'success', 'data': result})

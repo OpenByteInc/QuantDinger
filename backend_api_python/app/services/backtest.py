@@ -451,6 +451,7 @@ class BacktestService:
             result = {}
 
         item['total_return'] = result.get('totalReturn')
+        item['total_return_pct'] = item['total_return']
         item['annual_return'] = result.get('annualReturn')
         item['win_rate'] = result.get('winRate')
         item['total_trades'] = result.get('totalTrades')
@@ -1759,11 +1760,18 @@ class BacktestService:
             'precision': 'standard',
             'message': 'Using standard strategy script backtest'
         }
-        result['executionAssumptions'] = self._execution_assumptions(
+        ea = self._execution_assumptions(
             strategy_config,
-            simulation_mode='standard',
+            simulation_mode='script_standard',
             signal_timeframe=timeframe,
+            commission=commission,
+            slippage=slippage,
         )
+        ea['scriptBacktest'] = True
+        ea['strictMode'] = False
+        ea['simulationMode'] = 'script_standard'
+        ea['fillRule'] = 'next_bar_open'
+        result['executionAssumptions'] = ea
         self._attach_actual_range_to_result(result, df)
         return result
     
@@ -2310,14 +2318,16 @@ class BacktestService:
                 elif len(executed_df) == len(df):
                     executed_df.index = df.index
 
-            # Validation: if chart signals are provided, df['buy']/df['sell'] must exist for backtest normalization.
-            # This keeps indicator scripts simple and consistent (chart=buy/sell, execution=normalized in backend).
+            # Validation: chart markers in output['signals'] require df execution columns.
+            # four_way scripts may omit buy/sell when open/close_* columns are present.
             output_obj = exec_env.get('output')
             has_output_signals = isinstance(output_obj, dict) and isinstance(output_obj.get('signals'), list) and len(output_obj.get('signals')) > 0
-            if has_output_signals and not all(col in executed_df.columns for col in ['buy', 'sell']):
+            has_four_way = all(col in executed_df.columns for col in ['open_long', 'close_long', 'open_short', 'close_short'])
+            has_buy_sell = all(col in executed_df.columns for col in ['buy', 'sell'])
+            if has_output_signals and not has_four_way and not has_buy_sell:
                 raise ValueError(
-                    "Invalid indicator script: output['signals'] is provided, but df['buy'] and df['sell'] are missing. "
-                    "Please set df['buy'] and df['sell'] as boolean columns (len == len(df))."
+                    "Invalid indicator script: output['signals'] is provided, but df execution columns are missing. "
+                    "Set df['buy'] and df['sell'], or four-way df['open_long'/'close_long'/'open_short'/'close_short']."
                 )
             
             # Extract signals from executed df

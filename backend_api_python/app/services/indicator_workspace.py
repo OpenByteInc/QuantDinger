@@ -13,6 +13,36 @@ from app.utils.safe_exec import validate_code_safety
 
 logger = get_logger(__name__)
 
+_NON_INDICATOR_ASSET_TYPES = frozenset({"script_template", "bot_preset"})
+
+
+def is_script_strategy_code(code: str) -> bool:
+    """True when code defines ``on_bar(ctx, bar)`` script-strategy handlers."""
+    raw = (code or "").strip()
+    if not raw:
+        return False
+    return bool(re.search(r"^\s*def\s+on_bar\s*\(", raw, re.MULTILINE))
+
+
+def is_indicator_ide_listable(*, code: str = "", asset_type: Optional[str] = "indicator") -> bool:
+    """Whether a ``qd_indicator_codes`` row belongs in the indicator IDE sidebar."""
+    at = (asset_type or "indicator").strip().lower()
+    if at in _NON_INDICATOR_ASSET_TYPES:
+        return False
+    if is_script_strategy_code(code):
+        return False
+    return True
+
+
+def resolve_indicator_asset_type(code: str, asset_type: Optional[str] = "indicator") -> str:
+    """Map script-strategy source to ``script_template`` so it stays out of indicator IDE."""
+    at = (asset_type or "indicator").strip().lower()
+    if at in _NON_INDICATOR_ASSET_TYPES:
+        return at
+    if is_script_strategy_code(code):
+        return "script_template"
+    return "indicator"
+
 
 def extract_indicator_meta_from_code(code: str) -> Dict[str, str]:
     """Parse ``my_indicator_name`` / ``my_indicator_description`` assignments."""
@@ -100,9 +130,17 @@ def save_user_indicator(
     if not raw:
         raise ValueError("code is required")
 
-    is_safe, unsafe_reason = validate_code_safety(raw)
-    if not is_safe:
-        raise ValueError(f"Unsafe indicator code: {unsafe_reason}")
+    asset_type = resolve_indicator_asset_type(raw)
+    if asset_type == "script_template":
+        from app.routes.strategy import _validate_strategy_code_internal
+
+        validation = _validate_strategy_code_internal(raw)
+        if not validation.get("success"):
+            raise ValueError(validation.get("message") or "Unsafe script template code")
+    else:
+        is_safe, unsafe_reason = validate_code_safety(raw)
+        if not is_safe:
+            raise ValueError(f"Unsafe indicator code: {unsafe_reason}")
 
     meta = extract_indicator_meta_from_code(raw)
     name = (name or meta.get("name") or "").strip() or "Custom Indicator"
@@ -112,15 +150,21 @@ def save_user_indicator(
 
     with get_db_connection() as db:
         cur = db.cursor()
+        try:
+            cur.execute(
+                "ALTER TABLE qd_indicator_codes ADD COLUMN IF NOT EXISTS asset_type VARCHAR(32) DEFAULT 'indicator'"
+            )
+        except Exception:
+            pass
         if iid > 0:
             cur.execute(
                 """
                 UPDATE qd_indicator_codes
-                SET name = ?, code = ?, description = ?,
+                SET name = ?, code = ?, description = ?, asset_type = ?,
                     updatetime = ?, updated_at = NOW()
                 WHERE id = ? AND user_id = ? AND (is_buy IS NULL OR is_buy = 0)
                 """,
-                (name, raw, description, now, iid, int(user_id)),
+                (name, raw, description, asset_type, now, iid, int(user_id)),
             )
             if cur.rowcount == 0:
                 cur.close()
@@ -130,11 +174,11 @@ def save_user_indicator(
                 """
                 INSERT INTO qd_indicator_codes
                   (user_id, is_buy, end_time, name, code, description,
-                   publish_to_community, pricing_type, price, preview_image, vip_free,
+                   publish_to_community, pricing_type, price, preview_image, vip_free, asset_type,
                    createtime, updatetime, created_at, updated_at)
-                VALUES (?, 0, 1, ?, ?, ?, 0, 'free', 0, '', FALSE, ?, ?, NOW(), NOW())
+                VALUES (?, 0, 1, ?, ?, ?, 0, 'free', 0, '', FALSE, ?, ?, ?, NOW(), NOW())
                 """,
-                (int(user_id), name, raw, description, now, now),
+                (int(user_id), name, raw, description, asset_type, now, now),
             )
             iid = int(cur.lastrowid or 0)
         db.commit()
@@ -150,27 +194,37 @@ def list_user_indicators(user_id: int, *, limit: int = 50) -> List[Dict[str, Any
         cur = db.cursor()
         cur.execute(
             """
-            SELECT id, user_id, is_buy, name, description, createtime, updatetime
+            SELECT id, user_id, is_buy, name, description, code,
+                   COALESCE(asset_type, 'indicator') as asset_type,
+                   createtime, updatetime
             FROM qd_indicator_codes
             WHERE user_id = ?
             ORDER BY id DESC
-            LIMIT ?
             """,
-            (int(user_id), limit),
+            (int(user_id),),
         )
         rows = cur.fetchall() or []
         cur.close()
-    return [
-        {
-            "id": r.get("id"),
-            "name": r.get("name") or "",
-            "description": r.get("description") or "",
-            "is_buy": int(r.get("is_buy") or 0),
-            "createtime": r.get("createtime"),
-            "updatetime": r.get("updatetime"),
-        }
-        for r in rows
-    ]
+    out: List[Dict[str, Any]] = []
+    for r in rows:
+        if not is_indicator_ide_listable(
+            code=r.get("code") or "",
+            asset_type=r.get("asset_type") or "indicator",
+        ):
+            continue
+        out.append(
+            {
+                "id": r.get("id"),
+                "name": r.get("name") or "",
+                "description": r.get("description") or "",
+                "is_buy": int(r.get("is_buy") or 0),
+                "createtime": r.get("createtime"),
+                "updatetime": r.get("updatetime"),
+            }
+        )
+        if len(out) >= limit:
+            break
+    return out
 
 
 def get_user_indicator(user_id: int, indicator_id: int) -> Optional[Dict[str, Any]]:
@@ -214,6 +268,8 @@ def link_indicator_config(
     ic = dict(indicator_config or {})
     code = (ic.get("indicator_code") or ic.get("code") or "").strip()
     if not code or not auto_save:
+        return ic
+    if is_script_strategy_code(code):
         return ic
 
     existing_id = ic.get("indicator_id")

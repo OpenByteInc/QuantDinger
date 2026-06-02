@@ -191,6 +191,28 @@ class GridRestingOrderRepository:
         except Exception as e:
             logger.warning("grid resting update failed id=%s: %s", order_id, e)
 
+    def list_unprocessed(self, strategy_id: int) -> List[GridRestingOrder]:
+        """Orders with exchange fills not yet written to the strategy trade ledger."""
+        try:
+            with get_db_connection() as db:
+                cur = db.cursor()
+                cur.execute(
+                    """
+                    SELECT * FROM qd_grid_resting_orders
+                    WHERE strategy_id = %s
+                      AND filled_quantity > 0
+                      AND processed_fill_qty + 1e-12 < filled_quantity
+                    ORDER BY id ASC
+                    """,
+                    (int(strategy_id),),
+                )
+                rows = cur.fetchall() or []
+                cur.close()
+        except Exception as e:
+            logger.warning("grid resting list_unprocessed failed: %s", e)
+            return []
+        return [GridRestingOrder.from_row(dict(r)) for r in rows]
+
     def list_open(self, strategy_id: Optional[int] = None) -> List[GridRestingOrder]:
         try:
             with get_db_connection() as db:

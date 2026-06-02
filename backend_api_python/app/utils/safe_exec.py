@@ -95,6 +95,9 @@ _DANGEROUS_METHOD_NAMES: Set[str] = {
     'eval', 'query',
     # Frame / introspection accessors should never be invoked.
     'getframe', 'currentframe', 'stack', 'getouterframes',
+    # pandas.io.common — file/URL IO bypassing blocked read_* entry points.
+    'urlopen', '_urlopen', 'get_filepath_or_buffer', '_get_filepath_or_buffer',
+    'file_exists', 'file_open', 'open_url',
 }
 
 # Attribute names whose access leaks frames / closures / code objects, even
@@ -112,6 +115,13 @@ _DANGEROUS_FRAME_ATTRS: Set[str] = {
 # Sub-modules of whitelisted packages that expose C/native escapes.
 _DANGEROUS_SUBMODULE_ATTRS: Set[str] = {
     'ctypeslib', 'distutils', 'f2py',
+}
+
+# pandas / numpy module roots and internal sub-packages that bypass top-level IO bans.
+_PANDAS_NUMPY_ROOTS: Set[str] = {'pd', 'pandas', 'np', 'numpy'}
+_DANGEROUS_PD_NUMPY_ATTRS: Set[str] = {
+    'io', 'compat', 'util', 'core', 'arrays', 'plotting', 'errors',
+    'testing', 'tseries', 'api', 'conftest', 'lib',
 }
 
 
@@ -447,6 +457,31 @@ def _is_operator_accessor_call(node: Any) -> bool:
     return False
 
 
+def _attribute_access_chain(node: Any) -> Tuple[Optional[str], list]:
+    """Return (root_name, [attr, ...]) for Name / Attribute chains."""
+    import ast
+
+    attrs: list = []
+    cur = node
+    while isinstance(cur, ast.Attribute):
+        attrs.insert(0, cur.attr)
+        cur = cur.value
+    root = cur.id if isinstance(cur, ast.Name) else None
+    return root, attrs
+
+
+def _dangerous_pd_numpy_internal(root: Optional[str], attrs: list) -> Optional[str]:
+    """Detect pd.io / pd._libs / np.lib style internal access."""
+    if root not in _PANDAS_NUMPY_ROOTS or not attrs:
+        return None
+    for idx, attr in enumerate(attrs):
+        if not isinstance(attr, str):
+            continue
+        if attr in _DANGEROUS_PD_NUMPY_ATTRS or attr.startswith('_'):
+            return f"{root}.{'.'.join(attrs[:idx + 1])}"
+    return None
+
+
 def validate_code_safety(code: str) -> Tuple[bool, Optional[str]]:
     """
     验证代码安全性（正则 + AST 双重检查）
@@ -515,6 +550,10 @@ def validate_code_safety(code: str) -> Tuple[bool, Optional[str]]:
         r'tb_frame|tb_next|func_globals|func_code|func_closure)\b',
         # numpy sub-packages that expose C/native escape hatches.
         r'\b(np|numpy)\.(ctypeslib|distutils|f2py)\b',
+        # pandas internal IO — bypasses blocked read_csv / read_pickle entry points.
+        r'\b(pd|pandas)\.(io|compat|_libs|_testing)\b',
+        r'\b(np|numpy)\.lib\b',
+        r'\.(urlopen|_urlopen|get_filepath_or_buffer|_get_filepath_or_buffer)\s*\(',
         # sys.settrace / inspect.* could also pivot — block by name.
         r'\b(sys\._getframe|inspect\.(currentframe|stack|getouterframes|getframeinfo))\b',
     ]
@@ -587,6 +626,10 @@ def validate_code_safety(code: str) -> Tuple[bool, Optional[str]]:
             if isinstance(node.func, ast.Attribute):
                 if isinstance(node.func.value, ast.Name) and node.func.value.id in dangerous_modules:
                     return False, f"检测到危险模块调用: {node.func.value.id}.{node.func.attr}"
+                root, attrs = _attribute_access_chain(node.func)
+                internal = _dangerous_pd_numpy_internal(root, attrs)
+                if internal:
+                    return False, f"检测到访问 pandas/numpy 内部模块: {internal}"
                 # Block dangerous methods on any receiver. pandas/numpy are
                 # whitelisted modules, so we cannot tell statically whether
                 # `x.to_csv(...)` targets a DataFrame or some local object.
@@ -606,6 +649,10 @@ def validate_code_safety(code: str) -> Tuple[bool, Optional[str]]:
             if isinstance(node.attr, str) and node.attr in _DANGEROUS_SUBMODULE_ATTRS:
                 if isinstance(node.value, ast.Name) and node.value.id in {'np', 'numpy'}:
                     return False, f"检测到访问危险子模块: {node.value.id}.{node.attr}"
+            root, attrs = _attribute_access_chain(node)
+            internal = _dangerous_pd_numpy_internal(root, attrs)
+            if internal:
+                return False, f"检测到访问 pandas/numpy 内部模块: {internal}"
             folded = _fold_string_constant(node)
             if folded is not None and _string_has_forbidden_dunder(folded):
                 return False, "检测到危险 dunder 属性访问"

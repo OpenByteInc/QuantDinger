@@ -667,6 +667,19 @@ class DeepcoinClient(BaseRestClient):
         end_ts = time.time() + float(max_wait_sec or 0.0)
         last: Dict[str, Any] = {}
 
+        # SWAP accFillSz/fillSz are contracts (OKX-compatible); SPOT is base currency.
+        ct_val = Decimal("1")
+        if self.market_type != "spot":
+            try:
+                info = self.get_instrument_info(symbol=str(symbol)) or {}
+                ct_val = self._to_dec(
+                    info.get("ctVal") or info.get("ct_val") or info.get("contractSize") or "0"
+                )
+            except Exception:
+                ct_val = Decimal("0")
+            if ct_val <= 0:
+                ct_val = Decimal("1")
+
         while True:
             timed_out = time.time() >= end_ts
             try:
@@ -679,9 +692,17 @@ class DeepcoinClient(BaseRestClient):
                 last = last or {}
             
             status = str(last.get("state") or last.get("status") or last.get("orderStatus") or "")
-            
+
             try:
-                filled = float(last.get("accFillSz") or last.get("fillSz") or last.get("cumExecQty") or 0.0)
+                filled_raw = self._to_dec(
+                    last.get("accFillSz") or last.get("fillSz") or last.get("cumExecQty") or "0"
+                )
+            except Exception:
+                filled_raw = Decimal("0")
+
+            filled_base = filled_raw if self.market_type == "spot" else filled_raw * ct_val
+            try:
+                filled = float(filled_base or 0)
             except Exception:
                 filled = 0.0
             

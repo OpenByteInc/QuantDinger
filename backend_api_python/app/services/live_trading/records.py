@@ -4,14 +4,22 @@ DB helpers for recording live trades and maintaining local position snapshots.
 Important:
 - This is a local DB snapshot, not the source of truth (exchange is).
 - We keep it best-effort to support UI display and strategy state.
+
+Live ownership:
+- ``size`` / ``entry_price``: ``PendingOrderWorker.apply_fill`` + position sync.
+- ``highest_price`` / ``lowest_price`` / ``current_price``: executor may patch
+  existing rows only (``patch_position_markers``); never insert in live mode.
 """
 
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple, TYPE_CHECKING
 
 from app.utils.db import get_db_connection
+
+if TYPE_CHECKING:
+    from app.services.live_trading.leg_context import LegContext
 
 
 def normalize_strategy_symbol(symbol: str) -> str:
@@ -58,6 +66,30 @@ def fetch_position_size_for_side(strategy_id: int, symbol: str, side: str) -> fl
         return 0.0
 
 
+def strategy_has_trades_for_symbol(strategy_id: int, symbol: str) -> bool:
+    """True when this strategy has at least one trade row for the symbol (any alias)."""
+    sid = int(strategy_id)
+    if sid <= 0:
+        return False
+    cands = _position_symbol_candidates(symbol)
+    if not cands:
+        return False
+    placeholders = ", ".join(["%s"] * len(cands))
+    with get_db_connection() as db:
+        cur = db.cursor()
+        cur.execute(
+            f"""
+            SELECT 1 FROM qd_strategy_trades
+            WHERE strategy_id = %s AND symbol IN ({placeholders})
+            LIMIT 1
+            """,
+            (sid, *cands),
+        )
+        hit = cur.fetchone()
+        cur.close()
+    return bool(hit)
+
+
 def _fetch_position_fuzzy(strategy_id: int, symbol: str, side: str) -> Tuple[Dict[str, Any], str]:
     """
     Find a non-empty position row; return (row, db_symbol_to_use).
@@ -67,8 +99,8 @@ def _fetch_position_fuzzy(strategy_id: int, symbol: str, side: str) -> Tuple[Dic
     for sym in _position_symbol_candidates(symbol):
         row = _fetch_position(strategy_id, sym, side_l)
         if row and float(row.get("size") or 0.0) > 0:
-            db_sym = str(row.get("symbol") or sym).strip()
-            return row, db_sym or sym
+            canon = normalize_strategy_symbol(symbol) or str(symbol or "").strip()
+            return row, canon
     canon = normalize_strategy_symbol(symbol) or str(symbol or "").strip()
     return {}, canon
 
@@ -169,7 +201,9 @@ def rebuild_positions_from_trades(strategy_id: int) -> bool:
     Rebuild local position rows by replaying trade history.
 
     Best-effort repair when trades were recorded but the position snapshot was
-    never written (older workers) or was cleared by a failed sync.
+    never written (older workers). For ``execution_mode='live'``, an empty
+    position table usually means position sync confirmed the exchange is flat —
+    do not call this from the positions API (would recreate ghost rows).
     """
     sid = int(strategy_id)
     if sid <= 0:
@@ -186,7 +220,7 @@ def rebuild_positions_from_trades(strategy_id: int) -> bool:
             return False
         cur.execute(
             """
-            SELECT type, symbol, amount, price
+            SELECT type, symbol, amount, price, market_type, credential_id, inst_id, fill_source
             FROM qd_strategy_trades
             WHERE strategy_id = %s
             ORDER BY id ASC
@@ -197,22 +231,55 @@ def rebuild_positions_from_trades(strategy_id: int) -> bool:
         cur.close()
     if not trades:
         return False
+    from app.services.live_trading.leg_context import LegContext
+
     for row in trades:
+        mt = str(row.get("market_type") or "swap").strip().lower()
+        if mt in ("futures", "future", "perp", "perpetual"):
+            mt = "swap"
+        leg = LegContext(
+            market_type=mt or "swap",
+            credential_id=int(row.get("credential_id") or 0),
+            inst_id=str(row.get("inst_id") or ""),
+            fill_source=str(row.get("fill_source") or "replay"),
+        )
         apply_fill_to_local_position(
             strategy_id=sid,
-            symbol=str(row.get("symbol") or ""),
+            symbol=normalize_strategy_symbol(str(row.get("symbol") or "")) or str(row.get("symbol") or ""),
             signal_type=str(row.get("type") or ""),
             filled=float(row.get("amount") or 0.0),
             avg_price=float(row.get("price") or 0.0),
+            leg=leg,
         )
     return True
 
 
 def _resolve_write_symbol(current: Dict[str, Any], cur_size: float, input_symbol: str) -> str:
-    """Use existing DB symbol when updating a row; otherwise canonical new key."""
-    if cur_size > 0 and current and str(current.get("symbol") or "").strip():
-        return str(current.get("symbol") or "").strip()
+    """Canonical symbol key for qd_strategy_positions (UNIQUE with side)."""
     return normalize_strategy_symbol(input_symbol) or str(input_symbol or "").strip()
+
+
+def _purge_position_symbol_duplicates(strategy_id: int, side: str, canonical: str) -> None:
+    """Remove legacy alias rows (ETHUSDT vs ETH/USDT) after writing the canonical row."""
+    canon = normalize_strategy_symbol(canonical) or str(canonical or "").strip()
+    if not canon:
+        return
+    side_l = str(side or "").strip().lower()
+    with get_db_connection() as db:
+        cur = db.cursor()
+        cur.execute(
+            "SELECT id, symbol FROM qd_strategy_positions WHERE strategy_id = %s AND side = %s",
+            (int(strategy_id), side_l),
+        )
+        rows = cur.fetchall() or []
+        for r in rows:
+            sym = str(r.get("symbol") or "").strip()
+            if not sym or sym == canon:
+                continue
+            if normalize_strategy_symbol(sym) == canon:
+                cur.execute("DELETE FROM qd_strategy_positions WHERE id = %s", (int(r.get("id") or 0),))
+        db.commit()
+        cur.close()
 
 
 def _get_user_id_from_strategy(strategy_id: int) -> int:
@@ -229,19 +296,51 @@ def _get_user_id_from_strategy(strategy_id: int) -> int:
 
 
 def ensure_strategy_trades_close_reason_column() -> None:
-    """Idempotent schema guard for late-added columns on qd_strategy_trades.
+    """Backward-compatible alias — prefer ``ensure_position_ledger_schema``."""
+    ensure_position_ledger_schema()
 
-    The function is invoked at executor startup, so it doubles as the
-    auto-migration for any column added after the initial release.
-    """
+
+def ensure_position_ledger_schema() -> None:
+    """Idempotent schema guard for ledger / position redesign columns."""
     statements = (
         "ALTER TABLE qd_strategy_trades ADD COLUMN IF NOT EXISTS close_reason VARCHAR(64) DEFAULT ''",
-        # P1-1 (May 2026): per-trade grid matched PnL + the FIFO entry price
-        # the leg was retired at. ``profit`` is kept as the absolute realised
-        # PnL; ``grid_matched_profit`` is the same value but the UI uses it to
-        # render a dedicated "grid profit" column for grid/DCA bots.
         "ALTER TABLE qd_strategy_trades ADD COLUMN IF NOT EXISTS matched_entry_price DECIMAL(20,8) DEFAULT 0",
         "ALTER TABLE qd_strategy_trades ADD COLUMN IF NOT EXISTS grid_matched_profit DECIMAL(20,8) DEFAULT 0",
+        "ALTER TABLE qd_strategy_trades ADD COLUMN IF NOT EXISTS market_type VARCHAR(20) DEFAULT 'swap'",
+        "ALTER TABLE qd_strategy_trades ADD COLUMN IF NOT EXISTS credential_id INTEGER DEFAULT 0",
+        "ALTER TABLE qd_strategy_trades ADD COLUMN IF NOT EXISTS inst_id VARCHAR(80) DEFAULT ''",
+        "ALTER TABLE qd_strategy_trades ADD COLUMN IF NOT EXISTS symbol_canonical VARCHAR(50) DEFAULT ''",
+        "ALTER TABLE qd_strategy_trades ADD COLUMN IF NOT EXISTS fill_source VARCHAR(32) DEFAULT ''",
+        "ALTER TABLE qd_strategy_trades ADD COLUMN IF NOT EXISTS pending_order_id INTEGER DEFAULT 0",
+        "ALTER TABLE qd_strategy_positions ADD COLUMN IF NOT EXISTS market_type VARCHAR(20) DEFAULT 'swap'",
+        "ALTER TABLE qd_strategy_positions ADD COLUMN IF NOT EXISTS credential_id INTEGER DEFAULT 0",
+        "ALTER TABLE qd_strategy_positions ADD COLUMN IF NOT EXISTS inst_id VARCHAR(80) DEFAULT ''",
+        "ALTER TABLE qd_strategy_positions ADD COLUMN IF NOT EXISTS symbol_canonical VARCHAR(50) DEFAULT ''",
+        "ALTER TABLE pending_orders ADD COLUMN IF NOT EXISTS credential_id INTEGER DEFAULT 0",
+        "ALTER TABLE pending_orders ADD COLUMN IF NOT EXISTS inst_id VARCHAR(80) DEFAULT ''",
+        """
+        CREATE TABLE IF NOT EXISTS qd_account_positions (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER NOT NULL DEFAULT 1 REFERENCES qd_users(id) ON DELETE CASCADE,
+            credential_id INTEGER NOT NULL DEFAULT 0,
+            exchange_id VARCHAR(40) NOT NULL DEFAULT '',
+            market_type VARCHAR(20) NOT NULL DEFAULT 'swap',
+            inst_id VARCHAR(80) NOT NULL DEFAULT '',
+            symbol VARCHAR(50) NOT NULL DEFAULT '',
+            side VARCHAR(10) NOT NULL DEFAULT '',
+            size DECIMAL(24, 8) NOT NULL DEFAULT 0,
+            entry_price DECIMAL(24, 8) DEFAULT 0,
+            mark_price DECIMAL(24, 8) DEFAULT 0,
+            unrealized_pnl DECIMAL(24, 8) DEFAULT 0,
+            raw_json JSONB DEFAULT '{}'::jsonb,
+            synced_at TIMESTAMP NOT NULL DEFAULT NOW(),
+            UNIQUE (credential_id, market_type, inst_id, side)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_account_pos_user ON qd_account_positions(user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_account_pos_cred ON qd_account_positions(credential_id, market_type)",
+        "CREATE INDEX IF NOT EXISTS idx_trades_strategy_symbol_canon ON qd_strategy_trades (strategy_id, market_type, symbol_canonical)",
+        "CREATE INDEX IF NOT EXISTS idx_positions_strategy_leg ON qd_strategy_positions (strategy_id, market_type, symbol_canonical, side)",
     )
     for sql in statements:
         try:
@@ -268,25 +367,50 @@ def record_trade(
     user_id: int = None,
     matched_entry_price: Optional[float] = None,
     grid_matched_profit: Optional[float] = None,
+    leg: Optional["LegContext"] = None,
+    market_type: str = "",
+    credential_id: int = 0,
+    inst_id: str = "",
+    fill_source: str = "",
+    pending_order_id: int = 0,
 ) -> None:
     value = float(amount or 0.0) * float(price or 0.0)
     if user_id is None:
         user_id = _get_user_id_from_strategy(strategy_id)
     sym_out = normalize_strategy_symbol(symbol) or str(symbol or "").strip()
+
+    mt = str(market_type or "").strip().lower()
+    cred = int(credential_id or 0)
+    iid = str(inst_id or "").strip()
+    fsrc = str(fill_source or "").strip()
+    poid = int(pending_order_id or 0)
+    if leg is not None:
+        mt = mt or leg.normalized_market_type()
+        cred = cred or int(leg.credential_id or 0)
+        iid = iid or str(leg.inst_id or "")
+        fsrc = fsrc or str(leg.fill_source or "")
+        poid = poid or int(leg.pending_order_id or 0)
+    if mt in ("futures", "future", "perp", "perpetual"):
+        mt = "swap"
+    if not mt:
+        mt = "swap"
+
     with get_db_connection() as db:
         cur = db.cursor()
         cur.execute(
             """
             INSERT INTO qd_strategy_trades
-            (user_id, strategy_id, symbol, type, price, amount, value, commission,
+            (user_id, strategy_id, symbol, symbol_canonical, type, price, amount, value, commission,
              commission_ccy, profit, close_reason,
-             matched_entry_price, grid_matched_profit, created_at)
+             matched_entry_price, grid_matched_profit,
+             market_type, credential_id, inst_id, fill_source, pending_order_id, created_at)
             VALUES
-            (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+            (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
             """,
             (
                 int(user_id),
                 int(strategy_id),
+                sym_out,
                 sym_out,
                 str(trade_type),
                 float(price or 0.0),
@@ -298,6 +422,11 @@ def record_trade(
                 str(close_reason or "").strip(),
                 float(matched_entry_price) if matched_entry_price is not None else 0.0,
                 float(grid_matched_profit) if grid_matched_profit is not None else 0.0,
+                mt,
+                cred,
+                iid,
+                fsrc,
+                poid,
             ),
         )
         db.commit()
@@ -317,14 +446,76 @@ def _fetch_position(strategy_id: int, symbol: str, side: str) -> Dict[str, Any]:
 
 
 def _delete_position(strategy_id: int, symbol: str, side: str) -> None:
+    side_l = str(side or "").strip().lower()
+    seen: Set[str] = set()
+    with get_db_connection() as db:
+        cur = db.cursor()
+        for sym in _position_symbol_candidates(symbol):
+            if sym in seen:
+                continue
+            seen.add(sym)
+            cur.execute(
+                "DELETE FROM qd_strategy_positions WHERE strategy_id = %s AND symbol = %s AND side = %s",
+                (int(strategy_id), str(sym), side_l),
+            )
+        db.commit()
+        cur.close()
+
+
+def patch_position_markers(
+    *,
+    strategy_id: int,
+    symbol: str,
+    side: str,
+    current_price: float,
+    highest_price: float = 0.0,
+    lowest_price: float = 0.0,
+) -> bool:
+    """
+    Update trailing / mark-price fields on an existing local row.
+
+    Never inserts rows — live ``TradingExecutor`` uses this so it cannot
+    resurrect a leg that ``PendingOrderWorker`` already closed.
+    """
+    side_l = str(side or "").strip().lower()
+    if side_l not in ("long", "short"):
+        return False
+    px = float(current_price or 0.0)
+    if px <= 0:
+        return False
+
+    row, sym_key = _fetch_position_fuzzy(int(strategy_id), symbol, side_l)
+    if not row or float(row.get("size") or 0.0) <= 0:
+        return False
+
+    hp = float(highest_price or 0.0)
+    lp = float(lowest_price or 0.0)
     with get_db_connection() as db:
         cur = db.cursor()
         cur.execute(
-            "DELETE FROM qd_strategy_positions WHERE strategy_id = %s AND symbol = %s AND side = %s",
-            (int(strategy_id), str(symbol), str(side)),
+            """
+            UPDATE qd_strategy_positions
+            SET current_price = %s,
+                highest_price = CASE WHEN %s > 0 THEN %s ELSE highest_price END,
+                lowest_price = CASE WHEN %s > 0 THEN %s ELSE lowest_price END,
+                updated_at = NOW()
+            WHERE strategy_id = %s AND symbol = %s AND side = %s AND size > 0
+            """,
+            (
+                px,
+                hp,
+                hp,
+                lp,
+                lp,
+                int(strategy_id),
+                str(sym_key),
+                side_l,
+            ),
         )
+        updated = int(getattr(cur, "rowcount", 0) or 0) > 0
         db.commit()
         cur.close()
+    return updated
 
 
 def upsert_position(
@@ -338,29 +529,66 @@ def upsert_position(
     highest_price: float = 0.0,
     lowest_price: float = 0.0,
     user_id: int = None,
+    leg: Optional["LegContext"] = None,
+    market_type: str = "",
+    credential_id: int = 0,
+    inst_id: str = "",
 ) -> None:
     if user_id is None:
         user_id = _get_user_id_from_strategy(strategy_id)
+    sym_key = normalize_strategy_symbol(symbol) or str(symbol or "").strip()
+    mt = str(market_type or "").strip().lower()
+    cred = int(credential_id or 0)
+    iid = str(inst_id or "").strip()
+    if leg is not None:
+        mt = mt or leg.normalized_market_type()
+        cred = cred or int(leg.credential_id or 0)
+        iid = iid or str(leg.inst_id or "")
+    if mt in ("futures", "future", "perp", "perpetual"):
+        mt = "swap"
+    if not mt:
+        mt = "swap"
+
     with get_db_connection() as db:
         cur = db.cursor()
         cur.execute(
             """
             INSERT INTO qd_strategy_positions
-            (user_id, strategy_id, symbol, side, size, entry_price, current_price, highest_price, lowest_price, updated_at)
+            (user_id, strategy_id, symbol, symbol_canonical, side, size, entry_price, current_price,
+             highest_price, lowest_price, market_type, credential_id, inst_id, updated_at)
             VALUES
-            (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+            (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
             ON CONFLICT(strategy_id, symbol, side) DO UPDATE SET
+                symbol_canonical = excluded.symbol_canonical,
                 size = excluded.size,
                 entry_price = excluded.entry_price,
                 current_price = excluded.current_price,
                 highest_price = CASE WHEN excluded.highest_price > 0 THEN excluded.highest_price ELSE qd_strategy_positions.highest_price END,
                 lowest_price = CASE WHEN excluded.lowest_price > 0 THEN excluded.lowest_price ELSE qd_strategy_positions.lowest_price END,
+                market_type = excluded.market_type,
+                credential_id = CASE WHEN excluded.credential_id > 0 THEN excluded.credential_id ELSE qd_strategy_positions.credential_id END,
+                inst_id = CASE WHEN excluded.inst_id <> '' THEN excluded.inst_id ELSE qd_strategy_positions.inst_id END,
                 updated_at = NOW()
             """,
-            (int(user_id), int(strategy_id), str(symbol), str(side), float(size or 0.0), float(entry_price or 0.0), float(current_price or 0.0), float(highest_price or 0.0), float(lowest_price or 0.0)),
+            (
+                int(user_id),
+                int(strategy_id),
+                sym_key,
+                sym_key,
+                str(side),
+                float(size or 0.0),
+                float(entry_price or 0.0),
+                float(current_price or 0.0),
+                float(highest_price or 0.0),
+                float(lowest_price or 0.0),
+                mt,
+                cred,
+                iid,
+            ),
         )
         db.commit()
         cur.close()
+    _purge_position_symbol_duplicates(int(strategy_id), str(side), sym_key)
 
 
 def apply_fill_to_local_position(
@@ -370,6 +598,7 @@ def apply_fill_to_local_position(
     signal_type: str,
     filled: float,
     avg_price: float,
+    leg: Optional["LegContext"] = None,
 ) -> Tuple[Optional[float], Optional[Dict[str, Any]], Optional[float]]:
     """
     Apply a fill to the local position snapshot.
@@ -429,6 +658,7 @@ def apply_fill_to_local_position(
             current_price=px,
             highest_price=new_high,
             lowest_price=new_low,
+            leg=leg,
         )
         return None, _fetch_position(sid, sym_key, side), None
 
@@ -458,6 +688,7 @@ def apply_fill_to_local_position(
             current_price=px,
             highest_price=new_high,
             lowest_price=new_low,
+            leg=leg,
         )
         return profit, _fetch_position(sid, sym_key, side), matched_entry
 

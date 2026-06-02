@@ -23,6 +23,7 @@ import numpy as np
 
 from app.utils.db import get_db_connection
 from app.utils.logger import get_logger
+from app.services.indicator_workspace import is_indicator_ide_listable, resolve_indicator_asset_type
 from app.utils.auth import login_required
 from app.services.indicator_params import IndicatorParamsParser
 from app.services.indicator_translator import (
@@ -488,6 +489,7 @@ def get_indicators():
             # Best-effort schema upgrade for VIP-free indicators
             try:
                 cur.execute("ALTER TABLE qd_indicator_codes ADD COLUMN IF NOT EXISTS vip_free BOOLEAN DEFAULT FALSE")
+                cur.execute("ALTER TABLE qd_indicator_codes ADD COLUMN IF NOT EXISTS asset_type VARCHAR(32) DEFAULT 'indicator'")
             except Exception:
                 pass
             # Get user's own indicators (both purchased and custom).
@@ -496,6 +498,7 @@ def get_indicators():
                 SELECT
                   id, user_id, is_buy, end_time, name, code, description,
                   publish_to_community, pricing_type, price, is_encrypted, preview_image, vip_free,
+                  COALESCE(asset_type, 'indicator') as asset_type,
                   createtime, updatetime, created_at, updated_at
                 FROM qd_indicator_codes
                 WHERE user_id = ?
@@ -506,6 +509,13 @@ def get_indicators():
             rows = cur.fetchall() or []
             cur.close()
 
+        rows = [
+            r for r in rows
+            if is_indicator_ide_listable(
+                code=r.get("code") or "",
+                asset_type=r.get("asset_type") or "indicator",
+            )
+        ]
         out = [_row_to_indicator(r, user_id) for r in rows]
         return jsonify({"code": 1, "msg": "success", "data": out})
     except Exception as e:
@@ -543,19 +553,34 @@ def save_indicator():
         except Exception:
             price = 0.0
         preview_image = (data.get("previewImage") or data.get("preview_image") or "").strip()
+        asset_type = (data.get("assetType") or data.get("asset_type") or "indicator").strip() or "indicator"
+        if asset_type not in ("indicator", "script_template", "bot_preset"):
+            asset_type = "indicator"
+
+        asset_type = resolve_indicator_asset_type(code, asset_type)
 
         if not code or not str(code).strip():
             return jsonify({"code": 0, "msg": "code is required", "data": None}), 400
 
-        from app.utils.safe_exec import validate_code_safety
+        if asset_type == "script_template":
+            from app.routes.strategy import _validate_strategy_code_internal
+            validation = _validate_strategy_code_internal(code)
+            if not validation.get("success"):
+                return jsonify({
+                    "code": 0,
+                    "msg": validation.get("message") or "Unsafe script template code",
+                    "data": None,
+                }), 400
+        else:
+            from app.utils.safe_exec import validate_code_safety
 
-        is_safe_code, unsafe_reason = validate_code_safety(code)
-        if not is_safe_code:
-            return jsonify({
-                "code": 0,
-                "msg": f"Unsafe indicator code: {unsafe_reason}",
-                "data": None,
-            }), 400
+            is_safe_code, unsafe_reason = validate_code_safety(code)
+            if not is_safe_code:
+                return jsonify({
+                    "code": 0,
+                    "msg": f"Unsafe indicator code: {unsafe_reason}",
+                    "data": None,
+                }), 400
 
         # Local dev UX: if name/description not provided, derive from code variables.
         if not name or not description:
@@ -579,6 +604,7 @@ def save_indicator():
             # Best-effort schema upgrade for VIP-free indicators
             try:
                 cur.execute("ALTER TABLE qd_indicator_codes ADD COLUMN IF NOT EXISTS vip_free BOOLEAN DEFAULT FALSE")
+                cur.execute("ALTER TABLE qd_indicator_codes ADD COLUMN IF NOT EXISTS asset_type VARCHAR(32) DEFAULT 'indicator'")
                 # i18n columns (see services/indicator_translator.py)
                 cur.execute("ALTER TABLE qd_indicator_codes ADD COLUMN IF NOT EXISTS source_language VARCHAR(16)")
                 cur.execute("ALTER TABLE qd_indicator_codes ADD COLUMN IF NOT EXISTS name_i18n JSONB")
@@ -619,12 +645,12 @@ def save_indicator():
                             UPDATE qd_indicator_codes
                             SET name = ?, code = ?, description = ?,
                                 publish_to_community = ?, pricing_type = ?, price = ?, preview_image = ?,
-                                vip_free = ?,
+                                vip_free = ?, asset_type = ?,
                                 review_status = ?, review_note = '', reviewed_at = NOW(), reviewed_by = ?,
                                 updatetime = ?, updated_at = NOW()
                             WHERE id = ? AND user_id = ? AND (is_buy IS NULL OR is_buy = 0)
                             """,
-                            (name, code, description, publish_to_community, pricing_type, price, preview_image, vip_free,
+                            (name, code, description, publish_to_community, pricing_type, price, preview_image, vip_free, asset_type,
                              new_review_status, user_id if is_admin else None, now, indicator_id, user_id),
                         )
                     else:
@@ -634,11 +660,11 @@ def save_indicator():
                             UPDATE qd_indicator_codes
                             SET name = ?, code = ?, description = ?,
                                 publish_to_community = ?, pricing_type = ?, price = ?, preview_image = ?,
-                                vip_free = ?,
+                                vip_free = ?, asset_type = ?,
                                 updatetime = ?, updated_at = NOW()
                             WHERE id = ? AND user_id = ? AND (is_buy IS NULL OR is_buy = 0)
                             """,
-                            (name, code, description, publish_to_community, pricing_type, price, preview_image, vip_free, now, indicator_id, user_id),
+                            (name, code, description, publish_to_community, pricing_type, price, preview_image, vip_free, asset_type, now, indicator_id, user_id),
                         )
                 else:
                     # 取消发布，清除审核状态
@@ -647,12 +673,12 @@ def save_indicator():
                         UPDATE qd_indicator_codes
                         SET name = ?, code = ?, description = ?,
                             publish_to_community = ?, pricing_type = ?, price = ?, preview_image = ?,
-                            vip_free = FALSE,
+                            vip_free = FALSE, asset_type = ?,
                             review_status = NULL, review_note = '', reviewed_at = NULL, reviewed_by = NULL,
                             updatetime = ?, updated_at = NOW()
                         WHERE id = ? AND user_id = ? AND (is_buy IS NULL OR is_buy = 0)
                         """,
-                        (name, code, description, publish_to_community, pricing_type, price, preview_image, now, indicator_id, user_id),
+                        (name, code, description, publish_to_community, pricing_type, price, preview_image, asset_type, now, indicator_id, user_id),
                     )
             else:
                 # 新建指标 - 管理员发布的直接通过，普通用户需要待审核
@@ -663,11 +689,11 @@ def save_indicator():
                     """
                     INSERT INTO qd_indicator_codes
                       (user_id, is_buy, end_time, name, code, description,
-                       publish_to_community, pricing_type, price, preview_image, vip_free, review_status,
+                       publish_to_community, pricing_type, price, preview_image, vip_free, asset_type, review_status,
                        createtime, updatetime, created_at, updated_at)
-                    VALUES (?, 0, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+                    VALUES (?, 0, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
                     """,
-                    (user_id, name, code, description, publish_to_community, pricing_type, price, preview_image, vip_free, review_status, now, now),
+                    (user_id, name, code, description, publish_to_community, pricing_type, price, preview_image, vip_free, asset_type, review_status, now, now),
                 )
                 indicator_id = int(cur.lastrowid or 0)
             db.commit()

@@ -56,6 +56,8 @@ LOCALE_PATCHES: dict[str, dict[str, str]] = {
         "trading-bot.detail.restingPurpose.long_exit": "賣出平多",
         "trading-bot.detail.restingPurpose.short_entry": "賣出開空",
         "trading-bot.detail.restingPurpose.short_exit": "買入平空",
+        "trading-bot.detail.restingPurpose.grid_initial_long": "初始底倉開多",
+        "trading-bot.detail.restingPurpose.grid_initial_short": "初始底倉開空",
         "trading-bot.detail.restingStatus.pending": "待提交",
         "trading-bot.detail.restingStatus.open": "掛單中",
         "trading-bot.detail.restingStatus.partial": "部分成交",

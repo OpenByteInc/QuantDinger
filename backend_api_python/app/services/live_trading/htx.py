@@ -874,6 +874,16 @@ class HtxClient(BaseRestClient):
     ) -> Dict[str, Any]:
         end_ts = time.time() + float(max_wait_sec or 0.0)
         last: Dict[str, Any] = {}
+        contract_size = 1.0
+        if self.market_type != "spot":
+            try:
+                info = self.get_contract_info(symbol=str(symbol)) or {}
+                cs = float(info.get("contract_size") or info.get("contractSize") or 0.0)
+                if cs > 0:
+                    contract_size = cs
+            except Exception:
+                contract_size = 1.0
+
         while True:
             timed_out = time.time() >= end_ts
             try:
@@ -889,14 +899,28 @@ class HtxClient(BaseRestClient):
             fee_ccy = "USDT"
             status = str(last.get("status") or last.get("state") or "")
             try:
-                filled = float(
-                    last.get("field-amount")
-                    or last.get("filled_amount")
-                    or last.get("filled_qty")
-                    or last.get("trade_volume")
-                    or last.get("trade_volume_avg")
-                    or 0.0
-                )
+                if self.market_type == "spot":
+                    filled = float(
+                        last.get("field-amount")
+                        or last.get("filled_amount")
+                        or last.get("filled_qty")
+                        or 0.0
+                    )
+                else:
+                    contracts = float(
+                        last.get("trade_volume")
+                        or last.get("tradeVolume")
+                        or 0.0
+                    )
+                    if contracts > 0:
+                        filled = abs(contracts) * contract_size
+                    else:
+                        filled = float(
+                            last.get("field-amount")
+                            or last.get("filled_amount")
+                            or last.get("filled_qty")
+                            or 0.0
+                        )
             except Exception:
                 filled = 0.0
             try:
@@ -911,6 +935,14 @@ class HtxClient(BaseRestClient):
                         or last.get("price")
                         or 0.0
                     )
+                    if avg_price <= 0 and self.market_type != "spot":
+                        turnover = float(
+                            last.get("trade_turnover")
+                            or last.get("tradeTurnover")
+                            or 0.0
+                        )
+                        if filled > 0 and turnover > 0:
+                            avg_price = turnover / filled
             except Exception:
                 avg_price = 0.0
             try:

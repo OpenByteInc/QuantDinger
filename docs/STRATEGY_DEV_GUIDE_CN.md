@@ -856,6 +856,35 @@ def on_bar(ctx, bar):
 - 脚本策略回测当前不会走指标侧的 MTF 执行路径
 - 策略回测要求 symbol 合法且代码非空
 
+### 7.1 脚本策略回测的成交假设（与指标「严格模式」不同）
+
+脚本策略回测**没有**指标 IDE 里的「严格 / 非严格」开关。UI 上应显示为：
+
+**脚本标准回测 · 逐 bar · 下一根开盘成交**
+
+含义：
+
+1. 按策略周期（如 5m）逐根拉 K 线，每根已收盘 bar 调用一次 `on_bar(ctx, bar)`。
+2. 脚本在当根 bar 内通过 `ctx.buy()` / `ctx.sell()` / `ctx.close_position()` 表达下单意图。
+3. 撮合层默认把成交推到**下一根 K 线开盘价**（并计滑点/手续费），与 `trading_config.execution.signalTiming = next_bar_open` 一致。
+4. 仓位大小仍主要受 `entryPct` 等交易配置约束，而不是脚本里 `amount` 的唯一来源。
+
+这与 **IndicatorStrategy** 的严格模式（整表布尔信号 + 可选 MTF 子周期）是两条不同路径，不要混为一谈。
+
+### 7.2 交易机器人 vs 脚本策略 vs 指标策略
+
+| 类型 | 代码存放 | 典型入口 | 说明 |
+|------|----------|----------|------|
+| **IndicatorStrategy** | `qd_indicator_codes.code` | 指标 IDE | `df` + `buy/sell` 信号，适合研究与信号型回测 |
+| **ScriptStrategy** | `qd_strategies_trading.strategy_code` | 策略工作室 `/strategy-script` | `on_init` + `on_bar`，适合有状态逻辑 |
+| **Trading Bot** | 同上 `strategy_code`，`strategy_mode=bot` | 交易机器人向导 | 参数化模板；Live 网格等由专用引擎执行 |
+
+**「克隆为脚本」**（机器人详情页）会把 `strategy_code` 复制为新的 **ScriptStrategy**，跳转到 **策略工作室** 编辑，**不会**写入指标 IDE 的 `indicator_code`。
+
+- **网格机器人** 的 `strategy_code` 只是占位脚本（`on_bar: pass`），真实逻辑在 Live 挂单引擎；克隆后编辑器里看起来「几乎为空」是预期行为，不是 bug。
+- **马丁 / 趋势 / DCA** 等机器人会生成完整 Python 模板，克隆后应能看到可编辑代码。
+- 若克隆后在策略工作室仍看不到代码，请刷新页面；新版本会在编辑时调用 `/api/strategies/detail` 拉取完整 `strategy_code`。
+
 ---
 
 ## 8. 最佳实践

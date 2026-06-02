@@ -413,6 +413,7 @@ class BitgetMixClient(BaseRestClient):
         reduce_only: bool,
         margin_coin: str,
         product_type: str,
+        hold_side: str = "",
     ) -> Dict[str, Any]:
         """
         Bitget mix place-order: hedge_mode requires tradeSide open/close; one_way_mode requires reduceOnly YES/NO
@@ -431,6 +432,14 @@ class BitgetMixClient(BaseRestClient):
                 "tradeSide": "close" if reduce_only else "open",
                 "side": ("sell" if sd == "buy" else "buy") if reduce_only else sd,
             }
+            hs = str(hold_side or "").strip().lower()
+            if hs in ("long", "short"):
+                out["holdSide"] = hs
+            elif reduce_only:
+                # close long -> sell+close holdSide long; close short -> buy+close holdSide short
+                out["holdSide"] = "long" if out["side"] == "sell" else "short"
+            else:
+                out["holdSide"] = "long" if sd == "buy" else "short"
             return out
         return {"side": sd, "reduceOnly": "YES" if reduce_only else "NO"}
 
@@ -721,6 +730,7 @@ class BitgetMixClient(BaseRestClient):
         margin_mode: str = "crossed",
         reduce_only: bool = False,
         client_order_id: Optional[str] = None,
+        hold_side: str = "",
     ) -> LiveOrderResult:
         sym = to_bitget_um_symbol(symbol)
         sd = (side or "").lower()
@@ -746,6 +756,7 @@ class BitgetMixClient(BaseRestClient):
                 reduce_only=reduce_only,
                 margin_coin=str(margin_coin or "USDT"),
                 product_type=str(product_type or "USDT-FUTURES"),
+                hold_side=hold_side,
             )
         )
         if client_order_id:
@@ -778,6 +789,7 @@ class BitgetMixClient(BaseRestClient):
         reduce_only: bool = False,
         post_only: bool = False,
         client_order_id: Optional[str] = None,
+        hold_side: str = "",
     ) -> LiveOrderResult:
         sym = to_bitget_um_symbol(symbol)
         sd = (side or "").lower()
@@ -810,6 +822,7 @@ class BitgetMixClient(BaseRestClient):
                 reduce_only=reduce_only,
                 margin_coin=str(margin_coin or "USDT"),
                 product_type=str(product_type or "USDT-FUTURES"),
+                hold_side=hold_side,
             )
         )
         # Force maker behavior when requested (avoid taker fills).
@@ -871,6 +884,38 @@ class BitgetMixClient(BaseRestClient):
             "symbol": to_bitget_um_symbol(symbol),
         }
         return self._signed_request("GET", "/api/v2/mix/order/fills", params=params)
+
+    def get_order(
+        self,
+        *,
+        symbol: str,
+        order_id: str = "",
+        client_order_id: str = "",
+        product_type: str = "USDT-FUTURES",
+    ) -> Dict[str, Any]:
+        """Normalized order snapshot for grid fill polling (base qty + avg price)."""
+        raw = self.get_order_detail(
+            symbol=symbol,
+            product_type=product_type,
+            order_id=str(order_id or ""),
+            client_oid=str(client_order_id or ""),
+        )
+        row = raw.get("data") if isinstance(raw, dict) else None
+        if not isinstance(row, dict):
+            row = {}
+        filled = float(row.get("baseVolume") or row.get("filledQty") or row.get("fillSize") or 0)
+        avg = float(row.get("priceAvg") or row.get("fillPrice") or 0)
+        state = str(row.get("state") or row.get("status") or "").lower()
+        return {
+            "filled": filled,
+            "filledSize": filled,
+            "executedQty": filled,
+            "avg_price": avg,
+            "avgPrice": avg,
+            "status": state,
+            "state": state,
+            "raw": raw,
+        }
 
     def wait_for_fill(
         self,

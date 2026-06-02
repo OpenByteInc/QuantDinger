@@ -7,6 +7,14 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
+# Grid resting order purposes (stored in close_reason on open/close fills)
+GRID_LONG_ENTRY = "long_entry"
+GRID_LONG_EXIT = "long_exit"
+GRID_SHORT_ENTRY = "short_entry"
+GRID_SHORT_EXIT = "short_exit"
+GRID_INITIAL_LONG = "grid_initial_long"
+GRID_INITIAL_SHORT = "grid_initial_short"
+
 # Grid bot — crossing a grid line and reducing opposite exposure
 GRID_REDUCE_LONG = "grid_reduce_long"
 GRID_REDUCE_SHORT = "grid_reduce_short"
@@ -32,6 +40,12 @@ INDICATOR_SIGNAL = "indicator_signal"
 LEGACY_SIGNAL_TRIGGER = "signal_trigger"
 
 _LABELS_ZH: Dict[str, str] = {
+    GRID_LONG_ENTRY: "网格买入开多",
+    GRID_LONG_EXIT: "网格卖出平多",
+    GRID_SHORT_ENTRY: "网格卖出开空",
+    GRID_SHORT_EXIT: "网格买入平空",
+    GRID_INITIAL_LONG: "初始底仓开多",
+    GRID_INITIAL_SHORT: "初始底仓开空",
     GRID_REDUCE_LONG: "网格减多",
     GRID_REDUCE_SHORT: "网格减空",
     GRID_CLOSE_ALL: "网格全平",
@@ -48,6 +62,12 @@ _LABELS_ZH: Dict[str, str] = {
 }
 
 _LABELS_EN: Dict[str, str] = {
+    GRID_LONG_ENTRY: "Grid buy long",
+    GRID_LONG_EXIT: "Grid sell close long",
+    GRID_SHORT_ENTRY: "Grid sell short",
+    GRID_SHORT_EXIT: "Grid buy cover short",
+    GRID_INITIAL_LONG: "Initial long position",
+    GRID_INITIAL_SHORT: "Initial short position",
     GRID_REDUCE_LONG: "Grid reduce long",
     GRID_REDUCE_SHORT: "Grid reduce short",
     GRID_CLOSE_ALL: "Grid close all",
