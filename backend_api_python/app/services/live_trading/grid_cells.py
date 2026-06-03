@@ -297,6 +297,67 @@ class GridCellRepository:
             logger.warning(f"update_state failed: strategy={strategy_id}, cell={cell_index}, err={e}")
             return False
 
+    def release_cancelled_working_orders(self, strategy_id: int, symbol: Optional[str] = None) -> int:
+        """Release cell state after strategy stop cancels all exchange working orders.
+
+        Entry cells with cancelled limits become IDLE again so restart can re-hang
+        them. Held inventory cells keep their held state and cost basis, but lose
+        the stale working order reference so restart can re-create take-profit
+        limits.
+        """
+        try:
+            with get_db_connection() as db:
+                cur = db.cursor()
+                filters = ["strategy_id = %s"]
+                args: List[Any] = [int(strategy_id)]
+                if symbol:
+                    filters.append("symbol = %s")
+                    args.append(str(symbol))
+                filters_sql = " AND ".join(filters)
+                cur.execute(
+                    f"""
+                    UPDATE qd_grid_cells
+                    SET
+                        state = CASE
+                            WHEN state IN (%s, %s) THEN %s
+                            ELSE state
+                        END,
+                        leg_size = CASE
+                            WHEN state IN (%s, %s) THEN 0
+                            ELSE leg_size
+                        END,
+                        leg_entry_price = CASE
+                            WHEN state IN (%s, %s) THEN 0
+                            ELSE leg_entry_price
+                        END,
+                        working_order_id = '',
+                        last_event_ts = NOW()
+                    WHERE {filters_sql}
+                      AND state IN (%s, %s, %s, %s)
+                    """,
+                    (
+                        GridCellState.BUY_OPEN.value,
+                        GridCellState.SELL_OPEN.value,
+                        GridCellState.IDLE.value,
+                        GridCellState.BUY_OPEN.value,
+                        GridCellState.SELL_OPEN.value,
+                        GridCellState.BUY_OPEN.value,
+                        GridCellState.SELL_OPEN.value,
+                        *args,
+                        GridCellState.BUY_OPEN.value,
+                        GridCellState.SELL_OPEN.value,
+                        GridCellState.LONG_HELD.value,
+                        GridCellState.SHORT_HELD.value,
+                    ),
+                )
+                n = int(cur.rowcount or 0)
+                db.commit()
+                cur.close()
+                return n
+        except Exception as e:
+            logger.warning(f"release_cancelled_working_orders failed: strategy={strategy_id}, err={e}")
+            return 0
+
     def delete_cells(self, strategy_id: int, symbol: Optional[str] = None) -> int:
         try:
             with get_db_connection() as db:

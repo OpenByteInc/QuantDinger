@@ -78,9 +78,7 @@ def query_exchange_position_size(
         from app.services.live_trading.bybit import BybitClient
         from app.services.live_trading.bitget import BitgetMixClient
         from app.services.live_trading.gate import GateUsdtFuturesClient
-        from app.services.live_trading.kucoin import KucoinFuturesClient
         from app.services.live_trading.kraken_futures import KrakenFuturesClient
-        from app.services.live_trading.deepcoin import DeepcoinClient
         from app.services.live_trading.htx import HtxClient
     except Exception:
         return 0.0
@@ -169,26 +167,6 @@ def query_exchange_position_size(
             if qty_base > 0:
                 return float(qty_base)
 
-    if isinstance(client, KucoinFuturesClient):
-        resp = client.get_positions() or {}
-        data = (resp.get("data") if isinstance(resp, dict) else None) or []
-        for p in data:
-            if not isinstance(p, dict):
-                continue
-            p_sym = str(p.get("symbol") or "").strip()
-            if not symbols_equivalent(p_sym, sym):
-                continue
-            mult = 1.0
-            try:
-                meta = client.get_contract(symbol=p_sym) or {}
-                mult = float(meta.get("multiplier") or meta.get("lotSize") or 0.0) or 1.0
-            except Exception:
-                mult = 1.0
-            qty_base = position_base_qty_for_side(p, side, contracts_to_base=mult)
-            if qty_base > 0:
-                return float(qty_base)
-        return 0.0
-
     if isinstance(client, KrakenFuturesClient):
         resp = client.get_open_positions() or {}
         positions = (
@@ -203,30 +181,6 @@ def query_exchange_position_size(
             if sym and p_sym and not symbols_equivalent(p_sym, sym):
                 continue
             qty = position_base_qty_for_side(p, side)
-            if qty > 0:
-                return qty
-        return 0.0
-
-    if isinstance(client, DeepcoinClient):
-        resp = client.get_positions(symbol=sym) or {}
-        data = _extract_position_rows(resp)
-        ct_val = 1.0
-        if getattr(client, "market_type", "swap") != "spot":
-            try:
-                info = client.get_instrument_info(symbol=sym) or {}
-                ct = float(info.get("ctVal") or info.get("contractSize") or 0.0)
-                if ct > 0:
-                    ct_val = ct
-            except Exception:
-                pass
-        for p in data:
-            if not isinstance(p, dict):
-                continue
-            inst = str(p.get("instId") or p.get("symbol") or "")
-            if sym and inst and not symbols_equivalent(inst, sym):
-                continue
-            mult = ct_val if getattr(client, "market_type", "swap") != "spot" else 1.0
-            qty = position_base_qty_for_side(p, side, contracts_to_base=mult)
             if qty > 0:
                 return qty
         return 0.0

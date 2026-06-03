@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from unittest.mock import MagicMock, patch
 
 from app.services.grid.poller import GridFillPoller
@@ -18,6 +19,7 @@ def test_poller_select_orders_respects_interval():
     poller = GridFillPoller()
     poller._min_order_interval = 100.0
     order = GridRestingOrder(id=1, strategy_id=99, symbol="BTC/USDT", status="open")
+    poller._last_poll_by_order[1] = time.time()
     with patch("app.services.grid.poller.get_runner", return_value=MagicMock()):
         selected = poller._select_orders([order])
     assert selected == []
@@ -46,8 +48,9 @@ def test_poller_idempotent_skip_when_processed():
         filled_quantity=1.0,
         status="open",
     )
-    with patch.object(poller._repo, "update_status") as upd:
-        poller._poll_order(runner, MagicMock(), order, "swap")
-        upd.assert_called()
-        args = upd.call_args
+    with patch("app.services.grid.poller.query_grid_order_fill", return_value=(1.0, 100.0, "filled")):
+        with patch.object(poller._repo, "update_status") as upd:
+            poller._poll_order(runner, MagicMock(), order, "swap")
+            upd.assert_called()
+            args = upd.call_args
         assert args[0][0] == 10

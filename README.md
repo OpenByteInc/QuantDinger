@@ -544,9 +544,7 @@ See full examples:
 | Bybit | Spot, Linear Futures |
 | Coinbase | Spot |
 | Kraken | Spot, Futures |
-| KuCoin | Spot, Futures |
 | Gate.io | Spot, Futures |
-| Deepcoin | Derivatives integration |
 | HTX | Spot, USDT-margined perpetuals |
 
 ### Traditional Markets

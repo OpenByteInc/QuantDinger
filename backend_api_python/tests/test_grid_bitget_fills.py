@@ -8,6 +8,7 @@ import pytest
 
 from app.services.grid.exchange_orders import query_grid_order_fill
 from app.services.live_trading.bitget import BitgetMixClient
+from app.services.live_trading.bitget_spot import BitgetSpotClient
 from app.services.live_trading.bybit import BybitClient
 from app.services.live_trading.okx import OkxClient
 
@@ -49,6 +50,94 @@ def test_query_grid_order_fill_bitget_open():
     )
     assert status == "open"
     assert filled == 0.0
+
+
+def test_query_grid_order_fill_bitget_spot_unwraps_order_info():
+    client = MagicMock()
+    client.__class__ = BitgetSpotClient
+    client.get_order.return_value = {
+        "code": "00000",
+        "data": {
+            "orderId": "spot-oid-1",
+            "status": "filled",
+            "baseVolume": "0.25",
+            "priceAvg": "123.45",
+        },
+    }
+    filled, avg, status = query_grid_order_fill(
+        client,
+        symbol="ABC/USDT",
+        market_type="spot",
+        exchange_order_id="spot-oid-1",
+    )
+    assert status == "filled"
+    assert filled == 0.25
+    assert avg == 123.45
+
+
+def test_query_grid_order_fill_bitget_spot_uses_fills_when_order_info_lags():
+    client = MagicMock()
+    client.__class__ = BitgetSpotClient
+    client.get_order.return_value = {
+        "code": "00000",
+        "data": {
+            "orderId": "spot-oid-2",
+            "status": "live",
+            "baseVolume": "0",
+            "priceAvg": "0",
+        },
+    }
+    client.get_fills.return_value = {
+        "code": "00000",
+        "data": [
+            {"orderId": "spot-oid-2", "tradeId": "t1", "size": "0.1", "priceAvg": "10"},
+            {"orderId": "spot-oid-2", "tradeId": "t2", "size": "0.2", "priceAvg": "11"},
+        ],
+    }
+    filled, avg, status = query_grid_order_fill(
+        client,
+        symbol="ABC/USDT",
+        market_type="spot",
+        exchange_order_id="spot-oid-2",
+    )
+    assert status == "filled"
+    assert filled == pytest.approx(0.3)
+    assert avg == pytest.approx((0.1 * 10 + 0.2 * 11) / 0.3)
+    client.get_fills.assert_called_once_with(symbol="ABC/USDT", order_id="spot-oid-2")
+
+
+def test_query_grid_order_fill_bitget_mix_uses_fills_when_order_detail_lags():
+    client = MagicMock()
+    client.__class__ = BitgetMixClient
+    client.get_order.return_value = {
+        "filled": 0.0,
+        "avg_price": 0.0,
+        "status": "live",
+        "raw": {"data": {"orderId": "mix-oid-1"}},
+    }
+    client.get_order_fills.return_value = {
+        "code": "00000",
+        "data": {
+            "fillList": [
+                {"orderId": "mix-oid-1", "tradeId": "t1", "baseVolume": "0.004", "fillPrice": "70000"},
+            ],
+        },
+    }
+    filled, avg, status = query_grid_order_fill(
+        client,
+        symbol="BTC/USDT",
+        market_type="swap",
+        exchange_order_id="mix-oid-1",
+        exchange_config={"product_type": "USDT-FUTURES"},
+    )
+    assert status == "filled"
+    assert filled == 0.004
+    assert avg == 70000.0
+    client.get_order_fills.assert_called_once_with(
+        symbol="BTC/USDT",
+        product_type="USDT-FUTURES",
+        order_id="mix-oid-1",
+    )
 
 
 def test_query_grid_order_fill_okx_filled():

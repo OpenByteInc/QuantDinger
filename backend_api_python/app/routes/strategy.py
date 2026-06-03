@@ -802,6 +802,8 @@ def get_trades():
         # the stored wall clock is UTC. Naive datetime must not use .timestamp() alone — that would
         # interpret it in the Python process local TZ and shift the instant (e.g. +8h on CN laptops).
         from datetime import datetime as _dt, timezone as _tz
+        from app.utils.trade_close_reason import enrich_trade_row
+        from app.utils.trade_net_pnl import enrich_trades_net_pnl
         processed_rows = []
         for row in rows:
             trade = dict(row)
@@ -820,8 +822,6 @@ def get_trades():
                         trade['created_at'] = int(dt.timestamp())
                     except Exception:
                         pass
-            from app.utils.trade_close_reason import enrich_trade_row
-            from app.utils.trade_net_pnl import enrich_trades_net_pnl
 
             trade = enrich_trade_row(trade, bot_type=bot_type, lang=lang)
             processed_rows.append(trade)
@@ -2319,21 +2319,20 @@ Generate Python strategy code that follows this framework:
 - def on_init(ctx): Initialize strategy parameters using ctx.param(name, default)
 - def on_bar(ctx, bar): Core logic called on each K-line bar
   - bar supports both bar.close and bar['close'] access, and has: open, high, low, close, volume, timestamp
-  - ctx.buy(price, amount), ctx.sell(price, amount), ctx.close_position()
+  - Preferred actions: ctx.open_long/open_short(amount, price), ctx.add_long/add_short(amount, price), ctx.close_long/close_short(amount=None, price=None), ctx.close_position(); ctx.buy/sell are legacy helpers
   - ctx.position supports both numeric checks and dict-style fields:
     - if not ctx.position / if ctx.position > 0 / if ctx.position < 0
     - ctx.position['side'], ctx.position['size'], ctx.position['entry_price']
   - ctx.balance, ctx.equity
   - ctx.bars(n) to get last N bars, ctx.log(message) to log
-- def on_order_filled(ctx, order): Optional callback when order fills
-- def on_stop(ctx): Optional cleanup when strategy stops
-
 Return ONLY the Python code, no explanations.
 
 Quality rules:
 - Always define both on_init(ctx) and on_bar(ctx, bar)
 - Prefer reading defaults via ctx.param(...)
-- Use ctx.buy / ctx.sell / ctx.close_position for order intent
+- Use open_long/open_short for first entries, add_long/add_short only for intentional scale-ins, and close_long/close_short/close_position for exits
+- Entry logic must be event-based: use cross_up = prev_fast <= prev_slow and fast > slow, breakout = prev_close <= level and close > level. Do NOT enter on persistent states like `if not ctx.position and fast > slow:`.
+- Scale-ins must have layer count, price distance/cooldown, and max layers; call ctx.add_long/add_short, not ctx.buy/ctx.sell.
 - Generated code must compile cleanly
 - Avoid markdown fences or explanatory text
 
@@ -2416,8 +2415,8 @@ Percent / ratio convention:
                 "# Repair requirements\n"
                 "- Must define both on_init(ctx) and on_bar(ctx, bar).\n"
                 "- Must compile and run in QuantDinger strategy runtime.\n"
-                "- Prefer ctx.param(...) for defaults.\n"
-                "- Use ctx.buy / ctx.sell / ctx.close_position for actions.\n"
+                "- Prefer ctx.param(...) for defaults; use explicit open/add/close actions.\n"
+                "- Entry conditions must be edge/crossing events; scale-ins must call add_long/add_short deliberately.\n"
                 "- Return Python only, no markdown, no explanation."
             )
             repaired_content = llm.call_llm_api(

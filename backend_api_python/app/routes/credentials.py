@@ -16,6 +16,7 @@ from app.utils.logger import get_logger
 from app.utils.auth import login_required
 from app.utils.credential_crypto import encrypt_credential_blob, decrypt_credential_blob
 from app.services.live_trading.factory import exchange_demo_mode_enabled
+from app.services.live_trading.capabilities import supported_crypto_exchange_ids
 
 logger = get_logger(__name__)
 
@@ -94,10 +95,7 @@ def list_credentials():
         return jsonify({'code': 0, 'msg': str(e), 'data': {'items': []}}), 500
 
 
-CRYPTO_EXCHANGES = [
-    'binance', 'okx', 'bitget', 'bybit', 'coinbaseexchange',
-    'kraken', 'kucoin', 'gate', 'deepcoin', 'htx', 'ktx'
-]
+CRYPTO_EXCHANGES = sorted(supported_crypto_exchange_ids(include_aliases=True))
 
 
 def _egress_ipify(url: str) -> str:

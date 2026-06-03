@@ -7,6 +7,7 @@ yfinance>=0.2.18
 ccxt>=4.0.0
 pandas>=1.5.0
 requests>=2.32.0
+litellm>=1.80,<1.87
 certifi>=2024.2.2
 PySocks>=1.7.1
 akshare>=1.12.0

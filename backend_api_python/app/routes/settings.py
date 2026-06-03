@@ -365,6 +365,7 @@ CONFIG_SCHEMA = {
                     {'value': 'grok', 'label': 'xAI Grok'},
                     {'value': 'custom', 'label': 'Custom API (OpenAI-compatible)'},
                     {'value': 'minimax', 'label': 'MiniMax'},
+                    {'value': 'litellm', 'label': 'LiteLLM (100+ providers)'},
                 ],
                 'description': 'Select your preferred LLM provider'
             },
@@ -548,6 +549,33 @@ CONFIG_SCHEMA = {
                 'default': 'https://api.minimax.io/v1',
                 'description': 'MiniMax API endpoint',
                 'group': 'minimax'
+            },
+            # LiteLLM
+            {
+                'key': 'LITELLM_API_KEY',
+                'label': 'LiteLLM API Key',
+                'type': 'password',
+                'required': False,
+                'link': 'https://docs.litellm.ai/docs/providers',
+                'link_text': 'settings.link.viewProviders',
+                'description': 'Optional. LiteLLM reads provider-specific env vars (OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.) automatically',
+                'group': 'litellm'
+            },
+            {
+                'key': 'LITELLM_MODEL',
+                'label': 'LiteLLM Model',
+                'type': 'text',
+                'default': 'gpt-4o-mini',
+                'description': 'Model ID in provider/model format, e.g. anthropic/claude-sonnet-4-20250514, gemini/gemini-2.5-flash, azure/gpt-4o',
+                'group': 'litellm'
+            },
+            {
+                'key': 'LITELLM_BASE_URL',
+                'label': 'LiteLLM Base URL',
+                'type': 'text',
+                'default': '',
+                'description': 'Optional. Override provider base URL (e.g. Azure endpoint)',
+                'group': 'litellm'
             },
             # Common settings
             {

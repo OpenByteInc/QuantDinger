@@ -25,6 +25,7 @@ class LLMProvider(Enum):
     GROK = "grok"
     CUSTOM = "custom"
     MINIMAX = "minimax"
+    LITELLM = "litellm"
 
 
 # Provider configurations
@@ -63,6 +64,11 @@ PROVIDER_CONFIGS = {
         "base_url": "https://api.minimax.io/v1",
         "default_model": "MiniMax-M2.7",
         "fallback_model": "MiniMax-M2.7-highspeed",
+    },
+    LLMProvider.LITELLM: {
+        "base_url": "",  # LiteLLM SDK handles routing
+        "default_model": "gpt-4o-mini",
+        "fallback_model": "gpt-4o-mini",
     },
 }
 
@@ -103,6 +109,7 @@ class LLMService:
         
         # Auto-detect: find any provider with a configured API key
         # Priority: DeepSeek > Grok > MiniMax > OpenAI > Google > OpenRouter
+        # (LiteLLM excluded from auto-detect; must be set explicitly via LLM_PROVIDER=litellm)
         priority_order = [
             LLMProvider.DEEPSEEK,
             LLMProvider.GROK,
@@ -132,6 +139,7 @@ class LLMService:
             LLMProvider.GROK: APIKeys.GROK_API_KEY,
             LLMProvider.CUSTOM: APIKeys.CUSTOM_API_KEY,
             LLMProvider.MINIMAX: APIKeys.MINIMAX_API_KEY,
+            LLMProvider.LITELLM: APIKeys.LITELLM_API_KEY,
         }
         return key_map.get(p, "") or ""
 
@@ -292,6 +300,46 @@ class LLMService:
         
         raise ValueError("Gemini API response is missing content")
 
+    def _call_litellm(self, messages: list, model: str, temperature: float,
+                      api_key: str, base_url: str, timeout: int,
+                      use_json_mode: bool = True) -> str:
+        """Call LLM via LiteLLM SDK (supports 100+ providers)."""
+        try:
+            import litellm
+        except ImportError as e:
+            raise ImportError(
+                "litellm is required for the LiteLLM provider. "
+                "Install it with: pip install 'litellm>=1.80,<1.87'"
+            ) from e
+
+        kwargs = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "timeout": timeout,
+            "drop_params": True,
+        }
+
+        if use_json_mode:
+            kwargs["response_format"] = {"type": "json_object"}
+        if (api_key or "").strip():
+            kwargs["api_key"] = api_key.strip()
+        if (base_url or "").strip():
+            kwargs["api_base"] = base_url.strip().rstrip('/')
+
+        try:
+            response = litellm.completion(**kwargs)
+        except Exception as e:
+            raise ValueError(f"LiteLLM API error ({model}): {e}") from e
+
+        if response.choices and len(response.choices) > 0:
+            content = response.choices[0].message.content
+            if not content:
+                raise ValueError(f"Model {model} returned empty content")
+            return content
+        else:
+            raise ValueError("LiteLLM response is missing 'choices'")
+
     def _normalize_model_for_provider(self, model: str, provider: LLMProvider) -> str:
         """
         Normalize model name for the target provider.
@@ -304,8 +352,8 @@ class LLMService:
         
         model = model.strip()
         
-        # If using OpenRouter, keep the original format
-        if provider == LLMProvider.OPENROUTER:
+        # LiteLLM and OpenRouter use provider/model format natively
+        if provider in (LLMProvider.OPENROUTER, LLMProvider.LITELLM):
             return model
         
         # For direct providers, extract the model name from OpenRouter format
@@ -410,7 +458,8 @@ class LLMService:
         api_key = (self.get_api_key(p) or "").strip()
         base_url = (self.get_base_url(p) or "").strip()
         # Local OpenAI-compatible servers (e.g. Ollama) often use no API key when base_url is set.
-        custom_ok_without_key = p == LLMProvider.CUSTOM and bool(base_url)
+        # LiteLLM reads provider-specific env vars (OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.) directly.
+        custom_ok_without_key = (p == LLMProvider.CUSTOM and bool(base_url)) or p == LLMProvider.LITELLM
 
         if not api_key and not custom_ok_without_key:
             # If provider is explicitly configured by user, don't silently switch.
@@ -464,7 +513,13 @@ class LLMService:
         
         for current_model in models_to_try:
             try:
-                if p == LLMProvider.GOOGLE:
+                if p == LLMProvider.LITELLM:
+                    return self._call_litellm(
+                        messages, current_model, temperature,
+                        api_key, base_url, timeout,
+                        use_json_mode=use_json_mode
+                    )
+                elif p == LLMProvider.GOOGLE:
                     return self._call_google_gemini(
                         messages, current_model, temperature,
                         api_key, base_url, timeout

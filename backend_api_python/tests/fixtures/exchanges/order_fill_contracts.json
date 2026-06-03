@@ -1,0 +1,146 @@
+[
+  {
+    "id": "binance_futures_filled",
+    "client": "BinanceFuturesClient",
+    "market_type": "swap",
+    "response": {
+      "executedQty": "0.005",
+      "avgPrice": "70000.5",
+      "status": "FILLED"
+    },
+    "expected": {
+      "filled": 0.005,
+      "avg": 70000.5,
+      "status": "filled"
+    }
+  },
+  {
+    "id": "okx_swap_filled_contracts_to_base",
+    "client": "OkxClient",
+    "market_type": "swap",
+    "response": {
+      "state": "filled",
+      "accFillSz": "5",
+      "avgPx": "65000.1"
+    },
+    "metadata": {
+      "ctVal": "0.01"
+    },
+    "expected": {
+      "filled": 0.05,
+      "avg": 65000.1,
+      "status": "filled"
+    }
+  },
+  {
+    "id": "bitget_spot_order_info_filled",
+    "client": "BitgetSpotClient",
+    "market_type": "spot",
+    "response": {
+      "status": "filled",
+      "baseVolume": "0.25",
+      "priceAvg": "123.45"
+    },
+    "expected": {
+      "filled": 0.25,
+      "avg": 123.45,
+      "status": "filled"
+    }
+  },
+  {
+    "id": "bybit_linear_partial",
+    "client": "BybitClient",
+    "market_type": "swap",
+    "response": {
+      "orderStatus": "PartiallyFilled",
+      "cumExecQty": "0.003",
+      "avgPrice": "71500"
+    },
+    "expected": {
+      "filled": 0.003,
+      "avg": 71500.0,
+      "status": "partial"
+    }
+  },
+  {
+    "id": "gate_futures_finished_contracts_to_base",
+    "client": "GateUsdtFuturesClient",
+    "market_type": "swap",
+    "response": {
+      "status": "finished",
+      "filled_size": "100",
+      "fill_price": "65000"
+    },
+    "metadata": {
+      "quanto_multiplier": "0.01"
+    },
+    "expected": {
+      "filled": 1.0,
+      "avg": 65000.0,
+      "status": "filled"
+    }
+  },
+  {
+    "id": "coinbase_spot_done",
+    "client": "CoinbaseExchangeClient",
+    "market_type": "spot",
+    "response": {
+      "status": "done",
+      "filled_size": "0.02",
+      "executed_value": "1300.0"
+    },
+    "expected": {
+      "filled": 0.02,
+      "avg": 65000.0,
+      "status": "filled"
+    }
+  },
+  {
+    "id": "kraken_spot_closed",
+    "client": "KrakenClient",
+    "market_type": "spot",
+    "response": {
+      "status": "closed",
+      "vol_exec": "0.015",
+      "cost": "975.0"
+    },
+    "expected": {
+      "filled": 0.015,
+      "avg": 65000.0,
+      "status": "filled"
+    }
+  },
+  {
+    "id": "kraken_futures_filled",
+    "client": "KrakenFuturesClient",
+    "market_type": "swap",
+    "response": {
+      "status": "filled",
+      "filledSize": "0.03",
+      "avgFillPrice": "65010"
+    },
+    "expected": {
+      "filled": 0.03,
+      "avg": 65010.0,
+      "status": "filled"
+    }
+  },
+  {
+    "id": "htx_swap_numeric_filled",
+    "client": "HtxClient",
+    "market_type": "swap",
+    "response": {
+      "status": 6,
+      "trade_volume": "6",
+      "trade_avg_price": "67500"
+    },
+    "metadata": {
+      "contract_size": "0.001"
+    },
+    "expected": {
+      "filled": 0.006,
+      "avg": 67500.0,
+      "status": "filled"
+    }
+  }
+]

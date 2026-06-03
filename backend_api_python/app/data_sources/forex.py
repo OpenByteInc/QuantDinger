@@ -22,7 +22,14 @@ def normalize_forex_pair_symbol(symbol: str) -> str:
     if not symbol:
         return symbol
     s = str(symbol).strip().upper().replace(" ", "").replace("-", "")
-    return s.replace("/", "")
+    s = s.replace("/", "")
+    aliases = {
+        "XAU": "XAUUSD",
+        "GOLD": "XAUUSD",
+        "XAG": "XAGUSD",
+        "SILVER": "XAGUSD",
+    }
+    return aliases.get(s, s)
 
 
 # 全局缓存

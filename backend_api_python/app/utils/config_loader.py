@@ -99,6 +99,11 @@ def load_addon_config() -> Dict[str, Any]:
         ('MINIMAX_BASE_URL', 'minimax.base_url', 'string'),
         ('MINIMAX_MODEL', 'minimax.model', 'string'),
 
+        # LiteLLM
+        ('LITELLM_API_KEY', 'litellm.api_key', 'string'),
+        ('LITELLM_BASE_URL', 'litellm.base_url', 'string'),
+        ('LITELLM_MODEL', 'litellm.model', 'string'),
+
         # LLM Provider Selection
         ('LLM_PROVIDER', 'llm.provider', 'string'),
 

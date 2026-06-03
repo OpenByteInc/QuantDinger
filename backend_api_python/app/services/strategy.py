@@ -261,7 +261,7 @@ class StrategyService:
                         }
 
             # For these exchanges, prefer direct REST (no ccxt), aligned with local live-trading design.
-            if ex in ("bybit", "coinbaseexchange", "coinbase_exchange", "kraken", "kucoin", "gate", "ktx"):
+            if ex in ("bybit", "coinbaseexchange", "coinbase_exchange", "kraken", "gate","ktx"):
                 import requests
 
                 def _req_json(url: str) -> Any:
@@ -333,41 +333,6 @@ class StrategyService:
                                 typ = str(it.get("type") or "").lower()
                                 if sym and ("perpetual" in typ or typ.startswith("pf") or sym.startswith("PF_")):
                                     symbols.append(sym)
-                    symbols = sorted(list(set(symbols)))
-                    return {'success': True, 'message': f'Success, {len(symbols)} trading pairs', 'symbols': symbols}
-
-                if ex == "kucoin":
-                    if market_type == "spot":
-                        base = str(exchange_config.get("base_url") or exchange_config.get("baseUrl") or "https://api.kucoin.com").rstrip("/")
-                        j = _req_json(f"{base}/api/v1/symbols")
-                        data = (j.get("data") if isinstance(j, dict) else None) or []
-                        if isinstance(data, list):
-                            for it in data:
-                                if not isinstance(it, dict):
-                                    continue
-                                if not bool(it.get("enableTrading", True)):
-                                    continue
-                                if str(it.get("quoteCurrency") or "").upper() != "USDT":
-                                    continue
-                                b = str(it.get("baseCurrency") or "").upper()
-                                if b:
-                                    symbols.append(f"{b}/USDT")
-                    else:
-                        base = str(exchange_config.get("futures_base_url") or exchange_config.get("futuresBaseUrl") or "https://api-futures.kucoin.com").rstrip("/")
-                        j = _req_json(f"{base}/api/v1/contracts/active")
-                        data = (j.get("data") if isinstance(j, dict) else None) or []
-                        if isinstance(data, list):
-                            for it in data:
-                                if not isinstance(it, dict):
-                                    continue
-                                sym = str(it.get("symbol") or "")
-                                if not sym or not sym.upper().endswith("USDTM"):
-                                    continue
-                                base_ccy = sym[:-5].upper()
-                                if base_ccy == "XBT":
-                                    base_ccy = "BTC"
-                                if base_ccy:
-                                    symbols.append(f"{base_ccy}/USDT")
                     symbols = sorted(list(set(symbols)))
                     return {'success': True, 'message': f'Success, {len(symbols)} trading pairs', 'symbols': symbols}
 
@@ -470,10 +435,7 @@ class StrategyService:
                 from app.services.live_trading.coinbase_exchange import CoinbaseExchangeClient
                 from app.services.live_trading.kraken import KrakenClient
                 from app.services.live_trading.kraken_futures import KrakenFuturesClient
-                from app.services.live_trading.kucoin import KucoinSpotClient
-                from app.services.live_trading.kucoin import KucoinFuturesClient
                 from app.services.live_trading.gate import GateSpotClient, GateUsdtFuturesClient
-                from app.services.live_trading.deepcoin import DeepcoinClient
                 from app.services.live_trading.htx import HtxClient
                 from app.services.live_trading.ktx import KtxClient
 
@@ -656,16 +618,10 @@ class StrategyService:
                         return client.get_balance()
                     if isinstance(client, KrakenFuturesClient):
                         return client.get_accounts()
-                    if isinstance(client, KucoinSpotClient):
-                        return client.get_accounts()
-                    if isinstance(client, KucoinFuturesClient):
-                        return client.get_accounts()
                     if isinstance(client, GateSpotClient):
                         return client.get_accounts()
                     if isinstance(client, GateUsdtFuturesClient):
                         return client.get_accounts()
-                    if isinstance(client, DeepcoinClient):
-                        return client.get_balance()
                     if isinstance(client, HtxClient):
                         return client.get_balance()
                     if isinstance(client, KtxClient):

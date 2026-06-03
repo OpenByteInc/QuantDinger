@@ -2,7 +2,7 @@
 Factory for direct exchange clients.
 
 Supports:
-- Crypto exchanges: Binance, OKX, Bitget, Bybit, Coinbase, Kraken, KuCoin, Gate, Deepcoin, HTX, KTX
+- Crypto exchanges: Binance, OKX, Bitget, Bybit, Coinbase, Kraken, Gate, HTX, KTX
 - Traditional brokers: Interactive Brokers (IBKR) for US stocks
 - Forex brokers: MetaTrader 5 (MT5)
 """
@@ -25,9 +25,7 @@ from app.services.live_trading.bybit import BybitClient
 from app.services.live_trading.coinbase_exchange import CoinbaseExchangeClient
 from app.services.live_trading.kraken import KrakenClient
 from app.services.live_trading.kraken_futures import KrakenFuturesClient
-from app.services.live_trading.kucoin import KucoinSpotClient, KucoinFuturesClient
 from app.services.live_trading.gate import GateSpotClient, GateUsdtFuturesClient
-from app.services.live_trading.deepcoin import DeepcoinClient
 from app.services.live_trading.htx import HtxClient
 from app.services.live_trading.ktx import KtxClient
 
@@ -235,15 +233,6 @@ def create_client(exchange_config: Dict[str, Any], *, market_type: str = "swap")
         fut_url = _get(exchange_config, "futures_base_url", "futuresBaseUrl") or fut_default
         return KrakenFuturesClient(api_key=api_key, secret_key=secret_key, base_url=fut_url)
 
-    if exchange_id == "kucoin":
-        default_spot = "https://openapi-sandbox.kucoin.com" if is_demo else "https://api.kucoin.com"
-        base_url = _get(exchange_config, "base_url", "baseUrl") or default_spot
-        if mt == "spot":
-            return KucoinSpotClient(api_key=api_key, secret_key=secret_key, passphrase=passphrase, base_url=base_url)
-        fut_default = "https://api-sandbox-futures.kucoin.com" if is_demo else "https://api-futures.kucoin.com"
-        fut_url = _get(exchange_config, "futures_base_url", "futuresBaseUrl") or fut_default
-        return KucoinFuturesClient(api_key=api_key, secret_key=secret_key, passphrase=passphrase, base_url=fut_url)
-
     if exchange_id == "gate":
         gate_channel_id = _get(exchange_config, "gate_channel_id", "gateChannelId") or "dinger"
         if mt == "spot":
@@ -253,18 +242,6 @@ def create_client(exchange_config: Dict[str, Any], *, market_type: str = "swap")
         default_fut = "https://fx-api-testnet.gateio.ws" if is_demo else "https://fx-api.gateio.ws"
         base_url = _get(exchange_config, "base_url", "baseUrl") or default_fut
         return GateUsdtFuturesClient(api_key=api_key, secret_key=secret_key, base_url=base_url, channel_id=gate_channel_id)
-
-    if exchange_id == "deepcoin":
-        if is_demo and not (_get(exchange_config, "base_url", "baseUrl")):
-            raise LiveTradingError("Deepcoin demo/testnet is not configured in this project yet. Please disable demo mode or provide an explicit testnet base_url.")
-        base_url = _get(exchange_config, "base_url", "baseUrl") or "https://api.deepcoin.com"
-        return DeepcoinClient(
-            api_key=api_key,
-            secret_key=secret_key,
-            passphrase=passphrase,
-            base_url=base_url,
-            market_type=mt,
-        )
 
     if exchange_id == "htx":
         if is_demo and not (_get(exchange_config, "base_url", "baseUrl") or _get(exchange_config, "futures_base_url", "futuresBaseUrl")):

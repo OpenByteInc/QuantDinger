@@ -49,7 +49,7 @@ def infer_position_side_from_row(item: Dict[str, Any]) -> str:
     if pos_side in ("long", "short"):
         return pos_side
 
-    # OKX / Deepcoin net mode: posSide=net, sign lives on pos / availPos
+    # Net mode: posSide=net, sign lives on pos / availPos
     if pos_side == "net":
         signed = extract_signed_position_qty(item)
         if signed < -1e-10:

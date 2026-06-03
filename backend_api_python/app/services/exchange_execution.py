@@ -16,6 +16,7 @@ from typing import Any, Dict
 from app.utils.db import get_db_connection
 from app.utils.logger import get_logger
 from app.utils.credential_crypto import decrypt_credential_blob
+from app.services.live_trading.capabilities import canonical_exchange_id, supported_crypto_exchange_ids
 
 logger = get_logger(__name__)
 
@@ -49,10 +50,7 @@ _EXCHANGE_TO_MARKET: Dict[str, str] = {
     "alpaca": "USStock",  # Alpaca primarily for US stocks; crypto is opt-in via market_category override
     "mt5": "Forex",
 }
-_CRYPTO_EXCHANGES = {
-    "binance", "okx", "bitget", "bybit", "coinbaseexchange",
-    "kraken", "kucoin", "gate", "deepcoin", "htx", "ktx",
-}
+_CRYPTO_EXCHANGES = supported_crypto_exchange_ids()
 
 
 def _infer_market_category_from_exchange(exchange_id: str) -> str:
@@ -61,7 +59,7 @@ def _infer_market_category_from_exchange(exchange_id: str) -> str:
 
     Returns 'Crypto' as the legacy default only if exchange_id is empty or unknown.
     """
-    eid = (exchange_id or "").strip().lower()
+    eid = canonical_exchange_id(exchange_id)
     if not eid:
         return "Crypto"
     if eid in _EXCHANGE_TO_MARKET:

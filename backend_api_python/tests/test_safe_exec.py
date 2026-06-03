@@ -77,6 +77,25 @@ def on_bar(ctx, bar):
     x = pd._libs
 """
 
+_PD_IO_IMPORT_ESCAPE = """
+def on_bar(ctx, bar):
+    import pandas.io.common as common
+    data = common.urlopen('file:///etc/passwd').read()
+    ctx.log(str(data[:200]))
+"""
+
+_NP_CTYPESLIB_IMPORT_ESCAPE = """
+def on_bar(ctx, bar):
+    import numpy.ctypeslib as ctypeslib
+    ctx.log(str(ctypeslib))
+"""
+
+_FROM_PD_IO_IMPORT_ESCAPE = """
+def on_bar(ctx, bar):
+    from pandas.io import common
+    ctx.log(str(common))
+"""
+
 _LEGIT_PANDAS_STRATEGY = """
 def on_bar(ctx, bar):
     import pandas as pd
@@ -108,6 +127,24 @@ def test_pd_io_attr_access_rejected():
 
 def test_pd_libs_attr_access_rejected():
     ok, err = validate_code_safety(_PD_LIBS_ESCAPE)
+    assert ok is False
+    assert err
+
+
+def test_pd_io_submodule_import_rejected():
+    ok, err = validate_code_safety(_PD_IO_IMPORT_ESCAPE)
+    assert ok is False
+    assert err
+
+
+def test_np_ctypeslib_submodule_import_rejected():
+    ok, err = validate_code_safety(_NP_CTYPESLIB_IMPORT_ESCAPE)
+    assert ok is False
+    assert err
+
+
+def test_from_pd_io_import_rejected():
+    ok, err = validate_code_safety(_FROM_PD_IO_IMPORT_ESCAPE)
     assert ok is False
     assert err
 

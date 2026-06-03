@@ -28,10 +28,11 @@ from app.services.live_trading.binance_spot import BinanceSpotClient
 from app.services.live_trading.bitget import BitgetMixClient
 from app.services.live_trading.bitget_spot import BitgetSpotClient
 from app.services.live_trading.bybit import BybitClient
-from app.services.live_trading.deepcoin import DeepcoinClient
 from app.services.live_trading.gate import GateSpotClient, GateUsdtFuturesClient
 from app.services.live_trading.htx import HtxClient
-from app.services.live_trading.kucoin import KucoinFuturesClient, KucoinSpotClient
+from app.services.live_trading.coinbase_exchange import CoinbaseExchangeClient
+from app.services.live_trading.kraken import KrakenClient
+from app.services.live_trading.kraken_futures import KrakenFuturesClient
 from app.services.live_trading.okx import OkxClient
 
 
@@ -52,11 +53,6 @@ def _okx_call_assert(kw: Dict[str, Any]) -> None:
 
 
 def _gate_call_assert(kw: Dict[str, Any]) -> None:
-    assert "symbol" not in kw
-    assert kw.get("order_id") == "oid-1"
-
-
-def _kucoin_call_assert(kw: Dict[str, Any]) -> None:
     assert "symbol" not in kw
     assert kw.get("order_id") == "oid-1"
 
@@ -160,31 +156,24 @@ FILL_CONTRACT_CASES: Tuple[FillContractCase, ...] = (
         call_assert=_gate_call_assert,
     ),
     FillContractCase(
-        "kucoin_spot_wrapped_filled",
-        KucoinSpotClient,
-        {"data": {"isActive": False, "dealSize": "0.015", "dealFunds": "975.0", "status": "done"}},
+        "coinbase_spot_done",
+        CoinbaseExchangeClient,
+        {"status": "done", "filled_size": "0.02", "executed_value": "1300.0"},
+        (0.02, 65000.0, "filled"),
+        market_type="spot",
+    ),
+    FillContractCase(
+        "kraken_spot_closed",
+        KrakenClient,
+        {"status": "closed", "vol_exec": "0.015", "cost": "975.0"},
         (0.015, 65000.0, "filled"),
-        call_assert=_kucoin_call_assert,
+        market_type="spot",
     ),
     FillContractCase(
-        "kucoin_futures_wrapped_filled",
-        KucoinFuturesClient,
-        {"status": "done", "dealSize": "15", "dealValue": "975.0"},
-        (0.015, 65000.0, "filled"),
-        call_assert=_kucoin_call_assert,
-    ),
-    FillContractCase(
-        "kucoin_futures_wrapped_open",
-        KucoinFuturesClient,
-        {"data": {"status": "open", "dealSize": 0, "dealValue": 0}},
-        (0.0, 0.0, "open"),
-        call_assert=_kucoin_call_assert,
-    ),
-    FillContractCase(
-        "deepcoin_filled",
-        DeepcoinClient,
-        {"state": "filled", "accFillSz": "8", "avgPx": "68000"},
-        (0.08, 68000.0, "filled"),
+        "kraken_futures_filled",
+        KrakenFuturesClient,
+        {"status": "filled", "filledSize": "0.03", "avgFillPrice": "65010"},
+        (0.03, 65010.0, "filled"),
     ),
     FillContractCase(
         "htx_filled",
@@ -215,10 +204,6 @@ def test_query_grid_order_fill_contract(case: FillContractCase):
         client.get_instrument.return_value = {"ctVal": "0.01"}
     if case.client_cls is GateUsdtFuturesClient:
         client.get_contract.return_value = {"quanto_multiplier": "0.01"}
-    if case.client_cls is KucoinFuturesClient:
-        client.get_contract.return_value = {"multiplier": "0.001"}
-    if case.client_cls is DeepcoinClient:
-        client.get_instrument_info.return_value = {"ctVal": "0.01"}
     if case.client_cls is HtxClient:
         client.get_contract_info.return_value = {"contract_size": "0.001"}
     filled, avg, status = query_grid_order_fill(

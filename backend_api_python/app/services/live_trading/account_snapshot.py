@@ -202,10 +202,8 @@ def _fetch_swap_positions_snapshot(client: Any, exchange_id: str, errors: List[s
         from app.services.live_trading.binance import BinanceFuturesClient
         from app.services.live_trading.bitget import BitgetMixClient
         from app.services.live_trading.bybit import BybitClient
-        from app.services.live_trading.deepcoin import DeepcoinClient
         from app.services.live_trading.gate import GateUsdtFuturesClient
         from app.services.live_trading.htx import HtxClient
-        from app.services.live_trading.kucoin import KucoinFuturesClient
         from app.services.live_trading.okx import OkxClient
 
         if isinstance(client, OkxClient):
@@ -252,33 +250,6 @@ def _fetch_swap_positions_snapshot(client: Any, exchange_id: str, errors: List[s
                     leg["size"] = float(leg.get("size") or 0) * qm
                     parsed.append(leg)
             return parsed
-        if isinstance(client, KucoinFuturesClient):
-            resp = client.get_positions() or {}
-            data = resp.get("data") if isinstance(resp, dict) else resp
-            items = data if isinstance(data, list) else []
-            parsed = []
-            for item in items if isinstance(items, list) else []:
-                if not isinstance(item, dict):
-                    continue
-                p_sym = str(item.get("symbol") or "").strip()
-                mult = 1.0
-                try:
-                    meta = client.get_contract(symbol=p_sym) or {}
-                    mult = float(meta.get("multiplier") or meta.get("lotSize") or 0.0) or 1.0
-                except Exception:
-                    mult = 1.0
-                row = dict(item)
-                row["currentQty"] = item.get("currentQty") or item.get("quantity")
-                for leg in _parse_swap_position_items([row], market_type="swap"):
-                    leg["size"] = float(leg.get("size") or 0) * mult
-                    parsed.append(leg)
-            return parsed
-        if isinstance(client, DeepcoinClient):
-            resp = client.get_positions() or {}
-            data = resp.get("data") if isinstance(resp, dict) else resp
-            if isinstance(data, dict):
-                data = data.get("list") or [data]
-            return _parse_swap_position_items(data if isinstance(data, list) else [], market_type="swap")
         if isinstance(client, HtxClient):
             resp = client.get_positions() or {}
             data = (resp.get("data") or []) if isinstance(resp, dict) else []
@@ -563,10 +534,8 @@ def fetch_account_snapshot(*, user_id: int, credential_id: int) -> Dict[str, Any
         "bybit",
         "gate",
         "gateio",
-        "kucoin",
         "htx",
         "huobi",
-        "deepcoin",
         "kraken",
         "coinbase",
         "coinbaseexchange",

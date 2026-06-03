@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from app.services.grid.fill_units import parse_grid_order_fill
 from app.services.live_trading.base import BaseRestClient, LiveOrderResult, LiveTradingError
@@ -12,12 +12,10 @@ from app.services.live_trading.bitget import BitgetMixClient
 from app.services.live_trading.bitget_spot import BitgetSpotClient
 from app.services.live_trading.bybit import BybitClient
 from app.services.live_trading.coinbase_exchange import CoinbaseExchangeClient
-from app.services.live_trading.deepcoin import DeepcoinClient
 from app.services.live_trading.gate import GateSpotClient, GateUsdtFuturesClient, to_gate_currency_pair
 from app.services.live_trading.htx import HtxClient
 from app.services.live_trading.kraken import KrakenClient
 from app.services.live_trading.kraken_futures import KrakenFuturesClient
-from app.services.live_trading.kucoin import KucoinFuturesClient, KucoinSpotClient
 from app.services.live_trading.okx import OkxClient
 from app.services.live_trading.symbols import to_okx_spot_inst_id, to_okx_swap_inst_id
 from app.utils.logger import get_logger
@@ -180,25 +178,6 @@ def place_grid_limit_order(
             post_only=post_only,
             client_order_id=coid or None,
         )
-    if isinstance(client, KucoinSpotClient):
-        return client.place_limit_order(
-            symbol=str(symbol), side=sd, size=qty, price=px, client_order_id=coid or None
-        )
-    if isinstance(client, KucoinFuturesClient):
-        try:
-            if mt == "swap":
-                client.set_leverage(symbol=str(symbol), leverage=float(leverage or 1))
-        except Exception:
-            pass
-        return client.place_limit_order(
-            symbol=str(symbol),
-            side=sd,
-            size=qty,
-            price=px,
-            reduce_only=reduce_only,
-            post_only=post_only,
-            client_order_id=coid or None,
-        )
     if isinstance(client, GateSpotClient):
         return client.place_limit_order(
             symbol=str(symbol), side=sd, size=qty, price=px, client_order_id=coid or None
@@ -214,16 +193,6 @@ def place_grid_limit_order(
             size=qty,
             price=px,
             reduce_only=reduce_only,
-            client_order_id=coid or None,
-        )
-    if isinstance(client, DeepcoinClient):
-        return client.place_limit_order(
-            symbol=str(symbol),
-            side=sd,
-            qty=qty,
-            price=px,
-            reduce_only=reduce_only,
-            pos_side=pos_side or ("long" if sd == "buy" else "short"),
             client_order_id=coid or None,
         )
     if isinstance(client, HtxClient):
@@ -467,6 +436,112 @@ def _unwrap_client_order_payload(raw: Any) -> Dict[str, Any]:
     return raw
 
 
+def _float(v: Any) -> float:
+    try:
+        return float(v or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _extract_order_id_from_payload(data: Dict[str, Any], fallback: str = "") -> str:
+    if not isinstance(data, dict):
+        return str(fallback or "")
+    for src in (data, data.get("raw") if isinstance(data.get("raw"), dict) else {}):
+        if not isinstance(src, dict):
+            continue
+        row = src.get("data") if isinstance(src.get("data"), dict) else src
+        if isinstance(row, dict):
+            oid = str(row.get("orderId") or row.get("order_id") or "").strip()
+            if oid:
+                return oid
+    return str(fallback or "")
+
+
+def _bitget_contract_size(client: BitgetMixClient, symbol: str, exchange_config: Dict[str, Any]) -> float:
+    product_type = str(exchange_config.get("product_type") or exchange_config.get("productType") or "USDT-FUTURES")
+    try:
+        contract = client.get_contract(symbol=str(symbol), product_type=product_type) or {}
+        ct = _float(contract.get("contractSize") or contract.get("contractSz") or contract.get("ctVal"))
+        return ct if ct > 0 else 1.0
+    except Exception:
+        return 1.0
+
+
+def _unwrap_bitget_fills(raw: Any) -> List[Dict[str, Any]]:
+    if not isinstance(raw, dict):
+        return []
+    data = raw.get("data")
+    if isinstance(data, list):
+        return [x for x in data if isinstance(x, dict)]
+    if isinstance(data, dict):
+        rows = data.get("fillList") or data.get("fills") or data.get("list") or []
+        if isinstance(rows, list):
+            return [x for x in rows if isinstance(x, dict)]
+    return []
+
+
+def _fetch_bitget_grid_fills(
+    client: BaseRestClient,
+    *,
+    symbol: str,
+    market_type: str,
+    exchange_order_id: str,
+    exchange_config: Dict[str, Any],
+) -> Dict[str, Any]:
+    oid = str(exchange_order_id or "").strip()
+    if not oid:
+        return {}
+    if isinstance(client, BitgetMixClient):
+        product_type = str(exchange_config.get("product_type") or exchange_config.get("productType") or "USDT-FUTURES")
+        return client.get_order_fills(symbol=str(symbol), product_type=product_type, order_id=oid)
+    if isinstance(client, BitgetSpotClient):
+        return client.get_fills(symbol=str(symbol), order_id=oid)
+    return {}
+
+
+def _aggregate_bitget_grid_fills(
+    client: BaseRestClient,
+    *,
+    symbol: str,
+    market_type: str,
+    exchange_config: Dict[str, Any],
+    raw: Dict[str, Any],
+) -> Tuple[float, float, str]:
+    fills = _unwrap_bitget_fills(raw)
+    if not fills:
+        return 0.0, 0.0, "unknown"
+    mt = str(market_type or "swap").strip().lower()
+    if mt in ("futures", "future", "perp", "perpetual"):
+        mt = "swap"
+    ct = _bitget_contract_size(client, symbol, exchange_config) if isinstance(client, BitgetMixClient) else 1.0
+
+    total_base = 0.0
+    total_quote = 0.0
+    for f in fills:
+        if isinstance(client, BitgetSpotClient):
+            qty = _float(f.get("size") or f.get("baseVolume") or f.get("dealSize"))
+            px = _float(f.get("priceAvg") or f.get("price") or f.get("fillPrice"))
+            amount = _float(f.get("amount") or f.get("quoteVolume"))
+        else:
+            qty = _float(f.get("baseVolume"))
+            if qty <= 0:
+                contracts = _float(f.get("size") or f.get("fillSize") or f.get("filledQty"))
+                qty = contracts * ct if contracts > 0 and mt == "swap" else contracts
+            px = _float(f.get("fillPrice") or f.get("priceAvg") or f.get("price"))
+            amount = _float(f.get("quoteVolume") or f.get("amount"))
+        if qty <= 0:
+            continue
+        total_base += qty
+        if px > 0:
+            total_quote += qty * px
+        elif amount > 0:
+            total_quote += amount
+    if total_base <= 0:
+        return 0.0, 0.0, "unknown"
+    avg = total_quote / total_base if total_quote > 0 else 0.0
+    return total_base, avg, "filled"
+
+
 def _parse_grid_order_fill(data: Dict[str, Any]) -> Tuple[float, float, str]:
     """Legacy generic parser — prefer parse_grid_order_fill() with client context."""
     if not data:
@@ -534,18 +609,13 @@ def _fetch_grid_client_order(
             product_type=product_type,
         )
     if isinstance(client, BitgetSpotClient):
-        return client.get_order(symbol=str(symbol), order_id=oid, client_order_id=coid)
+        return _unwrap_client_order_payload(client.get_order(symbol=str(symbol), order_id=oid, client_order_id=coid))
     if isinstance(client, BybitClient):
         return client.get_order(symbol=str(symbol), order_id=oid, client_order_id=coid)
     if isinstance(client, (GateSpotClient, GateUsdtFuturesClient)):
         if not oid:
             return {}
         return _unwrap_client_order_payload(client.get_order(order_id=oid))
-    if isinstance(client, (KucoinSpotClient, KucoinFuturesClient)):
-        raw = client.get_order(order_id=oid, client_order_id=coid)
-        return _unwrap_client_order_payload(raw)
-    if isinstance(client, DeepcoinClient):
-        return client.get_order(symbol=str(symbol), order_id=oid, client_order_id=coid)
     if isinstance(client, HtxClient):
         return client.get_order(symbol=str(symbol), order_id=oid, client_order_id=coid)
     if hasattr(client, "get_order"):
@@ -586,13 +656,35 @@ def query_grid_order_fill(
             exchange_config=ex_cfg,
         )
         if isinstance(data, dict) and data:
-            return parse_grid_order_fill(
+            filled, avg, status = parse_grid_order_fill(
                 client,
                 symbol=str(symbol),
                 market_type=str(market_type or "swap"),
                 exchange_config=ex_cfg,
                 data=data,
             )
+            if isinstance(client, (BitgetMixClient, BitgetSpotClient)) and filled <= 0 and status in ("open", "unknown"):
+                fill_oid = _extract_order_id_from_payload(data, str(exchange_order_id or ""))
+                try:
+                    raw_fills = _fetch_bitget_grid_fills(
+                        client,
+                        symbol=str(symbol),
+                        market_type=str(market_type or "swap"),
+                        exchange_order_id=fill_oid,
+                        exchange_config=ex_cfg,
+                    )
+                    ff, fa, fs = _aggregate_bitget_grid_fills(
+                        client,
+                        symbol=str(symbol),
+                        market_type=str(market_type or "swap"),
+                        exchange_config=ex_cfg,
+                        raw=raw_fills,
+                    )
+                    if ff > 0:
+                        return ff, fa, fs
+                except Exception as e:
+                    logger.debug("query_grid_order_fill bitget fills fallback: %s", e)
+            return filled, avg, status
     except Exception as e:
         logger.debug("query_grid_order_fill: %s", e)
     return 0.0, 0.0, "unknown"

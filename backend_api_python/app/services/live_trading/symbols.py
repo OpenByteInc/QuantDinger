@@ -74,12 +74,6 @@ _KRAKEN_BASE_MAP: Dict[str, str] = {
     "BTC": "XBT",
 }
 
-_KUCOIN_FUTURES_BASE_MAP: Dict[str, str] = {
-    # KuCoin futures uses XBT for BTC on many contracts
-    "BTC": "XBT",
-}
-
-
 def to_bybit_symbol(symbol: str) -> str:
     """
     Bybit symbol format (v5): typically concatenated, e.g. BTCUSDT.
@@ -128,34 +122,6 @@ def to_kraken_pair(symbol: str) -> str:
     return f"{b}{quote}"
 
 
-def to_kucoin_symbol(symbol: str) -> str:
-    """
-    KuCoin spot symbol format: BASE-QUOTE, e.g. BTC-USDT.
-    """
-    base, quote = _split_base_quote(symbol)
-    if not base or not quote:
-        return symbol
-    return f"{base}-{quote}"
-
-
-def to_kucoin_futures_symbol(symbol: str) -> str:
-    """
-    KuCoin Futures (USDT perpetual) symbol is exchange-specific, common examples:
-    - XBTUSDTM, ETHUSDTM
-
-    We provide a best-effort mapping: BASEQUOTE + "M".
-    If caller already provides an exchange-native symbol (no '/'), we return as-is.
-    """
-    s = (symbol or "").strip()
-    if "/" not in s:
-        return s
-    base, quote = _split_base_quote(symbol)
-    if not base or not quote:
-        return s
-    b = _KUCOIN_FUTURES_BASE_MAP.get(base, base)
-    return f"{b}{quote}M"
-
-
 def to_kraken_futures_symbol(symbol: str) -> str:
     """
     Kraken Futures instruments are exchange-specific (e.g. PF_XBTUSD, PI_XBTUSD).
@@ -188,42 +154,6 @@ def to_gate_currency_pair(symbol: str) -> str:
     if not base or not quote:
         return symbol
     return f"{base}_{quote}"
-
-
-def to_deepcoin_symbol(symbol: str) -> str:
-    """
-    Deepcoin symbol format: typically BASE-QUOTE for spot, BASE-QUOTE-SWAP for perpetual.
-    Examples:
-    - Spot: BTC-USDT
-    - Perpetual: BTC-USDT-SWAP
-    
-    If symbol already contains '-', return as-is (already in Deepcoin format).
-    """
-    s = (symbol or "").strip()
-    if not s:
-        return s
-    
-    # Already in Deepcoin format
-    if "-" in s:
-        return s.upper()
-    
-    base, quote = _split_base_quote(symbol)
-    if not base or not quote:
-        # Best effort: remove slashes and colons
-        return s.replace("/", "-").replace(":", "-").upper()
-    
-    # Return BASE-QUOTE format (caller adds -SWAP if needed for futures)
-    return f"{base}-{quote}"
-
-
-def to_deepcoin_swap_symbol(symbol: str) -> str:
-    """
-    Deepcoin perpetual swap symbol format: BASE-QUOTE-SWAP, e.g. BTC-USDT-SWAP.
-    """
-    base_symbol = to_deepcoin_symbol(symbol)
-    if base_symbol.endswith("-SWAP"):
-        return base_symbol
-    return f"{base_symbol}-SWAP"
 
 
 def to_htx_spot_symbol(symbol: str) -> str:

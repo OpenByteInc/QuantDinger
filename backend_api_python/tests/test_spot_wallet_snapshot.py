@@ -5,7 +5,6 @@ from app.services.live_trading.spot_wallet_snapshot import (
     _from_bitget_assets,
     _from_bybit_spot_holdings,
     _from_gate_spot_accounts,
-    _from_kucoin_accounts,
     _from_okx_balance,
     list_spot_wallet_positions,
 )
@@ -66,18 +65,6 @@ def test_gate_spot_accounts_parser():
     rows = _from_gate_spot_accounts(raw)
     assert rows[0]["symbol"] == "SOL/USDT"
     assert rows[0]["size"] == 2.5
-
-
-def test_kucoin_spot_accounts_parser():
-    raw = {
-        "data": [
-            {"currency": "DOGE", "type": "trade", "balance": "1000"},
-            {"currency": "DOGE", "type": "main", "balance": "500"},
-        ]
-    }
-    rows = _from_kucoin_accounts(raw)
-    assert rows[0]["symbol"] == "DOGE/USDT"
-    assert rows[0]["size"] == 1500
 
 
 def test_list_spot_wallet_unknown_client():

@@ -1,4 +1,4 @@
-"""
+﻿"""
 List all non-zero spot wallet coins for account snapshot UI.
 
 Spot holdings are wallet balances, not derivative ``/positions`` rows.
@@ -125,25 +125,6 @@ def _from_gate_spot_accounts(raw: Any) -> List[Dict[str, Any]]:
     return rows
 
 
-def _from_kucoin_accounts(raw: Dict[str, Any]) -> List[Dict[str, Any]]:
-    rows: List[Dict[str, Any]] = []
-    by_ccy: Dict[str, float] = {}
-    data = (raw.get("data") or []) if isinstance(raw, dict) else []
-    for row in data if isinstance(data, list) else []:
-        if not isinstance(row, dict):
-            continue
-        acct_type = str(row.get("type") or "").strip().lower()
-        if acct_type and acct_type not in ("trade", "main", ""):
-            continue
-        ccy = str(row.get("currency") or "").strip().upper()
-        if not ccy:
-            continue
-        bal = _pick_free_from_row(row, "balance", "available", "holds")
-        by_ccy[ccy] = by_ccy.get(ccy, 0.0) + bal
-    for ccy, qty in by_ccy.items():
-        _append_row(rows, ccy, qty)
-    return rows
-
 
 def _from_htx_spot_balance(raw: Dict[str, Any]) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
@@ -177,26 +158,6 @@ def _from_kraken_balance(raw: Dict[str, Any]) -> List[Dict[str, Any]]:
         _append_row(rows, ccy, qty)
     return rows
 
-
-def _from_deepcoin_balances(raw: Dict[str, Any]) -> List[Dict[str, Any]]:
-    rows: List[Dict[str, Any]] = []
-    data = raw.get("data") if isinstance(raw, dict) else raw
-    if isinstance(data, dict):
-        data = data.get("list") or data.get("balances") or [data]
-    if not isinstance(data, list):
-        return rows
-    for row in data:
-        if not isinstance(row, dict):
-            continue
-        ccy = str(row.get("ccy") or row.get("currency") or row.get("coin") or "").strip().upper()
-        if not ccy:
-            continue
-        qty = _pick_free_from_row(
-            row, "eq", "balance", "availBal", "available", "cashBal", "total"
-        )
-        entry = _pick_cost_from_row(row, "openAvgPx", "avgPx", "avgCost")
-        _append_row(rows, ccy, qty, entry_price=entry)
-    return rows
 
 
 def list_spot_wallet_positions(client: Any) -> List[Dict[str, Any]]:
@@ -248,14 +209,6 @@ def list_spot_wallet_positions(client: Any) -> List[Dict[str, Any]]:
         logger.debug("spot wallet gate: %s", e)
 
     try:
-        from app.services.live_trading.kucoin import KucoinSpotClient
-
-        if isinstance(client, KucoinSpotClient):
-            return _from_kucoin_accounts(client.get_accounts() or {})
-    except Exception as e:
-        logger.debug("spot wallet kucoin: %s", e)
-
-    try:
         from app.services.live_trading.htx import HtxClient
 
         if isinstance(client, HtxClient) and str(getattr(client, "market_type", "") or "").strip().lower() == "spot":
@@ -270,13 +223,5 @@ def list_spot_wallet_positions(client: Any) -> List[Dict[str, Any]]:
             return _from_kraken_balance(client.get_balance() or {})
     except Exception as e:
         logger.debug("spot wallet kraken: %s", e)
-
-    try:
-        from app.services.live_trading.deepcoin import DeepcoinClient
-
-        if isinstance(client, DeepcoinClient) and str(getattr(client, "market_type", "") or "").strip().lower() == "spot":
-            return _from_deepcoin_balances(client.get_balance() or {})
-    except Exception as e:
-        logger.debug("spot wallet deepcoin: %s", e)
 
     return []

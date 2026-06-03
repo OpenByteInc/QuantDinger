@@ -1,5 +1,5 @@
-"""
-Grid fill quantity normalization — convert exchange order fields to base-asset qty.
+﻿"""
+Grid fill quantity normalization 鈥?convert exchange order fields to base-asset qty.
 
 Sources (official API docs):
 - OKX v5: SWAP sz/accFillSz are contracts; base = contracts * ctVal
@@ -12,12 +12,8 @@ Sources (official API docs):
   https://bybit-exchange.github.io/docs/v5/order/open-order
 - Gate v4 futures: size/filled_size are contracts; base = contracts * quanto_multiplier
   https://www.gate.com/docs/developers/apiv4/en/
-- KuCoin futures: dealSize is in lots/contracts; base = dealSize * multiplier
-  https://github.com/tiagosiebler/kucoin-api (official examples + GET /api/v1/contracts/{symbol})
 - HTX USDT swap: trade_volume is in contracts (cont); base = trade_volume * contract_size
   https://huobiapi.github.io/docs/usdt_swap/v1/en/#get-order-information
-- Deepcoin: OKX-compatible SWAP accFillSz (contracts); use ctVal when present
-  https://www.deepcoin.com/docs/DeepCoinTrade/order
 """
 
 from __future__ import annotations
@@ -30,11 +26,11 @@ from app.services.live_trading.binance_spot import BinanceSpotClient
 from app.services.live_trading.bitget import BitgetMixClient
 from app.services.live_trading.bitget_spot import BitgetSpotClient
 from app.services.live_trading.bybit import BybitClient
-from app.services.live_trading.deepcoin import DeepcoinClient
+from app.services.live_trading.coinbase_exchange import CoinbaseExchangeClient
 from app.services.live_trading.gate import GateSpotClient, GateUsdtFuturesClient, to_gate_currency_pair
 from app.services.live_trading.htx import HtxClient
+from app.services.live_trading.kraken import KrakenClient
 from app.services.live_trading.kraken_futures import KrakenFuturesClient
-from app.services.live_trading.kucoin import KucoinFuturesClient, KucoinSpotClient
 from app.services.live_trading.okx import OkxClient
 from app.services.live_trading.symbols import to_okx_spot_inst_id, to_okx_swap_inst_id
 from app.utils.logger import get_logger
@@ -83,18 +79,6 @@ def okx_swap_position_base_size(
     return contracts * ct_val
 
 
-def _deepcoin_ct_val(client: DeepcoinClient, symbol: str) -> float:
-    try:
-        info = client.get_instrument_info(symbol=str(symbol)) or {}
-        for key in ("ctVal", "ct_val", "contractSize", "contract_size"):
-            ct = _float(info.get(key))
-            if ct > 0:
-                return ct
-    except Exception as e:
-        logger.debug("deepcoin ctVal lookup failed symbol=%s: %s", symbol, e)
-    return 1.0
-
-
 def _gate_quanto_multiplier(client: GateUsdtFuturesClient, symbol: str) -> float:
     try:
         contract = to_gate_currency_pair(str(symbol))
@@ -103,16 +87,6 @@ def _gate_quanto_multiplier(client: GateUsdtFuturesClient, symbol: str) -> float
         return qm if qm > 0 else 1.0
     except Exception as e:
         logger.debug("gate quanto_multiplier lookup failed symbol=%s: %s", symbol, e)
-        return 1.0
-
-
-def _kucoin_multiplier(client: KucoinFuturesClient, symbol: str) -> float:
-    try:
-        meta = client.get_contract(symbol=str(symbol)) or {}
-        mult = _float(meta.get("multiplier") or meta.get("lotSize"))
-        return mult if mult > 0 else 1.0
-    except Exception as e:
-        logger.debug("kucoin multiplier lookup failed symbol=%s: %s", symbol, e)
         return 1.0
 
 
@@ -199,20 +173,11 @@ def extract_grid_fill_base_qty(
     if isinstance(client, GateSpotClient):
         return _float(data.get("filled_amount") or data.get("filledAmount"))
 
-    if isinstance(client, KucoinFuturesClient):
-        lots = _float(data.get("dealSize"))
-        if lots <= 0:
-            return 0.0
-        return abs(lots) * _kucoin_multiplier(client, symbol)
+    if isinstance(client, CoinbaseExchangeClient):
+        return _float(data.get("filled_size") or data.get("filledSize"))
 
-    if isinstance(client, KucoinSpotClient):
-        return _float(data.get("dealSize"))
-
-    if isinstance(client, DeepcoinClient):
-        contracts = _float(data.get("accFillSz") or data.get("fillSz"))
-        if mt == "spot":
-            return contracts
-        return contracts * _deepcoin_ct_val(client, symbol)
+    if isinstance(client, KrakenClient):
+        return _float(data.get("vol_exec") or data.get("filled"))
 
     if isinstance(client, HtxClient):
         if mt == "spot":
@@ -235,7 +200,7 @@ def extract_grid_fill_base_qty(
         if filled_amt > 0 and filled_total > 0:
             return filled_total / filled_amt
 
-    # Generic fallback (legacy path — may be wrong for contract-denominated exchanges).
+    # Generic fallback (legacy path 鈥?may be wrong for contract-denominated exchanges).
     return _float(
         data.get("filled")
         or data.get("executedQty")
@@ -280,19 +245,19 @@ def extract_grid_fill_avg_price(
     if isinstance(client, (GateUsdtFuturesClient,)):
         return _float(data.get("fill_price") or data.get("fillPrice") or data.get("price"))
 
-    if isinstance(client, (KucoinFuturesClient, KucoinSpotClient)):
-        deal_size = _float(data.get("dealSize"))
-        deal_value = _float(data.get("dealValue") or data.get("dealFunds"))
-        if deal_size > 0 and deal_value > 0:
-            # dealValue is quote; for futures dealSize is lots — use dealValue/(lots*mult) externally if needed.
-            # Here approximate with dealFunds/dealSize when spot; futures wait_for_fill uses dealValue/filled_base.
-            if isinstance(client, KucoinFuturesClient) and filled_base > 0:
-                return deal_value / filled_base
-            return deal_value / deal_size
+    if isinstance(client, CoinbaseExchangeClient):
+        filled = _float(data.get("filled_size") or data.get("filledSize"))
+        executed_value = _float(data.get("executed_value") or data.get("executedValue"))
+        if filled > 0 and executed_value > 0:
+            return executed_value / filled
         return _float(data.get("price"))
 
-    if isinstance(client, DeepcoinClient):
-        return _float(data.get("avgPx") or data.get("fillPx"))
+    if isinstance(client, KrakenClient):
+        filled = _float(data.get("vol_exec") or data.get("filled"))
+        cost = _float(data.get("cost"))
+        if filled > 0 and cost > 0:
+            return cost / filled
+        return _float(data.get("price"))
 
     if isinstance(client, HtxClient):
         avg = _float(data.get("trade_avg_price") or data.get("tradeAvgPrice"))

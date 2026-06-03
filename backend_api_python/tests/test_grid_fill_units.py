@@ -8,10 +8,8 @@ import pytest
 
 from app.services.grid.fill_units import extract_grid_fill_base_qty, parse_grid_order_fill
 from app.services.live_trading.bitget import BitgetMixClient
-from app.services.live_trading.deepcoin import DeepcoinClient
 from app.services.live_trading.gate import GateUsdtFuturesClient
 from app.services.live_trading.htx import HtxClient
-from app.services.live_trading.kucoin import KucoinFuturesClient
 from app.services.live_trading.okx import OkxClient
 
 
@@ -56,20 +54,6 @@ def test_gate_filled_size_times_quanto_multiplier():
     assert qty == pytest.approx(0.01)
 
 
-def test_kucoin_dealsize_times_multiplier():
-    client = MagicMock()
-    client.__class__ = KucoinFuturesClient
-    client.get_contract.return_value = {"multiplier": "0.001"}
-    qty = extract_grid_fill_base_qty(
-        client,
-        symbol="BTC/USDT",
-        market_type="swap",
-        exchange_config={},
-        data={"status": "done", "dealSize": "10"},
-    )
-    assert qty == pytest.approx(0.01)
-
-
 def test_htx_trade_volume_times_contract_size():
     client = MagicMock()
     client.__class__ = HtxClient
@@ -80,20 +64,6 @@ def test_htx_trade_volume_times_contract_size():
         market_type="swap",
         exchange_config={},
         data={"status": 6, "trade_volume": "100", "trade_avg_price": "48555.6"},
-    )
-    assert qty == pytest.approx(0.1)
-
-
-def test_deepcoin_accfillsz_times_ctval():
-    client = MagicMock()
-    client.__class__ = DeepcoinClient
-    client.get_instrument_info.return_value = {"ctVal": "0.01"}
-    qty = extract_grid_fill_base_qty(
-        client,
-        symbol="BTC/USDT",
-        market_type="swap",
-        exchange_config={},
-        data={"state": "filled", "accFillSz": "10", "avgPx": "72000"},
     )
     assert qty == pytest.approx(0.1)
 

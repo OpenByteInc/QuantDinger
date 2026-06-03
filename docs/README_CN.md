@@ -532,9 +532,7 @@ df["sell"] = sell.fillna(False).astype(bool)
 | Bybit | 现货、线性期货 |
 | Coinbase | 现货 |
 | Kraken | 现货、期货 |
-| KuCoin | 现货、期货 |
 | Gate.io | 现货、期货 |
-| Deepcoin | 衍生品接入 |
 | HTX | 现货、USDT 本位永续 |
 
 ### 传统市场

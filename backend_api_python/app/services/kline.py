@@ -43,11 +43,12 @@ class KlineService:
         Returns:
             K线数据列表
         """
+        normalized_market = DataSourceFactory.normalize_market(market or "")
         ex_key = (exchange_id or "").strip().lower()
         mt_key = (market_type or "").strip().lower()
         # 构建缓存键（历史数据不缓存）
         if not before_time:
-            cache_key = f"kline:{market}:{ex_key}:{mt_key}:{symbol}:{timeframe}:{limit}"
+            cache_key = f"kline:{normalized_market}:{ex_key}:{mt_key}:{symbol}:{timeframe}:{limit}"
             cached = self.cache.get(cache_key)
             if cached:
                 # logger.info(f"命中缓存: {cache_key}")
@@ -55,7 +56,7 @@ class KlineService:
         
         # 获取数据
         klines = DataSourceFactory.get_kline(
-            market=market,
+            market=normalized_market,
             symbol=symbol,
             timeframe=timeframe,
             limit=limit,

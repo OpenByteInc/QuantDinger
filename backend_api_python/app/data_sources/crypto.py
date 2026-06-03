@@ -41,12 +41,8 @@ def resolve_ccxt_for_live_trading(exchange_id: str, market_type: str) -> Tuple[s
         opts["defaultType"] = "swap" if mt == "swap" else "spot"
     elif e == "gate":
         opts["defaultType"] = "swap" if mt == "swap" else "spot"
-    elif e == "kucoin":
-        ccxt_id = "kucoinfutures" if mt == "swap" else "kucoin"
     elif e == "kraken":
         ccxt_id = "krakenfutures" if mt == "swap" else "kraken"
-    elif e == "deepcoin":
-        opts["defaultType"] = "swap" if mt == "swap" else "spot"
     elif e == "htx" or e == "huobi":
         ccxt_id = "htx"
         opts["defaultType"] = "swap" if mt == "swap" else "spot"

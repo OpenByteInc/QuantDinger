@@ -276,7 +276,7 @@ RULES (critical, follow exactly):
 1. Input is a JSON object mapping key -> { "zh": "Simplified Chinese source", "en": "English reference" }
 2. Output ONLY a JSON object mapping the same keys -> translated string value. No markdown, no prose, no code fences, no explanation.
 3. Preserve every placeholder exactly: {name}, {count}, %d, %s, %.2f, {{variable}}, HTML tags, newlines \\n.
-4. Do NOT translate these proper nouns/terms: BTC, ETH, USDT, USDC, API, OKX, Binance, Bitget, Bybit, Gate, MEXC, HTX, KuCoin, Kraken, TradingView, RSI, MACD, EMA, SMA, VWAP, Bollinger, ATR, QuantDinger, AI, JSON.
+4. Do NOT translate these proper nouns/terms: BTC, ETH, USDT, USDC, API, OKX, Binance, Bitget, Bybit, Gate, MEXC, HTX, Kraken, TradingView, RSI, MACD, EMA, SMA, VWAP, Bollinger, ATR, QuantDinger, AI, JSON.
 5. Trading/finance domain vocabulary must be accurate:
    - 做多/做空/持仓/平仓/加仓/止盈/止损/回测/实盘/挂单/市价/限价/网格/马丁格尔/定投/趋势/资金费率/杠杆 etc.
 6. UI labels should be short and idiomatic — don't translate "确定" into a full sentence; use the target language's standard "OK / Confirm" equivalent.

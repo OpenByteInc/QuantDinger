@@ -964,7 +964,6 @@ def _limit_order_kwargs(client, symbol, amount, price, side, market_type, client
     from app.services.live_trading.binance_spot import BinanceSpotClient
     from app.services.live_trading.okx import OkxClient
     from app.services.live_trading.bybit import BybitClient
-    from app.services.live_trading.deepcoin import DeepcoinClient
 
     if isinstance(client, (BinanceFuturesClient, BinanceSpotClient)):
         return {"quantity": amount, "price": price, "client_order_id": client_order_id}
@@ -977,7 +976,7 @@ def _limit_order_kwargs(client, symbol, amount, price, side, market_type, client
             pos_side = "long" if side.lower() == "buy" else "short"
             kwargs["pos_side"] = pos_side
         return kwargs
-    if isinstance(client, (BybitClient, DeepcoinClient)):
+    if isinstance(client, BybitClient):
         return {"qty": amount, "price": price, "client_order_id": client_order_id}
     # Generic fallback
     return {"size": amount, "price": price, "client_order_id": client_order_id}
@@ -1501,7 +1500,7 @@ def _fetch_exchange_positions_raw(
     """
     Fetch raw position payload for quick-trade / close-position.
 
-    Many clients do not accept ``symbol=`` on ``get_positions()`` (Gate, KuCoin),
+    Many clients do not accept ``symbol=`` on ``get_positions()`` (Gate),
     or need extra args (Bitget ``product_type``, OKX ``inst_type``). Centralize here.
     """
     from app.services.live_trading.binance import BinanceFuturesClient
@@ -1509,15 +1508,12 @@ def _fetch_exchange_positions_raw(
     from app.services.live_trading.bitget import BitgetMixClient
     from app.services.live_trading.bitget_spot import BitgetSpotClient
     from app.services.live_trading.bybit import BybitClient
-    from app.services.live_trading.deepcoin import DeepcoinClient
     from app.services.live_trading.gate import GateSpotClient, GateUsdtFuturesClient
     from app.services.live_trading.htx import HtxClient
-    from app.services.live_trading.kucoin import KucoinFuturesClient, KucoinSpotClient
     from app.services.live_trading.okx import OkxClient
     from app.services.live_trading.symbols import (
         to_bybit_symbol,
         to_gate_currency_pair,
-        to_kucoin_futures_symbol,
         to_okx_spot_inst_id,
         to_okx_swap_inst_id,
     )
@@ -1525,7 +1521,7 @@ def _fetch_exchange_positions_raw(
     mt = (market_type or "swap").strip().lower()
 
     if mt == "spot" and isinstance(
-        client, (BinanceSpotClient, BitgetSpotClient, KucoinSpotClient, OkxClient)
+        client, (BinanceSpotClient, BitgetSpotClient, OkxClient)
     ):
         return _fetch_spot_holdings_raw(client, symbol=symbol)
 
@@ -1619,19 +1615,6 @@ def _fetch_exchange_positions_raw(
                      [(p.get("size"), p.get("positionAmt")) for p in out])
         return out
 
-    if isinstance(client, KucoinFuturesClient):
-        raw = client.get_positions()
-        data = raw.get("data") if isinstance(raw, dict) else []
-        sym = to_kucoin_futures_symbol(symbol)
-        if not isinstance(data, list):
-            data = []
-        filtered = [p for p in data if isinstance(p, dict) and str(p.get("symbol") or "").strip() == sym]
-        if isinstance(raw, dict):
-            out = dict(raw)
-            out["data"] = filtered
-            return out
-        return {"data": filtered}
-
     if isinstance(client, HtxClient):
         if mt == "spot":
             return client.get_positions(symbol=symbol)
@@ -1666,9 +1649,6 @@ def _fetch_exchange_positions_raw(
         logger.info("HTX positions for %s: %d items, sizes=%s", symbol, len(out_items),
                      [(p.get("contract_code"), p.get("volume"), p.get("positionAmt")) for p in out_items])
         return {"data": out_items}
-
-    if isinstance(client, DeepcoinClient):
-        return client.get_positions(symbol=symbol)
 
     if hasattr(client, "get_positions"):
         try:

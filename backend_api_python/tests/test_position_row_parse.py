@@ -26,7 +26,7 @@ def test_okx_net_mode_long():
     assert position_base_qty_for_side(row, "long", contracts_to_base=0.01) == 0.1
 
 
-def test_deepcoin_net_mode_short():
+def test_net_mode_short():
     row = {"posSide": "net", "pos": "-8", "instId": "BNB-USDT-SWAP"}
     assert infer_position_side_from_row(row) == "short"
     assert position_base_qty_for_side(row, "short", contracts_to_base=0.1) == 0.8

@@ -1,0 +1,113 @@
+[
+  {
+    "id": "binance_long_position_amt",
+    "row": {
+      "symbol": "BTCUSDT",
+      "positionSide": "LONG",
+      "positionAmt": "0.015"
+    },
+    "side": "long",
+    "contracts_to_base": 1,
+    "expected": {
+      "inferred_side": "long",
+      "base_qty": 0.015
+    }
+  },
+  {
+    "id": "binance_short_position_amt_abs",
+    "row": {
+      "symbol": "BTCUSDT",
+      "positionSide": "SHORT",
+      "positionAmt": "-0.02"
+    },
+    "side": "short",
+    "contracts_to_base": 1,
+    "expected": {
+      "inferred_side": "short",
+      "base_qty": 0.02
+    }
+  },
+  {
+    "id": "okx_net_short_signed_pos",
+    "row": {
+      "instId": "BTC-USDT-SWAP",
+      "posSide": "net",
+      "pos": "-3"
+    },
+    "side": "short",
+    "contracts_to_base": 0.01,
+    "expected": {
+      "inferred_side": "short",
+      "base_qty": 0.03
+    }
+  },
+  {
+    "id": "bitget_hold_side_long",
+    "row": {
+      "symbol": "BTCUSDT",
+      "holdSide": "long",
+      "total": "0.004"
+    },
+    "side": "long",
+    "contracts_to_base": 1,
+    "expected": {
+      "inferred_side": "long",
+      "base_qty": 0.004
+    }
+  },
+  {
+    "id": "bybit_position_idx_short",
+    "row": {
+      "symbol": "BTCUSDT",
+      "positionIdx": 2,
+      "size": "0.12"
+    },
+    "side": "short",
+    "contracts_to_base": 1,
+    "expected": {
+      "inferred_side": "short",
+      "base_qty": 0.12
+    }
+  },
+  {
+    "id": "gate_contracts_to_base",
+    "row": {
+      "contract": "BTC_USDT",
+      "size": "-100"
+    },
+    "side": "short",
+    "contracts_to_base": 0.01,
+    "expected": {
+      "inferred_side": "short",
+      "base_qty": 1.0
+    }
+  },
+  {
+    "id": "kraken_futures_open_position_short",
+    "row": {
+      "symbol": "PF_XBTUSD",
+      "side": "short",
+      "size": "0.008"
+    },
+    "side": "short",
+    "contracts_to_base": 1,
+    "expected": {
+      "inferred_side": "short",
+      "base_qty": 0.008
+    }
+  },
+  {
+    "id": "htx_direction_buy_long_contracts_to_base",
+    "row": {
+      "contract_code": "BTC-USDT",
+      "direction": "buy",
+      "volume": "6"
+    },
+    "side": "long",
+    "contracts_to_base": 0.001,
+    "expected": {
+      "inferred_side": "long",
+      "base_qty": 0.006
+    }
+  }
+]

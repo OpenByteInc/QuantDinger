@@ -1,4 +1,4 @@
-"""Tests for Deepcoin/HTX wait_for_fill contract conversion and worker fill recovery."""
+"""Tests for HTX wait_for_fill contract conversion and worker fill recovery."""
 
 from __future__ import annotations
 
@@ -6,17 +6,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.services.live_trading.deepcoin import DeepcoinClient
 from app.services.live_trading.fill_recovery import try_recover_zero_fill
 from app.services.live_trading.htx import HtxClient
-
-
-def _deepcoin_client(*, market_type: str = "swap") -> DeepcoinClient:
-    client = DeepcoinClient.__new__(DeepcoinClient)
-    client.market_type = market_type
-    client._inst_cache = {}
-    client._inst_cache_ttl_sec = 300.0
-    return client
 
 
 def _htx_client(*, market_type: str = "swap") -> HtxClient:
@@ -25,39 +16,6 @@ def _htx_client(*, market_type: str = "swap") -> HtxClient:
     client._contract_cache = {}
     client._contract_cache_ttl_sec = 300.0
     return client
-
-
-def test_deepcoin_wait_for_fill_swap_multiplies_ctval():
-    client = _deepcoin_client(market_type="swap")
-    client.get_instrument_info = MagicMock(return_value={"ctVal": "0.01"})
-    client.get_order = MagicMock(
-        return_value={"state": "filled", "accFillSz": "50", "avgPx": "65000"}
-    )
-
-    out = client.wait_for_fill(
-        symbol="BTC/USDT",
-        order_id="oid-1",
-        max_wait_sec=0.01,
-        poll_interval_sec=0.01,
-    )
-    assert out["filled"] == pytest.approx(0.5)
-    assert out["avg_price"] == pytest.approx(65000.0)
-
-
-def test_deepcoin_wait_for_fill_spot_no_ctval():
-    client = _deepcoin_client(market_type="spot")
-    client.get_instrument_info = MagicMock(return_value={"ctVal": "0.01"})
-    client.get_order = MagicMock(
-        return_value={"state": "filled", "accFillSz": "0.015", "avgPx": "65000"}
-    )
-
-    out = client.wait_for_fill(
-        symbol="BTC/USDT",
-        order_id="oid-1",
-        max_wait_sec=0.01,
-        poll_interval_sec=0.01,
-    )
-    assert out["filled"] == pytest.approx(0.015)
 
 
 def test_htx_wait_for_fill_swap_multiplies_contract_size():

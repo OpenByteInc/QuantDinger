@@ -202,25 +202,6 @@ def get_spot_base_holding(client: BaseRestClient, *, symbol: str) -> Dict[str, f
         logger.warning("spot base holding (bybit): %s", e)
 
     try:
-        from app.services.live_trading.kucoin import KucoinSpotClient
-
-        if isinstance(client, KucoinSpotClient):
-            raw = client.get_accounts()
-            data = (raw.get("data") or []) if isinstance(raw, dict) else []
-            for row in data if isinstance(data, list) else []:
-                if not isinstance(row, dict):
-                    continue
-                if str(row.get("currency") or "").upper() != base_u:
-                    continue
-                if str(row.get("type") or "").lower() not in ("", "trade", "main"):
-                    continue
-                avail = _pick_free_from_row(row, "available", "balance", "holds")
-                total = _pick_free_from_row(row, "balance", "available", "holds")
-                return _spot_holding(total, avail)
-    except Exception as e:
-        logger.warning("spot base holding (kucoin): %s", e)
-
-    try:
         from app.services.live_trading.htx import HtxClient
 
         if isinstance(client, HtxClient) and getattr(client, "market_type", "") == "spot":
@@ -301,12 +282,11 @@ def prepare_spot_live_order_sizes(
     Returns:
         (base_qty, quote_amount, market_buy_uses_quote)
         ``market_buy_uses_quote`` is True when market BUY should send USDT notional
-        (Bitget / KuCoin / Gate spot).
+        (Bitget / Gate spot).
     """
     from app.services.live_trading.binance_spot import BinanceSpotClient
     from app.services.live_trading.bitget_spot import BitgetSpotClient
     from app.services.live_trading.gate import GateSpotClient
-    from app.services.live_trading.kucoin import KucoinSpotClient
 
     qty = float(base_qty or 0.0)
     sd = (side or "").strip().lower()
@@ -328,7 +308,7 @@ def prepare_spot_live_order_sizes(
         quote_amt = normalize_spot_quote_amount(
             client, symbol=symbol, quote_amount=quote_amt
         )
-        if isinstance(client, (BitgetSpotClient, KucoinSpotClient, GateSpotClient)):
+        if isinstance(client, (BitgetSpotClient, GateSpotClient)):
             market_buy_uses_quote = quote_amt > 0
         if isinstance(client, BinanceSpotClient) or not market_buy_uses_quote:
             qty = normalize_spot_base_quantity(
@@ -348,7 +328,7 @@ def normalize_spot_quote_amount(
     symbol: str,
     quote_amount: float,
 ) -> float:
-    """Floor USDT notional for spot market buy (Bitget/KuCoin/Gate quote-sized orders)."""
+    """Floor USDT notional for spot market buy (Bitget/Gate quote-sized orders)."""
     amt = float(quote_amount or 0.0)
     if amt <= 0:
         return 0.0

@@ -125,13 +125,40 @@ _DANGEROUS_PD_NUMPY_ATTRS: Set[str] = {
 }
 
 
+def _dangerous_pd_numpy_import(name: str) -> Optional[str]:
+    """Return the blocked import path when a pandas/numpy submodule is unsafe."""
+    parts = [p for p in str(name or '').split('.') if p]
+    if len(parts) < 2:
+        return None
+    root, attrs = parts[0], parts[1:]
+    alias_root = {'pandas': 'pd', 'numpy': 'np'}.get(root, root)
+    internal = _dangerous_pd_numpy_internal(alias_root, attrs)
+    if internal:
+        return name
+    for attr in attrs:
+        if attr in _DANGEROUS_SUBMODULE_ATTRS:
+            return name
+    return None
+
+
+def _is_safe_import_name(name: str) -> Tuple[bool, Optional[str]]:
+    """Validate import names with package-root and dangerous-submodule checks."""
+    root = str(name or '').split('.')[0]
+    if root not in SAFE_IMPORT_MODULES:
+        return False, f"Import not allowed: {name}"
+    blocked = _dangerous_pd_numpy_import(str(name or ''))
+    if blocked:
+        return False, f"Import not allowed: dangerous pandas/numpy submodule {blocked}"
+    return True, None
+
+
 def _make_safe_import():
     """Create a restricted __import__ that only allows whitelisted modules."""
     def safe_import(name, *args, **kwargs):
-        root = name.split('.')[0]
-        if root in SAFE_IMPORT_MODULES:
+        ok, err = _is_safe_import_name(name)
+        if ok:
             return _builtins_mod.__import__(name, *args, **kwargs)
-        raise ImportError(f"Import not allowed: {name}")
+        raise ImportError(err or f"Import not allowed: {name}")
     return safe_import
 
 
@@ -332,6 +359,10 @@ def safe_exec_isolated(
     """
     import multiprocessing
     import pickle
+
+    is_safe, err = validate_code_safety(code)
+    if not is_safe:
+        return {'success': False, 'error': f"Unsafe code rejected: {err}", 'result': None}
 
     def _worker(code, input_data, max_memory_mb, result_pipe):
         try:
@@ -608,15 +639,22 @@ def validate_code_safety(code: str) -> Tuple[bool, Optional[str]]:
 
         if isinstance(node, ast.Import):
             for alias in node.names:
-                root = alias.name.split('.')[0]
-                if root not in SAFE_IMPORT_MODULES:
+                ok, err = _is_safe_import_name(alias.name)
+                if not ok:
                     return False, f"不允许导入模块 '{alias.name}'，仅允许: {', '.join(sorted(SAFE_IMPORT_MODULES))}"
 
         elif isinstance(node, ast.ImportFrom):
             if node.module:
-                root = node.module.split('.')[0]
-                if root not in SAFE_IMPORT_MODULES:
+                ok, err = _is_safe_import_name(node.module)
+                if not ok:
                     return False, f"不允许导入模块 '{node.module}'，仅允许: {', '.join(sorted(SAFE_IMPORT_MODULES))}"
+
+                for alias in node.names:
+                    if alias.name == '*':
+                        return False, "Wildcard imports are not allowed"
+                    ok, err = _is_safe_import_name(f"{node.module}.{alias.name}")
+                    if not ok:
+                        return False, err or f"Import not allowed: {node.module}.{alias.name}"
 
         elif isinstance(node, ast.Call):
             if _is_operator_accessor_call(node):

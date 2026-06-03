@@ -121,6 +121,10 @@ class GridRestingRunner:
     def should_stop(self) -> bool:
         return self._engine.stop_requested
 
+    @property
+    def stop_reason(self) -> str:
+        return self._engine.stop_reason
+
     def startup(self, current_price: float, *, bars_df: Any = None) -> tuple[bool, str]:
         cfg = GridBotConfig.from_trading_config(self.trading_config)
         ok, msg, warnings = validate_grid_config(cfg, initial_capital=float(self.trading_config.get("initial_capital") or 0))
@@ -170,9 +174,23 @@ class GridRestingRunner:
             )
         except Exception as e:
             logger.debug("grid startup exchange snapshot sid=%s: %s", self.strategy_id, e)
+        if self._engine.handle_boundary(current_price):
+            if self._engine.stop_requested:
+                return False, self._engine.stop_reason or "grid out of bounds"
+            if self._engine._paused_entries:
+                self._started = True
+                register_runner(self)
+                append_strategy_log(
+                    self.strategy_id,
+                    "warning",
+                    "Grid resting startup paused because current price is outside configured bounds",
+                )
+                return True, ""
         self._engine.run_initial_market_position(current_price)
         n = self._engine.sync_grid_orders(current_price)
-        if self._engine.cfg.initial_position_pct <= 0 or self._engine._initial_done:
+        if self._engine.cfg.grid_direction == "neutral":
+            self._engine.sync_held_cell_exits(current_price)
+        elif self._engine.cfg.initial_position_pct <= 0 or self._engine._initial_done:
             self._engine.sync_exit_coverage(current_price)
         if self._engine.stop_requested:
             append_strategy_log(
@@ -255,11 +273,14 @@ class GridRestingRunner:
         ):
             self._engine.run_initial_market_position(current_price)
 
-        if self._engine.cfg.grid_direction in ("long", "short"):
+        if self._engine.cfg.grid_direction in ("long", "short", "neutral"):
             if self._engine.cfg.initial_position_pct <= 0 or self._engine._initial_done:
                 now_exit = time.time()
                 if now_exit - self._last_exit_sync_ts >= 15.0:
-                    self._engine.sync_exit_coverage(current_price)
+                    if self._engine.cfg.grid_direction == "neutral":
+                        self._engine.sync_held_cell_exits(current_price)
+                    else:
+                        self._engine.sync_exit_coverage(current_price)
                     self._last_exit_sync_ts = now_exit
 
         now = time.time()
