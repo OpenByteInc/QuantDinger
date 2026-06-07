@@ -180,7 +180,7 @@ def get_public_config():
                 'openai/gpt-5-mini': 'OpenAI: GPT-5 Mini',
                 'openai/gpt-4.1-mini': 'OpenAI: GPT-4.1 Mini',
                 'deepseek/deepseek-v3.2': 'DeepSeek: DeepSeek V3.2',
-                'minimax/minimax-m2': 'MiniMax: MiniMax M2',
+                'minimax/minimax-m3': 'MiniMax: MiniMax M3',
                 'anthropic/claude-sonnet-4': 'Anthropic: Claude Sonnet 4',
                 'anthropic/claude-sonnet-4.5': 'Anthropic: Claude Sonnet 4.5',
                 'anthropic/claude-opus-4.5': 'Anthropic: Claude Opus 4.5',

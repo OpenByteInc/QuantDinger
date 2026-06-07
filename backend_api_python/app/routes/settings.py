@@ -566,8 +566,8 @@ CONFIG_SCHEMA = {
                 'key': 'MINIMAX_MODEL',
                 'label': 'MiniMax Model',
                 'type': 'text',
-                'default': 'MiniMax-M2.7',
-                'description': 'Model: MiniMax-M2.7, MiniMax-M2.7-highspeed',
+                'default': 'MiniMax-M3',
+                'description': 'Model: MiniMax-M3, MiniMax-M2.7, MiniMax-M2.7-highspeed',
                 'group': 'minimax'
             },
             {

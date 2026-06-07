@@ -69,8 +69,8 @@ PROVIDER_CONFIGS = {
     },
     LLMProvider.MINIMAX: {
         "base_url": "https://api.minimax.io/v1",
-        "default_model": "MiniMax-M2.7",
-        "fallback_model": "MiniMax-M2.7-highspeed",
+        "default_model": "MiniMax-M3",
+        "fallback_model": "MiniMax-M2.7",
     },
     LLMProvider.LITELLM: {
         "base_url": "",  # LiteLLM SDK handles routing
