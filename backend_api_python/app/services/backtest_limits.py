@@ -84,6 +84,16 @@ def backtest_range_policy(market: str, timeframe: str) -> BacktestRangePolicy:
     )
 
 
+def _date_limit_start(end_date: datetime, max_days: int, warmup_seconds: int) -> datetime:
+    """Return a date-only friendly start that keeps the fetch window under max_days."""
+    return end_date - timedelta(days=max(0, int(max_days) - 1)) + timedelta(seconds=warmup_seconds)
+
+
+def _date_limit_end(fetch_start: datetime, max_days: int) -> datetime:
+    """Return a date-only friendly end that keeps the fetch window under max_days."""
+    return fetch_start + timedelta(days=max(0, int(max_days) - 1))
+
+
 def validate_backtest_range(
     *,
     market: str,
@@ -106,11 +116,21 @@ def validate_backtest_range(
     warmup_note = ""
     if warmup_bars:
         warmup_note = f" including {int(warmup_bars)} warmup bars"
+    recommended_start = _date_limit_start(end_date, policy.max_days, warmup_seconds)
+    if recommended_start > end_date:
+        recommended_start = end_date
+    recommended_end = _date_limit_end(fetch_start, policy.max_days)
+    if recommended_end > end_date:
+        recommended_end = end_date
+    recommended_start_str = recommended_start.strftime("%Y-%m-%d")
+    recommended_end_str = recommended_end.strftime("%Y-%m-%d")
     msg = (
         f"Backtest range exceeds limit: {market}:{symbol} timeframe {timeframe} "
         f"supports up to {policy.label} ({policy.max_days} days) because of the "
         f"{policy.reason}, but this request needs {fetch_days} days{warmup_note}. "
-        f"Please shorten the date range or use a higher timeframe."
+        f"Please shorten the date range or use a higher timeframe. "
+        f"Suggested range: {recommended_start_str} to {end_date.strftime('%Y-%m-%d')} "
+        f"(or keep the current start and end by {recommended_end_str})."
     )
     return {
         "error_type": "BACKTEST_RANGE_LIMIT",
@@ -127,4 +147,6 @@ def validate_backtest_range(
         "fetch_start": fetch_start.strftime("%Y-%m-%d"),
         "requested_start": start_date.strftime("%Y-%m-%d"),
         "requested_end": end_date.strftime("%Y-%m-%d"),
+        "recommended_start": recommended_start_str,
+        "recommended_end": recommended_end_str,
     }
