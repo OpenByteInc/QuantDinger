@@ -57,6 +57,19 @@ _MARKET_LIMITS: Dict[str, Dict[str, BacktestRangePolicy]] = {
         "1D": BacktestRangePolicy(3650, "10 years", "US stock daily data provider limit"),
         "1W": BacktestRangePolicy(3650, "10 years", "US stock weekly data provider limit"),
     },
+}
+
+# Extended limits when Alpaca bridge is active (checked at runtime via env vars).
+# Alpaca IEX free feed provides ~6–10 years of intraday history.
+_ALPACA_USSTOCK_LIMITS: Dict[str, BacktestRangePolicy] = {
+    "1m":  BacktestRangePolicy(365,  "1 year",   "Alpaca IEX feed"),
+    "3m":  BacktestRangePolicy(365,  "1 year",   "Alpaca IEX feed"),
+    "5m":  BacktestRangePolicy(730,  "2 years",  "Alpaca IEX feed"),
+    "15m": BacktestRangePolicy(1095, "3 years",  "Alpaca IEX feed"),
+    "30m": BacktestRangePolicy(1095, "3 years",  "Alpaca IEX feed"),
+}
+
+_MARKET_LIMITS.update({
     # Public forex fallbacks often cap output size or paid subscription depth.
     # These limits avoid silently requesting more bars than the configured
     # provider can return in one backtest run.
@@ -71,12 +84,16 @@ _MARKET_LIMITS: Dict[str, Dict[str, BacktestRangePolicy]] = {
         "1D": BacktestRangePolicy(1095, "3 years", "forex daily data provider limit"),
         "1W": BacktestRangePolicy(1095, "3 years", "forex weekly data provider limit"),
     },
-}
+})
 
 
 def backtest_range_policy(market: str, timeframe: str) -> BacktestRangePolicy:
+    import os
     normalized_market = DataSourceFactory.normalize_market(market or "")
     tf = str(timeframe or "1D").strip()
+    if (normalized_market == "USStock" and tf in _ALPACA_USSTOCK_LIMITS
+            and os.getenv("ALPACA_API_KEY") and os.getenv("ALPACA_SECRET_KEY")):
+        return _ALPACA_USSTOCK_LIMITS[tf]
     return (
         _MARKET_LIMITS.get(normalized_market, {}).get(tf)
         or _DEFAULT_LIMITS.get(tf)
