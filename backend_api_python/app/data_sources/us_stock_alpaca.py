@@ -9,7 +9,8 @@ Bars are cached as Parquet per (symbol, timeframe) under ALPACA_CACHE_DIR to
 minimize API calls on repeated backtests. Cache is append-only: only missing
 tail is re-fetched on each access.
 
-Requires env vars: ALPACA_KEY_ID, ALPACA_SECRET_KEY (paper or live keys both work).
+Requires env vars: ALPACA_API_KEY, ALPACA_SECRET_KEY (paper or live keys both work;
+data API always connects to data.alpaca.markets regardless of paper/live).
 """
 import os
 from datetime import datetime, timedelta, date, timezone
@@ -47,7 +48,7 @@ class AlpacaUSStockDataSource(USStockDataSource):
         super().__init__()
         from alpaca.data.historical import StockHistoricalDataClient
         self._client = StockHistoricalDataClient(
-            api_key=os.environ["ALPACA_KEY_ID"],
+            api_key=os.environ["ALPACA_API_KEY"],
             secret_key=os.environ["ALPACA_SECRET_KEY"],
         )
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -198,7 +199,7 @@ class AlpacaUSStockDataSource(USStockDataSource):
                 timeframe=tf,
                 start=fetch_start,
                 end=end,
-                feed="sip",
+                feed="iex",
                 adjustment="split",
             )
             result = self._client.get_stock_bars(request)

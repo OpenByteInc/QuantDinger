@@ -138,7 +138,7 @@ class DataSourceFactory:
             return HKStockDataSource()
         elif market == 'USStock':
             import os
-            if os.getenv('ALPACA_KEY_ID') and os.getenv('ALPACA_SECRET_KEY'):
+            if os.getenv('ALPACA_API_KEY') and os.getenv('ALPACA_SECRET_KEY'):
                 from app.data_sources.us_stock_alpaca import AlpacaUSStockDataSource
                 return AlpacaUSStockDataSource()
             from app.data_sources.us_stock import USStockDataSource
