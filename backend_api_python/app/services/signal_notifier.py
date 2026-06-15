@@ -122,8 +122,17 @@ def _build_webhook_text(payload: Dict[str, Any]) -> Tuple[str, str]:
         title_bits.append(sname)
     if sym:
         title_bits.append(sym)
+    stp = "未知"
     if stype:
-        title_bits.append(stype.upper())
+        if stype == "open_long":
+            stp = "开多"
+        elif stype == "open_short":
+            stp = "开空"
+        elif stype == "close_long":
+            stp = "平多"
+        elif stype == "close_short":
+            stp = "平空"
+        title_bits.append(stp)
     title = ' · '.join(title_bits) if title_bits else 'QuantDinger 信号'
 
     body_lines: List[str] = []
@@ -132,16 +141,7 @@ def _build_webhook_text(payload: Dict[str, Any]) -> Tuple[str, str]:
     if sym:
         body_lines.append(f"标的: {sym}\n")
     if stype:
-        s = "未知"
-        if stype == "open_long":
-            s = "开多"
-        elif stype == "open_short":
-            s = "开空"
-        elif stype == "close_long":
-            s = "平多"
-        elif stype == "close_short":
-            s = "平空"
-        body_lines.append(f"信号: {"多" if stype =='long' else "做空"}\n")
+        body_lines.append(f"信号: {stp}\n")
     if side:
         body_lines.append(f"方向: {"做多" if side =='long' else "做空"}\n")
     try:
@@ -156,14 +156,39 @@ def _build_webhook_text(payload: Dict[str, Any]) -> Tuple[str, str]:
             body_lines.append(f"金额: {_fmt_float(stake)}\n")
     except Exception:
         pass
-    ts_disp = str(p.get('timestamp_display') or p.get('timestamp_iso') or '').strip()
-    if ts_disp:
-        if 'T' in ts_disp:
+    ts_disp = ""
+    ts_iso = str(p.get('timestamp_iso') or '').strip()
+    ts_sec = p.get('timestamp')
+    if ts_iso:
+        try:
+            dt = datetime.fromisoformat(ts_iso)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            dt_bj = dt.astimezone(ZoneInfo("Asia/Shanghai"))
+            ts_disp = dt_bj.strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            pass
+    elif ts_sec is not None:
+        try:
+            dt = datetime.fromtimestamp(int(ts_sec), tz=timezone.utc)
+            dt_bj = dt.astimezone(ZoneInfo("Asia/Shanghai"))
+            ts_disp = dt_bj.strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            pass
+
+    if not ts_disp:
+        ts_disp = str(p.get('timestamp_display') or '').strip()
+        if ts_disp and 'T' in ts_disp:
             try:
                 dt = datetime.fromisoformat(ts_disp)
-                ts_disp = dt.strftime("%Y-%m-%d %H:%M:%S")
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                dt_bj = dt.astimezone(ZoneInfo("Asia/Shanghai"))
+                ts_disp = dt_bj.strftime("%Y-%m-%d %H:%M:%S")
             except Exception:
                 pass
+
+    if ts_disp:
         body_lines.append(f"时间: {ts_disp}\n")
 
     if not body_lines:
