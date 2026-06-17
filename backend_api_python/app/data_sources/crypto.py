@@ -149,6 +149,15 @@ class CryptoDataSource(BaseDataSource):
             config.setdefault("options", {}).update(dict(options))
 
         exchange_id = (ccxt_exchange_id or "").strip().lower()
+
+        # KTX 不在 CCXT 中，已有原生分支（ticker + kline），跳过 CCXT 初始化
+        if exchange_id == "ktx":
+            logger.info("KTX has native client support, skipping CCXT initialization")
+            self.exchange = None
+            self._markets_loaded = False
+            self._markets_cache = None
+            return
+
         if not hasattr(ccxt, exchange_id):
             logger.warning("CCXT exchange '%s' not found, falling back to 'binance'", exchange_id)
             exchange_id = "binance"
@@ -298,59 +307,203 @@ class CryptoDataSource(BaseDataSource):
 
     def get_ticker(self, symbol: str) -> Dict[str, Any]:
         """
-        Get latest ticker for a crypto symbol via CCXT.
+        Get latest ticker for a crypto symbol.
 
-        Accepts common formats:
-        - BTC/USDT, BTCUSDT, BTC/USDT:USDT
-        - PI, TRX (will be normalized and searched across exchanges)
-        - 自动适配不同交易所的符号格式要求
+        KTX: uses native KtxClient.get_ticker() directly (CCXT has no KTX support).
+        All other exchanges: falls back to CCXT fetch_ticker().
         """
         if not symbol or not symbol.strip():
-            return {'last': 0, 'symbol': symbol}
-        
-        normalized = self._symbol_for_scoped_market(symbol)
+            return {"last": 0, "symbol": symbol}
 
+        # KTX native ticker path — CCXT has no KTX, use the native client directly.
+        if (getattr(self, "_scoped_exchange_id", "") or "").strip().lower() == "ktx":
+            return self._get_ticker_ktx(symbol)
+
+        normalized = self._symbol_for_scoped_market(symbol)
         if not normalized:
             logger.warning(f"Failed to normalize symbol: {symbol}")
-            return {'last': 0, 'symbol': symbol}
-        
-        # 尝试获取 ticker
+            return {"last": 0, "symbol": symbol}
+
+        # Try CCXT
         try:
             ticker = self.exchange.fetch_ticker(normalized)
             if ticker and isinstance(ticker, dict):
                 return ticker
         except Exception as e:
             error_msg = str(e).lower()
-            is_symbol_error = any(keyword in error_msg for keyword in [
-                'does not have market symbol',
-                'symbol not found',
-                'invalid symbol',
-                'market does not exist',
-                'trading pair not found'
-            ])
-            
+            is_symbol_error = any(
+                kw in error_msg
+                for kw in [
+                    "does not have market symbol",
+                    "symbol not found",
+                    "invalid symbol",
+                    "market does not exist",
+                    "trading pair not found",
+                ]
+            )
+
             if is_symbol_error:
-                # 尝试查找替代符号
-                base = normalized.split('/')[0] if '/' in normalized else normalized
+                base = normalized.split("/")[0] if "/" in normalized else normalized
                 if self._ensure_markets_loaded():
                     valid_symbol = self._find_valid_symbol(base)
                     if valid_symbol and valid_symbol != normalized:
                         try:
-                            logger.debug(f"Trying alternative symbol: {valid_symbol} (original: {symbol}, first attempt: {normalized})")
+                            logger.debug(
+                                f"Trying alternative symbol: {valid_symbol} "
+                                f"(original: {symbol}, first attempt: {normalized})"
+                            )
                             ticker = self.exchange.fetch_ticker(valid_symbol)
                             if ticker and isinstance(ticker, dict):
                                 return ticker
                         except Exception as e2:
                             logger.debug(f"Alternative symbol {valid_symbol} also failed: {e2}")
-            
-            # 如果所有尝试都失败，记录警告并返回默认值
+
             logger.warning(
                 f"Symbol '{symbol}' (normalized: {normalized}) not found on {self.exchange.id}. "
                 f"Error: {str(e)[:100]}"
             )
-        
-        return {'last': 0, 'symbol': symbol}
-    
+
+        return {"last": 0, "symbol": symbol}
+
+    def _get_ticker_ktx(self, symbol: str) -> Dict[str, Any]:
+        """
+        Fetch KTX ticker via native KtxClient (no CCXT support for KTX).
+
+        Uses API-key-free public endpoint: GET /api/v1/ticker?market=lpc&symbol=BTC_USDT_SWAP
+        """
+        try:
+            from app.services.live_trading.ktx import KtxClient
+
+            # Resolve market_type from the scoped instance
+            mt = getattr(self, "_scoped_market_type", "swap") or "swap"
+            if mt in ("futures", "future", "perp", "perpetual"):
+                mt = "swap"
+
+            # Try to fetch ticker via native client (uses public endpoint, no auth needed).
+            # Use a lightweight ephemeral client — no keys required for public market data.
+            client = KtxClient(
+                api_key="__placeholder__",
+                secret_key="__placeholder__",
+                market_type=mt,
+            )
+            raw = client.get_ticker(symbol=symbol)
+            if not isinstance(raw, dict) or not raw:
+                return {"last": 0, "symbol": symbol}
+
+            # Normalize KTX ticker response to CCXT-like format for consumers.
+            last = 0.0
+            try:
+                last = float(raw.get("last") or raw.get("lastPrice") or raw.get("price") or 0.0)
+            except Exception:
+                last = 0.0
+
+            change = 0.0
+            change_pct = 0.0
+            try:
+                change = float(raw.get("change") or raw.get("priceChange") or 0.0)
+            except Exception:
+                change = 0.0
+            try:
+                change_pct = float(
+                    raw.get("changePercent") or raw.get("priceChangePercent") or 0.0
+                )
+            except Exception:
+                change_pct = 0.0
+
+            return {
+                "last": last,
+                "change": change,
+                "changePercent": change_pct,
+                "high": float(raw.get("high") or raw.get("highPrice") or raw.get("priceHigh") or 0.0),
+                "low": float(raw.get("low") or raw.get("lowPrice") or raw.get("priceLow") or 0.0),
+                "open": float(raw.get("open") or raw.get("openPrice") or 0.0),
+                "volume": float(raw.get("volume") or raw.get("vol") or 0.0),
+                "symbol": symbol,
+            }
+        except Exception as e:
+            logger.warning(f"KTX ticker fetch failed for {symbol}: {e}")
+            return {"last": 0, "symbol": symbol}
+
+    def _get_kline_ktx(
+        self,
+        symbol: str,
+        timeframe: str,
+        limit: int,
+        before_time: Optional[int] = None,
+        after_time: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Fetch KTX candles via native KtxClient (no CCXT support for KTX).
+
+        Uses API-key-free public endpoint:
+        GET /api/v1/candles?symbol=BTC_USDT_SWAP&market=lpc&time_frame=1h&limit=500
+        """
+        try:
+            from app.services.live_trading.ktx import KtxClient
+
+            # Resolve market_type from the scoped instance
+            mt = getattr(self, "_scoped_market_type", "swap") or "swap"
+            if mt in ("futures", "future", "perp", "perpetual"):
+                mt = "swap"
+
+            # Ephemeral client for public market data — no real keys needed.
+            client = KtxClient(
+                api_key="__placeholder__",
+                secret_key="__placeholder__",
+                market_type=mt,
+            )
+            raw_candles = client.get_kline(symbol=symbol, timeframe=timeframe, limit=limit)
+            if not raw_candles:
+                logger.warning(f"KTX get_kline returned no candles for {symbol} {timeframe}")
+                return []
+
+            # Normalize KTX candle response to the standard kline format.
+            # KTX candle fields: open_time (ms), open, high, low, close, volume (strings).
+            klines = []
+            for c in raw_candles:
+                try:
+                    ts = int(c.get("open_time", c.get("timestamp", 0)))
+                    if ts > 1e12:  # milliseconds → seconds
+                        ts = int(ts / 1000)
+                    o = float(c.get("open", 0) or 0)
+                    h = float(c.get("high", 0) or 0)
+                    l = float(c.get("low", 0) or 0)
+                    cl = float(c.get("close", 0) or 0)
+                    v = float(c.get("volume", c.get("vol", 0)) or 0)
+                    klines.append(self.format_kline(
+                        timestamp=ts,
+                        open_price=o,
+                        high=h,
+                        low=l,
+                        close=cl,
+                        volume=v,
+                    ))
+                except (ValueError, TypeError):
+                    continue
+
+            # Apply time filters and limit
+            klines = self.filter_and_limit(
+                klines, limit, before_time, after_time,
+                truncate=(after_time is None),
+            )
+
+            # Concise trace
+            if klines:
+                try:
+                    from datetime import datetime as _dt
+                    first_ts = _dt.utcfromtimestamp(klines[0]['time']).isoformat()
+                    last_ts = _dt.utcfromtimestamp(klines[-1]['time']).isoformat()
+                    logger.info(
+                        f"[CryptoKline] {symbol} {timeframe} returned {len(klines)} candles (KTX native), "
+                        f"utc_range={first_ts}~{last_ts}, limit={limit}, before_time={before_time}"
+                    )
+                except Exception:
+                    pass
+
+            return klines
+        except Exception as e:
+            logger.error(f"KTX kline fetch failed for {symbol} {timeframe}: {e}")
+            return []
+
     def get_kline(
         self,
         symbol: str,
@@ -360,6 +513,10 @@ class CryptoDataSource(BaseDataSource):
         after_time: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """获取加密货币K线数据"""
+        # KTX native kline path — CCXT has no KTX, use the native client directly.
+        if (getattr(self, "_scoped_exchange_id", "") or "").strip().lower() == "ktx":
+            return self._get_kline_ktx(symbol, timeframe, limit, before_time, after_time)
+
         klines = []
         
         try:

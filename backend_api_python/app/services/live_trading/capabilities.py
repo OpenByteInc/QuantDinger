@@ -38,6 +38,7 @@ CRYPTO_VENUE_CAPABILITIES: Dict[str, VenueCapability] = {
     "kraken": VenueCapability("kraken", frozenset({"spot", "swap"})),
     "gate": VenueCapability("gate", frozenset({"spot", "swap"})),
     "htx": VenueCapability("htx", frozenset({"spot", "swap"})),
+    "ktx": VenueCapability("ktx", frozenset({"spot", "swap"})),
 }
 
 

@@ -79,6 +79,14 @@ class CacheManager:
             import redis
             from app.config import RedisConfig
 
+            # Log connection details (mask password for security)
+            password_info = "(set)" if RedisConfig.PASSWORD else "(none)"
+            logger.info(
+                f"Attempting Redis connection: "
+                f"host={RedisConfig.HOST}, port={RedisConfig.PORT}, "
+                f"db={RedisConfig.DB}, password={password_info}"
+            )
+
             self._client = redis.Redis(
                 host=RedisConfig.HOST,
                 port=RedisConfig.PORT,
@@ -90,10 +98,29 @@ class CacheManager:
             )
             self._client.ping()
             self._use_redis = True
-            logger.info("Redis cache connected")
+            logger.info("Redis cache connected successfully")
         except Exception as e:
-            # Fall back silently (keep startup logs clean in local mode).
-            logger.info(f"Redis is enabled but unavailable; using in-memory cache instead: {e}")
+            # Detailed error logging for debugging
+            error_type = type(e).__name__
+            error_details = str(e)
+            
+            # Provide helpful hints based on error type
+            hint = ""
+            if "invalid username-password" in error_details.lower() or "wrong number of arguments" in error_details.lower():
+                hint = " [Hint: Check REDIS_PASSWORD in .env - password may be incorrect]"
+            elif "Connection refused" in error_details:
+                hint = " [Hint: Redis server may not be running or REDIS_HOST/REDIS_PORT is wrong]"
+            elif "Authentication required" in error_details:
+                hint = " [Hint: Redis requires password but REDIS_PASSWORD is not set in .env]"
+            elif "disabled" in error_details.lower():
+                hint = " [Hint: Redis user may be disabled or ACL restricted]"
+            
+            logger.error(
+                f"Redis connection failed: {error_type}: {error_details}{hint}\n"
+                f"  Config: host={RedisConfig.HOST}, port={RedisConfig.PORT}, "
+                f"db={RedisConfig.DB}, password_set={bool(RedisConfig.PASSWORD)}\n"
+                f"  Falling back to in-memory cache"
+            )
             self._client = MemoryCache()
             self._use_redis = False
     

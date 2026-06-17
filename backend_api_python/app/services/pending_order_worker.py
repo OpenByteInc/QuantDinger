@@ -70,6 +70,7 @@ from app.services.live_trading.kraken import KrakenClient
 from app.services.live_trading.kraken_futures import KrakenFuturesClient
 from app.services.live_trading.gate import GateSpotClient, GateUsdtFuturesClient
 from app.services.live_trading.htx import HtxClient
+from app.services.live_trading.ktx import KtxClient
 from app.utils.db import get_db_connection
 from app.utils.logger import get_logger
 from app.utils.strategy_runtime_logs import append_strategy_log
@@ -732,6 +733,38 @@ class PendingOrderWorker:
                                 exch_size.setdefault(hb_sym, {"long": 0.0, "short": 0.0})[side] = abs(float(sz))
                                 try:
                                     ep = float(p.get("avgPrice") or p.get("entryPrice") or 0.0)
+                                    if ep > 0:
+                                        exch_entry_price.setdefault(hb_sym, {"long": 0.0, "short": 0.0})[side] = ep
+                                except Exception:
+                                    pass
+
+                    elif isinstance(client, KtxClient) and market_type == "swap":
+                        positions = client.get_positions()
+                        if isinstance(positions, list):
+                            for p in positions:
+                                if not isinstance(p, dict):
+                                    continue
+                                sym = str(p.get("symbol") or "").strip().upper()
+                                side0 = str(p.get("side") or "").strip().lower()
+                                try:
+                                    sz = float(p.get("quantity") or 0.0)
+                                except Exception:
+                                    sz = 0.0
+                                if not sym or abs(sz) <= 0:
+                                    continue
+                                # Normalize KTX symbol (BTC_USDT_SWAP / BTC_USDT) -> HB BTC/USDT
+                                hb_sym = sym
+                                if hb_sym.endswith("_SWAP"):
+                                    hb_sym = hb_sym[:-5]
+                                hb_sym = hb_sym.replace("_", "/")
+                                side = "long" if side0 in ("long", "buy") else (
+                                    "short" if side0 in ("short", "sell") else (
+                                        "long" if sz > 0 else "short"
+                                    )
+                                )
+                                exch_size.setdefault(hb_sym, {"long": 0.0, "short": 0.0})[side] = abs(float(sz))
+                                try:
+                                    ep = float(p.get("entryPrice") or 0.0)
                                     if ep > 0:
                                         exch_entry_price.setdefault(hb_sym, {"long": 0.0, "short": 0.0})[side] = ep
                                 except Exception:

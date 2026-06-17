@@ -81,6 +81,24 @@ def to_bybit_symbol(symbol: str) -> str:
     return to_binance_futures_symbol(symbol)
 
 
+def to_ktx_symbol(symbol: str, market_type: str = "spot") -> str:
+    """
+    KTX symbol format:
+    - spot: BTC_USDT
+    - futures (lpc): BTC_USDT_SWAP
+    """
+    base, quote = _split_base_quote(symbol)
+    if not quote:
+        # Already KTX format or bare symbol — try to preserve
+        s = (symbol or "").replace("/", "_").replace(":", "").upper()
+        if market_type != "spot" and not s.endswith("_SWAP"):
+            s = f"{s}_SWAP"
+        return s
+    if market_type != "spot":
+        return f"{base}_{quote}_SWAP"
+    return f"{base}_{quote}"
+
+
 def to_coinbase_product_id(symbol: str) -> str:
     """
     Coinbase Exchange product id format: BASE-QUOTE, e.g. BTC-USDT.

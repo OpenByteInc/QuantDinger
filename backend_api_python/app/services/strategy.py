@@ -261,7 +261,7 @@ class StrategyService:
                         }
 
             # For these exchanges, prefer direct REST (no ccxt), aligned with local live-trading design.
-            if ex in ("bybit", "coinbaseexchange", "coinbase_exchange", "kraken", "gate"):
+            if ex in ("bybit", "coinbaseexchange", "coinbase_exchange", "kraken", "gate","ktx"):
                 import requests
 
                 def _req_json(url: str) -> Any:
@@ -362,6 +362,28 @@ class StrategyService:
                     symbols = sorted(list(set(symbols)))
                     return {'success': True, 'message': f'Success, {len(symbols)} trading pairs', 'symbols': symbols}
 
+                if ex == "ktx":
+                    base = str(exchange_config.get("base_url") or exchange_config.get("baseUrl") or "https://api.ktx.app").rstrip("/")
+                    ktx_market = "spot" if market_type == "spot" else "lpc"
+                    j = _req_json(f"{base}/api/v1/products?market={ktx_market}")
+                    result = (j.get("result") if isinstance(j, dict) else None) or []
+                    if isinstance(result, list):
+                        for it in result:
+                            if not isinstance(it, dict):
+                                continue
+                            sym = str(it.get("symbol") or "")
+                            if not sym:
+                                continue
+                            # Convert BTC_USDT -> BTC/USDT, BTC_USDT_SWAP -> BTC/USDT
+                            if "_SWAP" in sym:
+                                sym_clean = sym.replace("_SWAP", "").replace("_", "/")
+                            else:
+                                sym_clean = sym.replace("_", "/")
+                            if sym_clean.endswith("/USDT"):
+                                symbols.append(sym_clean)
+                    symbols = sorted(list(set(symbols)))
+                    return {'success': True, 'message': f'Success, {len(symbols)} trading pairs', 'symbols': symbols}
+
             import ccxt
             
             # Create exchange instance (public only)
@@ -415,6 +437,7 @@ class StrategyService:
                 from app.services.live_trading.kraken_futures import KrakenFuturesClient
                 from app.services.live_trading.gate import GateSpotClient, GateUsdtFuturesClient
                 from app.services.live_trading.htx import HtxClient
+                from app.services.live_trading.ktx import KtxClient
 
                 resolved = resolve_exchange_config(exchange_config or {}, user_id=user_id)
                 safe_cfg = safe_exchange_config_for_log(resolved)
@@ -600,6 +623,8 @@ class StrategyService:
                     if isinstance(client, GateUsdtFuturesClient):
                         return client.get_accounts()
                     if isinstance(client, HtxClient):
+                        return client.get_balance()
+                    if isinstance(client, KtxClient):
                         return client.get_balance()
                     return None
 

@@ -4,7 +4,7 @@
 
 set -e
 
-ENV_FILE="backend_api_python/.env"
+ENV_FILE="../backend_api_python/.env"
 
 # Check if .env exists
 if [ ! -f "$ENV_FILE" ]; then

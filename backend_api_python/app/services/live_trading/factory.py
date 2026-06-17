@@ -2,7 +2,7 @@
 Factory for direct exchange clients.
 
 Supports:
-- Crypto exchanges: Binance, OKX, Bitget, Bybit, Coinbase, Kraken, Gate, HTX
+- Crypto exchanges: Binance, OKX, Bitget, Bybit, Coinbase, Kraken, Gate, HTX, KTX
 - Traditional brokers: Interactive Brokers (IBKR) for US stocks
 - Forex brokers: MetaTrader 5 (MT5)
 """
@@ -27,6 +27,7 @@ from app.services.live_trading.kraken import KrakenClient
 from app.services.live_trading.kraken_futures import KrakenFuturesClient
 from app.services.live_trading.gate import GateSpotClient, GateUsdtFuturesClient
 from app.services.live_trading.htx import HtxClient
+from app.services.live_trading.ktx import KtxClient
 
 # Lazy import IBKR to avoid ImportError if ib_insync not installed
 IBKRClient = None
@@ -255,6 +256,25 @@ def create_client(exchange_config: Dict[str, Any], *, market_type: str = "swap")
             futures_base_url=futures_url,
             market_type=mt,
             broker_id=broker_id,
+        )
+
+    if exchange_id == "ktx":
+        base_url = _get(exchange_config, "base_url", "baseUrl") or "https://api.ktx.app"
+        _ktx_lev = _get(exchange_config, "leverage") or 0
+        try:
+            _ktx_lev = int(float(_ktx_lev))
+        except (TypeError, ValueError):
+            _ktx_lev = 0
+        _ktx_margin = str(
+            _get(exchange_config, "margin_method", "marginMethod", "margin_mode", "marginMode") or ""
+        ).strip().lower()
+        return KtxClient(
+            api_key=api_key,
+            secret_key=secret_key,
+            base_url=base_url,
+            market_type=mt,
+            leverage=_ktx_lev if _ktx_lev > 0 else 0,
+            margin_method=_ktx_margin,
         )
 
     # Traditional brokers (IBKR for US stocks only)

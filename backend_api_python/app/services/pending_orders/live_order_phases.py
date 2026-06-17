@@ -17,6 +17,7 @@ from app.services.live_trading.bybit import BybitClient
 from app.services.live_trading.coinbase_exchange import CoinbaseExchangeClient
 from app.services.live_trading.gate import GateSpotClient, GateUsdtFuturesClient
 from app.services.live_trading.htx import HtxClient
+from app.services.live_trading.ktx import KtxClient
 from app.services.live_trading.kraken import KrakenClient
 from app.services.live_trading.kraken_futures import KrakenFuturesClient
 from app.services.live_trading.okx import OkxClient
@@ -184,6 +185,21 @@ def place_live_limit_order(
             pos_side=pos_side,
             client_order_id=client_order_id,
         )
+    if isinstance(client, KtxClient):
+        if market_type == "swap":
+            try:
+                client.set_leverage(symbol=str(symbol), leverage=leverage)
+            except Exception:
+                pass
+        return client.place_limit_order(
+            symbol=str(symbol),
+            side=side,
+            qty=amount,
+            price=price,
+            reduce_only=reduce_only,
+            pos_side=pos_side,
+            client_order_id=client_order_id,
+        )
     raise LiveTradingError(f"Unsupported client type: {type(client)}")
 
 
@@ -233,6 +249,8 @@ def wait_live_order_fill(
         return client.wait_for_fill(order_id=order_id, contract=to_gate_currency_pair(str(symbol)), max_wait_sec=wait_sec)
     if isinstance(client, HtxClient):
         return client.wait_for_fill(symbol=str(symbol), order_id=order_id, client_order_id=client_order_id, max_wait_sec=wait_sec)
+    if isinstance(client, KtxClient):
+        return client.wait_for_fill(symbol=str(symbol), order_id=order_id, client_order_id=client_order_id, max_wait_sec=wait_sec)
     raise LiveTradingError(f"Unsupported client type: {type(client)}")
 
 
@@ -270,6 +288,8 @@ def cancel_live_limit_order(
     if isinstance(client, GateUsdtFuturesClient):
         return client.cancel_order(order_id=order_id)
     if isinstance(client, HtxClient):
+        return client.cancel_order(symbol=str(symbol), order_id=order_id, client_order_id=client_order_id)
+    if isinstance(client, KtxClient):
         return client.cancel_order(symbol=str(symbol), order_id=order_id, client_order_id=client_order_id)
     return None
 
@@ -426,6 +446,20 @@ def place_live_market_order(
             client_order_id=client_order_id,
         )
     if isinstance(client, HtxClient):
+        if market_type == "swap":
+            try:
+                client.set_leverage(symbol=str(symbol), leverage=leverage)
+            except Exception:
+                pass
+        return client.place_market_order(
+            symbol=str(symbol),
+            side=side,
+            qty=amount,
+            reduce_only=reduce_only,
+            pos_side=pos_side,
+            client_order_id=client_order_id,
+        )
+    if isinstance(client, KtxClient):
         if market_type == "swap":
             try:
                 client.set_leverage(symbol=str(symbol), leverage=leverage)
