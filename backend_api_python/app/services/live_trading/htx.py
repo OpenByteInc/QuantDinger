@@ -15,7 +15,7 @@ import datetime
 import logging
 import time
 from decimal import Decimal, ROUND_DOWN
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlencode, urlparse
 
 from app.services.live_trading.base import BaseRestClient, LiveOrderResult, LiveTradingError
@@ -57,6 +57,8 @@ class HtxClient(BaseRestClient):
         self._v5_asset_mode: Optional[int] = None
         self._v5_asset_mode_ts: float = 0.0
         self._v5_multi_asset_switch_tried: bool = False
+        self._pos_mode_cache: Dict[str, Tuple[float, bool]] = {}
+        self._pos_mode_cache_ttl_sec: float = 60.0
 
     @staticmethod
     def _format_swap_client_order_id(client_order_id: Optional[str]) -> Optional[int]:
@@ -293,6 +295,94 @@ class HtxClient(BaseRestClient):
     def _default_margin_mode(self) -> str:
         return "cross"
 
+    def get_swap_hedge_mode(self, *, symbol: str) -> bool:
+        """
+        True when account uses HTX dual_side (hedge) position mode for ``symbol``.
+
+        GET /v5/position/mode — defaults to one-way when the API call fails.
+        """
+        if self.market_type != "swap":
+            return False
+        contract_code = to_htx_contract_code(symbol)
+        if not contract_code:
+            return False
+        key = contract_code.upper()
+        now = time.time()
+        cached = self._pos_mode_cache.get(key)
+        if cached:
+            ts, hedge = cached
+            if (now - float(ts or 0.0)) <= float(self._pos_mode_cache_ttl_sec or 60.0):
+                return bool(hedge)
+        hedge: Optional[bool] = None
+        margin_mode = self._default_margin_mode()
+        for params in (
+            {"contract_code": contract_code, "margin_mode": margin_mode},
+            {"contract_code": contract_code},
+            {"margin_account": "USDT", "margin_mode": margin_mode},
+            {"margin_account": "USDT"},
+        ):
+            if hedge is not None:
+                break
+            try:
+                raw = self._swap_v5_request("GET", "/v5/position/mode", params=params)
+                hedge = htx_v5.parse_position_mode_hedged(htx_v5.v5_data(raw))
+            except Exception as e:
+                logger.debug("HTX V5 position/mode probe %s for %s: %s", params, contract_code, e)
+        if hedge is None:
+            try:
+                pos_raw = self._swap_v5_request(
+                    "GET",
+                    "/v5/trade/position/opens",
+                    params={"contract_code": contract_code},
+                )
+                hedge = htx_v5.parse_position_mode_hedged(htx_v5.v5_data(pos_raw))
+            except Exception as e_pos:
+                logger.debug(
+                    "HTX V5 position/opens probe for %s: %s", contract_code, e_pos
+                )
+        if hedge is None:
+            for json_body in (
+                {"contract_code": contract_code},
+                {"margin_account": "USDT"},
+            ):
+                if hedge is not None:
+                    break
+                try:
+                    raw_v1 = self._swap_private_request_raw(
+                        "POST",
+                        "/linear-swap-api/v1/swap_cross_account_position_info",
+                        json_body=json_body,
+                    )
+                    if str(raw_v1.get("status") or "").lower() != "ok":
+                        continue
+                    data_v1 = raw_v1.get("data")
+                    if isinstance(data_v1, list) and data_v1:
+                        hedge = htx_v5.parse_position_mode_hedged(data_v1[0])
+                    elif isinstance(data_v1, dict):
+                        hedge = htx_v5.parse_position_mode_hedged(data_v1)
+                        if hedge is None:
+                            positions = data_v1.get("positions")
+                            if isinstance(positions, list) and positions:
+                                hedge = htx_v5.parse_position_mode_hedged(positions[0])
+                except Exception as e2:
+                    logger.debug(
+                        "HTX V1 position_mode probe %s for %s: %s", json_body, contract_code, e2
+                    )
+        if hedge is None:
+            hedge = False
+            logger.info(
+                "HTX position mode unknown for %s; assuming one-way (single_side)",
+                contract_code,
+            )
+        else:
+            logger.info(
+                "HTX position mode for %s: %s",
+                contract_code,
+                "dual_side" if hedge else "single_side",
+            )
+        self._pos_mode_cache[key] = (now, bool(hedge))
+        return bool(hedge)
+
     def _get_spot_account_id(self) -> str:
         if self._spot_account_id:
             return self._spot_account_id
@@ -419,6 +509,20 @@ class HtxClient(BaseRestClient):
         self._lever_cache[contract_code] = lv
         return True
 
+    def _place_swap_order_v1(self, body: Dict[str, Any]) -> LiveOrderResult:
+        raw = self._swap_private_request_raw(
+            "POST", "/linear-swap-api/v1/swap_cross_order", json_body=body
+        )
+        if str(raw.get("status") or "").lower() != "ok":
+            err = raw.get("err_msg") or raw.get("err_code") or raw
+            raise LiveTradingError(f"HTX swap_cross_order: {err}")
+        data = raw.get("data") or {}
+        if not isinstance(data, dict):
+            data = {}
+        oid = str(data.get("order_id_str") or data.get("order_id") or "")
+        logger.info("HTX V1 cross order placed order_id=%s", oid)
+        return LiveOrderResult(exchange_id="htx", exchange_order_id=oid, filled=0.0, avg_price=0.0, raw=raw)
+
     def _place_swap_order(self, body: Dict[str, Any]) -> LiveOrderResult:
         req = dict(body)
         req.setdefault("margin_mode", self._default_margin_mode())
@@ -428,6 +532,159 @@ class HtxClient(BaseRestClient):
         oid = str(data.get("order_id_str") or data.get("order_id") or "")
         logger.info("HTX V5 order placed order_id=%s", oid)
         return LiveOrderResult(exchange_id="htx", exchange_order_id=oid, filled=0.0, avg_price=0.0, raw=raw)
+
+    @staticmethod
+    def _is_position_mode_param_error(err: Exception) -> bool:
+        text = str(err or "").lower()
+        return "position mode" in text and ("parameter" in text or "passing" in text)
+
+    @staticmethod
+    def _is_illegal_parameter_type_error(err: Exception) -> bool:
+        text = str(err or "").lower()
+        return "illegal parameter type" in text or "invalid-type" in text
+
+    def _place_swap_order_with_mode_fallback(
+        self,
+        *,
+        symbol: str,
+        contract_code: str,
+        body: Dict[str, Any],
+        pos_side: str = "",
+    ) -> LiveOrderResult:
+        reduce_only = body.get("reduce_only") in (1, "1", True) or str(
+            body.get("offset") or ""
+        ).lower() == "close"
+        side = str(body.get("side") or body.get("direction") or "buy")
+        lever_rate = int(body.get("lever_rate") or 5)
+        has_price = body.get("price") is not None
+        order_price_type = "limit" if has_price else "opponent"
+        price = float(body["price"]) if has_price else None
+        client_order_id = body.get("client_order_id")
+        channel_code = str(body.get("channel_code") or self.broker_id or "")
+        volume = int(body.get("volume") or 0)
+        preferred = self.get_swap_hedge_mode(symbol=symbol)
+
+        v1_candidates = htx_v5.v1_order_body_variants(
+            contract_code=str(body.get("contract_code") or contract_code),
+            volume=volume,
+            side=side,
+            lever_rate=lever_rate,
+            order_price_type=order_price_type,
+            price=price,
+            client_order_id=client_order_id,
+            channel_code=channel_code,
+            reduce_only=reduce_only,
+            preferred_hedge=preferred,
+        )
+        margin_mode = str(body.get("margin_mode") or self._default_margin_mode())
+        v5_common = dict(
+            contract_code=str(body.get("contract_code") or contract_code),
+            volume=volume,
+            side=side,
+            order_price_type=order_price_type,
+            price=price,
+            client_order_id=client_order_id,
+            channel_code=channel_code,
+            margin_mode=margin_mode,
+            reduce_only=reduce_only,
+            pos_side=pos_side,
+        )
+
+        asset_mode = self._fetch_v5_asset_mode()
+        skip_v1 = asset_mode == 1
+        last_err: Optional[Exception] = None
+        tried_v1 = False
+        if not skip_v1:
+            for req in v1_candidates:
+                tried_v1 = True
+                try:
+                    hedge = str(req.get("offset") or "").lower() in ("open", "close")
+                    self._pos_mode_cache[contract_code.upper()] = (time.time(), hedge)
+                    return self._place_swap_order_v1(req)
+                except LiveTradingError as e:
+                    last_err = e
+                    if htx_v5.is_multi_asset_v1_unavailable(str(e)):
+                        skip_v1 = True
+                        logger.info(
+                            "HTX account is multi-asset collateral (asset_mode=%s); skipping V1 orders",
+                            asset_mode,
+                        )
+                        break
+                    logger.warning("HTX V1 order attempt failed for %s: %s", contract_code, e)
+        else:
+            logger.debug(
+                "HTX V1 swap_cross_order skipped for %s (asset_mode=1 multi-asset)",
+                contract_code,
+            )
+
+        if tried_v1 and not skip_v1:
+            logger.info("HTX V1 swap_cross_order failed for %s; falling back to V5", contract_code)
+
+        v5_mode = preferred
+        logger.info(
+            "HTX V5 multi-asset order for %s: position_mode=%s pos_side_hint=%s reduce_only=%s",
+            contract_code,
+            "dual_side" if v5_mode else "single_side",
+            pos_side or "(auto)",
+            reduce_only,
+        )
+        v5_candidates = htx_v5.swap_order_body_variants(
+            preferred_hedge=v5_mode, **v5_common
+        )
+        idx = 0
+        while idx < len(v5_candidates):
+            req = v5_candidates[idx]
+            try:
+                hedge = req.get("position_side") in ("long", "short")
+                self._pos_mode_cache[contract_code.upper()] = (time.time(), hedge)
+                return self._place_swap_order(req)
+            except LiveTradingError as e:
+                last_err = e
+                err_text = str(e)
+                if self._is_illegal_parameter_type_error(e):
+                    logger.warning(
+                        "HTX V5 illegal type for %s (type=%s position_side=%s); trying next",
+                        contract_code,
+                        req.get("type"),
+                        req.get("position_side"),
+                    )
+                    idx += 1
+                    continue
+                if htx_v5.is_oneway_order_rejected_on_hedge(err_text) and v5_mode:
+                    logger.warning(
+                        "HTX V5 hedge params rejected on %s (likely single_side); retry one-way",
+                        contract_code,
+                    )
+                    v5_mode = False
+                    v5_candidates = htx_v5.swap_order_body_variants(
+                        oneway_only=True, **v5_common
+                    )
+                    idx = 0
+                    continue
+                if htx_v5.is_hedge_order_rejected_on_oneway(err_text) and not v5_mode:
+                    logger.warning(
+                        "HTX V5 one-way params rejected on %s (likely dual_side); retry hedge",
+                        contract_code,
+                    )
+                    v5_mode = True
+                    v5_candidates = htx_v5.swap_order_body_variants(
+                        hedge_only=True, **v5_common
+                    )
+                    idx = 0
+                    continue
+                if not self._is_position_mode_param_error(e):
+                    raise
+                logger.warning(
+                    "HTX V5 position-mode mismatch for %s (type=%s position_side=%s reduce_only=%s); trying next",
+                    contract_code,
+                    req.get("type"),
+                    req.get("position_side"),
+                    req.get("reduce_only"),
+                )
+                idx += 1
+        if last_err:
+            raise last_err
+        raise LiveTradingError("HTX order failed after V1 and V5 retries")
 
     def place_market_order(
         self,
@@ -476,20 +733,26 @@ class HtxClient(BaseRestClient):
         sd = str(side or "").strip().lower()
         if sd not in ("buy", "sell"):
             raise LiveTradingError(f"Invalid side: {side}")
-        body: Dict[str, Any] = {
-            "contract_code": contract_code,
-            "volume": volume,
-            "direction": sd,
-            "offset": "close" if reduce_only else "open",
-            "lever_rate": int(self._lever_cache.get(contract_code) or 5),
-            "order_price_type": "opponent",
-        }
-        if self.broker_id:
-            body["channel_code"] = self.broker_id
+        hedge_mode = self.get_swap_hedge_mode(symbol=symbol)
+        ps = htx_v5.resolve_v5_position_side(
+            side=sd, reduce_only=reduce_only, hedge_mode=hedge_mode, pos_side=pos_side
+        )
+        body = htx_v5.build_swap_order_body(
+            contract_code=contract_code,
+            volume=volume,
+            side=sd,
+            order_price_type="opponent",
+            channel_code=self.broker_id or "",
+            margin_mode=self._default_margin_mode(),
+            reduce_only=reduce_only,
+            position_side=ps,
+        )
         swap_coid = self._format_swap_client_order_id(client_order_id)
         if swap_coid is not None:
             body["client_order_id"] = swap_coid
-        return self._place_swap_order(body)
+        return self._place_swap_order_with_mode_fallback(
+            symbol=symbol, contract_code=contract_code, body=body, pos_side=pos_side
+        )
 
     def place_limit_order(
         self,
@@ -530,21 +793,27 @@ class HtxClient(BaseRestClient):
 
         contract_code = to_htx_contract_code(symbol)
         volume = self._base_to_contracts(symbol=symbol, qty=qty)
-        body = {
-            "contract_code": contract_code,
-            "volume": volume,
-            "direction": sd,
-            "offset": "close" if reduce_only else "open",
-            "lever_rate": int(self._lever_cache.get(contract_code) or 5),
-            "price": px,
-            "order_price_type": "limit",
-        }
-        if self.broker_id:
-            body["channel_code"] = self.broker_id
+        hedge_mode = self.get_swap_hedge_mode(symbol=symbol)
+        ps = htx_v5.resolve_v5_position_side(
+            side=sd, reduce_only=reduce_only, hedge_mode=hedge_mode, pos_side=pos_side
+        )
+        body = htx_v5.build_swap_order_body(
+            contract_code=contract_code,
+            volume=volume,
+            side=sd,
+            order_price_type="limit",
+            price=px,
+            channel_code=self.broker_id or "",
+            margin_mode=self._default_margin_mode(),
+            reduce_only=reduce_only,
+            position_side=ps,
+        )
         swap_coid = self._format_swap_client_order_id(client_order_id)
         if swap_coid is not None:
             body["client_order_id"] = swap_coid
-        return self._place_swap_order(body)
+        return self._place_swap_order_with_mode_fallback(
+            symbol=symbol, contract_code=contract_code, body=body, pos_side=pos_side
+        )
 
     def cancel_order(self, *, symbol: str, order_id: str = "", client_order_id: str = "") -> Dict[str, Any]:
         if self.market_type == "spot":
@@ -605,6 +874,16 @@ class HtxClient(BaseRestClient):
     ) -> Dict[str, Any]:
         end_ts = time.time() + float(max_wait_sec or 0.0)
         last: Dict[str, Any] = {}
+        contract_size = 1.0
+        if self.market_type != "spot":
+            try:
+                info = self.get_contract_info(symbol=str(symbol)) or {}
+                cs = float(info.get("contract_size") or info.get("contractSize") or 0.0)
+                if cs > 0:
+                    contract_size = cs
+            except Exception:
+                contract_size = 1.0
+
         while True:
             timed_out = time.time() >= end_ts
             try:
@@ -620,14 +899,28 @@ class HtxClient(BaseRestClient):
             fee_ccy = "USDT"
             status = str(last.get("status") or last.get("state") or "")
             try:
-                filled = float(
-                    last.get("field-amount")
-                    or last.get("filled_amount")
-                    or last.get("filled_qty")
-                    or last.get("trade_volume")
-                    or last.get("trade_volume_avg")
-                    or 0.0
-                )
+                if self.market_type == "spot":
+                    filled = float(
+                        last.get("field-amount")
+                        or last.get("filled_amount")
+                        or last.get("filled_qty")
+                        or 0.0
+                    )
+                else:
+                    contracts = float(
+                        last.get("trade_volume")
+                        or last.get("tradeVolume")
+                        or 0.0
+                    )
+                    if contracts > 0:
+                        filled = abs(contracts) * contract_size
+                    else:
+                        filled = float(
+                            last.get("field-amount")
+                            or last.get("filled_amount")
+                            or last.get("filled_qty")
+                            or 0.0
+                        )
             except Exception:
                 filled = 0.0
             try:
@@ -642,6 +935,14 @@ class HtxClient(BaseRestClient):
                         or last.get("price")
                         or 0.0
                     )
+                    if avg_price <= 0 and self.market_type != "spot":
+                        turnover = float(
+                            last.get("trade_turnover")
+                            or last.get("tradeTurnover")
+                            or 0.0
+                        )
+                        if filled > 0 and turnover > 0:
+                            avg_price = turnover / filled
             except Exception:
                 avg_price = 0.0
             try:

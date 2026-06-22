@@ -51,7 +51,6 @@ class MetaCacheConfig(type):
     
     @property
     def ENABLED(cls):
-        # 强制默认关闭，除非环境变量显式开启
         return os.getenv('CACHE_ENABLED', 'False').lower() == 'true'
 
     @property
@@ -69,7 +68,6 @@ class MetaCacheConfig(type):
             '1H': 300,     # 1小时K线缓存5分钟
             '4H': 300,     # 4小时K线缓存5分钟
             '1D': 300,     # 日K线缓存5分钟
-            # 兼容小写
             '1h': 300,
             '4h': 300,
             '1d': 300,

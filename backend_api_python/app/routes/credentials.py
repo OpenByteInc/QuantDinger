@@ -6,7 +6,8 @@ encrypted_config stores Fernet ciphertext derived from SECRET_KEY (see app.utils
 
 import traceback
 import json
-from flask import Blueprint, request, jsonify, g
+from flask import g, jsonify, request
+from app.openapi.blueprint import HumanBlueprint as Blueprint
 
 import requests as rq
 
@@ -15,13 +16,14 @@ from app.utils.logger import get_logger
 from app.utils.auth import login_required
 from app.utils.credential_crypto import encrypt_credential_blob, decrypt_credential_blob
 from app.services.live_trading.factory import exchange_demo_mode_enabled
+from app.services.live_trading.capabilities import supported_crypto_exchange_ids
 
 logger = get_logger(__name__)
 
-credentials_bp = Blueprint('credentials', __name__)
+credentials_blp = Blueprint('credentials', __name__)
 
 
-@credentials_bp.route('/desktop-brokers-policy', methods=['GET'])
+@credentials_blp.route('/desktop-brokers-policy', methods=['GET'])
 @login_required
 def desktop_brokers_policy():
     """
@@ -52,7 +54,7 @@ def _api_key_hint(api_key: str) -> str:
     return f"{s[:4]}...{s[-4:]}"
 
 
-@credentials_bp.route('/list', methods=['GET'])
+@credentials_blp.route('/list', methods=['GET'])
 @login_required
 def list_credentials():
     """List all credentials for the current user."""
@@ -93,10 +95,7 @@ def list_credentials():
         return jsonify({'code': 0, 'msg': str(e), 'data': {'items': []}}), 500
 
 
-CRYPTO_EXCHANGES = [
-    'binance', 'okx', 'bitget', 'bybit', 'coinbaseexchange',
-    'kraken', 'kucoin', 'gate', 'deepcoin', 'htx'
-]
+CRYPTO_EXCHANGES = sorted(supported_crypto_exchange_ids(include_aliases=True))
 
 
 def _egress_ipify(url: str) -> str:
@@ -112,7 +111,7 @@ def _egress_ipify(url: str) -> str:
         return ""
 
 
-@credentials_bp.route('/egress-ip', methods=['GET'])
+@credentials_blp.route('/egress-ip', methods=['GET'])
 @login_required
 def get_egress_ip():
     """
@@ -128,14 +127,13 @@ def get_egress_ip():
             "data": {
                 "ipv4": ipv4 or None,
                 "ipv6": ipv6 or None,
-                # 兼容旧前端：优先 IPv4，否则 IPv6
                 "ip": ipv4 or ipv6 or None,
             },
         }
     )
 
 
-@credentials_bp.route('/create', methods=['POST'])
+@credentials_blp.route('/create', methods=['POST'])
 @login_required
 def create_credential():
     """Create a new credential for the current user.
@@ -252,7 +250,7 @@ def create_credential():
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
 
 
-@credentials_bp.route('/update-name', methods=['PUT', 'PATCH'])
+@credentials_blp.route('/update-name', methods=['PUT', 'PATCH'])
 @login_required
 def update_credential_name():
     """Update display name (alias) only — API keys in encrypted_config are untouched."""
@@ -299,7 +297,7 @@ def update_credential_name():
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
 
 
-@credentials_bp.route('/delete', methods=['DELETE'])
+@credentials_blp.route('/delete', methods=['DELETE'])
 @login_required
 def delete_credential():
     """Delete a credential for the current user."""
@@ -325,7 +323,7 @@ def delete_credential():
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
 
 
-@credentials_bp.route('/get', methods=['GET'])
+@credentials_blp.route('/get', methods=['GET'])
 @login_required
 def get_credential():
     """
@@ -376,3 +374,6 @@ def get_credential():
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
 
 
+
+# openapi-compat: legacy import name
+credentials_bp = credentials_blp

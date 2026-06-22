@@ -2,7 +2,8 @@
 Portfolio API routes (local-only).
 Manages manual positions (user's existing holdings) and AI monitoring tasks.
 """
-from flask import Blueprint, request, jsonify, g
+from flask import g, jsonify, request
+from app.openapi.blueprint import HumanBlueprint as Blueprint
 from datetime import date, datetime, timezone
 import os
 import json
@@ -21,7 +22,7 @@ from app.data.market_symbols_seed import get_symbol_name as seed_get_symbol_name
 
 logger = get_logger(__name__)
 
-portfolio_bp = Blueprint('portfolio', __name__)
+portfolio_blp = Blueprint('portfolio', __name__)
 kline_service = KlineService()
 cache = CacheManager()
 
@@ -108,7 +109,6 @@ def _get_single_price(market: str, symbol: str, force_refresh: bool = False) -> 
         force_refresh: 是否强制刷新（跳过缓存）
     """
     try:
-        # 速率限制：同一市场的请求间隔
         with _request_lock:
             now = time.time()
             last_time = _last_request_time.get(market, 0)
@@ -117,7 +117,6 @@ def _get_single_price(market: str, symbol: str, force_refresh: bool = False) -> 
                 time.sleep(wait_time)
             _last_request_time[market] = time.time()
         
-        # 使用新的 get_realtime_price 方法获取实时价格
         price_data = kline_service.get_realtime_price(market, symbol, force_refresh=force_refresh)
         
         return {
@@ -142,7 +141,7 @@ def _get_single_price(market: str, symbol: str, force_refresh: bool = False) -> 
 
 # ==================== Position CRUD ====================
 
-@portfolio_bp.route('/positions', methods=['GET'])
+@portfolio_blp.route('/positions', methods=['GET'])
 @login_required
 def get_positions():
     """Get all manual positions with current prices for the current user."""
@@ -247,7 +246,7 @@ def get_positions():
         return jsonify({'code': 0, 'msg': str(e), 'data': []}), 500
 
 
-@portfolio_bp.route('/positions', methods=['POST'])
+@portfolio_blp.route('/positions', methods=['POST'])
 @login_required
 def add_position():
     """Add a new manual position for the current user."""
@@ -317,7 +316,7 @@ def add_position():
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
 
 
-@portfolio_bp.route('/positions/<int:position_id>', methods=['PUT'])
+@portfolio_blp.route('/positions/<int:position_id>', methods=['PUT'])
 @login_required
 def update_position(position_id):
     """Update an existing position for the current user."""
@@ -386,7 +385,7 @@ def update_position(position_id):
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
 
 
-@portfolio_bp.route('/positions/<int:position_id>', methods=['DELETE'])
+@portfolio_blp.route('/positions/<int:position_id>', methods=['DELETE'])
 @login_required
 def delete_position(position_id):
     """Delete a position for the current user."""
@@ -408,7 +407,7 @@ def delete_position(position_id):
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
 
 
-@portfolio_bp.route('/summary', methods=['GET'])
+@portfolio_blp.route('/summary', methods=['GET'])
 @login_required
 def get_portfolio_summary():
     """Get portfolio summary with total value, PnL, and market distribution for the current user."""
@@ -530,7 +529,7 @@ def get_portfolio_summary():
 
 # ==================== Monitor CRUD ====================
 
-@portfolio_bp.route('/monitors', methods=['GET'])
+@portfolio_blp.route('/monitors', methods=['GET'])
 @login_required
 def get_monitors():
     """Get all position monitors for the current user."""
@@ -576,7 +575,7 @@ def get_monitors():
         return jsonify({'code': 0, 'msg': str(e), 'data': []}), 500
 
 
-@portfolio_bp.route('/monitors', methods=['POST'])
+@portfolio_blp.route('/monitors', methods=['POST'])
 @login_required
 def add_monitor():
     """Add a new position monitor for the current user."""
@@ -618,7 +617,6 @@ def add_monitor():
             db.commit()
             cur.close()
 
-        # 创建后立即在后台跑一轮：立刻发通知，并以完成时刻为基准写入 next_run_at（间隔后再次执行）
         if is_active and monitor_id:
             try:
                 from app.services.portfolio_monitor import run_single_monitor as _run_single_monitor
@@ -644,7 +642,7 @@ def add_monitor():
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
 
 
-@portfolio_bp.route('/monitors/<int:monitor_id>', methods=['PUT'])
+@portfolio_blp.route('/monitors/<int:monitor_id>', methods=['PUT'])
 @login_required
 def update_monitor(monitor_id):
     """Update an existing monitor for the current user."""
@@ -715,7 +713,7 @@ def update_monitor(monitor_id):
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
 
 
-@portfolio_bp.route('/monitors/<int:monitor_id>', methods=['DELETE'])
+@portfolio_blp.route('/monitors/<int:monitor_id>', methods=['DELETE'])
 @login_required
 def delete_monitor(monitor_id):
     """Delete a monitor for the current user."""
@@ -737,7 +735,7 @@ def delete_monitor(monitor_id):
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
 
 
-@portfolio_bp.route('/monitors/<int:monitor_id>/run', methods=['POST'])
+@portfolio_blp.route('/monitors/<int:monitor_id>/run', methods=['POST'])
 @login_required
 def run_monitor_now(monitor_id):
     """Manually trigger a monitor to run immediately.
@@ -802,7 +800,7 @@ def run_monitor_now(monitor_id):
 
 # ==================== Alerts CRUD ====================
 
-@portfolio_bp.route('/alerts', methods=['GET'])
+@portfolio_blp.route('/alerts', methods=['GET'])
 @login_required
 def get_alerts():
     """Get all position alerts for the current user."""
@@ -855,7 +853,7 @@ def get_alerts():
         return jsonify({'code': 0, 'msg': str(e), 'data': []}), 500
 
 
-@portfolio_bp.route('/alerts', methods=['POST'])
+@portfolio_blp.route('/alerts', methods=['POST'])
 @login_required
 def add_alert():
     """Add a new position alert for the current user."""
@@ -950,7 +948,7 @@ def add_alert():
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
 
 
-@portfolio_bp.route('/alerts/<int:alert_id>', methods=['PUT'])
+@portfolio_blp.route('/alerts/<int:alert_id>', methods=['PUT'])
 @login_required
 def update_alert(alert_id):
     """Update an existing alert for the current user."""
@@ -1013,7 +1011,7 @@ def update_alert(alert_id):
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
 
 
-@portfolio_bp.route('/alerts/<int:alert_id>', methods=['DELETE'])
+@portfolio_blp.route('/alerts/<int:alert_id>', methods=['DELETE'])
 @login_required
 def delete_alert(alert_id):
     """Delete an alert for the current user."""
@@ -1037,7 +1035,7 @@ def delete_alert(alert_id):
 
 # ==================== Groups ====================
 
-@portfolio_bp.route('/groups', methods=['GET'])
+@portfolio_blp.route('/groups', methods=['GET'])
 @login_required
 def get_groups():
     """Get list of all groups with position counts for the current user."""
@@ -1089,7 +1087,7 @@ def get_groups():
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
 
 
-@portfolio_bp.route('/groups/rename', methods=['POST'])
+@portfolio_blp.route('/groups/rename', methods=['POST'])
 @login_required
 def rename_group():
     """Rename a group for the current user."""
@@ -1116,3 +1114,6 @@ def rename_group():
         logger.error(f"rename_group failed: {str(e)}")
         logger.error(traceback.format_exc())
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
+
+# openapi-compat: legacy import name
+portfolio_bp = portfolio_blp

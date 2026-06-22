@@ -1,0 +1,6 @@
+extends: ./.spectral.yaml
+rules:
+  # Agent spec predates flask-smorest; operationIds added in a follow-up pass.
+  operation-operationId: warn
+  operation-description: off
+  qd-require-operation-summary: off

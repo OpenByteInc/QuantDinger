@@ -14,6 +14,28 @@ logger = get_logger(__name__)
 # Singleton instance
 _security_service = None
 
+_TURNSTILE_PLACEHOLDER_VALUES = {
+    '',
+    '0',
+    'false',
+    'none',
+    'null',
+    'test',
+    'dummy',
+    'placeholder',
+    'changeme',
+    'change-me',
+    'quantdinger',
+    'your-turnstile-site-key',
+    'your-turnstile-secret-key',
+}
+
+
+def _is_placeholder_turnstile_value(value: str) -> bool:
+    """Return True for local/demo placeholders that should not enable Turnstile."""
+    normalized = (value or '').strip().lower()
+    return normalized in _TURNSTILE_PLACEHOLDER_VALUES
+
 
 def get_security_service():
     """Get singleton SecurityService instance"""
@@ -32,9 +54,18 @@ class SecurityService:
     def _load_config(self):
         """Load security configuration from environment variables"""
         # Turnstile config
-        self.turnstile_site_key = os.getenv('TURNSTILE_SITE_KEY', '')
-        self.turnstile_secret_key = os.getenv('TURNSTILE_SECRET_KEY', '')
-        self.turnstile_enabled = bool(self.turnstile_site_key and self.turnstile_secret_key)
+        self.turnstile_site_key = (os.getenv('TURNSTILE_SITE_KEY', '') or '').strip()
+        self.turnstile_secret_key = (os.getenv('TURNSTILE_SECRET_KEY', '') or '').strip()
+        self.turnstile_enabled = bool(
+            self.turnstile_site_key
+            and self.turnstile_secret_key
+            and not _is_placeholder_turnstile_value(self.turnstile_site_key)
+            and not _is_placeholder_turnstile_value(self.turnstile_secret_key)
+        )
+        if (self.turnstile_site_key or self.turnstile_secret_key) and not self.turnstile_enabled:
+            logger.warning(
+                "Turnstile is disabled because its site key or secret key is empty/a placeholder."
+            )
         
         # IP rate limit config
         self.ip_max_attempts = int(os.getenv('SECURITY_IP_MAX_ATTEMPTS', '10'))
@@ -58,6 +89,8 @@ class SecurityService:
             'turnstile_enabled': self.turnstile_enabled,
             'turnstile_site_key': self.turnstile_site_key,
             'registration_enabled': os.getenv('ENABLE_REGISTRATION', 'true').lower() == 'true',
+            'mfa_enabled': os.getenv('MFA_ENABLED', 'false').lower() == 'true',
+            'mfa_risk_login_only': os.getenv('MFA_RISK_LOGIN_ONLY', 'true').lower() == 'true',
             'oauth_google_enabled': bool(os.getenv('GOOGLE_CLIENT_ID', '')),
             'oauth_github_enabled': bool(os.getenv('GITHUB_CLIENT_ID', '')),
             # Mobile in-app version check (semver-ish string, e.g. 1.0.1)

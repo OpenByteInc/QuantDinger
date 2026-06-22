@@ -16,14 +16,16 @@ import re
 import time
 import traceback
 from typing import Any, Dict, List
-from flask import Blueprint, Response, jsonify, request, g
+from flask import Response, g, jsonify, request
+from app.openapi.blueprint import HumanBlueprint as Blueprint
 import pandas as pd
 import numpy as np
 
 from app.utils.db import get_db_connection
 from app.utils.logger import get_logger
+from app.services.indicator_workspace import is_indicator_ide_listable, resolve_indicator_asset_type
 from app.utils.auth import login_required
-from app.services.indicator_params import IndicatorCaller, IndicatorParamsParser
+from app.services.indicator_params import IndicatorParamsParser
 from app.services.indicator_translator import (
     translate_indicator,
     SUPPORTED_LANGUAGES as _SUPPORTED_LANGUAGES_FOR_TRANSLATE,
@@ -32,7 +34,7 @@ import requests
 
 logger = get_logger(__name__)
 
-indicator_bp = Blueprint("indicator", __name__)
+indicator_blp = Blueprint("indicator", __name__)
 
 
 def _now_ts() -> int:
@@ -129,7 +131,7 @@ def _merge_indicator_params(code: str, user_params: Dict[str, Any] | None = None
 
 def _validate_indicator_code_internal(code: str, user_params: Dict[str, Any] | None = None) -> Dict[str, Any]:
     """
-    Shared validation for indicator code generation and verifyCode.
+    Shared validation for indicator code generation and strategy verify-code.
 
     Returns:
       {
@@ -270,6 +272,24 @@ def _validate_indicator_code_internal(code: str, user_params: Dict[str, Any] | N
                 "hints": hints,
             }
 
+    executed_df = exec_env.get('df', df)
+    four_way_cols = ['open_long', 'close_long', 'open_short', 'close_short']
+    has_four_way = all(col in getattr(executed_df, "columns", []) for col in four_way_cols)
+    if not has_four_way:
+        return {
+            "success": False,
+            "msg": (
+                "Missing execution columns. New QuantDinger indicator scripts must define "
+                "df['open_long'], df['close_long'], df['open_short'], and df['close_short'] "
+                "as boolean columns. output['signals'] is chart-only and cannot place orders."
+            ),
+            "error_type": "MissingExecutionColumns",
+            "details": None,
+            "plots_count": len(plots),
+            "signals_count": len(signals),
+            "hints": hints,
+        }
+
     return {
         "success": True,
         "msg": "Verification passed! Code executed successfully.",
@@ -331,6 +351,18 @@ def _indicator_hint_to_text(hint_code: str, params: Dict[str, Any] | None = None
             if is_zh else
             f"Declared parameters are not being read via params.get(...): {joined}."
         )
+    if hint_code == "PARAM_DEFAULT_MISMATCH":
+        items = params.get("items") or []
+        parts = [
+            f"{item.get('name')}: @param={item.get('declared')}, params.get fallback={item.get('fallback')}"
+            for item in items
+        ]
+        detail = "; ".join(parts) or "parameter defaults"
+        return (
+            f"参数默认值不一致：{detail}。# @param 的默认值必须和 params.get(..., 默认值) 完全一致。"
+            if is_zh else
+            f"Parameter default mismatch: {detail}. The # @param default must exactly match the params.get(..., default) fallback."
+        )
     if hint_code == "SIGNAL_MARKERS_USE_WHERE_NONE":
         return (
             "已检测到信号标记使用 where(..., None).tolist()，建议改为显式 None 列表以避免 NaN 渲染问题。"
@@ -340,7 +372,14 @@ def _indicator_hint_to_text(hint_code: str, params: Dict[str, Any] | None = None
     if hint_code == "MISSING_OUTPUT":
         return "缺少 output 字典。" if is_zh else "Missing output dictionary."
     if hint_code == "MISSING_BUY_SELL_COLUMNS":
-        return "缺少 df['buy'] 或 df['sell'] 信号列。" if is_zh else "Missing df['buy'] or df['sell'] signal columns."
+        return (
+            "缺少执行信号列：请提供四路 open_long/close_long/open_short/close_short；"
+            "output['signals'] 只负责图表标记，不能用于下单。"
+            if is_zh
+            else
+            "Missing execution columns: provide four-way open_long/close_long/open_short/close_short. "
+            "output['signals'] is chart-only and cannot place orders."
+        )
     if hint_code == "MISSING_DF_COPY":
         return "缺少 df = df.copy()。" if is_zh else "Missing df = df.copy()."
     if hint_code == "MISSING_INDICATOR_NAME":
@@ -463,7 +502,7 @@ def _indicator_human_summary(
     }
 
 
-@indicator_bp.route("/getIndicators", methods=["GET"])
+@indicator_blp.route("/getIndicators", methods=["GET"])
 @login_required
 def get_indicators():
     """
@@ -480,6 +519,7 @@ def get_indicators():
             # Best-effort schema upgrade for VIP-free indicators
             try:
                 cur.execute("ALTER TABLE qd_indicator_codes ADD COLUMN IF NOT EXISTS vip_free BOOLEAN DEFAULT FALSE")
+                cur.execute("ALTER TABLE qd_indicator_codes ADD COLUMN IF NOT EXISTS asset_type VARCHAR(32) DEFAULT 'indicator'")
             except Exception:
                 pass
             # Get user's own indicators (both purchased and custom).
@@ -488,6 +528,7 @@ def get_indicators():
                 SELECT
                   id, user_id, is_buy, end_time, name, code, description,
                   publish_to_community, pricing_type, price, is_encrypted, preview_image, vip_free,
+                  COALESCE(asset_type, 'indicator') as asset_type,
                   createtime, updatetime, created_at, updated_at
                 FROM qd_indicator_codes
                 WHERE user_id = ?
@@ -498,6 +539,13 @@ def get_indicators():
             rows = cur.fetchall() or []
             cur.close()
 
+        rows = [
+            r for r in rows
+            if is_indicator_ide_listable(
+                code=r.get("code") or "",
+                asset_type=r.get("asset_type") or "indicator",
+            )
+        ]
         out = [_row_to_indicator(r, user_id) for r in rows]
         return jsonify({"code": 1, "msg": "success", "data": out})
     except Exception as e:
@@ -505,7 +553,7 @@ def get_indicators():
         return jsonify({"code": 0, "msg": str(e), "data": []}), 500
 
 
-@indicator_bp.route("/saveIndicator", methods=["POST"])
+@indicator_blp.route("/saveIndicator", methods=["POST"])
 @login_required
 def save_indicator():
     """
@@ -535,9 +583,34 @@ def save_indicator():
         except Exception:
             price = 0.0
         preview_image = (data.get("previewImage") or data.get("preview_image") or "").strip()
+        asset_type = (data.get("assetType") or data.get("asset_type") or "indicator").strip() or "indicator"
+        if asset_type not in ("indicator", "script_template", "bot_preset"):
+            asset_type = "indicator"
+
+        asset_type = resolve_indicator_asset_type(code, asset_type)
 
         if not code or not str(code).strip():
             return jsonify({"code": 0, "msg": "code is required", "data": None}), 400
+
+        if asset_type == "script_template":
+            from app.routes.strategy import _validate_strategy_code_internal
+            validation = _validate_strategy_code_internal(code)
+            if not validation.get("success"):
+                return jsonify({
+                    "code": 0,
+                    "msg": validation.get("message") or "Unsafe script template code",
+                    "data": None,
+                }), 400
+        else:
+            from app.utils.safe_exec import validate_code_safety
+
+            is_safe_code, unsafe_reason = validate_code_safety(code)
+            if not is_safe_code:
+                return jsonify({
+                    "code": 0,
+                    "msg": f"Unsafe indicator code: {unsafe_reason}",
+                    "data": None,
+                }), 400
 
         # Local dev UX: if name/description not provided, derive from code variables.
         if not name or not description:
@@ -552,7 +625,6 @@ def save_indicator():
 
         now = _now_ts()  # For BIGINT fields (createtime, updatetime)
 
-        # 检查用户是否是管理员（管理员发布的指标自动通过审核）
         user_role = getattr(g, 'user_role', 'user')
         is_admin = user_role == 'admin'
         
@@ -561,13 +633,13 @@ def save_indicator():
             # Best-effort schema upgrade for VIP-free indicators
             try:
                 cur.execute("ALTER TABLE qd_indicator_codes ADD COLUMN IF NOT EXISTS vip_free BOOLEAN DEFAULT FALSE")
+                cur.execute("ALTER TABLE qd_indicator_codes ADD COLUMN IF NOT EXISTS asset_type VARCHAR(32) DEFAULT 'indicator'")
                 # i18n columns (see services/indicator_translator.py)
                 cur.execute("ALTER TABLE qd_indicator_codes ADD COLUMN IF NOT EXISTS source_language VARCHAR(16)")
                 cur.execute("ALTER TABLE qd_indicator_codes ADD COLUMN IF NOT EXISTS name_i18n JSONB")
                 cur.execute("ALTER TABLE qd_indicator_codes ADD COLUMN IF NOT EXISTS description_i18n JSONB")
             except Exception:
                 pass
-            # 市场购买的副本不可改库中源码：应「另存为」新建 is_buy=0 的指标再编辑
             if indicator_id and indicator_id > 0:
                 cur.execute(
                     "SELECT is_buy FROM qd_indicator_codes WHERE id = ? AND user_id = ?",
@@ -584,7 +656,6 @@ def save_indicator():
                         }
                     ), 403
             if indicator_id and indicator_id > 0:
-                # 检查是否从未发布改为发布，需要设置审核状态
                 if publish_to_community:
                     cur.execute(
                         "SELECT publish_to_community, review_status FROM qd_indicator_codes WHERE id = ? AND user_id = ?",
@@ -592,52 +663,55 @@ def save_indicator():
                     )
                     existing = cur.fetchone()
                     was_published = existing and existing.get('publish_to_community')
-                    # 如果之前未发布，现在发布，设置审核状态
-                    # 管理员发布的直接通过，普通用户需要待审核
                     new_review_status = 'approved' if is_admin else 'pending'
+                    reviewer_id = user_id if is_admin else None
                     if not was_published:
                         cur.execute(
                             """
                             UPDATE qd_indicator_codes
                             SET name = ?, code = ?, description = ?,
                                 publish_to_community = ?, pricing_type = ?, price = ?, preview_image = ?,
-                                vip_free = ?,
-                                review_status = ?, review_note = '', reviewed_at = NOW(), reviewed_by = ?,
+                                vip_free = ?, asset_type = ?,
+                                review_status = ?, review_note = '',
+                                reviewed_at = CASE WHEN ? = 'approved' THEN NOW() ELSE NULL END,
+                                reviewed_by = ?,
                                 updatetime = ?, updated_at = NOW()
                             WHERE id = ? AND user_id = ? AND (is_buy IS NULL OR is_buy = 0)
                             """,
-                            (name, code, description, publish_to_community, pricing_type, price, preview_image, vip_free,
-                             new_review_status, user_id if is_admin else None, now, indicator_id, user_id),
+                            (name, code, description, publish_to_community, pricing_type, price, preview_image, vip_free, asset_type,
+                             new_review_status, new_review_status, reviewer_id, now, indicator_id, user_id),
                         )
                     else:
-                        # 已发布过的更新，保持原审核状态
+                        # Non-admin updates to published assets require review again.
                         cur.execute(
                             """
                             UPDATE qd_indicator_codes
                             SET name = ?, code = ?, description = ?,
                                 publish_to_community = ?, pricing_type = ?, price = ?, preview_image = ?,
-                                vip_free = ?,
+                                vip_free = ?, asset_type = ?,
+                                review_status = ?, review_note = '',
+                                reviewed_at = CASE WHEN ? = 'approved' THEN NOW() ELSE NULL END,
+                                reviewed_by = ?,
                                 updatetime = ?, updated_at = NOW()
                             WHERE id = ? AND user_id = ? AND (is_buy IS NULL OR is_buy = 0)
                             """,
-                            (name, code, description, publish_to_community, pricing_type, price, preview_image, vip_free, now, indicator_id, user_id),
+                            (name, code, description, publish_to_community, pricing_type, price, preview_image, vip_free, asset_type,
+                             new_review_status, new_review_status, reviewer_id, now, indicator_id, user_id),
                         )
                 else:
-                    # 取消发布，清除审核状态
                     cur.execute(
                         """
                         UPDATE qd_indicator_codes
                         SET name = ?, code = ?, description = ?,
                             publish_to_community = ?, pricing_type = ?, price = ?, preview_image = ?,
-                            vip_free = FALSE,
+                            vip_free = FALSE, asset_type = ?,
                             review_status = NULL, review_note = '', reviewed_at = NULL, reviewed_by = NULL,
                             updatetime = ?, updated_at = NOW()
                         WHERE id = ? AND user_id = ? AND (is_buy IS NULL OR is_buy = 0)
                         """,
-                        (name, code, description, publish_to_community, pricing_type, price, preview_image, now, indicator_id, user_id),
+                        (name, code, description, publish_to_community, pricing_type, price, preview_image, asset_type, now, indicator_id, user_id),
                     )
             else:
-                # 新建指标 - 管理员发布的直接通过，普通用户需要待审核
                 review_status = None
                 if publish_to_community:
                     review_status = 'approved' if is_admin else 'pending'
@@ -645,26 +719,18 @@ def save_indicator():
                     """
                     INSERT INTO qd_indicator_codes
                       (user_id, is_buy, end_time, name, code, description,
-                       publish_to_community, pricing_type, price, preview_image, vip_free, review_status,
+                       publish_to_community, pricing_type, price, preview_image, vip_free, asset_type, review_status,
                        createtime, updatetime, created_at, updated_at)
-                    VALUES (?, 0, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+                    VALUES (?, 0, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
                     """,
-                    (user_id, name, code, description, publish_to_community, pricing_type, price, preview_image, vip_free, review_status, now, now),
+                    (user_id, name, code, description, publish_to_community, pricing_type, price, preview_image, vip_free, asset_type, review_status, now, now),
                 )
                 indicator_id = int(cur.lastrowid or 0)
             db.commit()
             cur.close()
 
         # ============================================================
-        # 多语言：发布到指标市场时同步触发 LLM 翻译
         # ============================================================
-        # 设计取舍：
-        #   - 仅在 publish_to_community=1 时才翻译，私有指标不浪费 LLM 额度。
-        #   - 同步阻塞（一次调用约 2-5s）。如果以后 P99 超过用户耐心，可改成
-        #     后台 worker；现在保持同步是为了「保存成功 = 全语言立即可见」
-        #     最简单的 UX 契约。
-        #   - 翻译失败不会让保存失败：translate_indicator 内部 try/except，
-        #     返回 (None, None, src) 时下游接口仍能 fallback 到原文。
         if publish_to_community and indicator_id > 0:
             try:
                 ui_lang = (
@@ -703,7 +769,6 @@ def save_indicator():
                     db.commit()
                     cur.close()
             except Exception as _e:
-                # 翻译是 nice-to-have，永远不能让 save_indicator 失败。
                 logger.warning(f"save_indicator: i18n translation skipped: {_e}")
 
         return jsonify({"code": 1, "msg": "success", "data": {"id": indicator_id, "userid": user_id}})
@@ -712,7 +777,7 @@ def save_indicator():
         return jsonify({"code": 0, "msg": str(e), "data": None}), 500
 
 
-@indicator_bp.route("/deleteIndicator", methods=["POST"])
+@indicator_blp.route("/deleteIndicator", methods=["POST"])
 @login_required
 def delete_indicator():
     """Delete an indicator by id for the current user."""
@@ -738,62 +803,24 @@ def delete_indicator():
         return jsonify({"code": 0, "msg": str(e), "data": None}), 500
 
 
-@indicator_bp.route("/applyParamDefaults", methods=["POST"])
-@login_required
-def apply_param_defaults():
-    """
-    Apply tuned indicator parameter values into ``# @param`` lines in source code.
-
-    Body: { "code": "...", "indicatorParams": { "sma_short": 11, "sma_long": 35 } }
-    or flat keys: { "indicator_params.sma_short": 11, ... }
-    """
-    try:
-        data = request.get_json() or {}
-        code = str(data.get("code") or "")
-        if not code.strip():
-            return jsonify({"code": 0, "msg": "code is required", "data": None}), 400
-
-        params = data.get("indicatorParams") or data.get("indicator_params") or {}
-        if not isinstance(params, dict):
-            params = {}
-        for key, value in list((data.get("overrides") or {}).items()):
-            k = str(key or "")
-            if k.startswith("indicator_params."):
-                params[k.split(".", 1)[1]] = value
-
-        from app.services.experiment.overrides import enrich_experiment_overrides
-
-        nested = enrich_experiment_overrides({"indicatorParams": params}).get("indicatorParams") or params
-        new_code = IndicatorParamsParser.apply_defaults_to_code(code, nested)
-        changed = new_code != code
-        return jsonify({
-            "code": 1,
-            "msg": "success",
-            "data": {"code": new_code, "changed": changed, "indicatorParams": nested},
-        })
-    except Exception as e:
-        logger.error("apply_param_defaults failed: %s", e, exc_info=True)
-        return jsonify({"code": 0, "msg": str(e), "data": None}), 500
-
-
-@indicator_bp.route("/getIndicatorParams", methods=["GET"])
+@indicator_blp.route("/getIndicatorParams", methods=["GET"])
 @login_required
 def get_indicator_params():
     """
-    获取指标的参数声明
-    
-    用于前端在策略创建时显示可配置的参数表单。
-    
+    Return declared `# @param` fields for an indicator.
+
+    Used by the strategy builder to render a parameter form.
+
     Query params:
-        indicator_id: 指标ID
-        
+        indicator_id: Indicator ID
+
     Returns:
         params: [
             {
                 "name": "ma_fast",
                 "type": "int",
                 "default": 5,
-                "description": "短期均线周期"
+                "description": "Fast MA period"
             },
             ...
         ]
@@ -818,51 +845,7 @@ def get_indicator_params():
         return jsonify({"code": 0, "msg": str(e), "data": None}), 500
 
 
-@indicator_bp.route("/verifyCode", methods=["POST"])
-@login_required
-def verify_code():
-    """
-    Verify/Dry-run indicator code with mock data.
-    Checks for:
-    - Syntax errors
-    - Runtime errors
-    - Output format (must define 'output' dict)
-    """
-    try:
-        data = request.get_json() or {}
-        code = data.get("code") or ""
-        
-        if not code or not str(code).strip():
-            return jsonify({"code": 0, "msg": "Code is empty", "data": None}), 400
-
-        validation = _validate_indicator_code_internal(code, data.get("params") or {})
-        if not validation["success"]:
-            return jsonify({
-                "code": 0,
-                "msg": validation["msg"],
-                "data": {
-                    "type": validation["error_type"],
-                    "details": validation["details"],
-                    "hints": validation.get("hints", []),
-                }
-            })
-
-        return jsonify({
-            "code": 1,
-            "msg": validation["msg"],
-            "data": {
-                "plots_count": validation["plots_count"],
-                "signals_count": validation["signals_count"],
-                "hints": validation.get("hints", []),
-            }
-        })
-
-    except Exception as e:
-        logger.error(f"verify_code failed: {str(e)}", exc_info=True)
-        return jsonify({"code": 0, "msg": f"System Error: {str(e)}", "data": None}), 500
-
-
-@indicator_bp.route("/aiGenerate", methods=["POST"])
+@indicator_blp.route("/aiGenerate", methods=["POST"])
 @login_required
 def ai_generate():
     """
@@ -892,7 +875,7 @@ def ai_generate():
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
-    # QuantDinger indicator IDE: chart render + backtest; must pass server verifyCode + safe_exec rules.
+    # QuantDinger indicator IDE: chart render + backtest; must pass server verify-code + safe_exec rules.
     SYSTEM_PROMPT = """# Role
 
 You write production-ready **QuantDinger** indicator scripts: Python that runs in the Indicator IDE, renders on the K-line chart, and drives **backtest entries/exits** via boolean signals. Code must be syntactically valid, safe for the host sandbox, and match the exact I/O contract below.
@@ -902,6 +885,7 @@ You write production-ready **QuantDinger** indicator scripts: Python that runs i
 - Environment: browser-side Pyodide–style sandbox **or** API verify sandbox: **no network**, no file I/O, no subprocess.
 - **`pd` and `np` are already available.** Do **not** write `import pandas` / `import numpy`. Avoid any `import` unless unavoidable; never import `os`, `sys`, `requests`, `socket`, `subprocess`, `threading`, `sqlite3`, `multiprocessing`, or other I/O/network modules.
 - Do **not** use: `eval`, `exec`, `compile`, `open`, `__import__`, `getattr`/`setattr`/`delattr` on untrusted names, `globals`, `vars`, `dir`, or meta-programming to escape the sandbox. `locals()` is allowed if needed to assemble `output` (backtest/verify allow it); avoid `globals()`.
+- Allowed imports only: `numpy`, `pandas`, `math`, `json`, `datetime`, `time`, `collections`, `functools`, `itertools`, `statistics`, `decimal`, `fractions`, `copy`. **Never** `import operator`.
 - Work **vectorized** with pandas on `df` where possible; avoid O(n) Python loops over every row for core series (rolling/ewm/shift are preferred).
 
 # Series vs ndarray contract (critical — common AI bug source)
@@ -940,26 +924,41 @@ Self-check before returning code: every place where you call `.rolling` / `.fill
 
 # Backtest contract (strict)
 
-The backtest engine reads **boolean** columns on `df`:
+**Required (platform default): four-way execution columns**
 
-- `df['buy']` — True on bars where a **new** long entry signal is allowed (edge-triggered).
-- `df['sell']` — True on bars where a **new** exit / short entry signal is allowed (per product semantics).
+- `df['open_long']`, `df['close_long']`, `df['open_short']`, `df['close_short']` — all bool, length `len(df)`.
+- Use an `edge(s)` helper: `s & ~s.shift(1).fillna(False)` on each raw condition.
+- On trend flip bars you MAY set both `close_*` and opposing `open_*` true (flip_mode R2); for tp/sl-only exits use `close_*` alone without mixing tp/sl into `buy`/`sell`.
+- Declare contract header comments: `# signal_form: four_way`, `# exit_owner: engine|indicator`, `# flip_mode: R1|R2`.
+- Supported exit owners are **only** `engine` and `indicator`. Never emit `exit_owner: layered`.
+- See `docs/SIGNAL_EXECUTION_STANDARD_CN.md`.
+
+Do not generate legacy `df['buy']` / `df['sell']` columns for new code. Existing
+user code may contain those names, but generated or repaired scripts must
+migrate to four-way execution columns.
 
 Rules:
 
 - Same **index and length** as `df`; dtype boolean (use `.astype(bool)` after fillna).
-- **Edge-trigger (mandatory)** unless the user explicitly asks for repeated signals on consecutive bars:
-  - `raw_buy = (...condition...)`
-  - `buy = raw_buy.fillna(False) & (~raw_buy.shift(1).fillna(False))`
-  - Same pattern for `raw_sell` / `sell`.
-- Signals represent **confirmation on bar close**; the engine fills on the **next bar open** (live-like). Do not implement intrabar lookahead (e.g. do not use the same bar’s `high` to validate a signal that assumes you bought at that bar’s `open` unless the user clearly wants that research mode).
+- **Edge-trigger (mandatory)** unless the user explicitly asks for repeated signals on consecutive bars.
+- Signals represent **confirmation on bar close**; the engine fills on the **next bar open** (live-like). Do not implement intrabar lookahead unless the user clearly wants research mode.
 - Fill NaN from indicators before comparisons; replace division-by-zero (`replace(0, np.nan)` then fill).
+- `df['buy']` / `df['sell']` are legacy-only and should not appear in new generated code.
+
+# Exit ownership (strict)
+
+Pick exactly one price-exit owner and make the code consistent:
+
+- Use `# exit_owner: indicator` when the code itself emits close-only exits (`close_long` / `close_short`) for TP/SL, middle-band touches, channel exits, trailing logic, or other price/risk exits. In this mode set `# @strategy trailingEnabled false` and do not rely on `stopLossPct`, `takeProfitPct`, or trailing fields; the backend disables server-side price exits in backtest/live.
+- Use `# exit_owner: engine` when fixed stop-loss, fixed take-profit, or trailing stop should be handled by `# @strategy`. In this mode code should focus on entries; structural reverse `close_*` signals are acceptable, but do **not** encode a second tight TP/SL system in indicator booleans.
+- If the user asks for touch-based TP/SL, channel/middle-band exits, or in-code trailing, prefer `exit_owner: indicator`.
+- If the user asks for simple entry signals plus fixed SL/TP/trailing defaults, prefer `exit_owner: engine`.
 
 # Chart output: `output` dict (strict)
 
 After computation, set:
 
-`output = { 'name': ..., 'plots': [...], 'signals': [...] }`  (use the same string keys as below)
+`output = { 'name': ..., 'plots': [...], 'signals': [...], 'layers': [...] }`  (use the same string keys as below; `layers` is optional)
 
 - **`name`**: str, usually `my_indicator_name`.
 - **`plots`**: list of dicts, each with:
@@ -968,9 +967,15 @@ After computation, set:
   - Price-scale series (MA, Bollinger on price): `overlay: True`. Oscillators (RSI 0–100): `overlay: False`.
 - **`signals`**: optional list for markers; each item:
   - `type`: `'buy'` or `'sell'`, `text` (short label), `color`, `data`: list length **`len(df)`**, value `None` or a float price for marker Y.
+- **`layers`**: optional list for advanced K-line overlays. Use it for zones, horizontal/diagonal lines, and labels that should look like chart annotations rather than trade markers. Keep overlays sparse and readable.
+  - Zone layer: `{ 'type': 'zone', 'startIndex': int, 'endIndex': int, 'top': float, 'bottom': float, 'text': str, 'fillColor': '#RRGGBB', 'borderColor': '#RRGGBB', 'opacity': 0.12 }`.
+  - Line layer: `{ 'type': 'line', 'startIndex': int, 'endIndex': int, 'price': float, 'text': str, 'color': '#RRGGBB', 'dashed': true }`; for sloped lines use `startPrice` and `endPrice`.
+  - Label layer: `{ 'type': 'label', 'index': int, 'price': float, 'text': str, 'color': '#RRGGBB', 'textColor': '#FFFFFF' }`.
+  - Prefer `startIndex` / `endIndex` / `index` for generated code because they are stable with the current `df`. `startTime` / `endTime` / `time` are also supported if they match K-line timestamps.
+  - Do not use layers as execution signals. Backtest/live only read DataFrame boolean columns.
 - **`calculatedVars`**: optional dict for future UI; may be `{}` or omitted.
 
-**Length rule:** every `plot['data']` and every `signal['data']` list must have the **same length as `df`** (same as number of rows).
+**Length rule:** every `plot['data']` and every `signal['data']` list must have the **same length as `df`** (same as number of rows). Layer objects do not need per-bar arrays, but their indices/times and prices must be valid for the visible `df`.
 
 # Optional tunable parameters: `# @param`
 
@@ -991,6 +996,12 @@ you must read it explicitly in code, for example:
 
 `fast_period = params.get('fast_period', 10)`
 
+The fallback default in `params.get` must exactly match the declared `# @param`
+default after type conversion. Example: if you declare
+`# @param fast_period int 18 Fast MA period`, the code must read
+`fast_period = int(params.get('fast_period', 18))`; never use 10, 30, or any
+second hard-coded default for the same parameter.
+
 Never use declared parameter names directly unless you first assign them from `params`.
 
 # Strategy defaults: `# @strategy` (recommended)
@@ -1001,11 +1012,13 @@ Place **after** name/description lines, **one key per line**, no extra prose on 
 
 Supported keys (parser-enforced):
 
-- `stopLossPct`, `takeProfitPct`: float **0–1** (e.g. `0.03` = 3% on margin PnL semantics as used by the engine).
-- `entryPct`: float **0.01–1.0** (fraction of capital).
+- `stopLossPct`, `takeProfitPct`: float **0–1** = **underlying price move** (e.g. `0.03` = 3% adverse price move; `0.001` = 0.1%). **Not** margin PnL; **do not** divide by leverage.
+- `entryPct`: float **0.01–1.0** = fraction of capital (`1` = 100%, `0.25` = 25%).
 - `trailingEnabled`: `true` or `false`.
-- `trailingStopPct`, `trailingActivationPct`: float **0–1**.
+- `trailingStopPct`, `trailingActivationPct`: float **0–1** = price retracement / activation thresholds (same basis as stop/take-profit).
 - `tradeDirection`: exactly `long`, `short`, or `both`.
+
+**`tradeDirection both` execution semantics:** use four-way columns. `open_long` opens long (closing short first if needed), `open_short` opens short (closing long first if needed), and `close_long` / `close_short` are close-only exits. Do not document legacy `buy` / `sell` as close-only columns. If the strategy uses in-code tp/sl on `high`/`low` touches, use `close_*`, declare `# exit_owner: indicator`, and keep `# @strategy trailingEnabled false` unless the user explicitly asks for engine-managed exits — see `docs/STRATEGY_DEV_GUIDE.md`.
 
 **Do not** put `leverage` in `@strategy`; users set leverage in the IDE backtest panel.
 
@@ -1016,77 +1029,43 @@ Pick defaults that match the strategy style (trend vs mean-reversion).
 # Quality bar
 
 - Prefer clear variable names, short comments only where non-obvious.
-- Ensure at least some `buy` and some `sell` True in typical ranges unless the user asked for a rare signal; if logic is too strict, widen thresholds.
-- If the user asks for “display only” with no trading, still set `df['buy']`/`df['sell']` to all-False and provide plots.
+- Ensure at least some `open_long` and/or `open_short` True in typical ranges unless the user asked for a rare signal; if logic is too strict, widen thresholds.
+- If the user asks for “display only” with no trading, still set all four-way execution columns to all-False and provide plots.
 - For signal markers, prefer explicit lists with `None` for empty bars:
-  - `buy_marks = [df['low'].iloc[i] * 0.995 if bool(df['buy'].iloc[i]) else None for i in range(len(df))]`
+  - `buy_marks = [df['low'].iloc[i] * 0.995 if bool(df['open_long'].iloc[i]) else None for i in range(len(df))]`
+  - `sell_marks = [df['high'].iloc[i] * 1.005 if bool(df['open_short'].iloc[i]) else None for i in range(len(df))]`
   - Avoid `series.where(mask, None).tolist()` for marker data because float series may still contain `NaN` instead of real `None`.
+- Use `output['layers']` only when it improves readability, for example supply/demand zones, premium/discount ranges, support/resistance lines, BOS/CHoCH labels, or invalidation levels. Do not flood every bar with labels.
 - Before returning code, self-check:
   1. every declared `# @param` used in code is read via `params.get(...)`
-  2. `df['buy']` and `df['sell']` are assigned boolean Series
-  3. every `plot['data']` and `signal['data']` length equals `len(df)`
-  4. `output` exists and is a dict
-  5. **type audit**: scan every `.rolling` / `.fillna` / `.shift` / `.ewm` / `.iloc` / `.tolist` call site; confirm its left-hand side is a Series. If it came from `np.where` / `np.maximum` / `np.minimum` / a custom helper returning ndarray, you MUST wrap with `pd.Series(arr, index=df.index)` first
-  6. **index audit**: any `pd.Series(arr)` where `arr` is ndarray sized `len(df)` MUST pass `index=df.index`, otherwise it will silently misalign with DatetimeIndex-based `df`
+  2. every `params.get('name', fallback)` fallback exactly equals that parameter's declared `# @param` default
+  3. `df['open_long']`, `df['close_long']`, `df['open_short']`, and `df['close_short']` are assigned boolean Series
+  4. every `plot['data']` and `signal['data']` length equals `len(df)`
+  5. `output` exists and is a dict
+  6. **type audit**: scan every `.rolling` / `.fillna` / `.shift` / `.ewm` / `.iloc` / `.tolist` call site; confirm its left-hand side is a Series. If it came from `np.where` / `np.maximum` / `np.minimum` / a custom helper returning ndarray, you MUST wrap with `pd.Series(arr, index=df.index)` first
+  7. **index audit**: any `pd.Series(arr)` where `arr` is ndarray sized `len(df)` MUST pass `index=df.index`, otherwise it will silently misalign with DatetimeIndex-based `df`
 
 # Output format for this chat turn
 
-Return **only** valid Python source: **no** markdown fences, **no** ` ``` `, **no** explanation before or after the code. First non-empty line should be `my_indicator_name` or a comment block with `@strategy`/`@param` immediately followed by `my_indicator_name`.
+Return **only** valid Python source: **no** markdown fences, **no** ` ``` `, **no** explanation before or after the code. First non-empty line should be `my_indicator_name` or a short contract/comment block (`signal_form` / `exit_owner` / `flip_mode` / `@strategy` / `@param`) immediately followed by `my_indicator_name`.
 """
 
     def _template_code() -> str:
-        # Fallback template that follows the project expectations.
-        header = (
-            f"my_indicator_name = \"Custom Indicator\"\n"
-            f"my_indicator_description = \"{(prompt or '').replace('\n', ' ')[:200]}\"\n\n"
-        )
-        body = (
-            "# ===== Strategy defaults (single source of truth) =====\n"
-            "# @strategy stopLossPct 0.03            # Hard stop-loss (3%)\n"
-            "# @strategy takeProfitPct 0.06          # Take-profit (6%)\n"
-            "# @strategy entryPct 1.0                # Use 100% of available capital per entry\n"
-            "# @strategy trailingEnabled false       # Set true to enable trailing stop\n"
-            "# @strategy trailingStopPct 0.02        # Trailing distance (2%)\n"
-            "# @strategy trailingActivationPct 0.03  # Activate trailing after +3% in profit\n"
-            "# @strategy tradeDirection long         # long | short | both\n\n"
-            "# ===== Indicator parameters =====\n"
-            "# @param rsi_len int 14 RSI period\n\n"
-            "rsi_len = params.get('rsi_len', 14)\n"
-            "df = df.copy()\n\n"
-            "# Example: robust RSI with edge-triggered buy/sell (no position management, no TP/SL on chart)\n"
-            "delta = df['close'].diff()\n"
-            "gain = delta.clip(lower=0)\n"
-            "loss = (-delta).clip(lower=0)\n"
-            "# Wilder-style smoothing (stable and avoids early NaN explosion)\n"
-            "avg_gain = gain.ewm(alpha=1/rsi_len, adjust=False).mean()\n"
-            "avg_loss = loss.ewm(alpha=1/rsi_len, adjust=False).mean()\n"
-            "rs = avg_gain / avg_loss.replace(0, np.nan)\n"
-            "rsi = 100 - (100 / (1 + rs))\n"
-            "rsi = rsi.fillna(50)\n\n"
-            "# Raw conditions (avoid overly strict filters)\n"
-            "raw_buy = (rsi < 30)\n"
-            "raw_sell = (rsi > 70)\n"
-            "# One-shot signals\n"
-            "buy = (raw_buy.fillna(False) & (~raw_buy.shift(1).fillna(False))).astype(bool)\n"
-            "sell = (raw_sell.fillna(False) & (~raw_sell.shift(1).fillna(False))).astype(bool)\n"
-            "df['buy'] = buy\n"
-            "df['sell'] = sell\n\n"
-            "buy_marks = [df['low'].iloc[i] * 0.995 if bool(df['buy'].iloc[i]) else None for i in range(len(df))]\n"
-            "sell_marks = [df['high'].iloc[i] * 1.005 if bool(df['sell'].iloc[i]) else None for i in range(len(df))]\n\n"
-            "output = {\n"
-            "  'name': my_indicator_name,\n"
-            "  'plots': [\n"
-            "    {'name': 'RSI(14)', 'data': rsi.tolist(), 'color': '#faad14', 'overlay': False}\n"
-            "  ],\n"
-            "  'signals': [\n"
-            "    {'type': 'buy', 'text': 'B', 'data': buy_marks, 'color': '#00E676'},\n"
-            "    {'type': 'sell', 'text': 'S', 'data': sell_marks, 'color': '#FF5252'}\n"
-            "  ]\n"
-            "}\n"
+        from app.services.indicator_default_template import build_default_indicator_template
+
+        desc = (prompt or "").replace("\n", " ")[:200]
+        if not desc:
+            desc = (
+                "双均线四路信号模板：边缘触发 + 引擎风控。"
+                "详见 SIGNAL_EXECUTION_STANDARD_CN.md"
+            )
+        code = build_default_indicator_template(
+            name="Custom Indicator",
+            description=desc,
         )
         if existing:
-            header = "# Existing code was provided as context.\n" + header
-        return header + body
+            code = "# Existing code was provided as context.\n" + code
+        return code
 
     def _generate_code_via_llm() -> str:
         """Use unified LLMService to support all configured providers (OpenRouter, OpenAI, Grok, etc.)."""
@@ -1111,11 +1090,12 @@ Return **only** valid Python source: **no** markdown fences, **no** ` ``` `, **n
         user_prompt = prompt
         if existing:
             user_prompt = (
-                "# Existing QuantDinger indicator code (keep working output/buy/sell contract):\n\n```python\n"
+                "# Existing QuantDinger indicator code (migrate it to the four-way execution contract):\n\n```python\n"
                 + existing.strip()
                 + "\n```\n\n# Change request:\n\n"
                 + prompt
-                + "\n\nReturn one full replacement script: same QuantDinger rules (my_indicator_name/description, df = df.copy(), declared @param values must be read via params.get(...), df['buy']/df['sell'], output dict, list lengths == len(df)). "
+                + "\n\nReturn one full replacement script: same QuantDinger rules (my_indicator_name/description, df = df.copy(), declared @param values must be read via params.get(...), four-way execution columns, output dict with optional layers, list lengths == len(df)). "
+                "For every declared @param, the params.get fallback default must exactly match the declared default. "
                 "Python only — no markdown, no prose outside the code."
             )
 
@@ -1146,6 +1126,7 @@ Return **only** valid Python source: **no** markdown fences, **no** ` ``` `, **n
 
     AUTO_FIX_HINT_CODES = {
         "DECLARED_PARAMS_NOT_READ_VIA_PARAMS_GET",
+        "PARAM_DEFAULT_MISMATCH",
         "SIGNAL_MARKERS_USE_WHERE_NONE",
         "MISSING_OUTPUT",
         "MISSING_BUY_SELL_COLUMNS",
@@ -1199,8 +1180,8 @@ Return **only** valid Python source: **no** markdown fences, **no** ` ``` `, **n
             + "\n```\n\n"
             "# Repair requirements\n"
             "- Keep QuantDinger indicator contract intact.\n"
-            "- If code declares # @param, read each declared param via params.get(...).\n"
-            "- Ensure df['buy'] and df['sell'] are boolean Series.\n"
+            "- If code declares # @param, read each declared param via params.get(...), and the fallback default must exactly match the declared # @param default.\n"
+            "- Ensure df['open_long'], df['close_long'], df['open_short'], and df['close_short'] are boolean Series.\n"
             "- Ensure output exists and all plot/signal data lengths equal len(df).\n"
             "- For signal markers, prefer explicit None-or-price lists, not .where(..., None).tolist().\n"
             "- **Series vs ndarray**: audit every `.rolling` / `.fillna` / `.shift` / `.ewm` / `.iloc` / `.tolist` call. "
@@ -1368,22 +1349,17 @@ Return **only** valid Python source: **no** markdown fences, **no** ` ``` `, **n
     )
 
 
-@indicator_bp.route("/codeQualityHints", methods=["POST"])
+@indicator_blp.route("/codeQualityHints", methods=["POST"])
 @login_required
 def code_quality_hints():
     """
     Heuristic hints + runtime smoke-execution for indicator code.
 
-    POST /api/indicator/codeQualityHints
-    Body:  { "code": "..." }
-    Returns: { "code": 1, "data": { "hints": [ { "severity", "code", "params" } ] } }
+    Request body:
+        code (required): Indicator source code
 
-    The static pass catches structural/@strategy issues. We also do a short
-    sandboxed dry-run against a mock K-line frame so runtime errors (e.g.
-    `AttributeError: 'numpy.ndarray' has no attribute 'rolling'`) surface as
-    hints instead of staying invisible until backtest time. Static `error`
-    hints suppress the dry-run because they would deterministically fail
-    anyway and we want a fast response.
+    Returns hints with severity, code, and params. Static analysis catches
+    structural issues; a sandboxed dry-run surfaces runtime errors before backtest.
     """
     from app.services.indicator_code_quality import analyze_indicator_code_quality
 
@@ -1429,114 +1405,5 @@ def code_quality_hints():
     return jsonify({"code": 1, "data": {"hints": hints}})
 
 
-@indicator_bp.route("/parseStrategyConfig", methods=["POST"])
-@login_required
-def parse_strategy_config():
-    """
-    Parse @strategy annotations from indicator code and return strategy config.
-    POST /api/indicator/parseStrategyConfig
-    Body: { "code": "..." }
-    Returns: { "code": 1, "data": { "strategyConfig": {...}, "indicatorParams": [...] } }
-    """
-    from app.services.indicator_params import StrategyConfigParser, IndicatorParamsParser
-    data = request.get_json() or {}
-    code_str = (data.get("code") or "").strip()
-    strategy_cfg = StrategyConfigParser.parse(code_str) if code_str else {}
-    indicator_params = IndicatorParamsParser.parse_params(code_str) if code_str else []
-    return jsonify({
-        "code": 1,
-        "data": {
-            "strategyConfig": strategy_cfg,
-            "indicatorParams": indicator_params
-        }
-    })
-
-
-@indicator_bp.route("/callIndicator", methods=["POST"])
-@login_required
-def call_indicator():
-    """
-    调用另一个指标（供前端 Pyodide 环境使用）
-    
-    POST /api/indicator/callIndicator
-    Body: {
-        "indicatorRef": int | str,  # 指标ID或名称
-        "klineData": List[Dict],      # K线数据
-        "params": Dict,              # 传递给被调用指标的参数（可选）
-        "currentIndicatorId": int     # 当前指标ID（用于循环依赖检测，可选）
-    }
-    
-    Returns:
-        {
-            "code": 1,
-            "data": {
-                "df": List[Dict],    # 执行后的DataFrame（转换为JSON）
-                "columns": List[str]  # DataFrame的列名
-            }
-        }
-    """
-    try:
-        data = request.get_json() or {}
-        indicator_ref = data.get("indicatorRef")
-        kline_data = data.get("klineData", [])
-        params = data.get("params") or {}
-        current_indicator_id = data.get("currentIndicatorId")
-        
-        if not indicator_ref:
-            return jsonify({
-                "code": 0,
-                "msg": "indicatorRef is required",
-                "data": None
-            }), 400
-        
-        if not kline_data or not isinstance(kline_data, list):
-            return jsonify({
-                "code": 0,
-                "msg": "klineData must be a non-empty list",
-                "data": None
-            }), 400
-        
-        # 获取用户ID
-        user_id = g.user_id
-        
-        # 创建 IndicatorCaller
-        indicator_caller = IndicatorCaller(user_id, current_indicator_id)
-        
-        # 将前端传入的K线数据转换为DataFrame
-        df = pd.DataFrame(kline_data)
-        
-        # 确保必要的列存在
-        required_columns = ['open', 'high', 'low', 'close', 'volume']
-        for col in required_columns:
-            if col not in df.columns:
-                df[col] = 0.0
-        
-        # 转换数据类型
-        df['open'] = df['open'].astype('float64')
-        df['high'] = df['high'].astype('float64')
-        df['low'] = df['low'].astype('float64')
-        df['close'] = df['close'].astype('float64')
-        df['volume'] = df['volume'].astype('float64')
-        
-        # 调用指标
-        result_df = indicator_caller.call_indicator(indicator_ref, df, params)
-        
-        # 将DataFrame转换为JSON格式（前端可以使用的格式）
-        result_dict = result_df.to_dict(orient='records')
-        
-        return jsonify({
-            "code": 1,
-            "msg": "success",
-            "data": {
-                "df": result_dict,
-                "columns": list(result_df.columns)
-            }
-        })
-        
-    except Exception as e:
-        logger.error(f"Error calling indicator: {e}", exc_info=True)
-        return jsonify({
-            "code": 0,
-            "msg": str(e),
-            "data": None
-        }), 500
+# openapi-compat: legacy import name
+indicator_bp = indicator_blp

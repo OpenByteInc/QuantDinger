@@ -10,6 +10,24 @@ from app.services.experiment.runner import ExperimentRunnerService
 from app.services.experiment.scoring import StrategyScoringService
 
 
+def test_market_regime_detects_with_short_tail_segment():
+    """Regression: segment tail with 20-29 bars must not crash iloc[-30]."""
+    service = MarketRegimeService()
+    df = pd.DataFrame({
+        'time': pd.date_range('2024-01-01', periods=50, freq='D').astype(str),
+        'open': [100 + i * 0.5 for i in range(50)],
+        'high': [101 + i * 0.5 for i in range(50)],
+        'low': [99 + i * 0.5 for i in range(50)],
+        'close': [100 + i * 0.5 for i in range(50)],
+        'volume': [1000 for _ in range(50)],
+    })
+
+    regime = service.detect(df, symbol='BTC/USDT', market='Crypto', timeframe='1D')
+
+    assert regime['regime']
+    assert isinstance(regime.get('segments'), list)
+
+
 def test_market_regime_detects_bull_trend():
     service = MarketRegimeService()
     df = pd.DataFrame({

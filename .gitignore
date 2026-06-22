@@ -31,6 +31,13 @@ backend_api_python/.env
 .github/
 .vscode/
 agent-tools/
+.cache/
+.codex/
+.codex-logs/
+.agents/
+.local_tools/
+outputs/
+.pytest_cache/
 *.swp
 *.swo
 *~
@@ -68,6 +75,10 @@ yarn.lock
 # Logs & Runtime Data
 # ========================
 *.log
+pytest_out.txt
+*_out.txt
+_tmp_*.txt
+_i18n_*.txt
 backend_api_python/logs/
 # Vue build output belongs in frontend/dist/, not under the API package
 backend_api_python/dist/
@@ -79,12 +90,6 @@ mcp_server/.smoketest/
 mcp_server/src/quantdinger_mcp.egg-info/
 backend_api_python/data/quantdinger.db
 backend_api_python/data/memory/
-
-# ========================
-# i18n tooling
-# ========================
-scripts/.i18n-cache/
-QuantDinger-Vue-src/src/locales/lang/*.bak
 
 # ========================
 # Docker

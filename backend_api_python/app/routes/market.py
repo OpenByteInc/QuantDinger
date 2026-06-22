@@ -2,7 +2,8 @@
 Market API routes (local-only).
 Provides watchlist, market metadata, symbol search, and pricing helpers for the frontend.
 """
-from flask import Blueprint, request, jsonify, g
+from flask import g, jsonify, request
+from app.openapi.blueprint import HumanBlueprint as Blueprint
 import os
 import re
 import traceback
@@ -125,7 +126,7 @@ def _resolve_symbol_name_bounded(market: str, symbol: str, timeout_sec: float = 
 # come from ``resolve_symbol_name`` (e.g. a frontend-supplied ``name_in``
 # picked from search results).
 
-market_bp = Blueprint('market', __name__)
+market_blp = Blueprint('market', __name__)
 kline_service = KlineService()
 cache = CacheManager()
 
@@ -151,7 +152,7 @@ def _ensure_watchlist_table():
     # Table is created by db schema init; this is only a sanity hook.
     return True
 
-@market_bp.route('/config', methods=['GET'])
+@market_blp.route('/config', methods=['GET'])
 def get_public_config():
     """
     Public config for frontend (local mode).
@@ -163,10 +164,8 @@ def get_public_config():
         if not isinstance(models, dict) or not models:
             # Fallback defaults (offline friendly)
             models = {
-                # Keep some legacy defaults
-                'openai/gpt-4o': 'GPT-4o',
-
                 # Unified frontend model list (OpenRouter-style ids)
+                'openai/gpt-5.4': 'OpenAI: GPT-5.4',
                 'x-ai/grok-code-fast-1': 'xAI: Grok Code Fast 1',
                 'x-ai/grok-4-fast': 'xAI: Grok 4 Fast',
                 'x-ai/grok-4.1-fast': 'xAI: Grok 4.1 Fast',
@@ -175,6 +174,7 @@ def get_public_config():
                 'google/gemini-3-pro-preview': 'Google: Gemini 3 Pro Preview',
                 'google/gemini-2.5-flash-lite': 'Google: Gemini 2.5 Flash Lite',
                 'google/gemini-2.5-pro': 'Google: Gemini 2.5 Pro',
+                'openai/gpt-4o': 'OpenAI: GPT-4o',
                 'openai/gpt-4o-mini': 'OpenAI: GPT-4o-mini',
                 'openai/gpt-5-mini': 'OpenAI: GPT-5 Mini',
                 'openai/gpt-4.1-mini': 'OpenAI: GPT-4.1 Mini',
@@ -191,7 +191,7 @@ def get_public_config():
         logger.error(f"get_public_config failed: {str(e)}")
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
 
-@market_bp.route('/types', methods=['GET'])
+@market_blp.route('/types', methods=['GET'])
 def get_market_types():
     """Return supported market types for the add-watchlist modal.
 
@@ -246,7 +246,7 @@ def get_market_types():
     return jsonify({'code': 1, 'msg': 'success', 'data': data})
 
 
-@market_bp.route('/menuFooterConfig', methods=['GET'])
+@market_blp.route('/menuFooterConfig', methods=['GET'])
 def get_menu_footer_config():
     """
     Compatibility stub for old PHP `getMenuFooterConfig`.
@@ -271,7 +271,7 @@ def get_menu_footer_config():
     }
     return jsonify({'code': 1, 'msg': 'success', 'data': data})
 
-@market_bp.route('/symbols/search', methods=['GET'])
+@market_blp.route('/symbols/search', methods=['GET'])
 def search_symbols():
     """
     Lightweight symbol search.
@@ -351,7 +351,7 @@ def _search_crypto_exchange(keyword: str, limit: int, existing: set) -> list:
         logger.debug("_search_crypto_exchange failed: %s", e)
         return []
 
-@market_bp.route('/symbols/hot', methods=['GET'])
+@market_blp.route('/symbols/hot', methods=['GET'])
 def get_hot_symbols():
     """Return a small curated hot list per market (local-only)."""
     try:
@@ -363,7 +363,7 @@ def get_hot_symbols():
         logger.error(f"get_hot_symbols failed: {str(e)}")
         return jsonify({'code': 0, 'msg': str(e), 'data': []}), 500
 
-@market_bp.route('/watchlist/get', methods=['GET'])
+@market_blp.route('/watchlist/get', methods=['GET'])
 @login_required
 def get_watchlist():
     """Get watchlist for the current user."""
@@ -409,7 +409,7 @@ def get_watchlist():
         logger.error(traceback.format_exc())
         return jsonify({'code': 0, 'msg': str(e), 'data': []}), 500
 
-@market_bp.route('/watchlist/add', methods=['POST'])
+@market_blp.route('/watchlist/add', methods=['POST'])
 @login_required
 def add_watchlist():
     """Add a symbol to watchlist for the current user."""
@@ -496,7 +496,7 @@ def add_watchlist():
         logger.error(traceback.format_exc())
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
 
-@market_bp.route('/watchlist/remove', methods=['POST'])
+@market_blp.route('/watchlist/remove', methods=['POST'])
 @login_required
 def remove_watchlist():
     """Remove a symbol from watchlist for the current user.
@@ -581,8 +581,6 @@ def remove_watchlist():
 def get_single_price(market: str, symbol: str) -> dict:
     """获取单个标的的价格数据"""
     try:
-        # 使用 get_realtime_price 获取实时价格（内部已有30秒缓存）
-        # 相比原先的 '1D' K线逻辑，这能更及时地反映 Crypto 等 24h 市场的变化
         price_data = kline_service.get_realtime_price(market, symbol)
         
         return {
@@ -603,7 +601,7 @@ def get_single_price(market: str, symbol: str) -> dict:
         }
 
 
-@market_bp.route('/watchlist/prices', methods=['GET'])
+@market_blp.route('/watchlist/prices', methods=['GET'])
 @login_required
 def get_watchlist_prices():
     """
@@ -658,7 +656,6 @@ def get_watchlist_prices():
                 future = executor.submit(get_single_price, market, symbol)
                 futures[future] = (market, symbol)
         
-        # 收集结果（带超时保护）
         completed_futures = set()
         try:
             for future in as_completed(futures, timeout=30):
@@ -677,7 +674,6 @@ def get_watchlist_prices():
                         'changePercent': 0
                     })
         except TimeoutError:
-            # 超时时，为未完成的任务添加默认结果
             for future, (market, symbol) in futures.items():
                 if future not in completed_futures:
                     logger.warning(f"Price fetch timed out: {market}:{symbol}")
@@ -709,14 +705,14 @@ def get_watchlist_prices():
         }), 500
 
 
-@market_bp.route('/price', methods=['GET'])
+@market_blp.route('/price', methods=['GET'])
 def get_price():
     """
-    获取单个标的价格
-    
-    参数:
-        market: 市场类型
-        symbol: 交易标的
+    Get realtime price for a single symbol.
+
+    Query params:
+        market: Market type
+        symbol: Symbol or ticker
     """
     try:
         market = request.args.get('market', '')
@@ -746,125 +742,5 @@ def get_price():
         }), 500
 
 
-@market_bp.route('/stock/name', methods=['POST'])
-def get_stock_name():
-    """
-    获取股票名称
-    
-    请求体:
-    {
-        "market": "USStock",
-        "symbol": "AAPL"
-    }
-    
-    响应:
-    {
-        "code": 1,
-        "msg": "success",
-        "data": {
-            "name": "Apple Inc."
-        }
-    }
-    """
-    try:
-        data = request.get_json()
-        if not data:
-            return jsonify({
-                'code': 0,
-                'msg': 'Request body is required',
-                'data': None
-            }), 400
-        
-        market = data.get('market', '')
-        symbol = data.get('symbol', '')
-        
-        if not market or not symbol:
-            return jsonify({
-                'code': 0,
-                'msg': 'Missing market or symbol parameter(s)',
-                'data': None
-            }), 400
-        
-        # 尝试从缓存获取（1天缓存）
-        cache_key = f"stock_name:{market}:{symbol}"
-        cached_name = cache.get(cache_key)
-        
-        if cached_name:
-            logger.debug(f"Stock name cache hit: {market}:{symbol}")
-            return jsonify({
-                'code': 1,
-                'msg': 'success',
-                'data': {'name': cached_name}
-            })
-        
-        # 根据不同市场获取股票名称
-        stock_name = symbol  # 默认使用代码
-        
-        try:
-            if market == 'USStock':
-                # 对于股票，尝试获取基本信息
-                import yfinance as yf
-                
-                yf_symbol = symbol
-                ticker = yf.Ticker(yf_symbol)
-                info = ticker.info
-                
-                # 尝试获取名称
-                stock_name = info.get('longName') or info.get('shortName') or symbol
-                
-            elif market == 'Crypto':
-                # 加密货币，使用交易对格式
-                if '/' in symbol:
-                    stock_name = symbol
-                else:
-                    stock_name = f"{symbol}/USDT"
-            
-            elif market == 'Forex':
-                # 外汇
-                forex_names = {
-                    'XAUUSD': '黄金',
-                    'XAGUSD': '白银',
-                    'EURUSD': '欧元/美元',
-                    'GBPUSD': '英镑/美元',
-                    'USDJPY': '美元/日元',
-                    'AUDUSD': '澳元/美元',
-                    'USDCAD': '美元/加元',
-                    'USDCHF': '美元/瑞郎',
-                }
-                stock_name = forex_names.get(symbol, symbol)
-            
-            elif market == 'Futures':
-                # 期货
-                futures_names = {
-                    'GC': '黄金期货',
-                    'SI': '白银期货',
-                    'CL': '原油期货',
-                    'NG': '天然气期货',
-                    'ZC': '玉米期货',
-                    'ZW': '小麦期货',
-                    'BTCUSDT': 'BTC永续合约',
-                    'ETHUSDT': 'ETH永续合约',
-                }
-                stock_name = futures_names.get(symbol, symbol)
-            
-        except Exception as e:
-            logger.warning(f"Failed to fetch stock name; falling back to symbol: {market}:{symbol} - {str(e)}")
-            stock_name = symbol
-        
-        # 缓存1天
-        cache.set(cache_key, stock_name, 86400)
-        
-        return jsonify({
-            'code': 1,
-            'msg': 'success',
-            'data': {'name': stock_name}
-        })
-        
-    except Exception as e:
-        logger.error(f"Failed to fetch stock name: {str(e)}")
-        logger.error(traceback.format_exc())
-        return jsonify({
-            'code': 0,
-            'msg': f'Failed: {str(e)}',
-            'data': None
-        }), 500
+# openapi-compat: legacy import name
+market_bp = market_blp

@@ -50,6 +50,12 @@ if [ "$CURRENT_SECRET" = "$DEFAULT_SECRET" ]; then
 fi
 
 echo "[OK] SECRET_KEY is configured"
+SECRET_LEN=$(printf '%s' "$CURRENT_SECRET" | wc -c | tr -d ' ')
+if [ "$SECRET_LEN" -lt 32 ]; then
+    echo "[WARNING] SECRET_KEY is only ${SECRET_LEN} bytes; RFC 7518 recommends >= 32 for HS256."
+    echo "          Generate one with: python3 -c \"import secrets; print(secrets.token_hex(32))\""
+    echo "          After updating .env, restart the stack; users must sign in again."
+fi
 echo ""
 
 # Start the application

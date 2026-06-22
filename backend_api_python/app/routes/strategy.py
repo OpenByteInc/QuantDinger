@@ -1,75 +1,132 @@
 """
 Trading Strategy API Routes
 """
-from flask import Blueprint, request, jsonify, g
+from flask import g, jsonify, request
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Dict, List, Optional, Tuple
 import json
 import re
 import traceback
 import time
 
-from app.services.strategy import StrategyService
 from app.services.strategy_compiler import StrategyCompiler
-from app.services.backtest import BacktestService
-from app.services.strategy_snapshot import StrategySnapshotResolver
+from app.routes.strategy_blueprint import strategy_blp
+from app.routes.strategy_services import get_strategy_service
 from app import get_trading_executor
 from app.utils.logger import get_logger
 from app.utils.db import get_db_connection
 
-try:
-    from psycopg2.errors import UndefinedTable as PgUndefinedTable
-except Exception:  # pragma: no cover
-    PgUndefinedTable = None  # type: ignore
 from app.utils.auth import login_required
-from app.data_sources import DataSourceFactory
-from app.utils.pnl import (
-    calc_margin_notional,
-    calc_notional_value,
-    calc_pnl_percent,
-    calc_unrealized_pnl,
-    is_derivatives_market,
-)
 
 logger = get_logger(__name__)
 
-strategy_bp = Blueprint('strategy', __name__)
+# Register split strategy route modules on the shared blueprint.
+from app.routes import strategy_account_routes  # noqa: E402,F401
+from app.routes import strategy_backtest_routes  # noqa: E402,F401
+from app.routes import strategy_deviation_routes  # noqa: E402,F401
+from app.routes import strategy_grid_routes  # noqa: E402,F401
+from app.routes import strategy_ledger_routes  # noqa: E402,F401
+from app.routes import strategy_logs_routes  # noqa: E402,F401
+from app.routes import strategy_notifications  # noqa: E402,F401
+from app.routes import strategy_positions_routes  # noqa: E402,F401
+from app.routes import strategy_review_routes  # noqa: E402,F401
+from app.routes import script_source_routes  # noqa: E402,F401
 
 
-def _normalize_trade_row_for_api(trade: dict, *, leverage: float = 1.0, market_type: str = "spot") -> dict:
-    """Ensure numeric fields are JSON-friendly floats (PostgreSQL DECIMAL → float)."""
+def _strategy_live_lock_key(strategy: Dict[str, Any], user_id: int) -> Optional[Tuple[Any, ...]]:
+    """Return the account/symbol key that cannot run twice for live strategies."""
+    execution_mode = str(strategy.get("execution_mode") or "signal").strip().lower()
+    if execution_mode != "live":
+        return None
+
+    trading_config = strategy.get("trading_config") if isinstance(strategy.get("trading_config"), dict) else {}
+    exchange_config = strategy.get("exchange_config") if isinstance(strategy.get("exchange_config"), dict) else {}
+
     try:
-        from decimal import Decimal
-    except Exception:  # pragma: no cover
-        Decimal = ()  # type: ignore
-    out = dict(trade)
-    for k in ("price", "amount", "value", "commission", "profit"):
-        v = out.get(k)
-        if isinstance(v, Decimal):
-            out[k] = float(v)
-    try:
-        price = float(out.get("price") or 0.0)
-        amount = float(out.get("amount") or 0.0)
-        value = float(out.get("value") or 0.0)
-        if value <= 0 and price > 0 and amount > 0:
-            value = calc_notional_value(price, amount)
-            out["value"] = value
-        out["notional_value"] = value
-        out["margin_value"] = calc_margin_notional(value, leverage, market_type)
-        profit = out.get("profit")
-        if profit is not None:
-            margin = float(out.get("margin_value") or 0.0)
-            if margin > 0:
-                out["profit_pct_on_margin"] = round(float(profit) / margin * 100.0, 4)
-            else:
-                out["profit_pct_on_margin"] = 0.0
-            if value > 0:
-                out["profit_pct_on_notional"] = round(float(profit) / value * 100.0, 4)
-            else:
-                out["profit_pct_on_notional"] = 0.0
-    except Exception:
-        pass
-    return out
+        from app.services.exchange_execution import resolve_exchange_config
+        from app.services.live_trading.leg_context import credential_id_from_exchange_config
+        from app.services.live_trading.records import normalize_strategy_symbol
+
+        resolved_exchange = resolve_exchange_config(exchange_config, user_id=int(user_id or strategy.get("user_id") or 1))
+        exchange_id = str(
+            resolved_exchange.get("exchange_id")
+            or exchange_config.get("exchange_id")
+            or ""
+        ).strip().lower()
+        if not exchange_id:
+            return None
+
+        credential_id = int(credential_id_from_exchange_config(resolved_exchange) or credential_id_from_exchange_config(exchange_config) or 0)
+        credential_key: Any = credential_id if credential_id > 0 else f"inline:{exchange_id}"
+
+        market_type = str(
+            trading_config.get("market_type")
+            or strategy.get("market_type")
+            or resolved_exchange.get("market_type")
+            or "swap"
+        ).strip().lower()
+        if market_type in ("futures", "future", "perp", "perpetual"):
+            market_type = "swap"
+
+        symbol = (
+            strategy.get("symbol")
+            or trading_config.get("symbol")
+            or ""
+        )
+        symbol = normalize_strategy_symbol(str(symbol or "").strip()).upper()
+        if not symbol:
+            return None
+
+        return (int(user_id or strategy.get("user_id") or 0), credential_key, exchange_id, market_type, symbol)
+    except Exception as e:
+        logger.warning("strategy live lock key failed for strategy %s: %s", strategy.get("id"), e)
+        return None
+
+
+def _find_live_strategy_conflict(strategy: Dict[str, Any], user_id: int) -> Optional[Dict[str, Any]]:
+    """Find another running live strategy using the same account + market + symbol."""
+    key = _strategy_live_lock_key(strategy, user_id)
+    if not key:
+        return None
+    sid = int(strategy.get("id") or 0)
+    with get_db_connection() as db:
+        cur = db.cursor()
+        cur.execute(
+            """
+            SELECT id
+            FROM qd_strategies_trading
+            WHERE user_id = ? AND status = 'running' AND execution_mode = 'live' AND id <> ?
+            """,
+            (int(user_id), sid),
+        )
+        rows = cur.fetchall() or []
+        cur.close()
+
+    service = get_strategy_service()
+    for row in rows:
+        other_id = int(row.get("id") or 0)
+        other = service.get_strategy(other_id, user_id=user_id)
+        if not other:
+            continue
+        if _strategy_live_lock_key(other, user_id) == key:
+            return {
+                "strategy_id": other_id,
+                "strategy_name": other.get("strategy_name") or other.get("name") or str(other_id),
+                "symbol": key[-1],
+                "market_type": key[-2],
+                "exchange_id": key[-3],
+            }
+    return None
+
+
+def _live_conflict_message(conflict: Dict[str, Any]) -> str:
+    return (
+        "Live strategy conflict: another running strategy already uses the same "
+        f"API key/exchange/market/symbol ({conflict.get('exchange_id')} "
+        f"{conflict.get('market_type')} {conflict.get('symbol')}). "
+        f"Please stop strategy {conflict.get('strategy_id')} "
+        f"({conflict.get('strategy_name')}) first."
+    )
 
 
 def _analyze_strategy_code_quality(code: str) -> list[dict]:
@@ -179,31 +236,45 @@ def _is_zh_lang(lang: str | None) -> bool:
 
 def _strategy_ai_text(key: str, lang: str = "zh-CN") -> str:
     is_zh = _is_zh_lang(lang)
-    texts = {
-        "prompt_empty": "提示词不能为空" if is_zh else "Prompt cannot be empty",
-        "no_llm_key": "未配置 LLM API Key" if is_zh else "No LLM API key configured",
-        "insufficient_credits": "积分不足，请充值后重试" if is_zh else "Insufficient credits. Please top up and try again.",
-        "invalid_json_params": "AI 未返回有效的 JSON 参数" if is_zh else "AI did not return valid JSON parameters",
-        "ai_empty_result": "AI 生成结果为空" if is_zh else "AI generation returned empty result",
+    zh_texts = {
+        "prompt_empty": "提示词不能为空",
+        "no_llm_key": "未配置 LLM API Key",
+        "insufficient_credits": "积分不足，请充值后重试",
+        "invalid_json_params": "AI 未返回有效的 JSON 参数",
+        "ai_empty_result": "AI 生成结果为空",
         "success": "success",
     }
-    return texts.get(key, key)
+    en_texts = {
+        "prompt_empty": "Prompt cannot be empty",
+        "no_llm_key": "No LLM API key configured",
+        "insufficient_credits": "Insufficient credits. Please top up and try again.",
+        "invalid_json_params": "AI did not return valid JSON parameters",
+        "ai_empty_result": "AI generation returned empty result",
+        "success": "success",
+    }
+    return (zh_texts if is_zh else en_texts).get(key, key)
 
 
 def _strategy_hint_to_text(hint_code: str, params: dict | None = None, lang: str = "zh-CN") -> str:
     _ = params or {}
     is_zh = _is_zh_lang(lang)
-    if hint_code == 'MISSING_ON_INIT':
-        return "缺少 on_init(ctx) 函数。" if is_zh else "Missing on_init(ctx) function."
-    if hint_code == 'MISSING_ON_BAR':
-        return "缺少 on_bar(ctx, bar) 函数。" if is_zh else "Missing on_bar(ctx, bar) function."
-    if hint_code == 'NO_CTX_PARAM_DEFAULTS':
-        return "没有通过 ctx.param(...) 声明参数默认值。" if is_zh else "No parameter defaults were declared via ctx.param(...)."
-    if hint_code == 'NO_ORDER_INTENT':
-        return "没有检测到 ctx.buy / ctx.sell / ctx.close_position 等交易动作。" if is_zh else "No order intent like ctx.buy / ctx.sell / ctx.close_position was detected."
-    if hint_code == 'EMPTY_CODE':
-        return "策略代码为空。" if is_zh else "Strategy code is empty."
-    return f"检测到策略提示：{hint_code}" if is_zh else f"Strategy hint detected: {hint_code}"
+    zh_texts = {
+        "MISSING_ON_INIT": "缺少 on_init(ctx) 函数。",
+        "MISSING_ON_BAR": "缺少 on_bar(ctx, bar) 函数。",
+        "NO_CTX_PARAM_DEFAULTS": "没有通过 ctx.param(...) 声明参数默认值。",
+        "NO_ORDER_INTENT": "没有检测到 ctx.buy / ctx.sell / ctx.close_position 等交易动作。",
+        "EMPTY_CODE": "策略代码为空。",
+    }
+    en_texts = {
+        "MISSING_ON_INIT": "Missing on_init(ctx) function.",
+        "MISSING_ON_BAR": "Missing on_bar(ctx, bar) function.",
+        "NO_CTX_PARAM_DEFAULTS": "No parameter defaults were declared via ctx.param(...).",
+        "NO_ORDER_INTENT": "No order intent like ctx.buy / ctx.sell / ctx.close_position was detected.",
+        "EMPTY_CODE": "Strategy code is empty.",
+    }
+    if is_zh:
+        return zh_texts.get(hint_code, f"检测到策略提示：{hint_code}")
+    return en_texts.get(hint_code, f"Strategy hint detected: {hint_code}")
 
 
 def _strategy_human_summary(
@@ -240,15 +311,11 @@ def _strategy_human_summary(
     else:
         title = "AI 已生成策略代码，并通过当前质检流程" if is_zh else "AI generated strategy code and it passed the current QA flow"
 
-    returned_text = (
-        "当前返回的是自动修复后的代码。"
-        if returned_candidate == 'repaired' and is_zh else
-        "The returned code is the auto-fixed version."
-        if returned_candidate == 'repaired' else
-        "当前返回的是首次生成的代码。"
-        if is_zh else
-        "The returned code is the initially generated version."
-    )
+    if returned_candidate == 'repaired':
+        returned_text = "当前返回的是自动修复后的代码。" if is_zh else "The returned code is the auto-fixed version."
+    else:
+        returned_text = "当前返回的是首次生成的代码。" if is_zh else "The returned code is the initially generated version."
+
     return {
         "title": title,
         "returned_text": returned_text,
@@ -256,82 +323,7 @@ def _strategy_human_summary(
         "remaining_messages": remaining_messages,
     }
 
-
-# ---------------------------------------------------------------------------
-# Strategy templates (loaded once from JSON file)
-# ---------------------------------------------------------------------------
-import os as _os
-
-_TEMPLATES_PATH = _os.path.join(_os.path.dirname(__file__), '..', 'data', 'strategy_templates.json')
-_templates_cache = None
-
-
-def _load_templates():
-    global _templates_cache
-    if _templates_cache is None:
-        try:
-            with open(_TEMPLATES_PATH, 'r', encoding='utf-8') as f:
-                _templates_cache = json.load(f)
-        except Exception as e:
-            logger.error("Failed to load strategy templates: %s", e)
-            _templates_cache = []
-    return _templates_cache
-
-
-@strategy_bp.route('/templates', methods=['GET'])
-@login_required
-def list_strategy_templates():
-    """Return pre-built strategy templates for one-click import."""
-    templates = _load_templates()
-    category = request.args.get('category')
-    difficulty = request.args.get('difficulty')
-    if category:
-        templates = [t for t in templates if t.get('category') == category]
-    if difficulty:
-        templates = [t for t in templates if t.get('difficulty') == difficulty]
-    return jsonify({'code': 1, 'msg': 'success', 'data': templates})
-
-
-@strategy_bp.route('/templates/<key>', methods=['GET'])
-@login_required
-def get_strategy_template(key):
-    """Return a single strategy template by key."""
-    templates = _load_templates()
-    for t in templates:
-        if t.get('key') == key:
-            return jsonify({'code': 1, 'msg': 'success', 'data': t})
-    return jsonify({'code': 0, 'msg': 'Template not found'}), 404
-
-
-@strategy_bp.route('/bots/grid-script', methods=['GET'])
-@login_required
-def get_grid_bot_script():
-    """Canonical grid bot ScriptStrategy source (adaptive bounds + waterfall aware)."""
-    from app.services.bot_scripts.grid_template import build_grid_bot_script
-
-    return jsonify({'code': 1, 'msg': 'success', 'data': {'script': build_grid_bot_script()}})
-
-
-# Local mode: avoid heavy initialization during module import.
-# Instantiate services lazily on first use to keep startup clean.
-_strategy_service = None
-_backtest_service = None
-
-def get_strategy_service() -> StrategyService:
-    global _strategy_service
-    if _strategy_service is None:
-        _strategy_service = StrategyService()
-    return _strategy_service
-
-
-def get_backtest_service() -> BacktestService:
-    global _backtest_service
-    if _backtest_service is None:
-        _backtest_service = BacktestService()
-    return _backtest_service
-
-
-@strategy_bp.route('/strategies', methods=['GET'])
+@strategy_blp.route('/strategies', methods=['GET'])
 @login_required
 def list_strategies():
     """
@@ -347,7 +339,7 @@ def list_strategies():
         return jsonify({'code': 0, 'msg': str(e), 'data': {'strategies': []}}), 500
 
 
-@strategy_bp.route('/strategies/detail', methods=['GET'])
+@strategy_blp.route('/strategies/detail', methods=['GET'])
 @login_required
 def get_strategy_detail():
     try:
@@ -365,169 +357,7 @@ def get_strategy_detail():
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
 
 
-@strategy_bp.route('/strategies/backtest', methods=['POST'])
-@login_required
-def run_strategy_backtest():
-    try:
-        payload = request.get_json() or {}
-        user_id = g.user_id
-        strategy_id = int(payload.get('strategyId') or 0)
-        if not strategy_id:
-            return jsonify({'code': 0, 'msg': 'strategyId is required', 'data': None}), 400
-
-        start_date_str = str(payload.get('startDate') or '').strip()
-        end_date_str = str(payload.get('endDate') or '').strip()
-        if not start_date_str or not end_date_str:
-            return jsonify({'code': 0, 'msg': 'startDate and endDate are required', 'data': None}), 400
-
-        strategy = get_strategy_service().get_strategy(strategy_id, user_id=user_id)
-        if not strategy:
-            return jsonify({'code': 0, 'msg': 'Strategy not found', 'data': None}), 404
-
-        resolver = StrategySnapshotResolver(user_id=user_id)
-        snapshot = resolver.resolve(strategy, payload.get('overrideConfig') or {})
-        snapshot['user_id'] = user_id
-
-        start_date = datetime.strptime(start_date_str, '%Y-%m-%d')
-        end_date = datetime.strptime(end_date_str, '%Y-%m-%d').replace(hour=23, minute=59, second=59)
-
-        days_diff = (end_date - start_date).days
-        timeframe = snapshot.get('timeframe') or '1D'
-        if timeframe == '1m':
-            max_days = 30
-            max_range_text = '1 month'
-        elif timeframe == '5m':
-            max_days = 180
-            max_range_text = '6 months'
-        elif timeframe in ['15m', '30m']:
-            max_days = 365
-            max_range_text = '1 year'
-        else:
-            max_days = 1095
-            max_range_text = '3 years'
-        if days_diff > max_days:
-            return jsonify({
-                'code': 0,
-                'msg': f'Backtest range exceeds limit: timeframe {timeframe} supports up to {max_range_text} ({max_days} days), but you selected {days_diff} days',
-                'data': None
-            }), 400
-
-        svc = get_backtest_service()
-        result = svc.run_strategy_snapshot(snapshot, start_date=start_date, end_date=end_date)
-        run_id = svc.persist_run(
-            user_id=user_id,
-            indicator_id=snapshot.get('indicator_id'),
-            strategy_id=snapshot.get('strategy_id'),
-            strategy_name=snapshot.get('strategy_name') or '',
-            run_type=snapshot.get('run_type') or 'strategy_indicator',
-            market=snapshot.get('market') or '',
-            symbol=snapshot.get('symbol') or '',
-            timeframe=snapshot.get('timeframe') or '',
-            start_date_str=start_date_str,
-            end_date_str=end_date_str,
-            initial_capital=float(snapshot.get('initial_capital') or 0),
-            commission=float(snapshot.get('commission') or 0),
-            slippage=float(snapshot.get('slippage') or 0),
-            leverage=int(snapshot.get('leverage') or 1),
-            trade_direction=str(snapshot.get('trade_direction') or 'long'),
-            strategy_config=snapshot.get('strategy_config') or {},
-            config_snapshot=snapshot.get('config_snapshot') or {},
-            status='success',
-            error_message='',
-            result=result,
-            code=snapshot.get('code') or '',
-        )
-        return jsonify({'code': 1, 'msg': 'success', 'data': {'runId': run_id, 'result': result}})
-    except ValueError as e:
-        return jsonify({'code': 0, 'msg': str(e), 'data': None}), 400
-    except Exception as e:
-        logger.error(f"run_strategy_backtest failed: {str(e)}")
-        logger.error(traceback.format_exc())
-        try:
-            payload = payload if isinstance(payload, dict) else {}
-            strategy_id = int(payload.get('strategyId') or 0)
-            strategy = get_strategy_service().get_strategy(strategy_id, user_id=g.user_id) if strategy_id else None
-            if strategy:
-                resolver = StrategySnapshotResolver(user_id=g.user_id)
-                snapshot = resolver.resolve(strategy, payload.get('overrideConfig') or {})
-                snapshot['user_id'] = g.user_id
-                get_backtest_service().persist_run(
-                    user_id=g.user_id,
-                    indicator_id=snapshot.get('indicator_id'),
-                    strategy_id=snapshot.get('strategy_id'),
-                    strategy_name=snapshot.get('strategy_name') or '',
-                    run_type=snapshot.get('run_type') or 'strategy_indicator',
-                    market=snapshot.get('market') or '',
-                    symbol=snapshot.get('symbol') or '',
-                    timeframe=snapshot.get('timeframe') or '',
-                    start_date_str=str(payload.get('startDate') or ''),
-                    end_date_str=str(payload.get('endDate') or ''),
-                    initial_capital=float(snapshot.get('initial_capital') or 0),
-                    commission=float(snapshot.get('commission') or 0),
-                    slippage=float(snapshot.get('slippage') or 0),
-                    leverage=int(snapshot.get('leverage') or 1),
-                    trade_direction=str(snapshot.get('trade_direction') or 'long'),
-                    strategy_config=snapshot.get('strategy_config') or {},
-                    config_snapshot=snapshot.get('config_snapshot') or {},
-                    status='failed',
-                    error_message=str(e),
-                    result=None,
-                    code=snapshot.get('code') or '',
-                )
-        except Exception:
-            pass
-        return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
-
-
-@strategy_bp.route('/strategies/backtest/history', methods=['GET'])
-@login_required
-def get_strategy_backtest_history():
-    try:
-        user_id = g.user_id
-        strategy_id = int(request.args.get('strategyId') or request.args.get('id') or 0)
-        if not strategy_id:
-            return jsonify({'code': 0, 'msg': 'strategyId is required', 'data': None}), 400
-        limit = max(1, min(int(request.args.get('limit') or 50), 200))
-        offset = max(0, int(request.args.get('offset') or 0))
-        symbol = (request.args.get('symbol') or '').strip()
-        market = (request.args.get('market') or '').strip()
-        timeframe = (request.args.get('timeframe') or '').strip()
-        rows = get_backtest_service().list_runs(
-            user_id=user_id,
-            strategy_id=strategy_id,
-            limit=limit,
-            offset=offset,
-            symbol=symbol,
-            market=market,
-            timeframe=timeframe,
-        )
-        rows = [r for r in rows if str(r.get('run_type') or '').startswith('strategy_')]
-        return jsonify({'code': 1, 'msg': 'success', 'data': rows})
-    except Exception as e:
-        logger.error(f"get_strategy_backtest_history failed: {str(e)}")
-        logger.error(traceback.format_exc())
-        return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
-
-
-@strategy_bp.route('/strategies/backtest/get', methods=['GET'])
-@login_required
-def get_strategy_backtest_run():
-    try:
-        user_id = g.user_id
-        run_id = int(request.args.get('runId') or 0)
-        if not run_id:
-            return jsonify({'code': 0, 'msg': 'runId is required', 'data': None}), 400
-        row = get_backtest_service().get_run(user_id=user_id, run_id=run_id)
-        if not row or not str(row.get('run_type') or '').startswith('strategy_'):
-            return jsonify({'code': 0, 'msg': 'run not found', 'data': None}), 404
-        return jsonify({'code': 1, 'msg': 'success', 'data': row})
-    except Exception as e:
-        logger.error(f"get_strategy_backtest_run failed: {str(e)}")
-        logger.error(traceback.format_exc())
-        return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
-
-
-@strategy_bp.route('/strategies/create', methods=['POST'])
+@strategy_blp.route('/strategies/create', methods=['POST'])
 @login_required
 def create_strategy():
     try:
@@ -544,7 +374,7 @@ def create_strategy():
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
 
 
-@strategy_bp.route('/strategies/batch-create', methods=['POST'])
+@strategy_blp.route('/strategies/batch-create', methods=['POST'])
 @login_required
 def batch_create_strategies():
     """
@@ -581,7 +411,7 @@ def batch_create_strategies():
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
 
 
-@strategy_bp.route('/strategies/batch-start', methods=['POST'])
+@strategy_blp.route('/strategies/batch-start', methods=['POST'])
 @login_required
 def batch_start_strategies():
     """
@@ -604,6 +434,45 @@ def batch_start_strategies():
         
         if not strategy_ids:
             return jsonify({'code': 0, 'msg': 'Please provide strategy IDs', 'data': None}), 400
+
+        seen_live_keys: Dict[Tuple[Any, ...], Dict[str, Any]] = {}
+        batch_conflicts: List[Dict[str, Any]] = []
+        for sid in strategy_ids:
+            st = get_strategy_service().get_strategy(int(sid), user_id=user_id)
+            if not st:
+                continue
+            existing_conflict = _find_live_strategy_conflict(st, user_id)
+            if existing_conflict:
+                batch_conflicts.append({
+                    'strategy_id': int(sid),
+                    'conflict': existing_conflict,
+                    'message': _live_conflict_message(existing_conflict),
+                })
+                continue
+            key = _strategy_live_lock_key(st, user_id)
+            if key and key in seen_live_keys:
+                other = seen_live_keys[key]
+                conflict = {
+                    'strategy_id': other.get('id'),
+                    'strategy_name': other.get('strategy_name') or other.get('name') or str(other.get('id')),
+                    'symbol': key[-1],
+                    'market_type': key[-2],
+                    'exchange_id': key[-3],
+                }
+                batch_conflicts.append({
+                    'strategy_id': int(sid),
+                    'conflict': conflict,
+                    'message': _live_conflict_message(conflict),
+                })
+            elif key:
+                seen_live_keys[key] = st
+
+        if batch_conflicts:
+            return jsonify({
+                'code': 0,
+                'msg': 'Live strategy conflict',
+                'data': {'conflicts': batch_conflicts},
+            }), 409
         
         # Update database status first
         result = get_strategy_service().batch_start_strategies(strategy_ids, user_id=user_id)
@@ -627,7 +496,7 @@ def batch_start_strategies():
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
 
 
-@strategy_bp.route('/strategies/batch-stop', methods=['POST'])
+@strategy_blp.route('/strategies/batch-stop', methods=['POST'])
 @login_required
 def batch_stop_strategies():
     """
@@ -672,7 +541,7 @@ def batch_stop_strategies():
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
 
 
-@strategy_bp.route('/strategies/batch-delete', methods=['DELETE'])
+@strategy_blp.route('/strategies/batch-delete', methods=['DELETE'])
 @login_required
 def batch_delete_strategies():
     """
@@ -717,7 +586,7 @@ def batch_delete_strategies():
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
 
 
-@strategy_bp.route('/strategies/update', methods=['PUT'])
+@strategy_blp.route('/strategies/update', methods=['PUT'])
 @login_required
 def update_strategy():
     try:
@@ -736,7 +605,7 @@ def update_strategy():
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
 
 
-@strategy_bp.route('/strategies/delete', methods=['DELETE'])
+@strategy_blp.route('/strategies/delete', methods=['DELETE'])
 @login_required
 def delete_strategy():
     try:
@@ -752,317 +621,7 @@ def delete_strategy():
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
 
 
-@strategy_bp.route('/strategies/trades', methods=['GET'])
-@login_required
-def get_trades():
-    """Get trade records for the current user's strategy."""
-    try:
-        user_id = g.user_id
-        strategy_id = request.args.get('id', type=int)
-        if not strategy_id:
-            return jsonify({'code': 0, 'msg': 'Missing strategy id parameter', 'data': {'trades': [], 'items': []}}), 400
-        
-        # Verify strategy belongs to user
-        st = get_strategy_service().get_strategy(strategy_id, user_id=user_id)
-        if not st:
-            return jsonify({'code': 0, 'msg': 'Strategy not found', 'data': {'trades': [], 'items': []}}), 404
-
-        trading_config = st.get("trading_config") if isinstance(st.get("trading_config"), dict) else {}
-        try:
-            leverage = float(trading_config.get("leverage") or st.get("leverage") or 1.0)
-        except Exception:
-            leverage = 1.0
-        if leverage <= 0:
-            leverage = 1.0
-        market_type = str(trading_config.get("market_type") or st.get("market_type") or "swap").strip().lower()
-        if is_derivatives_market(market_type):
-            market_type = "swap"
-        
-        with get_db_connection() as db:
-            cur = db.cursor()
-            cur.execute(
-                """
-                SELECT id, strategy_id, symbol, type, price, amount, value, commission, commission_ccy, profit, created_at
-                FROM qd_strategy_trades
-                WHERE strategy_id = ?
-                ORDER BY id DESC
-                """,
-                (strategy_id,)
-            )
-            rows = cur.fetchall() or []
-            cur.close()
-        
-        # Convert created_at to Unix seconds (UTC instant).
-        # qd_strategy_trades.created_at is TIMESTAMP WITHOUT TIME ZONE; with PostgreSQL session UTC
-        # the stored wall clock is UTC. Naive datetime must not use .timestamp() alone — that would
-        # interpret it in the Python process local TZ and shift the instant (e.g. +8h on CN laptops).
-        from datetime import datetime as _dt, timezone as _tz
-        processed_rows = []
-        for row in rows:
-            trade = dict(row)
-            created_at = trade.get('created_at')
-            if created_at:
-                if hasattr(created_at, 'timestamp'):
-                    dt = created_at
-                    if getattr(dt, 'tzinfo', None) is None:
-                        dt = dt.replace(tzinfo=_tz.utc)
-                    trade['created_at'] = int(dt.timestamp())
-                elif isinstance(created_at, str):
-                    try:
-                        dt = _dt.fromisoformat(created_at.replace('Z', '+00:00'))
-                        if getattr(dt, 'tzinfo', None) is None:
-                            dt = dt.replace(tzinfo=_tz.utc)
-                        trade['created_at'] = int(dt.timestamp())
-                    except Exception:
-                        pass
-            processed_rows.append(_normalize_trade_row_for_api(trade, leverage=leverage, market_type=market_type))
-        
-        # Frontend expects data.trades; keep data.items for compatibility with list-style components.
-        return jsonify({'code': 1, 'msg': 'success', 'data': {'trades': processed_rows, 'items': processed_rows}})
-    except Exception as e:
-        logger.error(f"get_trades failed: {str(e)}")
-        logger.error(traceback.format_exc())
-        return jsonify({'code': 0, 'msg': str(e), 'data': {'trades': [], 'items': []}}), 500
-
-
-@strategy_bp.route('/strategies/dry-run-deviation', methods=['GET'])
-@login_required
-def get_dry_run_deviation():
-    """Quantify how far live fills drifted from backtest signal closes.
-
-    For every recorded trade the service rebuilds the prior closed bar (the
-    one a backtest would have used as the decision price) and computes per-
-    trade slippage / latency, plus a summary verdict.
-    """
-    try:
-        user_id = int(g.user_id)
-        strategy_id = request.args.get('id', type=int)
-        if not strategy_id:
-            return jsonify({'code': 0, 'msg': 'Missing strategy id parameter', 'data': None}), 400
-        limit = max(20, min(int(request.args.get('limit') or 200), 1000))
-
-        from app.services.dry_run_deviation import DryRunDeviationService
-        svc = DryRunDeviationService()
-        report = svc.build_report(
-            strategy_id=strategy_id,
-            user_id=user_id,
-            limit=limit,
-        )
-        return jsonify({'code': 1, 'msg': 'success', 'data': report})
-    except Exception as exc:
-        logger.error("get_dry_run_deviation failed: %s", exc)
-        logger.error(traceback.format_exc())
-        return jsonify({'code': 0, 'msg': str(exc), 'data': None}), 500
-
-
-@strategy_bp.route('/strategies/positions', methods=['GET'])
-@login_required
-def get_positions():
-    """Get position records for the current user's strategy."""
-    try:
-        user_id = g.user_id
-        strategy_id = request.args.get('id', type=int)
-        if not strategy_id:
-            return jsonify({'code': 0, 'msg': 'Missing strategy id parameter', 'data': {'positions': [], 'items': []}}), 400
-        
-        # Verify strategy belongs to user
-        st = get_strategy_service().get_strategy(strategy_id, user_id=user_id)
-        if not st:
-            return jsonify({'code': 0, 'msg': 'Strategy not found', 'data': {'positions': [], 'items': []}}), 404
-
-        trading_config = st.get("trading_config") if isinstance(st.get("trading_config"), dict) else {}
-        try:
-            leverage = float(trading_config.get("leverage") or st.get("leverage") or 1.0)
-        except Exception:
-            leverage = 1.0
-        if leverage <= 0:
-            leverage = 1.0
-        market_type = str(trading_config.get("market_type") or st.get("market_type") or "swap").strip().lower()
-        if is_derivatives_market(market_type):
-            market_type = "swap"
-
-        exchange_config = st.get("exchange_config") if isinstance(st.get("exchange_config"), dict) else {}
-        from app.data_sources.crypto import resolve_crypto_venue
-
-        price_exchange_id, price_market_type = resolve_crypto_venue(
-            exchange_config=exchange_config,
-            trading_config=trading_config,
-            market_type=market_type,
-        )
-        
-        with get_db_connection() as db:
-            cur = db.cursor()
-            cur.execute(
-                """
-                SELECT id, strategy_id, symbol, side, size, entry_price, current_price, highest_price,
-                       unrealized_pnl, pnl_percent, equity, updated_at
-                FROM qd_strategy_positions
-                WHERE strategy_id = ?
-                ORDER BY id DESC
-                """,
-                (strategy_id,)
-            )
-            rows = cur.fetchall() or []
-            cur.close()
-
-        # Sync current price and PnL on read (frontend polls every few seconds).
-        now = int(time.time())
-        # Fetch prices once per symbol to reduce API calls.
-        sym_to_price: dict[str, float] = {}
-        for r in rows:
-            sym = (r.get("symbol") or "").strip()
-            if not sym:
-                continue
-            if sym in sym_to_price:
-                continue
-            try:
-                t = DataSourceFactory.get_ticker(
-                    "Crypto",
-                    sym,
-                    exchange_id=price_exchange_id,
-                    market_type=price_market_type,
-                ) or {}
-                px = float(t.get("last") or t.get("close") or 0.0)
-                if px > 0:
-                    sym_to_price[sym] = px
-            except Exception:
-                continue
-
-        # Apply to rows and persist best-effort
-        out = []
-        with get_db_connection() as db:
-            cur = db.cursor()
-            for r in rows:
-                sym = (r.get("symbol") or "").strip()
-                side = (r.get("side") or "").strip().lower()
-                entry = float(r.get("entry_price") or 0.0)
-                size = float(r.get("size") or 0.0)
-                cp = float(sym_to_price.get(sym) or r.get("current_price") or 0.0)
-                pnl = calc_unrealized_pnl(side, entry, cp, size)
-                pct = calc_pnl_percent(entry, size, pnl, leverage=leverage, market_type=market_type)
-                notional = calc_notional_value(entry, size)
-
-                rr = dict(r)
-                # 确保 entry_price 有值（如果数据库中是 NULL，使用计算出的 entry 值）
-                if not rr.get("entry_price") or float(rr.get("entry_price") or 0.0) <= 0:
-                    rr["entry_price"] = float(entry or 0.0)
-                else:
-                    rr["entry_price"] = float(rr.get("entry_price") or 0.0)
-                rr["current_price"] = float(cp or 0.0)
-                rr["unrealized_pnl"] = float(pnl)
-                rr["pnl_percent"] = float(pct)
-                rr["notional_value"] = float(notional)
-                rr["margin_value"] = calc_margin_notional(notional, leverage, market_type)
-                rr["updated_at"] = now
-                out.append(rr)
-
-                try:
-                    cur.execute(
-                        """
-                        UPDATE qd_strategy_positions
-                        SET current_price = ?, unrealized_pnl = ?, pnl_percent = ?, updated_at = NOW()
-                        WHERE id = ?
-                        """,
-                        (float(cp or 0.0), float(pnl), float(pct), int(rr.get("id"))),
-                    )
-                except Exception:
-                    pass
-            db.commit()
-            cur.close()
-
-        return jsonify({'code': 1, 'msg': 'success', 'data': {'positions': out, 'items': out}})
-    except Exception as e:
-        logger.error(f"get_positions failed: {str(e)}")
-        logger.error(traceback.format_exc())
-        return jsonify({'code': 0, 'msg': str(e), 'data': {'positions': [], 'items': []}}), 500
-
-
-def _build_strategy_equity_curve(user_id: int, strategy_id: int):
-    st = get_strategy_service().get_strategy(strategy_id, user_id=user_id) or {}
-    if not st:
-        return None, 'Strategy not found'
-
-    initial = float(st.get('initial_capital') or (st.get('trading_config') or {}).get('initial_capital') or 0)
-    if initial <= 0:
-        initial = 1000.0
-
-    with get_db_connection() as db:
-        cur = db.cursor()
-        cur.execute(
-            """
-            SELECT created_at, profit, commission
-            FROM qd_strategy_trades
-            WHERE strategy_id = ?
-            ORDER BY created_at ASC
-            """,
-            (strategy_id,)
-        )
-        rows = cur.fetchall() or []
-        cur.execute(
-            """
-            SELECT COALESCE(SUM(unrealized_pnl), 0) AS u
-            FROM qd_strategy_positions
-            WHERE strategy_id = ?
-            """,
-            (strategy_id,),
-        )
-        prow = cur.fetchone() or {}
-        cur.close()
-
-    equity = initial
-    curve = []
-    for r in rows:
-        try:
-            # Net equity step: gross trade P&L minus exchange-synced fee.
-            equity += float(r.get('profit') or 0) - float(r.get('commission') or 0)
-        except Exception:
-            pass
-        created_at = r.get('created_at')
-        if created_at and hasattr(created_at, 'timestamp'):
-            ts = int(created_at.timestamp())
-        elif created_at:
-            ts = int(created_at)
-        else:
-            ts = int(time.time())
-        curve.append({'time': ts, 'equity': round(equity, 2)})
-
-    try:
-        unreal = float(prow.get('u') or prow.get('U') or 0)
-    except Exception:
-        unreal = 0.0
-    live_equity = float(equity) + unreal
-    now_ts = int(time.time())
-    if abs(unreal) > 1e-12 or not curve:
-        curve.append({'time': now_ts, 'equity': round(live_equity, 2)})
-
-    return curve, None
-
-
-@strategy_bp.route('/strategies/equityCurve', methods=['GET'])
-@login_required
-def get_equity_curve():
-    """Get equity curve for the current user's strategy."""
-    try:
-        user_id = g.user_id
-        strategy_id = request.args.get('id', type=int)
-        if not strategy_id:
-            return jsonify({'code': 0, 'msg': 'Missing strategy id parameter', 'data': []}), 400
-
-        curve, error = _build_strategy_equity_curve(user_id, strategy_id)
-        if error:
-            return jsonify({'code': 0, 'msg': error, 'data': []}), 404
-
-        return jsonify({'code': 1, 'msg': 'success', 'data': curve})
-    except Exception as e:
-        logger.error(f"get_equity_curve failed: {str(e)}")
-        logger.error(traceback.format_exc())
-        return jsonify({'code': 0, 'msg': str(e), 'data': []}), 500
-
-
-
-
-
-@strategy_bp.route('/strategies/stop', methods=['POST'])
+@strategy_blp.route('/strategies/stop', methods=['POST'])
 @login_required
 def stop_strategy():
     """
@@ -1086,7 +645,7 @@ def stop_strategy():
         st = get_strategy_service().get_strategy(strategy_id, user_id=user_id)
         if not st:
             return jsonify({'code': 0, 'msg': 'Strategy not found', 'data': None}), 404
-        
+
         # Get strategy type
         strategy_type = get_strategy_service().get_strategy_type(strategy_id)
         
@@ -1116,7 +675,7 @@ def stop_strategy():
         }), 500
 
 
-@strategy_bp.route('/strategies/start', methods=['POST'])
+@strategy_blp.route('/strategies/start', methods=['POST'])
 @login_required
 def start_strategy():
     """
@@ -1151,6 +710,16 @@ def start_strategy():
                 'msg': 'AI strategy has been removed; local edition does not support starting AI strategies',
                 'data': None
             }), 400
+
+        conflict = _find_live_strategy_conflict(st, user_id)
+        if conflict:
+            msg = _live_conflict_message(conflict)
+            return jsonify({
+                'code': 0,
+                'msg': msg,
+                'data': {'conflict': conflict},
+            }), 409
+
         get_strategy_service().update_strategy_status(strategy_id, 'running', user_id=user_id)
 
         executor = get_trading_executor()
@@ -1164,6 +733,16 @@ def start_strategy():
             if detail:
                 msg = f"{msg}: {detail}"
             return jsonify({'code': 0, 'msg': msg, 'data': {'detail': detail} if detail else None}), 500
+
+        alive, hint = executor.wait_strategy_running(strategy_id, timeout=3.0)
+        if not alive:
+            get_strategy_service().update_strategy_status(strategy_id, 'stopped', user_id=user_id)
+            msg = f"Strategy exited immediately after startup: {hint}"
+            return jsonify({
+                'code': 0,
+                'msg': msg,
+                'data': {'detail': hint, 'status': 'stopped'},
+            }), 500
         
         return jsonify({
             'code': 1,
@@ -1181,7 +760,7 @@ def start_strategy():
         }), 500
 
 
-@strategy_bp.route('/strategies/test-connection', methods=['POST'])
+@strategy_blp.route('/strategies/test-connection', methods=['POST'])
 @login_required
 def test_connection():
     """
@@ -1193,10 +772,10 @@ def test_connection():
     try:
         data = request.get_json() or {}
         
-        # 记录请求数据（用于调试，但不记录敏感信息）
+        # Log request keys for debugging without logging sensitive values.
         logger.debug(f"Connection test request keys: {list(data.keys())}")
         
-        # 获取交易所配置
+        # Read exchange configuration.
         exchange_config = data.get('exchange_config', data)
         
         # Local deployment: no encryption/decryption; accept dict or JSON string.
@@ -1207,7 +786,7 @@ def test_connection():
             except Exception:
                 pass
         
-        # 验证 exchange_config 是否为字典
+        # Validate exchange_config is a dictionary.
         if not isinstance(exchange_config, dict):
             logger.error(f"Invalid exchange_config type: {type(exchange_config)}, data: {str(exchange_config)[:200]}")
             # Frontend expects HTTP 200 with {code:0} for business failures.
@@ -1219,7 +798,7 @@ def test_connection():
 
             exchange_config = merge_root_exchange_config_overlay(root=data, exchange_config=exchange_config)
 
-        # Resolve credential_id → full config (merges credential keys with any overrides).
+        # Resolve credential_id to full config (merges credential keys with any overrides).
         # This allows the frontend to send just {credential_id: 5} without raw api_key/secret_key.
         from app.services.exchange_execution import resolve_exchange_config
         from app.utils.local_brokers import desktop_broker_cloud_reject_message, local_desktop_brokers_allowed
@@ -1227,7 +806,7 @@ def test_connection():
         user_id = g.user_id if hasattr(g, 'user_id') else 1
         resolved = resolve_exchange_config(exchange_config, user_id=user_id)
 
-        # 验证必要字段 (check resolved config after credential merge)
+        # Validate required fields after credential merge.
         ex_id = (resolved.get('exchange_id') or '').strip().lower()
         if not ex_id:
             return jsonify({'code': 0, 'msg': 'Please select an exchange', 'data': None})
@@ -1240,14 +819,14 @@ def test_connection():
             api_key = resolved.get('api_key', '')
             secret_key = resolved.get('secret_key', '')
 
-            # 详细日志排查
+            # Detailed diagnostics for connection tests.
             logger.info(f"Testing connection: exchange_id={resolved.get('exchange_id')}")
             if api_key:
                 logger.info(f"API Key: {api_key[:5]}... (len={len(api_key)})")
             if secret_key:
                 logger.info(f"Secret Key: {secret_key[:5]}... (len={len(secret_key)})")
 
-            # 检查是否有特殊字符
+            # Check for accidental leading or trailing whitespace.
             if api_key and api_key.strip() != api_key:
                 logger.warning("API key contains leading/trailing whitespace")
             if secret_key and secret_key.strip() != secret_key:
@@ -1274,327 +853,9 @@ def test_connection():
         }), 500
 
 
-@strategy_bp.route('/strategies/get-symbols', methods=['POST'])
-@login_required
-def get_symbols():
-    """
-    Get exchange trading pairs list.
-    
-    Request body:
-        exchange_config: Exchange configuration
-    """
-    try:
-        data = request.get_json() or {}
-        exchange_config = data.get('exchange_config', data)
-        user_id = g.user_id if hasattr(g, 'user_id') else 1
-
-        result = get_strategy_service().get_exchange_symbols(exchange_config, user_id=user_id)
-        
-        if result['success']:
-            return jsonify({
-                'code': 1,
-                'msg': result['message'],
-                'data': {
-                    'symbols': result['symbols']
-                }
-            })
-        else:
-            return jsonify({
-                'code': 0,
-                'msg': result['message'],
-                'data': {
-                    'symbols': []
-                }
-            })
-        
-    except Exception as e:
-        logger.error(f"Failed to fetch symbols: {str(e)}")
-        logger.error(traceback.format_exc())
-        return jsonify({
-            'code': 0,
-            'msg': f'Failed to fetch symbols: {str(e)}',
-            'data': {
-                'symbols': []
-            }
-        }), 500
-
-
-@strategy_bp.route('/strategies/preview-compile', methods=['POST'])
-@login_required
-def preview_compile():
-    """
-    Preview compiled strategy result.
-    """
-    try:
-        data = request.get_json() or {}
-        # strategy_config is passed as 'config'
-        config = data.get('config')
-        
-        if not config:
-             return jsonify({'code': 0, 'msg': 'Missing config'}), 400
-
-        # Compile
-        compiler = StrategyCompiler()
-        try:
-            code = compiler.compile(config)
-        except Exception as e:
-            return jsonify({'code': 0, 'msg': f'Compilation failed: {str(e)}'}), 400
-        
-        # Execute
-        symbol = config.get('symbol', 'BTC/USDT')
-        timeframe = config.get('timeframe', '4h')
-        
-        backtest_service = BacktestService()
-        result = backtest_service.run_code_strategy(
-            code=code,
-            symbol=symbol,
-            timeframe=timeframe,
-            limit=500 
-        )
-        
-        if result.get('error'):
-             return jsonify({'code': 0, 'msg': f"Execution failed: {result['error']}"}), 400
-
-        return jsonify({
-            'code': 1,
-            'msg': 'Success',
-            'data': result
-        })
-        
-    except Exception as e:
-        logger.error(f"Preview failed: {e}")
-        return jsonify({'code': 0, 'msg': str(e)}), 500
-
-
-@strategy_bp.route('/strategies/notifications', methods=['GET'])
-@login_required
-def get_strategy_notifications():
-    """
-    Strategy signal notifications for the current user.
-
-    Query:
-      - id: strategy id (optional)
-      - limit: default 50, max 200
-      - since_id: return rows with id > since_id (optional)
-    """
-    try:
-        user_id = g.user_id
-        strategy_id = request.args.get('id', type=int)
-        limit = request.args.get('limit', type=int) or 50
-        limit = max(1, min(200, int(limit)))
-        since_id = request.args.get('since_id', type=int) or 0
-
-        # Get user's strategy IDs for filtering notifications
-        user_strategy_ids = []
-        with get_db_connection() as db:
-            cur = db.cursor()
-            cur.execute("SELECT id FROM qd_strategies_trading WHERE user_id = ?", (user_id,))
-            rows = cur.fetchall() or []
-            user_strategy_ids = [r.get('id') for r in rows if r.get('id')]
-            cur.close()
-        
-        where = []
-        args = []
-        
-        # Filter by user's strategies
-        if strategy_id:
-            if strategy_id in user_strategy_ids:
-                where.append("strategy_id = ?")
-                args.append(int(strategy_id))
-            else:
-                return jsonify({'code': 1, 'msg': 'success', 'data': {'items': []}})
-        else:
-            if user_strategy_ids:
-                placeholders = ",".join(["?"] * len(user_strategy_ids))
-                where.append(f"(strategy_id IN ({placeholders}) OR (strategy_id IS NULL AND user_id = ?))")
-                args.extend(user_strategy_ids)
-                args.append(user_id)
-            else:
-                # Only portfolio monitor notifications (strategy_id is NULL)
-                where.append("strategy_id IS NULL AND user_id = ?")
-                args.append(user_id)
-        
-        if since_id:
-            where.append("id > ?")
-            args.append(int(since_id))
-        where_sql = ("WHERE " + " AND ".join(where)) if where else ""
-
-        with get_db_connection() as db:
-            cur = db.cursor()
-            cur.execute(
-                f"""
-                SELECT *
-                FROM qd_strategy_notifications
-                {where_sql}
-                ORDER BY id DESC
-                LIMIT ?
-                """,
-                tuple(args + [int(limit)]),
-            )
-            rows = cur.fetchall() or []
-            cur.close()
-
-        # Convert created_at to UTC timestamp (seconds) for frontend
-        from datetime import timezone as _dt_tz
-        processed_rows = []
-        for row in rows:
-            item = dict(row)
-            created_at = item.get('created_at')
-            if created_at:
-                if hasattr(created_at, 'timestamp'):
-                    # 无时区 datetime：连接已 SET TIME ZONE UTC，按 UTC 解释再转 Unix，避免服务端本地 TZ 误判
-                    if getattr(created_at, 'tzinfo', None) is None:
-                        created_at = created_at.replace(tzinfo=_dt_tz.utc)
-                    item['created_at'] = int(created_at.timestamp())
-                elif isinstance(created_at, str):
-                    try:
-                        from datetime import datetime
-                        dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
-                        item['created_at'] = int(dt.timestamp())
-                    except Exception:
-                        pass
-            processed_rows.append(item)
-
-        return jsonify({'code': 1, 'msg': 'success', 'data': {'items': processed_rows}})
-    except Exception as e:
-        logger.error(f"get_strategy_notifications failed: {str(e)}")
-        logger.error(traceback.format_exc())
-        return jsonify({'code': 0, 'msg': str(e), 'data': {'items': []}}), 500
-
-
-@strategy_bp.route('/strategies/notifications/unread-count', methods=['GET'])
-@login_required
-def get_unread_notification_count():
-    """
-    Get unread notification count for the current user.
-    Used by frontend header badge (cap at 99+ on UI).
-    """
-    try:
-        user_id = g.user_id
-
-        with get_db_connection() as db:
-            cur = db.cursor()
-            cur.execute("SELECT id FROM qd_strategies_trading WHERE user_id = ?", (user_id,))
-            rows = cur.fetchall() or []
-            user_strategy_ids = [r.get('id') for r in rows if r.get('id')]
-            cur.close()
-
-        where = ["is_read = 0"]
-        args = []
-
-        if user_strategy_ids:
-            placeholders = ",".join(["?"] * len(user_strategy_ids))
-            where.append(f"(strategy_id IN ({placeholders}) OR (strategy_id IS NULL AND user_id = ?))")
-            args.extend(user_strategy_ids)
-            args.append(user_id)
-        else:
-            where.append("strategy_id IS NULL AND user_id = ?")
-            args.append(user_id)
-
-        where_sql = "WHERE " + " AND ".join(where)
-
-        with get_db_connection() as db:
-            cur = db.cursor()
-            cur.execute(
-                f"SELECT COUNT(1) AS cnt FROM qd_strategy_notifications {where_sql}",
-                tuple(args),
-            )
-            cnt = int((cur.fetchone() or {}).get("cnt") or 0)
-            cur.close()
-
-        return jsonify({'code': 1, 'msg': 'success', 'data': {'unread': cnt}})
-    except Exception as e:
-        logger.error(f"get_unread_notification_count failed: {str(e)}")
-        logger.error(traceback.format_exc())
-        return jsonify({'code': 0, 'msg': str(e), 'data': {'unread': 0}}), 500
-
-
-@strategy_bp.route('/strategies/notifications/read', methods=['POST'])
-@login_required
-def mark_notification_read():
-    """Mark a single notification as read for the current user."""
-    try:
-        user_id = g.user_id
-        data = request.get_json(force=True, silent=True) or {}
-        notification_id = data.get('id')
-        if not notification_id:
-            return jsonify({'code': 0, 'msg': 'Missing id'}), 400
-
-        # Update notifications for user's strategies OR portfolio monitor notifications
-        with get_db_connection() as db:
-            cur = db.cursor()
-            cur.execute(
-                """
-                UPDATE qd_strategy_notifications SET is_read = 1 
-                WHERE id = ? AND (
-                    strategy_id IN (SELECT id FROM qd_strategies_trading WHERE user_id = ?)
-                    OR (strategy_id IS NULL AND user_id = ?)
-                )
-                """,
-                (int(notification_id), user_id, user_id)
-            )
-            db.commit()
-            cur.close()
-
-        return jsonify({'code': 1, 'msg': 'success'})
-    except Exception as e:
-        logger.error(f"mark_notification_read failed: {str(e)}")
-        return jsonify({'code': 0, 'msg': str(e)}), 500
-
-
-@strategy_bp.route('/strategies/notifications/read-all', methods=['POST'])
-@login_required
-def mark_all_notifications_read():
-    """Mark all notifications as read for the current user."""
-    try:
-        user_id = g.user_id
-        with get_db_connection() as db:
-            cur = db.cursor()
-            cur.execute(
-                """
-                UPDATE qd_strategy_notifications SET is_read = 1 
-                WHERE strategy_id IN (SELECT id FROM qd_strategies_trading WHERE user_id = ?)
-                   OR (strategy_id IS NULL AND user_id = ?)
-                """,
-                (user_id, user_id)
-            )
-            db.commit()
-            cur.close()
-
-        return jsonify({'code': 1, 'msg': 'success'})
-    except Exception as e:
-        logger.error(f"mark_all_notifications_read failed: {str(e)}")
-        return jsonify({'code': 0, 'msg': str(e)}), 500
-
-
-@strategy_bp.route('/strategies/notifications/clear', methods=['DELETE'])
-@login_required
-def clear_notifications():
-    """Clear all notifications for the current user."""
-    try:
-        user_id = g.user_id
-        with get_db_connection() as db:
-            cur = db.cursor()
-            cur.execute(
-                """
-                DELETE FROM qd_strategy_notifications 
-                WHERE strategy_id IN (SELECT id FROM qd_strategies_trading WHERE user_id = ?)
-                   OR (strategy_id IS NULL AND user_id = ?)
-                """,
-                (user_id, user_id)
-            )
-            db.commit()
-            cur.close()
-
-        return jsonify({'code': 1, 'msg': 'success'})
-    except Exception as e:
-        logger.error(f"clear_notifications failed: {str(e)}")
-        return jsonify({'code': 0, 'msg': str(e)}), 500
-
-
 # ===== Script Strategy Endpoints =====
 
-@strategy_bp.route('/strategies/verify-code', methods=['POST'])
+@strategy_blp.route('/strategies/verify-code', methods=['POST'])
 @login_required
 def verify_strategy_code():
     """Verify script strategy code syntax and safety."""
@@ -1605,13 +866,148 @@ def verify_strategy_code():
             return jsonify({'success': False, 'message': 'Code is empty'})
 
         validation = _validate_strategy_code_internal(code)
+        if validation.get('success'):
+            strategy_id = int(payload.get('strategyId') or payload.get('strategy_id') or 0)
+            if strategy_id:
+                try:
+                    get_strategy_service().patch_trading_config(
+                        strategy_id,
+                        {
+                            'lifecycle_verified': True,
+                            'script_verified': True,
+                            'lifecycle_verified_at': datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
+                        },
+                        user_id=g.user_id,
+                    )
+                except Exception as _lc_err:
+                    logger.warning(f"lifecycle_verified patch skipped: {_lc_err}")
         return jsonify(validation)
     except Exception as e:
         logger.error(f"verify_strategy_code failed: {str(e)}")
         return jsonify({'success': False, 'message': str(e)})
 
 
-@strategy_bp.route('/strategies/ai-generate', methods=['POST'])
+@strategy_blp.route('/strategies/publish-template', methods=['POST'])
+@login_required
+def publish_strategy_template():
+    """Publish script strategy code to marketplace as script_template asset."""
+    try:
+        payload = request.get_json() or {}
+        source_id = int(payload.get('sourceId') or payload.get('source_id') or payload.get('scriptSourceId') or 0)
+        source = None
+        if source_id:
+            from app.services.script_source import get_script_source_service
+            source = get_script_source_service().get_source(source_id, user_id=g.user_id)
+            if not source:
+                return jsonify({'code': 0, 'msg': 'Script source not found', 'data': None}), 404
+
+        strategy_id = int(payload.get('strategyId') or payload.get('strategy_id') or 0)
+        if not strategy_id and not source:
+            return jsonify({'code': 0, 'msg': 'strategyId is required', 'data': None}), 400
+
+        strategy = None
+        if strategy_id:
+            strategy = get_strategy_service().get_strategy(strategy_id, user_id=g.user_id)
+            if not strategy:
+                return jsonify({'code': 0, 'msg': 'Strategy not found', 'data': None}), 404
+
+        code = ((source or {}).get('code') or (strategy or {}).get('strategy_code') or '').strip()
+        if not code:
+            return jsonify({'code': 0, 'msg': 'Strategy has no script code', 'data': None}), 400
+
+        validation = _validate_strategy_code_internal(code)
+        if not validation.get('success'):
+            return jsonify({
+                'code': 0,
+                'msg': validation.get('message') or 'Code verification failed',
+                'data': validation,
+            }), 400
+
+        name = (payload.get('name') or (source or {}).get('name') or (strategy or {}).get('strategy_name') or '').strip()
+        description = (payload.get('description') or (source or {}).get('description') or '').strip()
+        pricing_type = (payload.get('pricingType') or payload.get('pricing_type') or 'free').strip() or 'free'
+        try:
+            price = float(payload.get('price') or 0)
+        except Exception:
+            price = 0.0
+        existing_indicator_id = int(payload.get('indicatorId') or payload.get('indicator_id') or 0)
+
+        user_role = getattr(g, 'user_role', 'user')
+        is_admin = user_role == 'admin'
+
+        from app.services.community_service import get_community_service
+        ok, msg, data = get_community_service().publish_script_template_from_strategy(
+            user_id=g.user_id,
+            strategy_id=strategy_id,
+            code=code,
+            name=name,
+            description=description,
+            pricing_type=pricing_type,
+            price=price,
+            is_admin=is_admin,
+            existing_indicator_id=existing_indicator_id,
+        )
+        if data is not None and source_id:
+            data['source_id'] = source_id
+        if not ok:
+            return jsonify({'code': 0, 'msg': msg, 'data': data}), 400
+        return jsonify({'code': 1, 'msg': 'success', 'data': data})
+    except Exception as e:
+        logger.error(f"publish_strategy_template failed: {str(e)}")
+        return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
+
+
+@strategy_blp.route('/strategies/publish-bot-preset', methods=['POST'])
+@login_required
+def publish_bot_preset():
+    """Publish a bot strategy configuration to marketplace as bot_preset asset."""
+    try:
+        payload = request.get_json() or {}
+        strategy_id = int(payload.get('strategyId') or payload.get('strategy_id') or 0)
+        if not strategy_id:
+            return jsonify({'code': 0, 'msg': 'strategyId is required', 'data': None}), 400
+
+        strategy = get_strategy_service().get_strategy(strategy_id, user_id=g.user_id)
+        if not strategy:
+            return jsonify({'code': 0, 'msg': 'Strategy not found', 'data': None}), 404
+
+        strategy_mode = str(strategy.get('strategy_mode') or '').strip().lower()
+        if strategy_mode != 'bot':
+            return jsonify({'code': 0, 'msg': 'Only bot strategies can be published as presets', 'data': None}), 400
+
+        name = (payload.get('name') or strategy.get('strategy_name') or '').strip()
+        description = (payload.get('description') or '').strip()
+        pricing_type = (payload.get('pricingType') or payload.get('pricing_type') or 'free').strip() or 'free'
+        try:
+            price = float(payload.get('price') or 0)
+        except Exception:
+            price = 0.0
+        existing_indicator_id = int(payload.get('indicatorId') or payload.get('indicator_id') or 0)
+
+        user_role = getattr(g, 'user_role', 'user')
+        is_admin = user_role == 'admin'
+
+        from app.services.community_service import get_community_service
+        ok, msg, data = get_community_service().publish_bot_preset_from_strategy(
+            user_id=g.user_id,
+            strategy_id=strategy_id,
+            name=name,
+            description=description,
+            pricing_type=pricing_type,
+            price=price,
+            is_admin=is_admin,
+            existing_indicator_id=existing_indicator_id,
+            strategy=strategy,
+        )
+        if not ok:
+            return jsonify({'code': 0, 'msg': msg, 'data': data}), 400
+        return jsonify({'code': 1, 'msg': 'success', 'data': data})
+    except Exception as e:
+        logger.error(f"publish_bot_preset failed: {str(e)}")
+        return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
+
+
+@strategy_blp.route('/strategies/ai-generate', methods=['POST'])
 @login_required
 def ai_generate_strategy():
     """Generate strategy code or suggest template parameter updates using AI."""
@@ -1642,7 +1038,7 @@ def ai_generate_strategy():
             return jsonify({'code': '', 'msg': msg, 'params': None})
 
         if intent == 'bot_recommend':
-            # ── Detect (market, symbol) from prompt and fetch real K-lines ──
+            # Detect (market, symbol) from prompt and fetch real K-lines.
             # Symbol detection is delegated to ai_bot_symbol_detect so the
             # logic is unit-testable and trivial to extend with new tickers.
             # The route only knows: (a) what market it ended up being, and
@@ -1705,7 +1101,7 @@ def ai_generate_strategy():
                         sma20 = sum(closes[-20:]) / min(20, len(closes[-20:])) if len(closes) >= 20 else avg_price
                         volatility = ((high_recent - low_recent) / avg_price * 100) if avg_price else 0
 
-                        # Forex/USStock often have no volume data — omit the
+                        # Forex/USStock often have no volume data; omit the
                         # noisy 'Avg Volume: 0.00' line in that case so the
                         # LLM doesn't read into a meaningless number.
                         vol_line = (
@@ -1774,13 +1170,20 @@ def ai_generate_strategy():
             system_prompt = (
                 "You are an expert quantitative trading advisor. The user wants to create an automated trading bot.\n"
                 "Based on their description AND the real-time market data provided, recommend one of the four bot types and provide optimal parameters.\n\n"
-                "Available bot types and their parameter schemas:\n"
-                "1. grid - Grid Trading: {upperPrice, lowerPrice, gridCount: int(5-100), amountPerGrid, gridMode: 'arithmetic'|'geometric', "
-                "gridDirection: 'long'|'short'|'neutral', adaptiveBounds: true, adaptiveAtrMult: 2.0, waterfallProtection: true, waterfallDropPct: 0.03; "
-                "martingale: waterfallProtection: true, waterfallDropPct: 0.04}\n"
-                "2. martingale - Martingale: {initialAmount: number, multiplier: number(1.1-3.0), maxLayers: int(2-10), priceDropPct: number(1-20), takeProfitPct: number(1-50)}\n"
-                "3. trend - Trend Following: {maPeriod: int(5-200), maType: 'SMA'|'EMA', confirmBars: int(1-5), positionPct: number(10-100), direction: 'long'|'short'|'both'}\n"
-                "4. dca - DCA (Dollar-Cost Averaging): {amountEach: number, frequency: 'every_bar'|'hourly'|'4h'|'daily'|'weekly'|'biweekly'|'monthly', totalBudget: number, dipBuyEnabled: bool, dipThreshold: number(1-30)}\n\n"
+                "Available bot types and their parameter schemas. Use these exact frontend keys:\n"
+                "1. grid - Grid Trading: {upperPrice, lowerPrice, gridCount: int(5-100), gridMode: 'arithmetic'|'geometric', "
+                "gridDirection: 'long'|'short'|'neutral', initialPositionPct: number(0-100), "
+                "boundaryAction: 'pause'|'stop_loss'|'hold', adaptiveBounds: boolean, adaptiveAtrMult: number(0.5-5), "
+                "waterfallProtection: boolean, waterfallDropPct: decimal ratio(0.005-0.20; example 0.03 means 3%)}\n"
+                "2. martingale - Martingale: {multiplier: number(1.1-3.0), maxLayers: int(2-10), "
+                "priceDropPct: number(1-20), takeProfitPct: number(0.2-50), stopLossPct: number(1-50), "
+                "direction: 'long'|'short', trailingTpEnabled: boolean, trailingTpCallbackPct: number(0.05-50), "
+                "waterfallProtection: boolean, waterfallDropPct: decimal ratio(0.005-0.20; example 0.04 means 4%)}\n"
+                "3. trend - Trend Following: {maPeriod: int(5-200), maType: 'SMA'|'EMA', confirmBars: int(1-5), "
+                "positionPct: number(10-100), direction: 'long'|'short'|'both', trailingTpEnabled: boolean, "
+                "trailingTpActivationPct: number(0.2-100), trailingTpCallbackPct: number(0.05-50)}\n"
+                "4. dca - DCA (Dollar-Cost Averaging): {frequency: 'every_bar'|'hourly'|'4h'|'daily'|'weekly'|'biweekly'|'monthly', "
+                "dipBuyEnabled: boolean, dipThreshold: number(1-30)}\n\n"
                 f"Bot type x market matrix (single source of truth from broker_market_policy): {dict(BOT_TYPE_MARKETS)}\n"
                 f"{_market_constraint_line}"
                 "Also suggest base config:\n"
@@ -1791,13 +1194,14 @@ def ai_generate_strategy():
                 "- leverage: int(1-125, only for swap; ignored on spot/USStock/Forex)\n"
                 f"- initialCapital: number (in {_quote_label})\n\n"
                 "Risk config:\n"
-                "- stopLossPct: number(0-100)\n"
-                "- takeProfitPct: number(0-1000)\n"
+                "- stopLossPct: number(0-100), stored as a 0-100 UI percent\n"
+                "- takeProfitPct: number(0-1000), stored as a 0-100 UI percent\n"
                 "- maxPosition: number\n\n"
+                "Percent convention: fields ending in Pct are 0-100 UI percentages, except waterfallDropPct, which is a 0-1 decimal ratio.\n"
                 "CRITICAL: If real-time market data is provided, you MUST use it to set realistic and accurate parameters.\n"
                 "For example, for grid trading, the upperPrice and lowerPrice MUST be derived from the actual price range in the market data.\n"
                 "IMPORTANT: Do NOT set initialCapital in baseConfig - leave it as 0 or omit it. The user will enter their own investment amount.\n"
-                "Also do NOT set amountPerGrid, initialAmount(for martingale), or totalBudget(for DCA) - these will be auto-calculated from the user's capital.\n\n"
+                "Also do NOT set amountPerGrid, initialAmount(for martingale), amountEach, or totalBudget(for DCA) - these will be auto-calculated from the user's capital.\n\n"
                 "Return ONLY a single JSON object with this structure:\n"
                 "{\n"
                 '  "botType": "grid"|"martingale"|"trend"|"dca",\n'
@@ -1881,6 +1285,95 @@ def ai_generate_strategy():
                 base_cfg['symbol'] = detected_symbol
             result['baseConfig'] = base_cfg
 
+            params = result.get('strategyParams') if isinstance(result.get('strategyParams'), dict) else {}
+            risk_cfg = result.get('riskConfig') if isinstance(result.get('riskConfig'), dict) else {}
+
+            def _num(v, default, min_v=None, max_v=None):
+                try:
+                    n = float(v)
+                except (TypeError, ValueError):
+                    n = float(default)
+                if min_v is not None:
+                    n = max(float(min_v), n)
+                if max_v is not None:
+                    n = min(float(max_v), n)
+                return n
+
+            def _int(v, default, min_v=None, max_v=None):
+                return int(round(_num(v, default, min_v, max_v)))
+
+            def _bool(v, default=False):
+                if isinstance(v, bool):
+                    return v
+                if isinstance(v, str):
+                    return v.strip().lower() in ('1', 'true', 'yes', 'on')
+                return default if v is None else bool(v)
+
+            def _ratio(v, default):
+                n = _num(v, default, 0.001, 100)
+                return n / 100 if n > 1 else n
+
+            bot_type = result.get('botType')
+            market_type = base_cfg.get('marketType') or 'spot'
+            force_long = market_type == 'spot' or base_cfg.get('marketCategory') in ('USStock', 'Forex')
+
+            if bot_type == 'grid':
+                params.pop('amountPerGrid', None)
+                params.update({
+                    'upperPrice': _num(params.get('upperPrice'), 0, 0),
+                    'lowerPrice': _num(params.get('lowerPrice'), 0, 0),
+                    'gridCount': _int(params.get('gridCount'), 10, 5, 100),
+                    'gridMode': params.get('gridMode') if params.get('gridMode') in ('arithmetic', 'geometric') else 'arithmetic',
+                    'gridDirection': 'long' if force_long else (params.get('gridDirection') if params.get('gridDirection') in ('long', 'short', 'neutral') else 'neutral'),
+                    'initialPositionPct': _num(params.get('initialPositionPct'), 0, 0, 100),
+                    'boundaryAction': params.get('boundaryAction') if params.get('boundaryAction') in ('pause', 'stop_loss', 'hold') else 'pause',
+                    'adaptiveBounds': _bool(params.get('adaptiveBounds'), True),
+                    'adaptiveAtrMult': _num(params.get('adaptiveAtrMult'), 2, 0.5, 5),
+                    'waterfallProtection': _bool(params.get('waterfallProtection'), True),
+                    'waterfallDropPct': _ratio(params.get('waterfallDropPct'), 0.03),
+                })
+            elif bot_type == 'martingale':
+                params.pop('initialAmount', None)
+                params.update({
+                    'multiplier': _num(params.get('multiplier'), 2, 1.1, 3),
+                    'maxLayers': _int(params.get('maxLayers'), 5, 2, 10),
+                    'priceDropPct': _num(params.get('priceDropPct'), 3, 1, 20),
+                    'takeProfitPct': _num(params.get('takeProfitPct') or risk_cfg.get('takeProfitPct'), 2, 0.2, 50),
+                    'stopLossPct': _num(params.get('stopLossPct') or risk_cfg.get('stopLossPct'), 12, 1, 50),
+                    'direction': 'long' if force_long else (params.get('direction') if params.get('direction') in ('long', 'short') else 'long'),
+                    'trailingTpEnabled': _bool(params.get('trailingTpEnabled'), False),
+                    'trailingTpCallbackPct': _num(params.get('trailingTpCallbackPct'), 0.8, 0.05, 50),
+                    'waterfallProtection': _bool(params.get('waterfallProtection'), True),
+                    'waterfallDropPct': _ratio(params.get('waterfallDropPct'), 0.04),
+                })
+            elif bot_type == 'trend':
+                params.update({
+                    'maPeriod': _int(params.get('maPeriod'), 20, 5, 200),
+                    'maType': params.get('maType') if params.get('maType') in ('SMA', 'EMA') else 'EMA',
+                    'confirmBars': _int(params.get('confirmBars'), 2, 1, 5),
+                    'positionPct': _num(params.get('positionPct'), 50, 10, 100),
+                    'direction': 'long' if force_long else (params.get('direction') if params.get('direction') in ('long', 'short', 'both') else 'both'),
+                    'trailingTpEnabled': _bool(params.get('trailingTpEnabled'), False),
+                    'trailingTpActivationPct': _num(params.get('trailingTpActivationPct'), 5, 0.2, 100),
+                    'trailingTpCallbackPct': _num(params.get('trailingTpCallbackPct'), 1, 0.05, 50),
+                })
+            elif bot_type == 'dca':
+                params.pop('amountEach', None)
+                params.pop('totalBudget', None)
+                freq = str(params.get('frequency') or '').strip().lower()
+                allowed = {'every_bar', 'hourly', '4h', 'daily', 'weekly', 'biweekly', 'monthly'}
+                params.update({
+                    'frequency': freq if freq in allowed else 'daily',
+                    'dipBuyEnabled': _bool(params.get('dipBuyEnabled'), False),
+                    'dipThreshold': _num(params.get('dipThreshold'), 5, 1, 30),
+                })
+
+            risk_cfg['stopLossPct'] = _num(risk_cfg.get('stopLossPct'), 10, 0, 100)
+            risk_cfg['takeProfitPct'] = _num(risk_cfg.get('takeProfitPct'), 20, 0, 1000)
+            risk_cfg['maxPosition'] = _num(risk_cfg.get('maxPosition'), 0, 0)
+            result['strategyParams'] = params
+            result['riskConfig'] = risk_cfg
+
             if result.get('botType') == 'dca':
                 params = result.get('strategyParams') if isinstance(result.get('strategyParams'), dict) else {}
                 freq = str(params.get('frequency') or '').strip().lower()
@@ -1897,7 +1390,14 @@ def ai_generate_strategy():
             system_prompt = """You tune quantitative strategy template parameters from the user's request.
 Return ONLY a single JSON object: keys are parameter names (strings), values are JSON numbers or booleans.
 You may return a partial object (only keys that should change) or a full object.
-Do not use markdown fences, do not add explanations before or after the JSON."""
+Do not use markdown fences, do not add explanations before or after the JSON.
+
+Percent parameter convention (IMPORTANT):
+- Template UI stores percent-type fields on a 0-100 scale (80 = 80%, 2.5 = 2.5%).
+- Generated Python code uses 0-1 ratios in ctx.param(...); the platform converts UI values automatically.
+- When returning JSON for adjust_params, always use the 0-100 scale for keys ending in _pct or typed as percent
+  (e.g. position_pct: 80, hard_stop_pct: 2.5). Never return 0.8 when the user means 80%.
+"""
 
             user_content = (
                 f"Template key: {template_key}\n"
@@ -1941,23 +1441,28 @@ Generate Python strategy code that follows this framework:
 - def on_init(ctx): Initialize strategy parameters using ctx.param(name, default)
 - def on_bar(ctx, bar): Core logic called on each K-line bar
   - bar supports both bar.close and bar['close'] access, and has: open, high, low, close, volume, timestamp
-  - ctx.buy(price, amount), ctx.sell(price, amount), ctx.close_position()
+  - Preferred actions: ctx.open_long/open_short(amount, price), ctx.add_long/add_short(amount, price), ctx.close_long/close_short(amount=None, price=None), ctx.close_position(); ctx.buy/sell are legacy helpers
   - ctx.position supports both numeric checks and dict-style fields:
     - if not ctx.position / if ctx.position > 0 / if ctx.position < 0
     - ctx.position['side'], ctx.position['size'], ctx.position['entry_price']
   - ctx.balance, ctx.equity
   - ctx.bars(n) to get last N bars, ctx.log(message) to log
-- def on_order_filled(ctx, order): Optional callback when order fills
-- def on_stop(ctx): Optional cleanup when strategy stops
-
 Return ONLY the Python code, no explanations.
 
 Quality rules:
 - Always define both on_init(ctx) and on_bar(ctx, bar)
 - Prefer reading defaults via ctx.param(...)
-- Use ctx.buy / ctx.sell / ctx.close_position for order intent
+- Use open_long/open_short for first entries, add_long/add_short only for intentional scale-ins, and close_long/close_short/close_position for exits
+- Entry logic must be event-based: use cross_up = prev_fast <= prev_slow and fast > slow, breakout = prev_close <= level and close > level. Do NOT enter on persistent states like `if not ctx.position and fast > slow:`.
+- Scale-ins must have layer count, price distance/cooldown, and max layers; call ctx.add_long/add_short, not ctx.buy/ctx.sell.
 - Generated code must compile cleanly
 - Avoid markdown fences or explanatory text
+
+Percent / ratio convention:
+- ctx.param defaults for *_pct fields must use 0-1 ratios (0.8 = 80%, 0.025 = 2.5%).
+- When sizing with ctx.equity * some_pct, keep some_pct as a 0-1 ratio.
+- Template UI may show 0-100; only the Python default literals should be ratios.
+- If user says "80% position", use ctx.param('position_pct', 0.8) and qty = ctx.equity * ctx.position_pct / price.
 """
 
         extra = ''
@@ -2032,8 +1537,8 @@ Quality rules:
                 "# Repair requirements\n"
                 "- Must define both on_init(ctx) and on_bar(ctx, bar).\n"
                 "- Must compile and run in QuantDinger strategy runtime.\n"
-                "- Prefer ctx.param(...) for defaults.\n"
-                "- Use ctx.buy / ctx.sell / ctx.close_position for actions.\n"
+                "- Prefer ctx.param(...) for defaults; use explicit open/add/close actions.\n"
+                "- Entry conditions must be edge/crossing events; scale-ins must call add_long/add_short deliberately.\n"
                 "- Return Python only, no markdown, no explanation."
             )
             repaired_content = llm.call_llm_api(
@@ -2113,89 +1618,5 @@ Quality rules:
         return jsonify({'code': '', 'msg': str(e), 'params': None, 'debug': None})
 
 
-@strategy_bp.route('/strategies/performance', methods=['GET'])
-@login_required
-def get_strategy_performance():
-    """Get strategy performance metrics (aggregated from equity curve and trades)."""
-    try:
-        user_id = g.user_id
-        strategy_id = request.args.get('id', type=int)
-        if not strategy_id:
-            return jsonify({'code': 0, 'msg': 'Strategy ID required'})
-
-        equity_data, error = _build_strategy_equity_curve(user_id, strategy_id)
-        if error:
-            return jsonify({'code': 0, 'msg': error, 'data': None}), 404
-
-        latest_equity = float(equity_data[-1].get('equity') or 0) if equity_data else 0.0
-        first_equity = float(equity_data[0].get('equity') or 0) if equity_data else latest_equity
-        total_return = latest_equity - first_equity
-        return jsonify({
-            'code': 1,
-            'msg': 'success',
-            'data': {
-                'equity_curve': equity_data,
-                'latest_equity': round(latest_equity, 2),
-                'total_return': round(total_return, 2),
-                'points': len(equity_data),
-            }
-        })
-    except Exception as e:
-        logger.error(f"get_strategy_performance failed: {str(e)}")
-        return jsonify({'code': 0, 'msg': str(e)}), 500
-
-
-@strategy_bp.route('/strategies/logs', methods=['GET'])
-@login_required
-def get_strategy_logs():
-    """Get strategy running logs."""
-    try:
-        user_id = g.user_id
-        strategy_id = request.args.get('id')
-        limit = int(request.args.get('limit', 200))
-        if not strategy_id:
-            return jsonify({'code': 0, 'msg': 'Strategy ID required'})
-
-        st = get_strategy_service().get_strategy(int(strategy_id), user_id=user_id)
-        if not st:
-            return jsonify({'code': 0, 'msg': 'Strategy not found'}), 404
-
-        with get_db_connection() as db:
-            cur = db.cursor()
-            cur.execute(
-                """
-                SELECT id, strategy_id, level, message, timestamp
-                FROM qd_strategy_logs
-                WHERE strategy_id = ?
-                ORDER BY id DESC
-                LIMIT ?
-                """,
-                (int(strategy_id), limit)
-            )
-            rows = cur.fetchall() or []
-            cur.close()
-
-        out = []
-        for r in rows or []:
-            if not isinstance(r, dict):
-                continue
-            rr = dict(r)
-            msg = str(rr.get('message') or '')
-            if msg.startswith('tick price=') or msg.startswith('tick price '):
-                continue
-            ts = rr.get('timestamp')
-            if ts is not None:
-                from app.utils.timeutil import to_utc_iso
-                iso = to_utc_iso(ts)
-                rr['timestamp'] = iso if iso is not None else str(ts)
-            out.append(rr)
-        # Already ORDER BY id DESC — newest first for the UI log panel.
-        return jsonify({'code': 1, 'msg': 'success', 'data': out})
-    except Exception as e:
-        if PgUndefinedTable is not None and isinstance(e, PgUndefinedTable):
-            return jsonify({'code': 1, 'msg': 'success', 'data': []})
-        el = str(e).lower()
-        if 'qd_strategy_logs' in el and ('does not exist' in el or 'no such table' in el):
-            return jsonify({'code': 1, 'msg': 'success', 'data': []})
-        logger.error(f"get_strategy_logs failed: {str(e)}")
-        return jsonify({'code': 0, 'msg': str(e)}), 500
+# openapi-compat: legacy import name
+strategy_bp = strategy_blp

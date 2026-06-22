@@ -8,7 +8,9 @@ Supports US stocks, ETFs, and crypto on both paper and live accounts.
 import time
 import threading
 from dataclasses import dataclass, field
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Union
+from urllib.parse import urlsplit, urlunsplit
+from uuid import UUID
 
 from app.utils.logger import get_logger
 from app.services.alpaca_trading.symbols import normalize_symbol, format_display_symbol, parse_symbol
@@ -18,6 +20,39 @@ logger = get_logger(__name__)
 
 def _market_hint_from_type(market_type: str) -> str:
     return "Crypto" if (market_type or "").strip().lower() == "crypto" else "USStock"
+
+
+def _as_str_id(value: Union[str, UUID, None]) -> str:
+    """Normalize Alpaca ids (alpaca-py may return uuid.UUID for account/order ids)."""
+    if value is None:
+        return ""
+    return str(value)
+
+
+def _id_log_prefix(value: Union[str, UUID, None], length: int = 12) -> str:
+    s = _as_str_id(value)
+    if not s:
+        return ""
+    return s[:length] if len(s) > length else s
+
+
+def _enum_value(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value.value) if hasattr(value, "value") else str(value)
+
+
+def _num(value: Any, default: float = 0.0) -> float:
+    try:
+        if value is None or value == "":
+            return default
+        return float(value)
+    except Exception:
+        return default
+
+
+def _str_attr(obj: Any, name: str, default: str = "") -> str:
+    return str(getattr(obj, name, default) or default)
 
 
 def _format_alpaca_error(err: Exception, *, context: str = "") -> str:
@@ -34,9 +69,33 @@ def _format_alpaca_error(err: Exception, *, context: str = "") -> str:
             "{\"action\":\"subscribe\",\"trades\":[\"BTC/USD\"]}（加密，勿用 BTC/USDT）。"
             "本系统「测试连接」仅走 REST 交易接口，不经过该 WebSocket。"
         )
-    if "401" in low or "403" in low or "auth failed" in low or "not authenticated" in low:
-        return prefix + f"Alpaca 鉴权失败，请检查 API Key/Secret 与 paper(PK*)/live(AK*) 是否匹配。原始错误: {msg}"
+    if "401" in low or "auth failed" in low or "not authenticated" in low or "unauthorized" in low:
+        return prefix + f"Alpaca authentication failed. Check API Key/Secret and paper(PK*)/live(AK*) mode. Raw error: {msg}"
+    if "403" in low:
+        return prefix + f"Alpaca rejected the request. Raw error: {msg}"
     return prefix + msg
+
+
+def normalize_base_url(base_url: Optional[str]) -> Optional[str]:
+    """
+    Normalize Alpaca SDK base URL overrides.
+
+    Alpaca REST docs show endpoints such as /v2/account, but alpaca-py
+    TradingClient expects a host-level base URL and appends /v2 internally.
+    Accepting a user-entered trailing /v2 prevents accidental /v2/v2 requests.
+    """
+    raw = (base_url or "").strip()
+    if not raw:
+        return None
+    if "://" not in raw:
+        raw = "https://" + raw
+
+    parts = urlsplit(raw)
+    path = (parts.path or "").rstrip("/")
+    if path.lower() == "/v2":
+        path = ""
+    normalized = urlunsplit((parts.scheme or "https", parts.netloc, path, "", ""))
+    return normalized.rstrip("/") or None
 
 
 # Lazy import alpaca-py to allow other features to work without it installed
@@ -83,6 +142,11 @@ class AlpacaConfig:
     paper: bool = True  # True = paper-api.alpaca.markets, False = api.alpaca.markets
     base_url: Optional[str] = None  # Optional override
     timeout: float = 15.0
+
+    def __post_init__(self):
+        self.api_key = (self.api_key or "").strip()
+        self.secret_key = (self.secret_key or "").strip()
+        self.base_url = normalize_base_url(self.base_url)
 
 
 @dataclass
@@ -147,9 +211,12 @@ class AlpacaClient:
             )
             # Verify by fetching account
             account = self._trading_client.get_account()
-            self._account_id = account.id
+            self._account_id = _as_str_id(account.id)
             mode = "paper" if self.config.paper else "live"
-            logger.info(f"Alpaca connected ({mode}), account={self._account_id[:12]}..., status={account.status}")
+            logger.info(
+                f"Alpaca connected ({mode}), account={_id_log_prefix(self._account_id)}..., "
+                f"status={account.status}"
+            )
             return True
         except Exception as e:
             logger.error("Alpaca connect failed: %s", _format_alpaca_error(e, context="REST account"))
@@ -275,11 +342,48 @@ class AlpacaClient:
         try:
             self._ensure_connected()
             self._trading_client.cancel_order_by_id(order_id)
-            logger.info(f"Alpaca order {order_id[:12]}... cancelled")
+            logger.info(f"Alpaca order {_id_log_prefix(order_id)}... cancelled")
             return True
         except Exception as e:
             logger.error(f"Alpaca cancel order failed: {e}")
             return False
+
+    def get_order_status(self, order_id: str) -> OrderResult:
+        """Fetch one order by id and return the latest fill snapshot."""
+        try:
+            self._ensure_connected()
+            if not str(order_id or "").strip():
+                return OrderResult(success=False, message="Missing order_id")
+            order = self._trading_client.get_order_by_id(str(order_id).strip())
+            status = _enum_value(getattr(order, "status", ""))
+            filled_qty = _num(getattr(order, "filled_qty", 0))
+            avg_price = _num(getattr(order, "filled_avg_price", 0))
+            raw = {
+                "id": str(getattr(order, "id", "") or ""),
+                "status": status,
+                "filled_qty": filled_qty,
+                "filled_avg_price": avg_price,
+                "qty": _num(getattr(order, "qty", 0)),
+                "symbol": str(getattr(order, "symbol", "") or ""),
+                "side": _enum_value(getattr(order, "side", "")),
+                "submitted_at": str(getattr(order, "submitted_at", "") or ""),
+                "filled_at": str(getattr(order, "filled_at", "") or ""),
+                "canceled_at": str(getattr(order, "canceled_at", "") or ""),
+            }
+            failed = status.lower() in ("rejected", "expired")
+            return OrderResult(
+                success=not failed,
+                order_id=raw["id"],
+                filled=filled_qty,
+                avg_price=avg_price,
+                status=status,
+                message=f"Order {status}",
+                raw=raw,
+            )
+        except Exception as e:
+            err = _format_alpaca_error(e)
+            logger.error("Alpaca get_order_status failed: %s", err)
+            return OrderResult(success=False, message=err)
 
     # ==================== Query Methods ====================
 
@@ -288,17 +392,47 @@ class AlpacaClient:
         try:
             self._ensure_connected()
             acct = self._trading_client.get_account()
+            account_id = _as_str_id(getattr(acct, "id", None))
+            currency = getattr(acct, "currency", None) or "USD"
+            buying_power = _str_attr(acct, "buying_power")
+            cash = _str_attr(acct, "cash")
+            portfolio_value = _str_attr(acct, "portfolio_value")
+            equity = _str_attr(acct, "equity", portfolio_value)
+            last_equity = _str_attr(acct, "last_equity")
+            daytrade_count = _str_attr(acct, "daytrade_count", "0")
+            status = _enum_value(getattr(acct, "status", ""))
+            pattern_day_trader = bool(getattr(acct, "pattern_day_trader", False))
+            trading_blocked = bool(getattr(acct, "trading_blocked", False))
+            transfers_blocked = bool(getattr(acct, "transfers_blocked", False))
+            account_blocked = bool(getattr(acct, "account_blocked", False))
             return {
-                "account": str(acct.id),
+                "account": account_id,
+                "account_id": account_id,
+                "currency": currency,
+                "buying_power": buying_power,
+                "cash": cash,
+                "portfolio_value": portfolio_value,
+                "equity": equity,
+                "last_equity": last_equity,
+                "daytrade_count": daytrade_count,
+                "pattern_day_trader": pattern_day_trader,
+                "trading_blocked": trading_blocked,
+                "transfers_blocked": transfers_blocked,
+                "account_blocked": account_blocked,
+                "status": status,
+                "paper": self.config.paper,
                 "summary": {
-                    "BuyingPower": {"value": str(acct.buying_power), "currency": "USD"},
-                    "Cash": {"value": str(acct.cash), "currency": "USD"},
-                    "PortfolioValue": {"value": str(acct.portfolio_value), "currency": "USD"},
-                    "Equity": {"value": str(acct.equity), "currency": "USD"},
-                    "DayTradeCount": {"value": str(acct.daytrade_count), "currency": ""},
-                    "PatternDayTrader": {"value": str(acct.pattern_day_trader), "currency": ""},
-                    "TradingBlocked": {"value": str(acct.trading_blocked), "currency": ""},
-                    "Status": {"value": str(acct.status), "currency": ""},
+                    "BuyingPower": {"value": buying_power, "currency": currency},
+                    "Cash": {"value": cash, "currency": currency},
+                    "PortfolioValue": {"value": portfolio_value, "currency": currency},
+                    "Equity": {"value": equity, "currency": currency},
+                    "LastEquity": {"value": last_equity, "currency": currency},
+                    "DayTradeCount": {"value": daytrade_count, "currency": ""},
+                    "PatternDayTrader": {"value": str(pattern_day_trader), "currency": ""},
+                    "TradingBlocked": {"value": str(trading_blocked), "currency": ""},
+                    "TransfersBlocked": {"value": str(transfers_blocked), "currency": ""},
+                    "AccountBlocked": {"value": str(account_blocked), "currency": ""},
+                    "Status": {"value": status, "currency": ""},
                 },
                 "success": True,
             }
@@ -314,13 +448,19 @@ class AlpacaClient:
             return [
                 {
                     "symbol": p.symbol,
-                    "asset_class": str(p.asset_class.value) if hasattr(p.asset_class, 'value') else str(p.asset_class),
-                    "quantity": float(p.qty),
-                    "avgCost": float(p.avg_entry_price),
-                    "marketValue": float(p.market_value),
-                    "unrealizedPnL": float(p.unrealized_pl),
-                    "currentPrice": float(p.current_price) if p.current_price else 0.0,
-                    "side": str(p.side.value) if hasattr(p.side, 'value') else str(p.side),
+                    "asset_class": _enum_value(getattr(p, "asset_class", "")),
+                    "quantity": _num(getattr(p, "qty", 0)),
+                    "qty": _num(getattr(p, "qty", 0)),
+                    "avgCost": _num(getattr(p, "avg_entry_price", 0)),
+                    "avg_entry_price": _num(getattr(p, "avg_entry_price", 0)),
+                    "marketValue": _num(getattr(p, "market_value", 0)),
+                    "market_value": _num(getattr(p, "market_value", 0)),
+                    "unrealizedPnL": _num(getattr(p, "unrealized_pl", 0)),
+                    "unrealized_pnl": _num(getattr(p, "unrealized_pl", 0)),
+                    "unrealized_plpc": _num(getattr(p, "unrealized_plpc", 0)),
+                    "currentPrice": _num(getattr(p, "current_price", 0)),
+                    "current_price": _num(getattr(p, "current_price", 0)),
+                    "side": _enum_value(getattr(p, "side", "")),
                 }
                 for p in positions
             ]
@@ -337,18 +477,28 @@ class AlpacaClient:
             orders = self._trading_client.get_orders(filter=req)
             return [
                 {
+                    "id": str(o.id),
                     "orderId": str(o.id),
                     "symbol": o.symbol,
-                    "action": (str(o.side.value) if hasattr(o.side, 'value') else str(o.side)).upper(),
-                    "quantity": float(o.qty),
-                    "orderType": str(o.order_type.value) if hasattr(o.order_type, 'value') else str(o.order_type),
-                    "limitPrice": float(o.limit_price) if o.limit_price else None,
-                    "status": str(o.status.value) if hasattr(o.status, 'value') else str(o.status),
-                    "filled": float(o.filled_qty or 0),
-                    "remaining": float(o.qty) - float(o.filled_qty or 0),
-                    "avgFillPrice": float(o.filled_avg_price or 0),
-                    "submittedAt": str(o.submitted_at),
-                    "extendedHours": bool(o.extended_hours),
+                    "side": _enum_value(getattr(o, "side", "")).lower(),
+                    "action": _enum_value(getattr(o, "side", "")).upper(),
+                    "quantity": _num(getattr(o, "qty", 0)),
+                    "qty": _num(getattr(o, "qty", 0)),
+                    "notional": _num(getattr(o, "notional", 0), default=0.0),
+                    "orderType": _enum_value(getattr(o, "order_type", "")),
+                    "order_type": _enum_value(getattr(o, "order_type", "")),
+                    "limitPrice": _num(getattr(o, "limit_price", None), default=None),
+                    "limit_price": _num(getattr(o, "limit_price", None), default=None),
+                    "status": _enum_value(getattr(o, "status", "")),
+                    "filled": _num(getattr(o, "filled_qty", 0)),
+                    "filled_qty": _num(getattr(o, "filled_qty", 0)),
+                    "remaining": _num(getattr(o, "qty", 0)) - _num(getattr(o, "filled_qty", 0)),
+                    "avgFillPrice": _num(getattr(o, "filled_avg_price", 0)),
+                    "filled_avg_price": _num(getattr(o, "filled_avg_price", 0)),
+                    "submittedAt": str(getattr(o, "submitted_at", "") or ""),
+                    "submitted_at": str(getattr(o, "submitted_at", "") or ""),
+                    "extendedHours": bool(getattr(o, "extended_hours", False)),
+                    "extended_hours": bool(getattr(o, "extended_hours", False)),
                 }
                 for o in orders
             ]

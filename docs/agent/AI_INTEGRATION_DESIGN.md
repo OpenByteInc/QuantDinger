@@ -323,7 +323,7 @@ A1–A4 are **safe to ship without trading exposure**. A5/A6 are gated and rever
 | MCP server (Python) | Shipped | `mcp_server/` — `stdio` (default), `sse`, and `streamable-http` transports via `QUANTDINGER_MCP_TRANSPORT` |
 | Operator quickstart | Shipped | `docs/agent/AGENT_QUICKSTART.md` |
 | Job progress streaming (SSE) | Shipped | `GET /api/agent/v1/jobs/{id}/stream` — `snapshot` / `progress` / `ping` / `result` frames; resume via `?since=` or `Last-Event-ID` |
-| Admin UI for tokens & audit | Shipped | `QuantDinger-Vue-src/src/views/agent-tokens/index.vue` (admin-only route `/agent-tokens`) |
+| Token UI (Profile + admin audit) | Shipped | `ProfileAgentTokens.vue` at Profile → My Agent Token (`/api/agent/v1/me/tokens`); admin route `/agent-tokens` retained |
 | Hosted-mode hardening (`QUANTDINGER_DEPLOYMENT_MODE=saas`) | Shipped | `app/routes/agent_v1/admin.py` — issuance-time T-scope rejection + `paper_only` force-pin; covered by `tests/test_agent_v1_saas_guard.py` |
 | Published MCP package on PyPI | Shipped | [`quantdinger-mcp`](https://pypi.org/project/quantdinger-mcp/) — install via `pipx`, `uvx`, or `pip` |
 | Live execution implementation (T, self-host only) | Pending | tracked under roadmap A6 |

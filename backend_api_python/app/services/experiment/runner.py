@@ -131,6 +131,7 @@ class ExperimentRunnerService:
         global_best: Optional[Dict[str, Any]] = None
         global_best_score = -1.0
         previous_results: Optional[List[Dict[str, Any]]] = None
+        evaluation_trace: List[Dict[str, Any]] = []
 
         for round_num in range(1, max_rounds + 1):
             round_start = time.time()
@@ -198,7 +199,7 @@ class ExperimentRunnerService:
                     result = {}
 
                 score = scorer.score_result(result, regime=regime)
-                round_ranked.append({
+                candidate_item = {
                     'name': cand.get('name', f'R{round_num}_{idx}'),
                     'reasoning': cand.get('reasoning', ''),
                     'source': f'ai_round_{round_num}',
@@ -209,7 +210,9 @@ class ExperimentRunnerService:
                     'snapshot': cand_snapshot,
                     'score': score,
                     'result': self._slim_result(result),
-                })
+                }
+                round_ranked.append(candidate_item)
+                evaluation_trace.append(self._trace_point(candidate_item, len(evaluation_trace) + 1, round_num))
 
             round_ranked = scorer.rank_results(round_ranked)
             round_best = round_ranked[0] if round_ranked else None
@@ -273,10 +276,18 @@ class ExperimentRunnerService:
             'bestStrategyOutput': self._build_best_output(global_best),
             'oosValidation': oos_meta,
             'scoringWeights': scorer.resolve_weights(regime),
+            'analytics': self._build_optimizer_analytics(
+                all_candidates,
+                evaluation_trace=evaluation_trace,
+                parameter_space={},
+                method='llm',
+            ),
             'experiment': {
                 'totalRounds': len(all_rounds),
                 'totalCandidates': len(all_candidates),
                 'globalBestScore': global_best_score,
+                'mode': 'ai',
+                'method': 'llm',
             },
         }
         # Final payload is sent once via SSE route (__final__); avoid duplicating huge JSON on progress.
@@ -319,7 +330,7 @@ class ExperimentRunnerService:
                 'trade_direction': snap.get('trade_direction', 'long'),
                 'market_type': 'swap',
                 'strategy_config': strategy_config,
-                'enable_mtf': snap.get('enable_mtf', True),
+                'strict_mode': snap.get('strict_mode', True),
             },
             'exchange_config': {},
         }
@@ -435,6 +446,12 @@ class ExperimentRunnerService:
             },
             'rankedStrategies': ranked,
             'bestStrategyOutput': self._build_best_output(best),
+            'analytics': self._build_optimizer_analytics(
+                ranked,
+                evaluation_trace=self._build_evaluation_trace(ranked),
+                parameter_space=parameter_space,
+                method=str((payload.get('evolution') or {}).get('method') or 'grid'),
+            ),
         }
 
     def run_structured_tune(
@@ -528,6 +545,7 @@ class ExperimentRunnerService:
                     'result': self._slim_result(result),
                 }))
 
+        evaluation_trace = self._build_evaluation_trace(ranked)
         ranked = scorer.rank_results(ranked)
         if oos_start is not None and oos_end is not None:
             self._evaluate_oos(ranked, oos_start=oos_start, oos_end=oos_end, regime=regime, scorer=scorer)
@@ -565,6 +583,12 @@ class ExperimentRunnerService:
             'bestStrategyOutput': self._build_best_output(best),
             'oosValidation': oos_meta,
             'scoringWeights': scorer.resolve_weights(regime),
+            'analytics': self._build_optimizer_analytics(
+                ranked,
+                evaluation_trace=evaluation_trace,
+                parameter_space=parameter_space,
+                method=method,
+            ),
             'experiment': {
                 'totalRounds': 1,
                 'totalCandidates': len(ranked),
@@ -572,6 +596,7 @@ class ExperimentRunnerService:
                 'mode': 'structured',
                 'method': method,
                 'maxVariants': max_variants,
+                'parameterCount': len(parameter_space or {}),
             },
         }
 
@@ -791,7 +816,7 @@ class ExperimentRunnerService:
                 'indicator_params': base.get('indicatorParams') or {},
                 'indicator_id': base.get('indicatorId'),
                 'user_id': user_id,
-                'enable_mtf': bool(base.get('enableMtf', True)),
+                'strict_mode': bool(base.get('strictMode', base.get('strict_mode', True))),
                 'run_type': str(base.get('runType') or 'indicator'),
             }
         snapshot['user_id'] = user_id
@@ -799,8 +824,12 @@ class ExperimentRunnerService:
 
     @staticmethod
     def _parse_dates(base: Dict[str, Any]) -> tuple[datetime, datetime]:
-        start_date = datetime.strptime(str(base.get('startDate')), '%Y-%m-%d')
-        end_date = datetime.strptime(str(base.get('endDate')), '%Y-%m-%d').replace(hour=23, minute=59, second=59)
+        start_raw = base.get('startDate') or base.get('start_date')
+        end_raw = base.get('endDate') or base.get('end_date')
+        if not start_raw or not end_raw:
+            raise ValueError('startDate/start_date and endDate/end_date are required (YYYY-MM-DD)')
+        start_date = datetime.strptime(str(start_raw), '%Y-%m-%d')
+        end_date = datetime.strptime(str(end_raw), '%Y-%m-%d').replace(hour=23, minute=59, second=59)
         return start_date, end_date
 
     @staticmethod
@@ -895,6 +924,261 @@ class ExperimentRunnerService:
                 f"{regime.get('label') or 'current'} conditions with risk controls."
             ),
         }
+
+    @staticmethod
+    def _trace_point(candidate: Dict[str, Any], index: int, round_num: Optional[int] = None) -> Dict[str, Any]:
+        score = float(((candidate.get('score') or {}).get('overallScore')) or 0.0)
+        result = candidate.get('result') or {}
+        point = {
+            'index': index,
+            'name': candidate.get('name'),
+            'source': candidate.get('source'),
+            'score': round(score, 4),
+            'totalReturn': result.get('totalReturn'),
+            'maxDrawdown': result.get('maxDrawdown'),
+            'sharpeRatio': result.get('sharpeRatio'),
+            'totalTrades': result.get('totalTrades'),
+        }
+        if round_num is not None:
+            point['round'] = round_num
+        return point
+
+    def _build_evaluation_trace(self, candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        return [self._trace_point(candidate, idx) for idx, candidate in enumerate(candidates or [], start=1)]
+
+    def _build_optimizer_analytics(
+        self,
+        ranked: List[Dict[str, Any]],
+        *,
+        evaluation_trace: Optional[List[Dict[str, Any]]] = None,
+        parameter_space: Optional[Dict[str, Any]] = None,
+        method: str = '',
+    ) -> Dict[str, Any]:
+        """Return audit-grade analytics derived only from evaluated backtests."""
+        ranked = ranked or []
+        trace = list(evaluation_trace or self._build_evaluation_trace(ranked))
+        if not ranked:
+            return {
+                'summary': {
+                    'method': method or '',
+                    'evaluationCount': 0,
+                    'parameterCount': len(parameter_space or {}),
+                    'dataSource': 'backtest',
+                },
+                'convergence': [],
+                'oosMatrix': [],
+                'parameterSensitivity': [],
+                'scoreDistribution': {},
+            }
+
+        best_score = float('-inf')
+        best_name = None
+        convergence: List[Dict[str, Any]] = []
+        for raw in trace:
+            score = float(raw.get('score') or 0.0)
+            if score >= best_score:
+                best_score = score
+                best_name = raw.get('name')
+            point = dict(raw)
+            point['bestScore'] = round(max(best_score, 0.0), 4)
+            point['bestName'] = best_name
+            convergence.append(point)
+
+        traced_names = {str(p.get('name')) for p in trace if p.get('name') is not None}
+        if len(traced_names) < len(ranked):
+            for candidate in ranked:
+                if str(candidate.get('name')) in traced_names:
+                    continue
+                idx = len(convergence) + 1
+                point = self._trace_point(candidate, idx)
+                score = float(point.get('score') or 0.0)
+                if score >= best_score:
+                    best_score = score
+                    best_name = point.get('name')
+                point['bestScore'] = round(max(best_score, 0.0), 4)
+                point['bestName'] = best_name
+                convergence.append(point)
+
+        oos_matrix = []
+        for candidate in ranked:
+            oos_score = candidate.get('oosScore') or {}
+            if not oos_score:
+                continue
+            result = candidate.get('result') or {}
+            oos_result = candidate.get('oosResult') or {}
+            oos_matrix.append({
+                'name': candidate.get('name'),
+                'rank': candidate.get('rank'),
+                'isScore': ((candidate.get('score') or {}).get('overallScore')),
+                'oosScore': oos_score.get('overallScore'),
+                'isReturn': result.get('totalReturn'),
+                'oosReturn': oos_result.get('totalReturn'),
+                'isDrawdown': result.get('maxDrawdown'),
+                'oosDrawdown': oos_result.get('maxDrawdown'),
+                'degradation': candidate.get('oosDegradation'),
+                'overfit': bool(candidate.get('oosOverfit')),
+            })
+
+        scores = [float(((c.get('score') or {}).get('overallScore')) or 0.0) for c in ranked]
+        distribution = self._score_distribution(scores)
+
+        return {
+            'summary': {
+                'method': method or '',
+                'evaluationCount': len(trace) or len(ranked),
+                'rankedCount': len(ranked),
+                'parameterCount': len(parameter_space or {}),
+                'parameterKeys': list((parameter_space or {}).keys())[:20],
+                'dataSource': 'backtest',
+                'oosCount': len(oos_matrix),
+            },
+            'convergence': convergence[:200],
+            'oosMatrix': oos_matrix,
+            'parameterSensitivity': self._parameter_sensitivity(ranked),
+            'scoreDistribution': distribution,
+        }
+
+    @staticmethod
+    def _score_distribution(scores: List[float]) -> Dict[str, Any]:
+        if not scores:
+            return {}
+        ordered = sorted(scores)
+        n = len(ordered)
+
+        def pct(p: float) -> float:
+            if n == 1:
+                return ordered[0]
+            pos = (n - 1) * p
+            lo = int(pos)
+            hi = min(n - 1, lo + 1)
+            frac = pos - lo
+            return ordered[lo] * (1 - frac) + ordered[hi] * frac
+
+        mean = sum(ordered) / n
+        variance = sum((x - mean) ** 2 for x in ordered) / n
+        return {
+            'count': n,
+            'min': round(ordered[0], 4),
+            'p25': round(pct(0.25), 4),
+            'median': round(pct(0.5), 4),
+            'p75': round(pct(0.75), 4),
+            'max': round(ordered[-1], 4),
+            'mean': round(mean, 4),
+            'std': round(variance ** 0.5, 4),
+        }
+
+    @staticmethod
+    def _parameter_sensitivity(ranked: List[Dict[str, Any]], *, limit: int = 8) -> List[Dict[str, Any]]:
+        """Estimate parameter impact from observed candidates, not synthetic modelling."""
+        buckets_by_key: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        numeric_pairs: Dict[str, List[tuple[float, float]]] = {}
+
+        for candidate in ranked or []:
+            score = float(((candidate.get('score') or {}).get('overallScore')) or 0.0)
+            result = candidate.get('result') or {}
+            overrides = candidate.get('overrides') or {}
+            flat = ExperimentRunnerService._flatten_overrides(overrides)
+            for key, value in flat.items():
+                label = ExperimentRunnerService._stable_value_label(value)
+                by_value = buckets_by_key.setdefault(key, {})
+                bucket = by_value.setdefault(label, {
+                    'value': value,
+                    'label': label,
+                    'count': 0,
+                    'scoreSum': 0.0,
+                    'returnSum': 0.0,
+                    'drawdownSum': 0.0,
+                })
+                bucket['count'] += 1
+                bucket['scoreSum'] += score
+                bucket['returnSum'] += float(result.get('totalReturn') or 0.0)
+                bucket['drawdownSum'] += abs(float(result.get('maxDrawdown') or 0.0))
+                try:
+                    numeric_pairs.setdefault(key, []).append((float(value), score))
+                except (TypeError, ValueError):
+                    pass
+
+        out: List[Dict[str, Any]] = []
+        for key, raw_buckets in buckets_by_key.items():
+            buckets = []
+            for bucket in raw_buckets.values():
+                count = max(1, int(bucket['count']))
+                buckets.append({
+                    'value': bucket['value'],
+                    'label': bucket['label'],
+                    'count': count,
+                    'avgScore': round(bucket['scoreSum'] / count, 4),
+                    'avgReturn': round(bucket['returnSum'] / count, 4),
+                    'avgDrawdown': round(bucket['drawdownSum'] / count, 4),
+                })
+            if len(buckets) < 2:
+                continue
+            buckets.sort(key=lambda x: x['avgScore'], reverse=True)
+            best = buckets[0]
+            worst = buckets[-1]
+            effect = float(best['avgScore'] - worst['avgScore'])
+            corr = ExperimentRunnerService._pearson(numeric_pairs.get(key) or [])
+            importance = abs(corr) if corr is not None else effect / 100.0
+            out.append({
+                'key': key,
+                'kind': 'numeric' if corr is not None else 'categorical',
+                'sampleCount': sum(int(b['count']) for b in buckets),
+                'uniqueCount': len(buckets),
+                'importance': round(max(0.0, min(1.0, float(importance))), 4),
+                'correlation': None if corr is None else round(corr, 4),
+                'effect': round(effect, 4),
+                'bestValue': best['value'],
+                'worstValue': worst['value'],
+                'bestAvgScore': best['avgScore'],
+                'worstAvgScore': worst['avgScore'],
+                'buckets': buckets[:10],
+            })
+
+        out.sort(key=lambda item: (float(item.get('importance') or 0.0), float(item.get('effect') or 0.0)), reverse=True)
+        return out[:limit]
+
+    @staticmethod
+    def _flatten_overrides(overrides: Dict[str, Any]) -> Dict[str, Any]:
+        flat: Dict[str, Any] = {}
+
+        def walk(prefix: str, value: Any) -> None:
+            if isinstance(value, dict):
+                for sub_key, sub_value in value.items():
+                    next_key = f'{prefix}.{sub_key}' if prefix else str(sub_key)
+                    walk(next_key, sub_value)
+            else:
+                flat[prefix] = value
+
+        walk('', overrides or {})
+        return flat
+
+    @staticmethod
+    def _stable_value_label(value: Any) -> str:
+        if isinstance(value, float):
+            return f'{value:.8g}'
+        if isinstance(value, (dict, list, tuple)):
+            try:
+                return json.dumps(value, sort_keys=True, ensure_ascii=False)
+            except Exception:
+                return str(value)
+        return str(value)
+
+    @staticmethod
+    def _pearson(pairs: List[tuple[float, float]]) -> Optional[float]:
+        if len(pairs) < 3:
+            return None
+        xs = [p[0] for p in pairs]
+        ys = [p[1] for p in pairs]
+        if len(set(xs)) < 2 or len(set(ys)) < 2:
+            return None
+        mx = sum(xs) / len(xs)
+        my = sum(ys) / len(ys)
+        cov = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+        vx = sum((x - mx) ** 2 for x in xs)
+        vy = sum((y - my) ** 2 for y in ys)
+        if vx <= 0 or vy <= 0:
+            return None
+        return cov / ((vx * vy) ** 0.5)
 
     @staticmethod
     def _build_best_output(best: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:

@@ -14,7 +14,7 @@ Or the dependency is already in `requirements.txt`.
 
 | Client | Live Port | Paper Port |
 |--------|-----------|------------|
-| TWS    | 7497      | 7496       |
+| TWS    | 7496      | 7497       |
 | IB Gateway | 4001  | 4002       |
 
 ## TWS / IB Gateway Configuration
@@ -74,7 +74,7 @@ GET  /api/ibkr/quote?symbol=AAPL&marketType=USStock
 ```bash
 curl -X POST http://localhost:5000/api/ibkr/connect \
   -H "Content-Type: application/json" \
-  -d '{"host": "127.0.0.1", "port": 7497, "clientId": 1}'
+  -d '{"host": "127.0.0.1", "port": 7497, "clientId": 1}'  # TWS Paper default
 ```
 
 ### Place Order

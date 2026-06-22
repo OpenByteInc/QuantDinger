@@ -760,8 +760,6 @@ class OkxClient(BaseRestClient):
         """
         mt = (market_type or "swap").strip().lower()
         inst_id = to_okx_spot_inst_id(symbol) if mt == "spot" else to_okx_swap_inst_id(symbol)
-        # IMPORTANT: For OKX SWAP, fillSz/accFillSz are in "contracts" (张数), not base-asset quantity.
-        # Our system standardizes on base-asset quantity everywhere ("币数"), so we convert using ctVal.
         ct_val = Decimal("0")
         if mt != "spot":
             try:

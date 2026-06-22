@@ -34,8 +34,8 @@ def test_legacy_without_strict_key_keeps_explicit_signal_mode():
     assert tc["signal_mode"] == "confirmed"
 
 
-def test_legacy_without_strict_key_defaults_aggressive():
+def test_legacy_without_strict_key_defaults_confirmed():
     tc = {}
     normalize_trading_execution_modes(tc)
-    assert tc["signal_mode"] == "aggressive"
-    assert tc["entry_trigger_mode"] == "immediate"
+    assert tc["signal_mode"] == "confirmed"
+    assert tc["exit_signal_mode"] == "confirmed"

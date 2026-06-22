@@ -56,7 +56,7 @@ def _ensure_ib_insync():
 class IBKRConfig:
     """IBKR connection configuration."""
     host: str = "127.0.0.1"
-    port: int = 7497  # TWS Live:7497, TWS Paper:7496, Gateway Live:4001, Gateway Paper:4002
+    port: int = 7497  # TWS Live:7496, TWS Paper:7497, Gateway Live:4001, Gateway Paper:4002
     client_id: int = 1
     readonly: bool = False
     account: str = ""  # Leave empty to auto-select first account
@@ -80,7 +80,7 @@ class IBKRClient:
     Interactive Brokers Trading Client
     
     Usage:
-        config = IBKRConfig(port=7497)  # TWS Live
+        config = IBKRConfig(port=7497)  # TWS Paper default
         client = IBKRClient(config)
         
         if client.connect():

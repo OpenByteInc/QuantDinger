@@ -65,7 +65,7 @@ jobs:
           # Import key modules to verify they are loadable
           from app import create_app
           from app.config import settings
-          from app.routes import health
+          from app.openapi import init_openapi
           
           print('✓ Core modules imported successfully')
           print('✓ No critical import errors detected')
@@ -112,3 +112,6 @@ jobs:
         # repo) and are skipped when absent. Run bump_version.py locally with
         # the full FE checkout to sync those files before building the image.
         run: python scripts/check_version.py
+
+      - name: Check for mojibake in tracked text files
+        run: python scripts/check_mojibake.py

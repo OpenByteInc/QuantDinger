@@ -30,12 +30,13 @@ wheels/
 *.swo
 *~
 
-# 日志
+# Logs
 *.log
 
-# 环境变量
+# Environment variables
 .env
 .env.local
+.env.testnet.local
 
 # Local runtime data (do not commit)
 quantdinger.db

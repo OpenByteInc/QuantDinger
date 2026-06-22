@@ -19,3 +19,6 @@ services:
     build:
       context: ${FRONTEND_SRC_PATH:-./QuantDinger-Vue}
       dockerfile: Dockerfile
+      args:
+        APP_VERSION: ${APP_VERSION:-}
+        GIT_TAG: ${GIT_TAG:-${FRONTEND_TAG:-${IMAGE_TAG:-}}}

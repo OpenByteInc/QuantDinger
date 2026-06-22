@@ -127,7 +127,7 @@ All endpoints require `@login_required`:
 | Auth | TWS/Gateway socket (host/port/clientId) | REST API key+secret |
 | Order IDs | Integer | UUID string |
 | Connection | Stateful, persistent socket | Stateless REST |
-| Paper mode | Port 7496/4002 | Different base URL |
+| Paper mode (IBKR TWS/Gateway) | Port 7497/4002 | Different base URL |
 | Symbol format | `AAPL` (stocks), `0700.HK` (HK) | `AAPL` (US), `BRK.B` (US class), `BTC/USD` (crypto) |
 | Extended hours | Configurable per-order | Configurable per-order (limit only) |
 | Crypto | No (separate IBKR Crypto product) | Yes, same client |

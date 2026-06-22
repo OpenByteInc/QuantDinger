@@ -91,3 +91,24 @@ def test_live_crypto_kline_params_usstock_unchanged():
     )
     assert ex is None
     assert mt is None
+
+
+def test_live_crypto_kline_params_resolves_credential_id(monkeypatch):
+    def _fake_resolve(cfg, user_id=1):
+        assert user_id == 42
+        assert cfg.get("credential_id") == 7
+        return {"exchange_id": "okx", "api_key": "k", "secret_key": "s", "passphrase": "p"}
+
+    monkeypatch.setattr(
+        "app.services.exchange_execution.resolve_exchange_config",
+        _fake_resolve,
+    )
+    ex, mt = TradingExecutor._live_crypto_kline_params(
+        market_category="Crypto",
+        market_type="swap",
+        execution_mode="live",
+        exchange_config={"credential_id": 7},
+        user_id=42,
+    )
+    assert ex == "okx"
+    assert mt == "swap"

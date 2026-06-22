@@ -11,6 +11,7 @@ os.environ.setdefault("ADMIN_USER", "testadmin")
 os.environ.setdefault("ADMIN_PASSWORD", "testpass123")
 os.environ.setdefault("TQDM_DISABLE", "1")
 os.environ.setdefault("CACHE_ENABLED", "false")
+os.environ.setdefault("SKIP_STARTUP_HOOKS", "1")
 
 import pytest
 from app import create_app

@@ -15,7 +15,7 @@ import hmac
 import logging
 import time
 from decimal import Decimal, ROUND_DOWN
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import urlencode
 
 from app.services.live_trading.base import BaseRestClient, LiveOrderResult, LiveTradingError
@@ -69,6 +69,10 @@ class BybitClient(BaseRestClient):
         self._time_offset_ms: int = 0
         self._time_offset_at: float = 0.0
         self._time_sync_ttl_sec: float = 55.0
+
+        # linear: symbol -> (fetched_at, is_hedge_mode) from GET /v5/position/list
+        self._pos_mode_cache: Dict[str, Tuple[float, bool]] = {}
+        self._pos_mode_cache_ttl_sec: float = 60.0
 
     @staticmethod
     def _to_dec(x: Any) -> Decimal:
@@ -214,15 +218,61 @@ class BybitClient(BaseRestClient):
         self._time_offset_ms = int(srv_ms - local_ms)
         self._time_offset_at = now
 
-    def _resolve_position_idx(self, pos_side: str) -> Optional[int]:
-        if not self.hedge_mode:
-            return None
+    def is_hedge_position_mode(self, *, symbol: str) -> bool:
+        """
+        Whether the Bybit account uses hedge (both-side) mode for ``symbol``.
+
+        Queries GET /v5/position/list (returns slots even when flat). Falls back to
+        ``hedge_mode`` from credentials when the API call fails.
+        """
+        if self.category != "linear":
+            return bool(self.hedge_mode)
+        sym = to_bybit_symbol(symbol)
+        if not sym:
+            return bool(self.hedge_mode)
+        key = sym.upper()
+        now = time.time()
+        cached = self._pos_mode_cache.get(key)
+        if cached:
+            ts, hedge = cached
+            if (now - float(ts or 0.0)) <= float(self._pos_mode_cache_ttl_sec or 60.0):
+                return bool(hedge)
+        detected: Optional[bool] = None
+        try:
+            raw = self.get_positions(symbol=symbol)
+            lst = ((raw.get("result") or {}).get("list") or []) if isinstance(raw, dict) else []
+            idxs: Set[int] = set()
+            for row in lst:
+                if not isinstance(row, dict):
+                    continue
+                try:
+                    idxs.add(int(row.get("positionIdx") or 0))
+                except Exception:
+                    continue
+            if 1 in idxs or 2 in idxs:
+                detected = True
+            elif idxs == {0} or (len(idxs) == 1 and 0 in idxs):
+                detected = False
+            elif len(idxs) >= 2:
+                detected = True
+        except Exception:
+            detected = None
+        hedge = bool(self.hedge_mode) if detected is None else bool(detected)
+        self._pos_mode_cache[key] = (now, hedge)
+        return hedge
+
+    def _resolve_position_idx(self, pos_side: str, *, symbol: str = "") -> int:
+        """
+        Bybit linear positionIdx: 0 one-way; 1 hedge long slot; 2 hedge short slot.
+        """
+        if self.category != "linear":
+            return 0
+        if not self.is_hedge_position_mode(symbol=symbol):
+            return 0
         ps = str(pos_side or "").strip().lower()
-        if ps == "long":
-            return 1
         if ps == "short":
             return 2
-        return None
+        return 1
 
     def _headers(self, ts_ms: str, sign: str) -> Dict[str, str]:
         headers = {
@@ -473,7 +523,77 @@ class BybitClient(BaseRestClient):
         
         if mn > 0 and q < mn:
             return (Decimal("0"), qty_precision)
+        if qty_precision is None and self.category == "spot":
+            # Avoid sending unrounded base qty when instrument metadata is missing.
+            qty_precision = 4
         return (q, qty_precision)
+
+    def _normalize_quantity(
+        self,
+        *,
+        symbol: str,
+        quantity: float,
+        for_market: bool = True,
+    ) -> Tuple[Decimal, Optional[int]]:
+        """Spot sizing helper (``spot_sizing.normalize_spot_base_quantity``)."""
+        _ = for_market
+        return self._normalize_qty(symbol=symbol, qty=quantity)
+
+    def get_spot_holdings(self, *, symbol: str = "") -> Dict[str, Any]:
+        """
+        Wallet coin balances for quick-trade spot position display.
+
+        Bybit spot category has no ``/v5/position/list``; use wallet balances instead.
+        """
+        base_filter = ""
+        if (symbol or "").strip():
+            base_filter = str(symbol).split("/", 1)[0].split(":", 1)[0].strip().upper()
+        rows: List[Dict[str, Any]] = []
+        seen: Set[str] = set()
+        for acct_type in ("UNIFIED", "SPOT"):
+            try:
+                raw = self.get_wallet_balance(account_type=acct_type)
+            except Exception:
+                continue
+            lst = ((raw.get("result") or {}).get("list") or []) if isinstance(raw, dict) else []
+            if not isinstance(lst, list):
+                continue
+            for acct in lst:
+                if not isinstance(acct, dict):
+                    continue
+                for coin in acct.get("coin") or []:
+                    if not isinstance(coin, dict):
+                        continue
+                    ccy = str(coin.get("coin") or "").upper()
+                    if not ccy or ccy in seen:
+                        continue
+                    if base_filter and ccy != base_filter:
+                        continue
+                    try:
+                        bal = float(
+                            coin.get("walletBalance")
+                            or coin.get("equity")
+                            or coin.get("availableToWithdraw")
+                            or 0
+                        )
+                    except Exception:
+                        bal = 0.0
+                    if bal <= 0:
+                        continue
+                    seen.add(ccy)
+                    try:
+                        avail = float(coin.get("availableToWithdraw") or coin.get("walletBalance") or bal)
+                    except Exception:
+                        avail = bal
+                    sym_out = to_bybit_symbol(f"{ccy}/USDT") if ccy != "USDT" else ccy
+                    rows.append(
+                        {
+                            "symbol": sym_out,
+                            "bal": bal,
+                            "availBal": avail,
+                        }
+                    )
+        return {"result": {"list": rows}}
 
     def _normalize_price(self, *, symbol: str, price: float) -> Tuple[Decimal, Optional[int]]:
         p = self._to_dec(price)
@@ -534,9 +654,8 @@ class BybitClient(BaseRestClient):
         }
         if self.category == "spot":
             body["marketUnit"] = "baseCoin"
-        pos_idx = self._resolve_position_idx(pos_side) if self.category == "linear" else None
-        if pos_idx is not None:
-            body["positionIdx"] = pos_idx
+        if self.category == "linear":
+            body["positionIdx"] = self._resolve_position_idx(pos_side, symbol=symbol)
         if reduce_only and self.category == "linear":
             body["reduceOnly"] = True
         if client_order_id:
@@ -580,9 +699,8 @@ class BybitClient(BaseRestClient):
             "price": self._dec_str(px_dec, strict_precision=price_precision),
             "timeInForce": "GTC",
         }
-        pos_idx = self._resolve_position_idx(pos_side) if self.category == "linear" else None
-        if pos_idx is not None:
-            body["positionIdx"] = pos_idx
+        if self.category == "linear":
+            body["positionIdx"] = self._resolve_position_idx(pos_side, symbol=symbol)
         if reduce_only and self.category == "linear":
             body["reduceOnly"] = True
         if client_order_id:
@@ -696,6 +814,8 @@ class BybitClient(BaseRestClient):
         - Pass ``symbol`` (e.g. ETH/USDT) to query one contract.
         - Omit ``symbol`` and pass ``settle_coin`` (default USDT) to list all USDT-linear positions.
         """
+        if self.category == "spot":
+            return self.get_spot_holdings(symbol=symbol)
         if self.category != "linear":
             raise LiveTradingError("Bybit positions are only supported for linear category in this client")
         params: Dict[str, Any] = {"category": "linear"}

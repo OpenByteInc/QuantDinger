@@ -16,6 +16,7 @@ from typing import Any, Dict
 from app.utils.db import get_db_connection
 from app.utils.logger import get_logger
 from app.utils.credential_crypto import decrypt_credential_blob
+from app.services.live_trading.capabilities import canonical_exchange_id, supported_crypto_exchange_ids
 
 logger = get_logger(__name__)
 
@@ -49,10 +50,7 @@ _EXCHANGE_TO_MARKET: Dict[str, str] = {
     "alpaca": "USStock",  # Alpaca primarily for US stocks; crypto is opt-in via market_category override
     "mt5": "Forex",
 }
-_CRYPTO_EXCHANGES = {
-    "binance", "okx", "bitget", "bybit", "coinbaseexchange",
-    "kraken", "kucoin", "gate", "deepcoin", "htx",
-}
+_CRYPTO_EXCHANGES = supported_crypto_exchange_ids()
 
 
 def _infer_market_category_from_exchange(exchange_id: str) -> str:
@@ -61,7 +59,7 @@ def _infer_market_category_from_exchange(exchange_id: str) -> str:
 
     Returns 'Crypto' as the legacy default only if exchange_id is empty or unknown.
     """
-    eid = (exchange_id or "").strip().lower()
+    eid = canonical_exchange_id(exchange_id)
     if not eid:
         return "Crypto"
     if eid in _EXCHANGE_TO_MARKET:
@@ -97,7 +95,7 @@ def load_strategy_configs(strategy_id: int) -> Dict[str, Any]:
         cur = db.cursor()
         cur.execute(
             """
-            SELECT id, user_id, exchange_config, trading_config, market_type, leverage, execution_mode, market_category
+            SELECT id, user_id, symbol, exchange_config, trading_config, market_type, leverage, execution_mode, market_category
             FROM qd_strategies_trading
             WHERE id = %s
             """,
@@ -132,9 +130,14 @@ def load_strategy_configs(strategy_id: int) -> Dict[str, Any]:
 
     user_id = int(row.get("user_id") or 1)
 
+    row_symbol = str(row.get("symbol") or "").strip()
+    tc_symbol = str((trading_config or {}).get("symbol") or "").strip()
+    symbol = row_symbol or tc_symbol
+
     return {
         "strategy_id": int(strategy_id),
         "user_id": user_id,
+        "symbol": symbol,
         "exchange_config": exchange_config if isinstance(exchange_config, dict) else {},
         "trading_config": trading_config if isinstance(trading_config, dict) else {},
         "market_type": market_type,

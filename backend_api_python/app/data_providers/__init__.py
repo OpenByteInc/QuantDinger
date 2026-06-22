@@ -58,6 +58,8 @@ CACHE_TTL = {
     # News & calendar — slow-moving, can be cached aggressively.
     "market_news": 180,
     "economic_calendar": 3600,
+    "economic_calendar_v2": 3600,
+    "economic_calendar_v3": 3600,
     # Macro sentiment (Fear&Greed, VIX, DXY...) — daily-ish cadence so 6h
     # is fine. SWR lets us return the previous payload while we refresh.
     "market_sentiment": 21600,

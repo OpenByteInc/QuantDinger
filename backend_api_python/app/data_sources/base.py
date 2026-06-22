@@ -11,7 +11,6 @@ from app.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
-# K线周期映射（秒数）
 TIMEFRAME_SECONDS = {
     '1m': 60,
     '3m': 180,
@@ -124,16 +123,13 @@ class BaseDataSource(ABC):
         Returns:
             处理后的K线数据
         """
-        # 按时间排序
         klines.sort(key=lambda x: x['time'])
         
-        # 过滤时间
         if before_time:
             klines = [k for k in klines if k['time'] < before_time]
         if after_time is not None:
             klines = [k for k in klines if k['time'] >= after_time]
         
-        # 限制数量（取最新的）
         if truncate and len(klines) > limit:
             klines = klines[-limit:]
         
@@ -160,13 +156,10 @@ class BaseDataSource(ABC):
 
             tf_sec = TIMEFRAME_SECONDS.get(timeframe, 3600)
             if tf_sec < 86400:
-                # 分钟/小时级：超过约 2 根 K 未更新则告警
                 max_diff = tf_sec * 2
             elif tf_sec == 86400:
-                # 日线：覆盖周末 + 短假期（约 5 个自然日）
                 max_diff = 5 * 86400
             else:
-                # 周线：允许跨多周数据滞后
                 max_diff = max(tf_sec * 2, 21 * 86400)
 
             if time_diff > max_diff:

@@ -1,0 +1,44 @@
+{
+  "defaults": {
+    "symbol": "BTC/USDT",
+    "max_notional_usdt": 5,
+    "exchange_config": {
+      "environment": "testnet",
+      "simulated_trading": true
+    }
+  },
+  "exchanges": [
+    {
+      "name": "bitget spot readonly",
+      "exchange": "bitget",
+      "market_type": "spot",
+      "api_key": "YOUR_BITGET_API_KEY",
+      "secret_key": "YOUR_BITGET_SECRET_KEY",
+      "passphrase": "YOUR_BITGET_PASSPHRASE"
+    },
+    {
+      "name": "bitget swap readonly",
+      "exchange": "bitget",
+      "market_type": "swap",
+      "api_key": "YOUR_BITGET_API_KEY",
+      "secret_key": "YOUR_BITGET_SECRET_KEY",
+      "passphrase": "YOUR_BITGET_PASSPHRASE",
+      "product_type": "USDT-FUTURES"
+    },
+    {
+      "name": "okx swap readonly",
+      "exchange": "okx",
+      "market_type": "swap",
+      "api_key": "YOUR_OKX_API_KEY",
+      "secret_key": "YOUR_OKX_SECRET_KEY",
+      "passphrase": "YOUR_OKX_PASSPHRASE"
+    },
+    {
+      "name": "bybit spot readonly",
+      "exchange": "bybit",
+      "market_type": "spot",
+      "api_key": "YOUR_BYBIT_API_KEY",
+      "secret_key": "YOUR_BYBIT_SECRET_KEY"
+    }
+  ]
+}

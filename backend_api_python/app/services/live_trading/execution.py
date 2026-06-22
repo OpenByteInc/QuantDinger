@@ -2,16 +2,17 @@
 Translate a strategy signal into a direct-exchange order call.
 
 Supports:
-- Crypto exchanges: Binance, OKX, Bitget, Bybit, Coinbase, Kraken, KuCoin, Gate, Deepcoin, HTX
+- Crypto exchanges: Binance, OKX, Bitget, Bybit, Coinbase, Kraken, Gate, HTX
 - Traditional brokers: Interactive Brokers (IBKR) for US stocks
 - Forex brokers: MetaTrader 5 (MT5)
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional
 
 from app.services.live_trading.base import BaseRestClient, LiveOrderResult, LiveTradingError
+from app.services.live_trading.contracts import normalize_order_market_type, order_intent_from_signal
 from app.services.live_trading.binance import BinanceFuturesClient
 from app.services.live_trading.binance_spot import BinanceSpotClient
 from app.services.live_trading.okx import OkxClient
@@ -21,12 +22,7 @@ from app.services.live_trading.bybit import BybitClient
 from app.services.live_trading.coinbase_exchange import CoinbaseExchangeClient
 from app.services.live_trading.kraken import KrakenClient
 from app.services.live_trading.kraken_futures import KrakenFuturesClient
-from app.services.live_trading.kucoin import KucoinSpotClient
-from app.services.live_trading.kucoin import KucoinFuturesClient
 from app.services.live_trading.gate import GateSpotClient, GateUsdtFuturesClient
-
-# Lazy import Deepcoin
-DeepcoinClient = None
 
 # Lazy import HTX
 HtxClient = None
@@ -63,17 +59,14 @@ def _normalize_symbol_for_order(symbol: str, market_type: str = "swap") -> str:
     
     sym = symbol.strip()
     
-    # 移除 swap/futures 后缀
     if ':' in sym:
         sym = sym.split(':', 1)[0]
     
     sym = sym.upper()
     
-    # 如果已经有分隔符，直接返回（假设格式正确）
     if '/' in sym:
         return sym
     
-    # 尝试从常见报价货币中识别
     common_quotes = ['USDT', 'USD', 'BTC', 'ETH', 'BUSD', 'USDC']
     for quote in common_quotes:
         if sym.endswith(quote) and len(sym) > len(quote):
@@ -81,26 +74,7 @@ def _normalize_symbol_for_order(symbol: str, market_type: str = "swap") -> str:
             if base:
                 return f"{base}/{quote}"
     
-    # 如果无法识别，默认使用 USDT
     return f"{sym}/USDT"
-
-
-def _signal_to_sides(signal_type: str) -> Tuple[str, str, bool]:
-    """
-    Returns (side, pos_side, reduce_only)
-    - side: buy/sell
-    - pos_side: long/short (for OKX)
-    """
-    sig = (signal_type or "").strip().lower()
-    if sig in ("open_long", "add_long"):
-        return "buy", "long", False
-    if sig in ("open_short", "add_short"):
-        return "sell", "short", False
-    if sig in ("close_long", "reduce_long"):
-        return "sell", "long", True
-    if sig in ("close_short", "reduce_short"):
-        return "buy", "short", True
-    raise LiveTradingError(f"Unsupported signal_type: {signal_type}")
 
 
 def _quote_amount_from_base_qty(client: BaseRestClient, *, symbol: str, base_qty: float) -> float:
@@ -132,35 +106,68 @@ def place_order_from_signal(
     market_type: str = "swap",
     exchange_config: Optional[Dict[str, Any]] = None,
     client_order_id: Optional[str] = None,
+    quote_amount: float = 0,
 ) -> LiveOrderResult:
     if amount is None:
         amount = 0.0
     qty = float(amount or 0.0)
-    if qty <= 0:
+    quote_amt = float(quote_amount or 0.0)
+    if qty <= 0 and quote_amt <= 0:
         raise LiveTradingError("Invalid amount")
 
-    side, pos_side, reduce_only = _signal_to_sides(signal_type)
+    intent = order_intent_from_signal(
+        signal_type=signal_type,
+        symbol=symbol,
+        quantity=qty,
+        market_type=market_type,
+        exchange_config=exchange_config,
+        client_order_id=client_order_id,
+        quote_amount=quote_amt,
+    )
+    side, pos_side, reduce_only = intent.side, intent.pos_side, intent.reduce_only
 
     cfg = exchange_config if isinstance(exchange_config, dict) else {}
-    mt = (market_type or cfg.get("market_type") or "swap").strip().lower()
+    mt = normalize_order_market_type(market_type or cfg.get("market_type") or "swap")
 
-    # Spot full close: sell size must not exceed exchange free base (buy fees reduce sellable qty).
-    if mt == "spot" and side == "sell" and reduce_only:
-        from app.services.live_trading.spot_sizing import clamp_spot_close_quantity
+    if mt == "spot":
+        from app.services.live_trading.spot_sizing import (
+            clamp_spot_close_quantity,
+            normalize_spot_base_quantity,
+            normalize_spot_quote_amount,
+        )
 
-        qty, _meta = clamp_spot_close_quantity(client, symbol=symbol, requested_qty=qty)
-        if qty <= 0:
-            raise LiveTradingError(
-                "Insufficient spot base balance to close (fees or balance mismatch)"
+        if side == "sell" and reduce_only:
+            # Full/partial close: cap to free base and lot step.
+            qty, _meta = clamp_spot_close_quantity(client, symbol=symbol, requested_qty=qty)
+            if qty <= 0:
+                raise LiveTradingError(
+                    "Insufficient spot base balance to close (fees or balance mismatch)"
+                )
+        elif side == "buy" and not reduce_only:
+            if quote_amt <= 0 and qty > 0:
+                quote_amt = _quote_amount_from_base_qty(client, symbol=symbol, base_qty=qty)
+            quote_amt = normalize_spot_quote_amount(client, symbol=symbol, quote_amount=quote_amt)
+            if quote_amt <= 0:
+                raise LiveTradingError("Invalid spot buy quote amount (below min/precision)")
+            # BinanceSpot now uses ``quoteOrderQty`` for market BUY, so the
+            # base ``quantity`` no longer needs to satisfy LOT_SIZE — keep it
+            # only as a fallback for clients that still want base sizing.
+            if isinstance(client, BinanceSpotClient) and quote_amt <= 0:
+                qty = normalize_spot_base_quantity(
+                    client, symbol=symbol, quantity=qty, for_market=True
+                )
+                if qty <= 0:
+                    raise LiveTradingError("Invalid spot order quantity (below lot step/minQty)")
+        else:
+            qty = normalize_spot_base_quantity(
+                client, symbol=symbol, quantity=qty, for_market=True
             )
-    if mt in ("futures", "future", "perp", "perpetual"):
-        mt = "swap"
-
+            if qty <= 0:
+                raise LiveTradingError("Invalid spot order quantity (below lot step/minQty)")
     # Spot does not support short signals in this system.
     if mt == "spot" and ("short" in (signal_type or "").lower()):
         raise LiveTradingError("spot market does not support short signals")
     
-    # 规范化符号格式（统一处理裸符号如 PI, TRX 等）
     symbol = _normalize_symbol_for_order(symbol, market_type=mt)
 
     if isinstance(client, BinanceFuturesClient):
@@ -197,8 +204,18 @@ def place_order_from_signal(
             margin_mode=margin_mode,
             reduce_only=reduce_only,
             client_order_id=client_order_id,
+            hold_side=pos_side or ("long" if side == "buy" else "short"),
         )
     if isinstance(client, BinanceSpotClient):
+        # Prefer ``quoteOrderQty`` for market BUY (Binance recommended) so we
+        # never trip LOT_SIZE / NOTIONAL filters; SELL still uses base qty.
+        if side == "buy" and quote_amt > 0:
+            return client.place_market_order(
+                symbol=symbol,
+                side="BUY",
+                quote_order_qty=quote_amt,
+                client_order_id=client_order_id,
+            )
         return client.place_market_order(
             symbol=symbol,
             side="BUY" if side == "buy" else "SELL",
@@ -206,8 +223,8 @@ def place_order_from_signal(
             client_order_id=client_order_id,
         )
     if isinstance(client, BitgetSpotClient):
-        spot_size = qty
-        if side == "buy":
+        spot_size = quote_amt if (side == "buy" and quote_amt > 0) else qty
+        if side == "buy" and spot_size <= 0:
             spot_size = _quote_amount_from_base_qty(client, symbol=symbol, base_qty=qty)
         return client.place_market_order(
             symbol=symbol,
@@ -228,43 +245,17 @@ def place_order_from_signal(
         return client.place_market_order(symbol=symbol, side=side, size=qty, client_order_id=client_order_id)
     if isinstance(client, KrakenClient):
         return client.place_market_order(symbol=symbol, side=side, size=qty, client_order_id=client_order_id)
-    if isinstance(client, KucoinSpotClient):
-        quote_size = False
-        kucoin_size = qty
-        if side == "buy":
-            kucoin_size = _quote_amount_from_base_qty(client, symbol=symbol, base_qty=qty)
-            quote_size = kucoin_size > 0 and kucoin_size != qty
-        return client.place_market_order(symbol=symbol, side=side, size=kucoin_size, client_order_id=client_order_id, quote_size=quote_size)
-    if isinstance(client, KucoinFuturesClient):
-        return client.place_market_order(symbol=symbol, side=side, size=qty, reduce_only=reduce_only, client_order_id=client_order_id)
     if isinstance(client, GateSpotClient):
         gate_size = qty
         if side == "buy":
-            gate_size = _quote_amount_from_base_qty(client, symbol=symbol, base_qty=qty)
+            gate_size = quote_amt if quote_amt > 0 else _quote_amount_from_base_qty(
+                client, symbol=symbol, base_qty=qty
+            )
         return client.place_market_order(symbol=symbol, side=side, size=gate_size, client_order_id=client_order_id)
     if isinstance(client, GateUsdtFuturesClient):
         return client.place_market_order(symbol=symbol, side=side, size=qty, reduce_only=reduce_only, client_order_id=client_order_id)
     if isinstance(client, KrakenFuturesClient):
         return client.place_market_order(symbol=symbol, side=side, size=qty, reduce_only=reduce_only, client_order_id=client_order_id)
-
-    # Check for Deepcoin client (lazy import to avoid circular dependency)
-    global DeepcoinClient
-    if DeepcoinClient is None:
-        try:
-            from app.services.live_trading.deepcoin import DeepcoinClient as _DeepcoinClient
-            DeepcoinClient = _DeepcoinClient
-        except ImportError:
-            pass
-
-    if DeepcoinClient is not None and isinstance(client, DeepcoinClient):
-        return client.place_market_order(
-            symbol=symbol,
-            side=side,
-            qty=qty,
-            reduce_only=reduce_only,
-            pos_side=pos_side,
-            client_order_id=client_order_id,
-        )
 
     global HtxClient
     if HtxClient is None:
@@ -508,4 +499,3 @@ def _place_alpaca_order(
             "raw": result.raw,
         },
     )
-

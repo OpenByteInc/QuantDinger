@@ -5,60 +5,23 @@ Experiment orchestration API routes.
 import json
 import queue
 import threading
+import time
 
-from flask import Blueprint, Response, g, jsonify, request
+from flask import Response, g, jsonify, request
+from app.openapi.blueprint import HumanBlueprint as Blueprint
 
 from app.services.experiment.runner import ExperimentRunnerService
+from app.services.billing_service import get_billing_service
 from app.utils.auth import login_required
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-experiment_bp = Blueprint('experiment', __name__)
+experiment_blp = Blueprint('experiment', __name__)
 experiment_runner = ExperimentRunnerService()
 
 
-@experiment_bp.route('/regime/detect', methods=['POST'])
-@login_required
-def detect_market_regime():
-    """Detect the current market regime for a symbol/timeframe/date range."""
-    try:
-        payload = request.get_json() or {}
-        regime = experiment_runner.detect_regime(payload)
-        return jsonify({
-            'code': 1,
-            'msg': 'success',
-            'data': regime,
-        })
-    except Exception as exc:
-        logger.error("detect_market_regime failed", exc_info=True)
-        return jsonify({
-            'code': 0,
-            'msg': str(exc),
-            'data': None,
-        }), 400
-
-
-@experiment_bp.route('/pipeline/run', methods=['POST'])
-@login_required
-def run_experiment_pipeline():
-    """Legacy grid-search pipeline (kept for backward compat)."""
-    try:
-        payload = request.get_json() or {}
-        if not payload:
-            return jsonify({'code': 0, 'msg': 'Request body is required', 'data': None}), 400
-
-        data = experiment_runner.run_pipeline(
-            user_id=int(g.user_id or 1),
-            payload=payload,
-        )
-        return jsonify({'code': 1, 'msg': 'success', 'data': data})
-    except Exception as exc:
-        logger.error("run_experiment_pipeline failed", exc_info=True)
-        return jsonify({'code': 0, 'msg': str(exc), 'data': None}), 400
-
-
-@experiment_bp.route('/ai-optimize', methods=['POST'])
+@experiment_blp.route('/ai-optimize', methods=['POST'])
 @login_required
 def ai_optimize():
     """
@@ -74,6 +37,19 @@ def ai_optimize():
         return jsonify({'code': 0, 'msg': 'Request body is required', 'data': None}), 400
 
     user_id = int(g.user_id or 1)
+    billing = get_billing_service()
+    ok, billing_msg = billing.check_and_consume(
+        user_id=user_id,
+        feature='ai_tuning',
+        reference_id=f"ai_tuning_{user_id}_{int(time.time())}",
+    )
+    if not ok:
+        return Response(
+            _sse('error', {'msg': f'Insufficient credits: {billing_msg}'}),
+            mimetype='text/event-stream',
+            headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'},
+        )
+
     progress_queue: queue.Queue = queue.Queue()
 
     def on_progress(data):
@@ -115,26 +91,7 @@ def ai_optimize():
                     headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
 
 
-@experiment_bp.route('/ai-optimize-sync', methods=['POST'])
-@login_required
-def ai_optimize_sync():
-    """Non-streaming version (simpler client integration)."""
-    payload = request.get_json() or {}
-    if not payload:
-        return jsonify({'code': 0, 'msg': 'Request body is required', 'data': None}), 400
-
-    try:
-        data = experiment_runner.run_ai_pipeline(
-            user_id=int(g.user_id or 1),
-            payload=payload,
-        )
-        return jsonify({'code': 1, 'msg': 'success', 'data': data})
-    except Exception as exc:
-        logger.error("ai_optimize_sync failed", exc_info=True)
-        return jsonify({'code': 0, 'msg': str(exc), 'data': None}), 400
-
-
-@experiment_bp.route('/structured-tune', methods=['POST'])
+@experiment_blp.route('/structured-tune', methods=['POST'])
 @login_required
 def structured_tune():
     """
@@ -158,36 +115,8 @@ def structured_tune():
         return jsonify({'code': 0, 'msg': str(exc), 'data': None}), 400
 
 
-@experiment_bp.route('/save-strategy', methods=['POST'])
-@login_required
-def save_experiment_strategy():
-    """Save the best experiment candidate as a strategy record."""
-    try:
-        payload = request.get_json() or {}
-        best_output = payload.get('bestOutput') or payload.get('bestStrategyOutput')
-        if not best_output:
-            return jsonify({'code': 0, 'msg': 'bestOutput is required', 'data': None}), 400
-
-        strategy_name = (payload.get('strategyName') or '').strip()
-        if not strategy_name:
-            return jsonify({'code': 0, 'msg': 'strategyName is required', 'data': None}), 400
-
-        market_category = payload.get('marketCategory') or 'Crypto'
-        strategy_id = experiment_runner.save_as_strategy(
-            user_id=int(g.user_id or 1),
-            best_output=best_output,
-            strategy_name=strategy_name,
-            market_category=market_category,
-        )
-        return jsonify({
-            'code': 1,
-            'msg': 'Strategy saved',
-            'data': {'strategyId': strategy_id},
-        })
-    except Exception as exc:
-        logger.error("save_experiment_strategy failed", exc_info=True)
-        return jsonify({'code': 0, 'msg': str(exc), 'data': None}), 400
-
-
 def _sse(event: str, data) -> str:
     return f"event: {event}\ndata: {json.dumps(data, default=str, ensure_ascii=False)}\n\n"
+
+# openapi-compat: legacy import name
+experiment_bp = experiment_blp

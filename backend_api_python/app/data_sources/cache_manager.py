@@ -64,7 +64,6 @@ class DataCache:
         self._cache: OrderedDict[str, CacheEntry] = OrderedDict()
         self._lock = threading.RLock()
         
-        # 统计信息
         self._hits = 0
         self._misses = 0
     
@@ -82,14 +81,12 @@ class DataCache:
             
             entry = self._cache[key]
             
-            # 检查是否过期
             if entry.is_expired():
                 del self._cache[key]
                 self._misses += 1
                 logger.debug(f"[缓存] {self.name}:{key} 已过期，删除")
                 return None
             
-            # 更新访问顺序（LRU）
             self._cache.move_to_end(key)
             entry.hit_count += 1
             self._hits += 1
@@ -112,7 +109,6 @@ class DataCache:
             ttl: 过期时间（秒），None 使用默认值
         """
         with self._lock:
-            # 检查容量，执行 LRU 淘汰
             while len(self._cache) >= self.max_size:
                 oldest_key, _ = self._cache.popitem(last=False)
                 logger.debug(f"[缓存] {self.name} 容量已满，淘汰: {oldest_key}")
@@ -175,24 +171,20 @@ class DataCache:
 
 
 # ============================================
-# 全局缓存实例
 # ============================================
 
-# 实时行情缓存（20分钟TTL）
 _realtime_cache = DataCache(
     name="realtime",
     default_ttl=1200.0,  # 20分钟
     max_size=6000
 )
 
-# K线数据缓存（5分钟TTL，按需缓存）
 _kline_cache = DataCache(
     name="kline",
     default_ttl=300.0,   # 5分钟
     max_size=500         # 最多500个交易对
 )
 
-# 股票基本信息缓存（1天TTL）
 _stock_info_cache = DataCache(
     name="stock_info",
     default_ttl=86400.0,  # 24小时

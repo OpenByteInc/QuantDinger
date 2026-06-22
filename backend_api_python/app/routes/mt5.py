@@ -4,7 +4,8 @@ MetaTrader 5 Trading API Routes
 Provides REST API for MT5 trading operations.
 """
 
-from flask import Blueprint, request, jsonify
+from flask import jsonify, request
+from app.openapi.blueprint import HumanBlueprint as Blueprint
 from app.utils.auth import login_required
 
 from app.utils.logger import get_logger
@@ -15,7 +16,7 @@ from app.utils.local_brokers import (
 
 logger = get_logger(__name__)
 
-mt5_bp = Blueprint("mt5", __name__)
+mt5_blp = Blueprint("mt5", __name__)
 
 # Lazy import MT5 client to avoid errors if not installed
 MT5Client = None
@@ -50,7 +51,7 @@ def _get_client():
 
 # ==================== Connection Management ====================
 
-@mt5_bp.route("/status", methods=["GET"])
+@mt5_blp.route("/status", methods=["GET"])
 @login_required
 def get_status():
     """Get MT5 connection status."""
@@ -76,7 +77,7 @@ def get_status():
         return jsonify({"connected": False, "error": str(e)})
 
 
-@mt5_bp.route("/connect", methods=["POST"])
+@mt5_blp.route("/connect", methods=["POST"])
 @login_required
 def connect():
     """
@@ -156,7 +157,7 @@ def connect():
         }), 500
 
 
-@mt5_bp.route("/disconnect", methods=["POST"])
+@mt5_blp.route("/disconnect", methods=["POST"])
 @login_required
 def disconnect():
     """Disconnect from MT5 terminal."""
@@ -180,7 +181,7 @@ def disconnect():
 
 # ==================== Account Queries ====================
 
-@mt5_bp.route("/account", methods=["GET"])
+@mt5_blp.route("/account", methods=["GET"])
 @login_required
 def get_account():
     """Get account information."""
@@ -199,7 +200,7 @@ def get_account():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
-@mt5_bp.route("/positions", methods=["GET"])
+@mt5_blp.route("/positions", methods=["GET"])
 @login_required
 def get_positions():
     """Get open positions."""
@@ -219,7 +220,7 @@ def get_positions():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
-@mt5_bp.route("/orders", methods=["GET"])
+@mt5_blp.route("/orders", methods=["GET"])
 @login_required
 def get_orders():
     """Get pending orders."""
@@ -239,7 +240,7 @@ def get_orders():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
-@mt5_bp.route("/symbols", methods=["GET"])
+@mt5_blp.route("/symbols", methods=["GET"])
 @login_required
 def get_symbols():
     """Get available symbols."""
@@ -261,7 +262,7 @@ def get_symbols():
 
 # ==================== Trading ====================
 
-@mt5_bp.route("/order", methods=["POST"])
+@mt5_blp.route("/order", methods=["POST"])
 @login_required
 def place_order():
     """
@@ -341,7 +342,7 @@ def place_order():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
-@mt5_bp.route("/close", methods=["POST"])
+@mt5_blp.route("/close", methods=["POST"])
 @login_required
 def close_position():
     """
@@ -397,7 +398,7 @@ def close_position():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
-@mt5_bp.route("/order/<int:ticket>", methods=["DELETE"])
+@mt5_blp.route("/order/<int:ticket>", methods=["DELETE"])
 @login_required
 def cancel_order(ticket: int):
     """Cancel a pending order."""
@@ -421,7 +422,7 @@ def cancel_order(ticket: int):
 
 # ==================== Market Data ====================
 
-@mt5_bp.route("/quote", methods=["GET"])
+@mt5_blp.route("/quote", methods=["GET"])
 @login_required
 def get_quote():
     """
@@ -448,3 +449,6 @@ def get_quote():
     except Exception as e:
         logger.error(f"MT5 get quote failed: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
+
+# openapi-compat: legacy import name
+mt5_bp = mt5_blp

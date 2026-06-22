@@ -1,0 +1,95 @@
+name: OpenAPI CI
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'backend_api_python/app/openapi/**'
+      - 'backend_api_python/scripts/export_openapi.py'
+      - 'docs/api/**'
+      - 'docs/agent/agent-openapi.json'
+      - '.spectral.yaml'
+      - '.github/workflows/openapi-ci.yml'
+  pull_request:
+    branches: [main, master]
+    paths:
+      - 'backend_api_python/app/openapi/**'
+      - 'backend_api_python/scripts/export_openapi.py'
+      - 'docs/api/**'
+      - 'docs/agent/agent-openapi.json'
+      - '.spectral.yaml'
+      - '.github/workflows/openapi-ci.yml'
+
+jobs:
+  openapi:
+    name: OpenAPI export, lint & diff
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python dependencies
+        working-directory: ./backend_api_python
+        run: |
+          python -m pip install --upgrade pip
+          grep -v "MetaTrader5" requirements.txt > /tmp/requirements_ci.txt
+          pip install -r /tmp/requirements_ci.txt
+          pip install pytest
+
+      - name: Export OpenAPI spec
+        working-directory: ./backend_api_python
+        env:
+          SKIP_STARTUP_HOOKS: '1'
+          OPENAPI_ENABLED: 'false'
+        run: |
+          python scripts/export_openapi.py --output ../docs/api/openapi.generated.yaml
+
+      - name: Verify committed spec matches export
+        run: |
+          if ! diff -u docs/api/openapi.yaml docs/api/openapi.generated.yaml; then
+            echo "::error::docs/api/openapi.yaml is out of date. Run: cd backend_api_python && python scripts/export_openapi.py"
+            exit 1
+          fi
+          echo "Committed openapi.yaml matches flask-smorest export."
+
+      - name: Set up Node.js (Spectral + oasdiff)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Spectral CLI
+        run: npm install -g @stoplight/spectral-cli@6.15.1
+
+      - name: Lint human Web API spec
+        run: spectral lint docs/api/openapi.yaml --ruleset .spectral.yaml
+
+      - name: Lint Agent Gateway spec
+        run: spectral lint docs/agent/agent-openapi.json --ruleset .spectral.agent.yaml
+
+      - name: Install oasdiff
+        run: |
+          OASDIFF_VERSION=1.10.21
+          curl -fsSL "https://github.com/Tufin/oasdiff/releases/download/v${OASDIFF_VERSION}/oasdiff_${OASDIFF_VERSION}_linux_amd64.tar.gz" \
+            | tar -xz -C /tmp
+          sudo mv /tmp/oasdiff /usr/local/bin/oasdiff
+          oasdiff --version
+
+      - name: Breaking-change check (human API)
+        run: |
+          oasdiff breaking docs/api/openapi.yaml docs/api/openapi.generated.yaml \
+            --fail-on ERR || {
+            echo "::error::Breaking OpenAPI change detected. Document in PR and bump API version if intentional."
+            exit 1
+          }
+
+      - name: OpenAPI smoke tests
+        working-directory: ./backend_api_python
+        env:
+          SKIP_STARTUP_HOOKS: '1'
+        run: python -m pytest tests/test_openapi.py -q

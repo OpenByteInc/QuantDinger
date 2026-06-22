@@ -4,15 +4,44 @@ Authentication Utilities
 JWT token generation, verification, and middleware decorators.
 Supports multi-user authentication with role-based access control.
 """
-import jwt
 import datetime
 import os
+import warnings
 from functools import wraps
-from flask import request, jsonify, g
+
+import jwt
+from flask import g, jsonify, request
+
 from app.config.settings import Config
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+_MIN_JWT_SECRET_BYTES = 32
+_jwt_warnings_configured = False
+
+
+def _configure_jwt_secret_warnings() -> None:
+    """Log once if SECRET_KEY is short; suppress per-request PyJWT spam."""
+    global _jwt_warnings_configured
+    if _jwt_warnings_configured:
+        return
+    key_len = len((Config.SECRET_KEY or "").encode("utf-8"))
+    if key_len < _MIN_JWT_SECRET_BYTES:
+        logger.warning(
+            "SECRET_KEY is %d bytes (< %d recommended for HS256). "
+            "Set a longer random value in .env, e.g. "
+            "`python -c \"import secrets; print(secrets.token_hex(32))\"`. "
+            "Existing sessions will invalidate after you change it.",
+            key_len,
+            _MIN_JWT_SECRET_BYTES,
+        )
+    warnings.filterwarnings(
+        "ignore",
+        message=r".*HMAC key is .* bytes long.*",
+        category=Warning,
+    )
+    _jwt_warnings_configured = True
 
 
 def generate_token(user_id: int, username: str, role: str = 'user', token_version: int = 1) -> str:
@@ -29,6 +58,7 @@ def generate_token(user_id: int, username: str, role: str = 'user', token_versio
         JWT token string
     """
     try:
+        _configure_jwt_secret_warnings()
         payload = {
             'exp': datetime.datetime.utcnow() + datetime.timedelta(days=7),
             'iat': datetime.datetime.utcnow(),
@@ -58,14 +88,13 @@ def verify_token(token: str) -> dict:
         Token payload dict or None if invalid
     """
     try:
+        _configure_jwt_secret_warnings()
         payload = jwt.decode(token, Config.SECRET_KEY, algorithms=['HS256'])
         
-        # 验证 token_version（单一客户端登录控制）
         user_id = payload.get('user_id')
         token_version = payload.get('token_version')
         
         if user_id and token_version is not None:
-            # 检查数据库中的 token_version 是否匹配
             if not _verify_token_version(user_id, token_version):
                 logger.debug(f"Token version mismatch for user {user_id}: expected current, got {token_version}")
                 return None
@@ -109,7 +138,6 @@ def _verify_token_version(user_id: int, token_version: int) -> bool:
             return int(token_version) == int(db_token_version)
     except Exception as e:
         logger.error(f"_verify_token_version failed: {e}")
-        # 如果验证失败，为了安全起见，返回 False
         return False
 
 

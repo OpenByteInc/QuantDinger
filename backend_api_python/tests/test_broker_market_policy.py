@@ -187,7 +187,7 @@ class TestValidateIllegalCombos:
     def test_unknown_exchange(self):
         with pytest.raises(ValueError, match="Unknown exchange_id"):
             validate_strategy_config(
-                exchange_id="kucoinfutures",  # not in our matrix
+                exchange_id="unsupportedfutures",  # not in our matrix
                 market_category="Crypto",
                 market_type="spot",
             )

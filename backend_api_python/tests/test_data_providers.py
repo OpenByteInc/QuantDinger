@@ -22,8 +22,34 @@ def test_cache_round_trip():
     assert get_cached("_test_unit") is None
 
 
-def test_economic_calendar_not_empty():
-    from app.data_providers.news import get_economic_calendar
+def test_economic_calendar_not_empty(monkeypatch):
+    from app.data_providers.economic_calendar import get_economic_calendar
+
+    class FakeResponse:
+        @staticmethod
+        def raise_for_status():
+            return None
+
+        @staticmethod
+        def json():
+            return [
+                {
+                    "Event": "US CPI m/m",
+                    "CountryCode": "US",
+                    "Date": "2026-06-01T08:30:00",
+                    "Importance": 3,
+                    "Unit": "%",
+                    "Forecast": 0.3,
+                    "Previous": 0.4,
+                }
+            ]
+
+    monkeypatch.setenv("TRADING_ECONOMICS_CLIENT", "test_client")
+    monkeypatch.setenv("TRADING_ECONOMICS_KEY", "test_key")
+    monkeypatch.setattr(
+        "app.data_providers.economic_calendar.requests.get",
+        lambda *args, **kwargs: FakeResponse(),
+    )
     events = get_economic_calendar()
     assert isinstance(events, list)
     assert len(events) > 0

@@ -17,6 +17,13 @@ from cryptography.fernet import Fernet, InvalidToken
 def _fernet_from_secret() -> Fernet:
     secret = (os.getenv("SECRET_KEY") or "").strip()
     if not secret:
+        try:
+            from app.config.settings import Config
+
+            secret = str(Config.SECRET_KEY or "").strip()
+        except Exception:
+            secret = ""
+    if not secret:
         raise ValueError("SECRET_KEY is not set; cannot encrypt or decrypt exchange credentials")
     key = base64.urlsafe_b64encode(hashlib.sha256(secret.encode("utf-8")).digest())
     return Fernet(key)

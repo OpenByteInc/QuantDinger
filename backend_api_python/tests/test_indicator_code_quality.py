@@ -31,8 +31,10 @@ def test_missing_stop_take_when_trading():
 my_indicator_name = "T"
 my_indicator_description = "D"
 df = df.copy()
-df['buy'] = True
-df['sell'] = True
+df['open_long'] = True
+df['close_long'] = False
+df['open_short'] = True
+df['close_short'] = False
 output = {'name': 'T', 'plots': [], 'signals': []}
 """
     hints = analyze_indicator_code_quality(code)
@@ -47,8 +49,10 @@ my_indicator_description = "D"
 # @strategy tradeDirection long
 # @strategy leverage 2
 df = df.copy()
-df['buy'] = False
-df['sell'] = False
+df['open_long'] = False
+df['close_long'] = False
+df['open_short'] = False
+df['close_short'] = False
 output = {'name': 'T', 'plots': [], 'signals': []}
 """
     hints = analyze_indicator_code_quality(code)
@@ -118,6 +122,23 @@ output = {'name': 'T', 'plots': [], 'signals': []}
 """
     hints = analyze_indicator_code_quality(code)
     assert not any(h["code"] == "DECLARED_PARAMS_NOT_READ_VIA_PARAMS_GET" for h in hints)
+
+
+def test_four_way_columns_no_missing_buy_sell_warn():
+    code = """
+my_indicator_name = "T"
+my_indicator_description = "D"
+# @strategy stopLossPct 0.02
+# @strategy takeProfitPct 0.04
+df = df.copy()
+df['open_long'] = False
+df['close_long'] = False
+df['open_short'] = False
+df['close_short'] = False
+output = {'name': 'T', 'plots': [], 'signals': []}
+"""
+    hints = analyze_indicator_code_quality(code)
+    assert not any(h["code"] == "MISSING_BUY_SELL_COLUMNS" for h in hints)
 
 
 def test_where_none_signal_markers_warned():

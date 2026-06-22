@@ -20,20 +20,12 @@ broker's client implementation. Everything else picks it up automatically.
 
 from typing import Dict, Optional, Set
 
+from app.services.live_trading.capabilities import CRYPTO_VENUE_CAPABILITIES
+
 
 # ---------------------------------------------------------------------------
 # Canonical sets
 # ---------------------------------------------------------------------------
-
-# All crypto exchanges QuantDinger has wired up in live_trading/factory.py.
-# Each is assumed to support both spot and swap unless noted otherwise.
-_CRYPTO_EXCHANGES_SPOT_AND_SWAP: Set[str] = {
-    "binance", "okx", "bitget", "bybit",
-    "kraken", "kucoin", "gate", "deepcoin", "htx",
-}
-# Coinbase Exchange API is institutional spot-only on our side.
-_CRYPTO_EXCHANGES_SPOT_ONLY: Set[str] = {"coinbaseexchange"}
-
 
 def _build_broker_markets() -> Dict[str, Dict[str, Set[str]]]:
     """Construct the master matrix.
@@ -54,10 +46,8 @@ def _build_broker_markets() -> Dict[str, Dict[str, Set[str]]]:
             "Crypto": {"spot"},
         },
     }
-    for ex in _CRYPTO_EXCHANGES_SPOT_AND_SWAP:
-        matrix[ex] = {"Crypto": {"spot", "swap"}}
-    for ex in _CRYPTO_EXCHANGES_SPOT_ONLY:
-        matrix[ex] = {"Crypto": {"spot"}}
+    for ex, capability in CRYPTO_VENUE_CAPABILITIES.items():
+        matrix[ex] = {"Crypto": set(capability.market_types)}
     return matrix
 
 

@@ -22,7 +22,6 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================
-# User-Agent 池
 # ============================================
 
 USER_AGENTS = [
@@ -77,7 +76,6 @@ def get_request_headers(referer: Optional[str] = None) -> dict:
 
 
 # ============================================
-# 随机休眠
 # ============================================
 
 def random_sleep(
@@ -103,7 +101,6 @@ def random_sleep(
 
 
 # ============================================
-# 请求频率限制器
 # ============================================
 
 class RateLimiter:
@@ -144,16 +141,13 @@ class RateLimiter:
         if self._last_request_time is not None:
             elapsed = time.time() - self._last_request_time
             if elapsed < self.min_interval:
-                # 补充休眠到最小间隔
                 wait_time = self.min_interval - elapsed
                 time.sleep(wait_time)
         
-        # 添加随机抖动
         jitter = random.uniform(self.jitter_min, self.jitter_max)
         time.sleep(jitter)
         wait_time += jitter
         
-        # 记录本次请求时间
         self._last_request_time = time.time()
         
         return wait_time
@@ -164,7 +158,6 @@ class RateLimiter:
 
 
 # ============================================
-# 指数退避重试装饰器
 # ============================================
 
 def retry_with_backoff(
@@ -206,12 +199,10 @@ def retry_with_backoff(
                         logger.error(f"[重试] {func.__name__} 已达最大重试次数 ({max_attempts})，放弃")
                         raise
                     
-                    # 计算退避延迟: base_delay * (exponential_base ^ (attempt - 1))
                     delay = min(
                         base_delay * (exponential_base ** (attempt - 1)),
                         max_delay
                     )
-                    # 添加随机抖动 (±20%)
                     delay *= random.uniform(0.8, 1.2)
                     
                     logger.warning(
@@ -224,7 +215,6 @@ def retry_with_backoff(
                     
                     time.sleep(delay)
             
-            # 不应该到达这里
             raise last_exception
         
         return wrapper
@@ -232,24 +222,20 @@ def retry_with_backoff(
 
 
 # ============================================
-# 全局限流器实例
 # ============================================
 
-# 东方财富接口限流器（较严格）
 _eastmoney_limiter = RateLimiter(
     min_interval=2.0,
     jitter_min=1.0,
     jitter_max=3.0
 )
 
-# 腾讯财经接口限流器（较宽松）
 _tencent_limiter = RateLimiter(
     min_interval=1.0,
     jitter_min=0.5,
     jitter_max=1.5
 )
 
-# Akshare 接口限流器
 _akshare_limiter = RateLimiter(
     min_interval=2.0,
     jitter_min=1.5,
