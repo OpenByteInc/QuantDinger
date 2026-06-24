@@ -15,6 +15,9 @@ akshare>=1.12.0
 PyJWT>=2.12.0,<3
 python-dotenv>=1.0.1
 cryptography>=43.0.0
+# TOTP MFA and QR code generation
+pyotp>=2.9.0
+qrcode[pil]>=7.4.2
 # HD wallet derivation (xpub -> address) for USDT payments
 bip-utils>=2.9.0
 # PostgreSQL support (multi-user mode)
@@ -27,6 +30,8 @@ gunicorn>=22.0.0
 flask-smorest>=0.44.0,<0.48
 marshmallow>=3.24.1,<5
 PyYAML>=6.0
+# Server-side PDF export for AI analysis reports
+reportlab>=4.2.0
 # Password hashing
 bcrypt>=4.1.0
 # Interactive Brokers trading (optional, for US stock trading via TWS/IB Gateway)

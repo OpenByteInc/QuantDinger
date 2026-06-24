@@ -26,7 +26,6 @@ def _split_base_quote(symbol: str) -> Tuple[str, str]:
     if ":" in s:
         s = s.split(":", 1)[0]
     if "/" not in s:
-        # 尝试识别报价货币（常见格式：BASEQUOTE）
         s_upper = s.upper()
         common_quotes = ['USDT', 'USD', 'BTC', 'ETH', 'BUSD', 'USDC', 'BNB']
         for quote in common_quotes:
@@ -34,7 +33,6 @@ def _split_base_quote(symbol: str) -> Tuple[str, str]:
                 base = s_upper[:-len(quote)]
                 if base:
                     return base, quote
-        # 无法识别，返回原符号和空报价
         return s_upper, ""
     base, quote = s.split("/", 1)
     return base.strip().upper(), quote.strip().upper()

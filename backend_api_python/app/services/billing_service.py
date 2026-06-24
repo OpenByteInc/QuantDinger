@@ -1,13 +1,9 @@
-"""
-Billing Service - 统一计费服务
+"""Unified billing service.
 
-负责用户积分余额、功能扣费、会员状态与套餐发放。
-当前计费模型为：
-1. 是否扣费由 `BILLING_ENABLED` 与各功能 cost 配置决定
-2. VIP/会员状态用于会员套餐与权益展示
-3. 社区指标的 `vip_free` 逻辑在社区购买流程中单独处理，不在这里做全局旁路
-
-计费配置存储在 `.env` 文件中，可通过系统设置界面配置。
+The billing switch and per-feature costs are stored in environment-backed
+settings. A cost of 0 makes the feature free; disabling billing bypasses all
+credit deductions. Marketplace VIP/free pricing is handled in community purchase
+flows, not in this global usage-metering layer.
 """
 import os
 import time
@@ -21,24 +17,27 @@ from app.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
-# 功能计费配置键名
 BILLING_CONFIG_PREFIX = 'BILLING_'
 
-# 默认计费配置
 DEFAULT_BILLING_CONFIG = {
-    # 全局开关
     'enabled': False,  # 是否启用计费
 
-    # 各功能积分消耗（0表示免费）
-    # ai_analysis 统一单价：即时分析 / AI过滤 / 定时任务 均按此单价 × 标的数扣费
     'cost_ai_analysis': 10,
     'cost_ai_code_gen': 30,
+    'cost_ai_tuning': 50,
+    'cost_ai_copilot_chat': 5,
+    'cost_ai_copilot_image': 15,
+    'cost_ai_copilot_radar': 20,
 }
 
 # Feature name mapping (for log recording)
 FEATURE_NAMES = {
     'ai_analysis': 'AI Analysis',
     'ai_code_gen': 'AI Code Generation',
+    'ai_tuning': 'AI Parameter Tuning',
+    'ai_copilot_chat': 'AI Copilot Chat',
+    'ai_copilot_image': 'AI Copilot Image Analysis',
+    'ai_copilot_radar': 'AI Copilot Opportunity Radar',
 }
 
 
@@ -136,11 +135,9 @@ class BillingService:
                 
                 if row and row.get('vip_expires_at'):
                     expires_at = row['vip_expires_at']
-                    # 确保是 datetime 对象
                     if isinstance(expires_at, str):
                         expires_at = datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
                     
-                    # 检查是否过期
                     now = datetime.now(timezone.utc)
                     if expires_at.tzinfo is None:
                         expires_at = expires_at.replace(tzinfo=timezone.utc)
@@ -488,45 +485,37 @@ class BillingService:
         
         Args:
             user_id: 用户ID
-            feature: 功能名称（ai_analysis / ai_code_gen）
+            feature: Billing feature key, for example ai_analysis, ai_code_gen, or ai_tuning.
             reference_id: 关联ID（可选）
         
         Returns:
             (success, message): 是否成功, 提示消息
         """
-        # 检查是否启用计费
         if not self.is_billing_enabled():
             return True, 'billing_disabled'
         
         config = self.get_billing_config()
         cost = self.get_feature_cost(feature)
         
-        # 免费功能
         if cost <= 0:
             return True, 'free_feature'
 
-        # 说明：这里不再根据 VIP 做全局免扣积分旁路。
-        # VIP / membership 仅保留为套餐、到期时间和社区 vip_free 指标权益。
 
-        # 检查积分余额
         credits = self.get_user_credits(user_id)
         if credits < cost:
             return False, f'insufficient_credits:{credits}:{cost}'
         
-        # 扣除积分
         try:
             new_balance = credits - Decimal(str(cost))
             
             with get_db_connection() as db:
                 cur = db.cursor()
                 
-                # 更新用户积分
                 cur.execute(
                     "UPDATE qd_users SET credits = ?, updated_at = NOW() WHERE id = ?",
                     (float(new_balance), user_id)
                 )
                 
-                # 记录日志 - 使用 UTC 时间确保跨时区显示正确
                 feature_name = FEATURE_NAMES.get(feature, feature)
                 created_at_utc = datetime.now(timezone.utc)
                 cur.execute(
@@ -574,13 +563,11 @@ class BillingService:
             with get_db_connection() as db:
                 cur = db.cursor()
                 
-                # 更新用户积分
                 cur.execute(
                     "UPDATE qd_users SET credits = ?, updated_at = NOW() WHERE id = ?",
                     (float(new_balance), user_id)
                 )
                 
-                # 记录日志（包含 reference_id）
                 cur.execute(
                     """
                     INSERT INTO qd_credits_log 
@@ -624,13 +611,11 @@ class BillingService:
             with get_db_connection() as db:
                 cur = db.cursor()
                 
-                # 更新用户积分
                 cur.execute(
                     "UPDATE qd_users SET credits = ?, updated_at = NOW() WHERE id = ?",
                     (amount, user_id)
                 )
                 
-                # 记录日志
                 cur.execute(
                     """
                     INSERT INTO qd_credits_log 
@@ -668,13 +653,11 @@ class BillingService:
             with get_db_connection() as db:
                 cur = db.cursor()
                 
-                # 更新VIP过期时间
                 cur.execute(
                     "UPDATE qd_users SET vip_expires_at = ?, updated_at = NOW() WHERE id = ?",
                     (expires_at, user_id)
                 )
                 
-                # 记录日志
                 action = 'vip_grant' if expires_at else 'vip_revoke'
                 log_remark = remark or (f'VIP granted until {expires_at}' if expires_at else 'VIP revoked')
                 cur.execute(
@@ -704,14 +687,12 @@ class BillingService:
             with get_db_connection() as db:
                 cur = db.cursor()
                 
-                # 获取总数
                 cur.execute(
                     "SELECT COUNT(*) as count FROM qd_credits_log WHERE user_id = ?",
                     (user_id,)
                 )
                 total = cur.fetchone()['count']
                 
-                # 获取日志
                 cur.execute(
                     """
                     SELECT id, action, amount, balance_after, feature, reference_id, remark, created_at
@@ -735,7 +716,6 @@ class BillingService:
                             if getattr(dt, 'tzinfo', None) is not None:
                                 d['created_at'] = dt.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S') + 'Z'
                             else:
-                                # 无时区：新记录用 UTC 写入，旧记录可能为服务器本地时间，统一按 UTC 返回以便前端正确转换
                                 d['created_at'] = dt.strftime('%Y-%m-%dT%H:%M:%S') + 'Z'
                     logs.append(d)
                 
@@ -786,11 +766,14 @@ class BillingService:
             'feature_costs': {
                 'ai_analysis': config.get('cost_ai_analysis', 0),
                 'ai_code_gen': config.get('cost_ai_code_gen', 0),
+                'ai_tuning': config.get('cost_ai_tuning', 0),
+                'ai_copilot_chat': config.get('cost_ai_copilot_chat', 0),
+                'ai_copilot_image': config.get('cost_ai_copilot_image', 0),
+                'ai_copilot_radar': config.get('cost_ai_copilot_radar', 0),
             }
         }
 
 
-# 全局单例
 _billing_service = None
 
 
@@ -800,3 +783,4 @@ def get_billing_service() -> BillingService:
     if _billing_service is None:
         _billing_service = BillingService()
     return _billing_service
+

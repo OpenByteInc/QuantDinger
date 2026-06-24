@@ -8,7 +8,7 @@
 # Frontend source lives in the private QuantDinger-Vue repo. The published
 # `ghcr.io/<owner>/quantdinger-frontend` image is consumed via docker-compose
 # by default. For local source iteration, clone QuantDinger-Vue into the
-# `/QuantDinger-Vue/` slot below and run `docker compose up --build` — that
+# `/QuantDinger-Vue/` slot below and run `docker compose up --build`; that
 # path is referenced by docker-compose.yml's frontend `build.context`
 # directive. Nothing under these paths should ever be committed here.
 /quantdinger_vue/
@@ -30,6 +30,13 @@ backend_api_python/.env
 .idea/
 .vscode/
 agent-tools/
+.cache/
+.codex/
+.codex-logs/
+.agents/
+.local_tools/
+outputs/
+.pytest_cache/
 *.swp
 *.swo
 *~
@@ -66,6 +73,10 @@ yarn.lock
 # Logs & Runtime Data
 # ========================
 *.log
+pytest_out.txt
+*_out.txt
+_tmp_*.txt
+_i18n_*.txt
 backend_api_python/logs/
 backend_api_python/dist/
 
@@ -76,12 +87,6 @@ mcp_server/.smoketest/
 mcp_server/src/quantdinger_mcp.egg-info/
 backend_api_python/data/quantdinger.db
 backend_api_python/data/memory/
-
-# ========================
-# i18n tooling
-# ========================
-scripts/.i18n-cache/
-QuantDinger-Vue-src/src/locales/lang/*.bak
 
 # ========================
 # Docker

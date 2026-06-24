@@ -9,6 +9,7 @@ import importlib
 from flask import jsonify, request
 from app.openapi.blueprint import HumanBlueprint as Blueprint
 from app._version import APP_VERSION
+from app.markets.registry import market_options
 from app.utils.logger import get_logger
 from app.utils.config_loader import clear_config_cache
 from app.utils.auth import login_required, admin_required
@@ -18,7 +19,6 @@ logger = get_logger(__name__)
 
 settings_blp = Blueprint('settings', __name__)
 
-# .env 文件路径
 ENV_FILE_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), '.env')
 
 
@@ -53,6 +53,7 @@ def _refresh_runtime_services() -> None:
         ('app.services.fast_analysis', '_fast_analysis_service'),
         ('app.services.billing_service', '_billing_service'),
         ('app.services.security_service', '_security_service'),
+        ('app.services.mfa_service', '_mfa_service'),
         ('app.services.oauth_service', '_oauth_service'),
         ('app.services.user_service', '_user_service'),
         ('app.services.email_service', '_email_service'),
@@ -70,14 +71,7 @@ def _refresh_runtime_services() -> None:
         except Exception as e:
             logger.warning(f"Singleton reset skipped: {module_name}.{field_name}: {e}")
 
-# 配置项定义（分组）- 按功能模块划分，每个配置项包含描述
 # ---------------------------------------------------------------
-# 精简原则：
-#   - 部署级配置（host/port/debug）不在 UI 暴露，用户通过 .env 或 docker-compose 设置
-#   - 内部调优参数（超时/重试/tick间隔/向量维度等）使用默认值即可，不暴露给普通用户
-#   - 只保留用户真正需要配置的功能开关和 API Key
-# - 频繁用到的开关、Key 放在 "常用" tab；冷门的限频/calibration 等放在 "高级" tab
-#   (由 ADVANCED_KEYS 集合控制，避免给每一项手动加字段)
 # ---------------------------------------------------------------
 
 # Keys that should land in the "Advanced" tab of the Settings page.  Anything
@@ -87,13 +81,22 @@ def _refresh_runtime_services() -> None:
 ADVANCED_KEYS = {
     # AI tuning
     'OPENROUTER_TEMPERATURE',
-    'AI_ANALYSIS_CONSENSUS_TIMEFRAMES',
-    'AI_CODE_GEN_MODEL',
+    'AI_ANALYSIS_CONSENSUS_TIMEFRAMES', 'SEARCH_MAX_RESULTS',
+    'SEARCH_GOOGLE_API_KEY', 'SEARCH_GOOGLE_CX', 'SEARCH_BING_API_KEY', 'SERPAPI_KEYS',
+    'SEARCH_SEARXNG_ENGINES', 'SEARCH_SEARXNG_CATEGORIES', 'SEARCH_SEARXNG_LANGUAGE', 'SEARCH_SEARXNG_TIMEOUT',
+    'GDELT_BASE_URL', 'GDELT_TIMEOUT', 'GDELT_MAX_RESULTS',
+    'ALPHA_VANTAGE_API_KEY', 'ALPHA_VANTAGE_BASE_URL', 'ALPHA_VANTAGE_TIMEOUT', 'ALPHA_VANTAGE_NEWS_LIMIT',
+    'AI_CODE_GEN_MODEL', 'LLM_PROXY_URL', 'LLM_USE_SYSTEM_PROXY',
     'OPENAI_BASE_URL', 'DEEPSEEK_BASE_URL', 'GROK_BASE_URL', 'ATLASCLOUD_BASE_URL', 'MINIMAX_BASE_URL',
     # Trading internals
-    'MAKER_WAIT_SEC',
+    'ORDER_MODE', 'MAKER_WAIT_SEC',
+    'SPOT_CLOSE_SAFETY_RATIO', 'SPOT_OPEN_QUOTE_BUFFER',
+    'FINNHUB_API_KEY', 'FINNHUB_FREE_ONLY',
+    'TRADING_ECONOMICS_CLIENT', 'TRADING_ECONOMICS_KEY',
+    'COINGLASS_API_KEY', 'CRYPTOQUANT_API_KEY', 'TIINGO_API_KEY',
+    'TWELVE_DATA_API_KEY', 'ADANOS_API_KEY',
     # Agent gateway (operator-level)
-    'AGENT_JOBS_MAX_WORKERS', 'AGENT_LIVE_TRADING_ENABLED', 'QUANTDINGER_DEPLOYMENT_MODE',
+    'AGENT_JOBS_MAX_WORKERS',
     'ENABLE_PENDING_ORDER_WORKER', 'DISABLE_RESTORE_RUNNING_STRATEGIES',
     # OAuth advanced
     'OAUTH_ALLOWED_REDIRECTS', 'OAUTH_STATE_TTL_MINUTES',
@@ -104,6 +107,7 @@ ADVANCED_KEYS = {
     'VERIFICATION_CODE_EXPIRE_MINUTES', 'VERIFICATION_CODE_RATE_LIMIT',
     'VERIFICATION_CODE_IP_HOURLY_LIMIT', 'VERIFICATION_CODE_MAX_ATTEMPTS',
     'VERIFICATION_CODE_LOCK_MINUTES',
+    'MFA_CHALLENGE_EXPIRE_MINUTES', 'MFA_MAX_ATTEMPTS',
     # AI reflection / calibration
     'REFLECTION_WORKER_INTERVAL_SEC', 'REFLECTION_MIN_AGE_DAYS', 'REFLECTION_VALIDATE_LIMIT',
     'AI_CALIBRATION_MARKETS', 'AI_CALIBRATION_LOOKBACK_DAYS', 'AI_CALIBRATION_MIN_SAMPLES',
@@ -115,15 +119,16 @@ ADVANCED_KEYS = {
     'USDT_AMOUNT_SUFFIX_DECIMALS', 'USDT_WORKER_POLL_INTERVAL',
     # Adanos sentiment
     'ADANOS_SENTIMENT_SOURCE', 'ADANOS_API_BASE_URL',
+    # Provider internals / rarely changed endpoints
+    'TRADING_ECONOMICS_BASE_URL', 'TRADING_ECONOMICS_TIMEOUT',
+    'FRED_BASE_URL', 'FRED_TIMEOUT', 'BLS_BASE_URL', 'BLS_TIMEOUT', 'BEA_BASE_URL', 'BEA_TIMEOUT',
     # Brand internals
     'BRAND_FAVICON_URL',
     'BRAND_LEGAL_USER_AGREEMENT_TEXT', 'BRAND_LEGAL_PRIVACY_POLICY_TEXT',
 }
 
-
 CONFIG_SCHEMA = {
 
-    # ==================== 0. 品牌 / 联系方式 / 法律 ====================
     # Frontend reads these via /api/settings/brand-config (no auth) so logos,
     # social links, version label and legal modals can be rebranded without
     # touching the Vue source.
@@ -177,7 +182,6 @@ CONFIG_SCHEMA = {
         ]
     },
 
-    # ==================== 0b. 联系方式（运营常改）====================
     'contact': {
         'title': 'Contact & Support',
         'icon': 'customer-service',
@@ -187,7 +191,7 @@ CONFIG_SCHEMA = {
                 'key': 'BRAND_CONTACT_EMAIL',
                 'label': 'Support Email',
                 'type': 'text',
-                'default': 'brokermr810@gmail.com',
+                'default': 'support@quantdinger.com',
                 'description': 'Public support email shown in the sidebar footer (mailto:).'
             },
             {
@@ -214,7 +218,6 @@ CONFIG_SCHEMA = {
         ]
     },
 
-    # ==================== 0c. 社交账户（固定 5 个槽）====================
     'social': {
         'title': 'Social Accounts',
         'icon': 'team',
@@ -258,7 +261,6 @@ CONFIG_SCHEMA = {
         ]
     },
 
-    # ==================== 0d. 用户协议 / 隐私 / 移动 App ====================
     'legal': {
         'title': 'Legal & Mobile App',
         'icon': 'safety-certificate',
@@ -309,7 +311,6 @@ CONFIG_SCHEMA = {
         ]
     },
 
-    # ==================== 1. 安全认证 ====================
     'auth': {
         'title': 'Security & Authentication',
         'icon': 'lock',
@@ -346,9 +347,8 @@ CONFIG_SCHEMA = {
         ]
     },
 
-    # ==================== 2. AI/LLM 配置 ====================
     'ai': {
-        'title': 'AI / LLM & Search',
+        'title': 'AI / LLM',
         'icon': 'robot',
         'order': 2,
         'items': [
@@ -393,10 +393,10 @@ CONFIG_SCHEMA = {
                 'key': 'OPENROUTER_MODEL',
                 'label': 'OpenRouter Model',
                 'type': 'text',
-                'default': 'openai/gpt-4o',
+                'default': 'openai/gpt-5.4',
                 'link': 'https://openrouter.ai/models',
                 'link_text': 'settings.link.viewModels',
-                'description': 'Model ID, e.g. openai/gpt-4o, anthropic/claude-3.5-sonnet',
+                'description': 'OpenRouter model ID in provider/model format, e.g. openai/gpt-5.4, anthropic/claude-sonnet-4.5',
                 'group': 'openrouter'
             },
             # OpenAI Direct
@@ -414,10 +414,10 @@ CONFIG_SCHEMA = {
                 'key': 'OPENAI_MODEL',
                 'label': 'OpenAI Model',
                 'type': 'text',
-                'default': 'gpt-4o',
+                'default': 'gpt-5.4',
                 'link': 'https://platform.openai.com/docs/models',
                 'link_text': 'settings.link.viewModels',
-                'description': 'Model name: gpt-4o, gpt-4o-mini, gpt-4-turbo, etc.',
+                'description': 'OpenAI direct model name without provider prefix, e.g. gpt-5.4, gpt-4o-mini',
                 'group': 'openai'
             },
             {
@@ -522,10 +522,10 @@ CONFIG_SCHEMA = {
                 'key': 'ATLASCLOUD_MODEL',
                 'label': 'AtlasCloud Model',
                 'type': 'text',
-                'default': 'deepseek-v3',
+                'default': 'openai/gpt-5.4',
                 'link': 'https://www.atlascloud.ai/docs/models/llm',
                 'link_text': 'settings.link.viewModels',
-                'description': 'AtlasCloud model id, e.g. deepseek-v3. Do not enter other-provider or OpenRouter-prefixed ids unless AtlasCloud lists them.',
+                'description': 'AtlasCloud model ID. Use the exact ID listed by AtlasCloud, e.g. openai/gpt-5.4 or deepseek-v3.',
                 'group': 'atlascloud'
             },
             {
@@ -605,10 +605,10 @@ CONFIG_SCHEMA = {
                 'key': 'LITELLM_MODEL',
                 'label': 'LiteLLM Model',
                 'type': 'text',
-                'default': 'gpt-4o-mini',
+                'default': 'openai/gpt-5.4',
                 'link': 'https://docs.litellm.ai/docs/providers',
                 'link_text': 'settings.link.viewProviders',
-                'description': 'Model ID in provider/model format, e.g. anthropic/claude-sonnet-4-20250514, gemini/gemini-2.5-flash, azure/gpt-4o',
+                'description': 'LiteLLM model ID, usually provider/model format, e.g. openai/gpt-5.4, anthropic/claude-sonnet-4-20250514, gemini/gemini-2.5-flash',
                 'group': 'litellm'
             },
             {
@@ -636,69 +636,23 @@ CONFIG_SCHEMA = {
                 'description': 'Multi-timeframe consensus for fast AI analysis. Comma-separated, e.g. "1D,4H"'
             },
             {
-                'key': 'SEARCH_PROVIDER',
-                'label': 'Search Provider',
-                'type': 'select',
-                'options': ['tavily', 'google', 'bing', 'none'],
-                'default': 'google',
-                'description': 'News / web search provider used by AI analysis. Configure both LLM and search to get full AI analysis results'
-            },
-            {
-                'key': 'SEARCH_MAX_RESULTS',
-                'label': 'Search Max Results',
-                'type': 'number',
-                'default': '10',
-                'description': 'Maximum number of search/news results returned per AI analysis request'
-            },
-            {
-                'key': 'TAVILY_API_KEYS',
-                'label': 'Tavily API Keys',
-                'type': 'password',
-                'required': False,
-                'link': 'https://tavily.com/',
-                'link_text': 'settings.link.getApiKey',
-                'description': 'Tavily search API keys (comma-separated). Recommended lightweight search source for AI analysis'
-            },
-            {
-                'key': 'SEARCH_GOOGLE_API_KEY',
-                'label': 'Google Search API Key',
-                'type': 'password',
-                'required': False,
-                'link': 'https://console.cloud.google.com/apis/credentials',
-                'link_text': 'settings.link.getApiKey',
-                'description': 'Google Custom Search JSON API key'
-            },
-            {
-                'key': 'SEARCH_GOOGLE_CX',
-                'label': 'Google Search Engine ID (CX)',
+                'key': 'LLM_PROXY_URL',
+                'label': 'LLM Proxy URL',
                 'type': 'text',
+                'default': '',
                 'required': False,
-                'link': 'https://programmablesearchengine.google.com/',
-                'link_text': 'settings.link.getApiKey',
-                'description': 'Google Programmable Search Engine ID'
+                'description': 'Optional dedicated proxy for LLM provider requests. Leave empty for direct LLM access; PROXY_URL is reserved for market data and exchange APIs.'
             },
             {
-                'key': 'SEARCH_BING_API_KEY',
-                'label': 'Bing Search API Key',
-                'type': 'password',
-                'required': False,
-                'link': 'https://portal.azure.com/',
-                'link_text': 'settings.link.getApiKey',
-                'description': 'Microsoft Bing Web Search API key'
-            },
-            {
-                'key': 'SERPAPI_KEYS',
-                'label': 'SerpAPI Keys',
-                'type': 'password',
-                'required': False,
-                'link': 'https://serpapi.com/',
-                'link_text': 'settings.link.getApiKey',
-                'description': 'SerpAPI keys (comma-separated)'
+                'key': 'LLM_USE_SYSTEM_PROXY',
+                'label': 'Use System Proxy for LLM',
+                'type': 'boolean',
+                'default': 'False',
+                'description': 'When enabled, LLM requests inherit HTTP_PROXY / HTTPS_PROXY / ALL_PROXY. Keep disabled unless the configured system proxy is reachable from this backend.'
             },
         ]
     },
 
-    # ==================== 3. 实盘交易 ====================
     'trading': {
         'title': 'Live Trading',
         'icon': 'stock',
@@ -741,21 +695,6 @@ CONFIG_SCHEMA = {
                 'description': 'Disable on a multi-tenant SaaS deployment so users see a clear "broker not supported" message instead of broken connect flows. Crypto exchange API keys are unaffected.'
             },
             {
-                'key': 'ENABLED_MARKETS',
-                'label': 'Enabled Markets (whitelist)',
-                'type': 'text',
-                'default': '',
-                'placeholder': 'Crypto,USStock,HKStock',
-                'description': 'CSV whitelist of markets exposed to the UI / Agent API / radar. When set, ONLY listed markets are visible everywhere; the legacy SHOW_CN_STOCK / SHOW_HK_STOCK flags are ignored. Valid values: Crypto, USStock, CNStock, HKStock, Forex, Futures, MOEX. Example: "Crypto,USStock". Empty = whitelist disabled (legacy flags apply).'
-            },
-            {
-                'key': 'SHOW_CN_STOCK',
-                'label': 'Show A-Share (CN Stock) in market picker',
-                'type': 'boolean',
-                'default': 'False',
-                'description': 'Legacy flag, ignored when ENABLED_MARKETS is set. Whether to expose the A-Share (CNStock) market type in frontend pickers. Strategy/data code stays intact either way.'
-            },
-            {
                 'key': 'ENABLE_PENDING_ORDER_WORKER',
                 'label': 'Enable Pending Order Worker',
                 'type': 'boolean',
@@ -772,12 +711,19 @@ CONFIG_SCHEMA = {
         ]
     },
 
-    # ==================== 4. 数据源配置 ====================
     'data_source': {
         'title': 'Data Sources',
         'icon': 'database',
         'order': 4,
         'items': [
+            {
+                'key': 'ENABLED_MARKETS',
+                'label': 'Enabled Markets',
+                'type': 'market_multiselect',
+                'default': '',
+                'options': market_options(),
+                'description': 'Markets exposed to research, strategy, market data, Agent API, and live-trading entry points. Saved as ENABLED_MARKETS in .env for backward compatibility. Empty = whitelist disabled and legacy SHOW_* flags apply.'
+            },
             {
                 'key': 'CCXT_DEFAULT_EXCHANGE',
                 'label': 'Default Crypto Exchange',
@@ -794,7 +740,126 @@ CONFIG_SCHEMA = {
                 'required': False,
                 'link': 'https://finnhub.io/register',
                 'link_text': 'settings.link.freeRegister',
-                'description': 'Finnhub API key for US stock data and economic calendar (free tier available)'
+                'description': 'Optional Finnhub API key for US stock quotes, company profile and news. Paid-only endpoints such as Economic Calendar are skipped by default.'
+            },
+            {
+                'key': 'FINNHUB_FREE_ONLY',
+                'label': 'Finnhub Free-only Mode',
+                'type': 'boolean',
+                'default': 'True',
+                'description': 'Keep enabled for free Finnhub plans. When enabled, paid-only Finnhub endpoints such as Economic Calendar and Social Sentiment are not called.'
+            },
+            {
+                'key': 'TRADING_ECONOMICS_CLIENT',
+                'label': 'Trading Economics Client',
+                'type': 'text',
+                'default': '',
+                'required': False,
+                'link': 'https://docs.tradingeconomics.com/',
+                'link_text': 'settings.link.viewDocs',
+                'description': 'Optional official international economic calendar provider. Leave empty to use the free AkShare/WallstreetCN fallback; enter your TE client name if you have a Trading Economics API key.'
+            },
+            {
+                'key': 'TRADING_ECONOMICS_KEY',
+                'label': 'Trading Economics Key',
+                'type': 'password',
+                'default': '',
+                'required': False,
+                'link': 'https://docs.tradingeconomics.com/',
+                'link_text': 'settings.link.viewDocs',
+                'description': 'Optional Trading Economics API key. The legacy guest account is discontinued; leave blank unless you have credentials.'
+            },
+            {
+                'key': 'TRADING_ECONOMICS_BASE_URL',
+                'label': 'Trading Economics Base URL',
+                'type': 'text',
+                'default': 'https://api.tradingeconomics.com',
+                'description': 'Trading Economics API endpoint. Change only if you use a proxy or mirror.'
+            },
+            {
+                'key': 'TRADING_ECONOMICS_TIMEOUT',
+                'label': 'Trading Economics Timeout (sec)',
+                'type': 'number',
+                'default': '10',
+                'description': 'Timeout for economic calendar requests.'
+            },
+            {
+                'key': 'FRED_API_KEY',
+                'label': 'FRED API Key',
+                'type': 'password',
+                'default': '',
+                'required': False,
+                'link': 'https://fred.stlouisfed.org/docs/api/api_key.html',
+                'link_text': 'settings.link.getApiKey',
+                'description': 'FRED key for stable US macro time series such as rates, CPI, unemployment, payrolls and financial conditions.'
+            },
+            {
+                'key': 'FRED_BASE_URL',
+                'label': 'FRED Base URL',
+                'type': 'text',
+                'default': 'https://api.stlouisfed.org/fred',
+                'link': 'https://fred.stlouisfed.org/docs/api/fred/',
+                'link_text': 'settings.link.viewDocs',
+                'description': 'FRED API endpoint. Change only when using a proxy.'
+            },
+            {
+                'key': 'FRED_TIMEOUT',
+                'label': 'FRED Timeout (sec)',
+                'type': 'number',
+                'default': '10',
+                'description': 'Timeout for FRED macro time-series requests.'
+            },
+            {
+                'key': 'BLS_API_KEY',
+                'label': 'BLS API Key',
+                'type': 'password',
+                'default': '',
+                'required': False,
+                'link': 'https://www.bls.gov/developers/',
+                'link_text': 'settings.link.getApiKey',
+                'description': 'Optional BLS registration key for higher official CPI, jobs, wages and labor data limits.'
+            },
+            {
+                'key': 'BLS_BASE_URL',
+                'label': 'BLS Base URL',
+                'type': 'text',
+                'default': 'https://api.bls.gov/publicAPI/v2',
+                'link': 'https://www.bls.gov/developers/',
+                'link_text': 'settings.link.viewDocs',
+                'description': 'BLS public API endpoint. A key is optional but recommended.'
+            },
+            {
+                'key': 'BLS_TIMEOUT',
+                'label': 'BLS Timeout (sec)',
+                'type': 'number',
+                'default': '10',
+                'description': 'Timeout for BLS official macro series requests.'
+            },
+            {
+                'key': 'BEA_API_KEY',
+                'label': 'BEA API Key',
+                'type': 'password',
+                'default': '',
+                'required': False,
+                'link': 'https://apps.bea.gov/API/signup/',
+                'link_text': 'settings.link.getApiKey',
+                'description': 'BEA key for official GDP, income, consumption and national accounts data.'
+            },
+            {
+                'key': 'BEA_BASE_URL',
+                'label': 'BEA Base URL',
+                'type': 'text',
+                'default': 'https://apps.bea.gov/api/data',
+                'link': 'https://apps.bea.gov/api/_pdf/bea_web_service_api_user_guide.pdf',
+                'link_text': 'settings.link.viewDocs',
+                'description': 'BEA API endpoint. Change only when using a proxy.'
+            },
+            {
+                'key': 'BEA_TIMEOUT',
+                'label': 'BEA Timeout (sec)',
+                'type': 'number',
+                'default': '10',
+                'description': 'Timeout for BEA official macro data requests.'
             },
             {
                 'key': 'COINGLASS_API_KEY',
@@ -858,7 +923,170 @@ CONFIG_SCHEMA = {
         ]
     },
 
-    # ==================== 5. 邮件配置 ====================
+    'search': {
+        'title': 'Search & News Sources',
+        'icon': 'search',
+        'order': 4.5,
+        'items': [
+            {
+                'key': 'SEARCH_PROVIDER',
+                'label': 'Search Provider',
+                'type': 'select',
+                'options': ['tavily', 'searxng', 'gdelt', 'serpapi', 'google', 'bing', 'duckduckgo', 'none'],
+                'default': 'tavily',
+                'description': 'Primary news/web search provider used by AI analysis. QuantDinger falls back to configured providers, then GDELT and DuckDuckGo when available'
+            },
+            {
+                'key': 'SEARCH_MAX_RESULTS',
+                'label': 'Search Max Results',
+                'type': 'number',
+                'default': '10',
+                'description': 'Maximum number of search/news results returned per AI analysis request'
+            },
+            {
+                'key': 'TAVILY_API_KEYS',
+                'label': 'Tavily API Keys',
+                'type': 'password',
+                'required': False,
+                'link': 'https://tavily.com/',
+                'link_text': 'settings.link.getApiKey',
+                'description': 'Tavily search API keys (comma-separated). Recommended lightweight search source for AI analysis'
+            },
+            {
+                'key': 'SEARCH_SEARXNG_BASE_URL',
+                'label': 'SearXNG Base URL',
+                'type': 'text',
+                'required': False,
+                'default': '',
+                'link': 'https://docs.searxng.org/',
+                'link_text': 'settings.link.viewDocs',
+                'description': 'Base URL of a trusted or self-hosted SearXNG instance, for example https://search.example.com'
+            },
+            {
+                'key': 'GDELT_BASE_URL',
+                'label': 'GDELT DOC Base URL',
+                'type': 'text',
+                'default': 'https://api.gdeltproject.org/api/v2/doc/doc',
+                'link': 'https://api.gdeltproject.org/api/v2/doc/doc',
+                'link_text': 'settings.link.viewDocs',
+                'description': 'Free global news fallback endpoint. GDELT requires no API key and is used when paid search sources are unavailable.'
+            },
+            {
+                'key': 'SERPAPI_KEYS',
+                'label': 'SerpAPI Keys',
+                'type': 'password',
+                'required': False,
+                'link': 'https://serpapi.com/',
+                'link_text': 'settings.link.getApiKey',
+                'description': 'SerpAPI keys (comma-separated)'
+            },
+            {
+                'key': 'SEARCH_GOOGLE_API_KEY',
+                'label': 'Google Search API Key',
+                'type': 'password',
+                'required': False,
+                'link': 'https://console.cloud.google.com/apis/credentials',
+                'link_text': 'settings.link.getApiKey',
+                'description': 'Google Custom Search JSON API key'
+            },
+            {
+                'key': 'SEARCH_GOOGLE_CX',
+                'label': 'Google Search Engine ID (CX)',
+                'type': 'text',
+                'required': False,
+                'link': 'https://programmablesearchengine.google.com/',
+                'link_text': 'settings.link.getApiKey',
+                'description': 'Google Programmable Search Engine ID'
+            },
+            {
+                'key': 'SEARCH_BING_API_KEY',
+                'label': 'Bing Search API Key',
+                'type': 'password',
+                'required': False,
+                'link': 'https://portal.azure.com/',
+                'link_text': 'settings.link.getApiKey',
+                'description': 'Microsoft Bing Web Search API key'
+            },
+            {
+                'key': 'SEARCH_SEARXNG_ENGINES',
+                'label': 'SearXNG Engines',
+                'type': 'text',
+                'required': False,
+                'default': '',
+                'description': 'Optional comma-separated SearXNG engines. Leave empty to use the instance defaults.'
+            },
+            {
+                'key': 'SEARCH_SEARXNG_CATEGORIES',
+                'label': 'SearXNG Categories',
+                'type': 'text',
+                'required': False,
+                'default': 'general',
+                'description': 'Comma-separated SearXNG categories used for AI research search.'
+            },
+            {
+                'key': 'SEARCH_SEARXNG_LANGUAGE',
+                'label': 'SearXNG Language',
+                'type': 'text',
+                'required': False,
+                'default': 'auto',
+                'description': 'SearXNG language code. Use auto to keep the instance default.'
+            },
+            {
+                'key': 'SEARCH_SEARXNG_TIMEOUT',
+                'label': 'SearXNG Timeout (sec)',
+                'type': 'number',
+                'default': '12',
+                'description': 'Timeout for SearXNG search requests.'
+            },
+            {
+                'key': 'GDELT_TIMEOUT',
+                'label': 'GDELT Timeout (sec)',
+                'type': 'number',
+                'default': '12',
+                'description': 'Timeout for GDELT DOC 2.0 global news queries.'
+            },
+            {
+                'key': 'GDELT_MAX_RESULTS',
+                'label': 'GDELT Max Results',
+                'type': 'number',
+                'default': '10',
+                'description': 'Default maximum GDELT article count used by fallback news/event search.'
+            },
+            {
+                'key': 'ALPHA_VANTAGE_API_KEY',
+                'label': 'Alpha Vantage API Key',
+                'type': 'password',
+                'required': False,
+                'link': 'https://www.alphavantage.co/support/#api-key',
+                'link_text': 'settings.link.getApiKey',
+                'description': 'Optional low-cost company news and sentiment source using Alpha Vantage NEWS_SENTIMENT.'
+            },
+            {
+                'key': 'ALPHA_VANTAGE_BASE_URL',
+                'label': 'Alpha Vantage Base URL',
+                'type': 'text',
+                'default': 'https://www.alphavantage.co/query',
+                'link': 'https://www.alphavantage.co/documentation/',
+                'link_text': 'settings.link.viewDocs',
+                'description': 'Alpha Vantage API endpoint for NEWS_SENTIMENT and related market-data functions.'
+            },
+            {
+                'key': 'ALPHA_VANTAGE_TIMEOUT',
+                'label': 'Alpha Vantage Timeout (sec)',
+                'type': 'number',
+                'default': '12',
+                'description': 'Timeout for Alpha Vantage company news and sentiment requests.'
+            },
+            {
+                'key': 'ALPHA_VANTAGE_NEWS_LIMIT',
+                'label': 'Alpha Vantage News Limit',
+                'type': 'number',
+                'default': '20',
+                'description': 'Maximum NEWS_SENTIMENT feed items requested per company-news lookup.'
+            },
+        ]
+    },
+
     'email': {
         'title': 'Email (SMTP)',
         'icon': 'mail',
@@ -916,7 +1144,6 @@ CONFIG_SCHEMA = {
         ]
     },
 
-    # ==================== 6. 短信配置 ====================
     'sms': {
         'title': 'SMS (Twilio)',
         'icon': 'phone',
@@ -1027,7 +1254,7 @@ CONFIG_SCHEMA = {
                 'key': 'AI_ENSEMBLE_MODELS',
                 'label': 'Ensemble Models',
                 'type': 'text',
-                'default': 'openai/gpt-4o,openai/gpt-4o-mini',
+                'default': 'openai/gpt-5.4,openai/gpt-4o-mini',
                 'description': 'Comma-separated model IDs for ensemble voting'
             },
             {
@@ -1054,7 +1281,6 @@ CONFIG_SCHEMA = {
         ]
     },
 
-    # ==================== 8. 网络代理 ====================
     'network': {
         'title': 'Network & Proxy',
         'icon': 'global',
@@ -1065,12 +1291,11 @@ CONFIG_SCHEMA = {
                 'label': 'Proxy URL',
                 'type': 'text',
                 'required': False,
-                'description': 'Global outbound proxy URL. Used by requests and by crypto data requests when a proxy is needed.'
+                'description': 'Proxy URL for market data, exchange and broker APIs. LLM provider calls are direct by default; use LLM Proxy URL only when an LLM provider must go through a proxy.'
             },
         ]
     },
 
-    # ==================== 10. 注册与 OAuth ====================
     'security': {
         'title': 'Registration & OAuth',
         'icon': 'safety',
@@ -1082,6 +1307,20 @@ CONFIG_SCHEMA = {
                 'type': 'boolean',
                 'default': 'True',
                 'description': 'Allow new users to register accounts'
+            },
+            {
+                'key': 'MFA_ENABLED',
+                'label': 'Enable Authenticator App MFA',
+                'type': 'boolean',
+                'default': 'False',
+                'description': 'Allow users to opt in to authenticator-app two-step verification. This does not force all users to bind MFA.'
+            },
+            {
+                'key': 'MFA_RISK_LOGIN_ONLY',
+                'label': 'MFA Only for Risky Login',
+                'type': 'boolean',
+                'default': 'True',
+                'description': 'When enabled, users who bound MFA are challenged only on new-location or new-device logins. Turn off to challenge every password login for MFA-enabled users.'
             },
             {
                 'key': 'FRONTEND_URL',
@@ -1245,10 +1484,23 @@ CONFIG_SCHEMA = {
                 'default': '30',
                 'description': 'How long to block code submissions after the attempt limit is hit.'
             },
+            {
+                'key': 'MFA_CHALLENGE_EXPIRE_MINUTES',
+                'label': 'MFA Challenge Expiry (min)',
+                'type': 'number',
+                'default': '5',
+                'description': 'How long a post-password MFA challenge is valid.'
+            },
+            {
+                'key': 'MFA_MAX_ATTEMPTS',
+                'label': 'MFA Max Attempts',
+                'type': 'number',
+                'default': '5',
+                'description': 'Wrong authenticator-code attempts allowed before the login challenge must be restarted.'
+            },
         ]
     },
 
-    # ==================== 11. 计费配置 ====================
     'billing': {
         'title': 'Billing & Credits',
         'icon': 'dollar',
@@ -1404,6 +1656,34 @@ CONFIG_SCHEMA = {
                 'description': 'Credits per AI strategy/indicator code generation (higher token usage)'
             },
             {
+                'key': 'BILLING_COST_AI_TUNING',
+                'label': 'AI Parameter Tuning Cost',
+                'type': 'number',
+                'default': '50',
+                'description': 'Credits per AI parameter tuning run (multi-round model calls plus backtests)'
+            },
+            {
+                'key': 'BILLING_COST_AI_COPILOT_CHAT',
+                'label': 'AI Copilot Chat Cost',
+                'type': 'number',
+                'default': '5',
+                'description': 'Credits per AI Copilot conversation turn'
+            },
+            {
+                'key': 'BILLING_COST_AI_COPILOT_IMAGE',
+                'label': 'AI Copilot Image Analysis Cost',
+                'type': 'number',
+                'default': '15',
+                'description': 'Extra credits charged when a Copilot message includes chart images'
+            },
+            {
+                'key': 'BILLING_COST_AI_COPILOT_RADAR',
+                'label': 'AI Copilot Radar Cost',
+                'type': 'number',
+                'default': '20',
+                'description': 'Credits per AI opportunity radar / market scan request'
+            },
+            {
                 'key': 'CREDITS_REGISTER_BONUS',
                 'label': 'Register Bonus',
                 'type': 'number',
@@ -1435,15 +1715,12 @@ def read_env_file():
         with open(ENV_FILE_PATH, 'r', encoding='utf-8') as f:
             for line in f:
                 line = line.strip()
-                # 跳过空行和注释
                 if not line or line.startswith('#'):
                     continue
-                # 解析 KEY=VALUE
                 if '=' in line:
                     key, value = line.split('=', 1)
                     key = key.strip()
                     value = value.strip()
-                    # 移除引号
                     if (value.startswith('"') and value.endswith('"')) or \
                        (value.startswith("'") and value.endswith("'")):
                         value = value[1:-1]
@@ -1459,7 +1736,6 @@ def write_env_file(env_values):
     lines = []
     existing_keys = set()
     
-    # 读取原文件保留格式
     if os.path.exists(ENV_FILE_PATH):
         try:
             with open(ENV_FILE_PATH, 'r', encoding='utf-8') as f:
@@ -1467,18 +1743,15 @@ def write_env_file(env_values):
                     original_line = line
                     stripped = line.strip()
                     
-                    # 保留空行和注释
                     if not stripped or stripped.startswith('#'):
                         lines.append(original_line)
                         continue
                     
-                    # 更新已存在的键
                     if '=' in stripped:
                         key = stripped.split('=', 1)[0].strip()
                         if key in env_values:
                             existing_keys.add(key)
                             value = env_values[key]
-                            # 如果值包含特殊字符，用引号包裹
                             if ' ' in str(value) or '"' in str(value) or "'" in str(value):
                                 lines.append(f'{key}="{value}"\n')
                             else:
@@ -1490,7 +1763,6 @@ def write_env_file(env_values):
         except Exception as e:
             logger.error(f"Failed to read .env file for update: {e}")
     
-    # 添加新的键
     new_keys = set(env_values.keys()) - existing_keys
     if new_keys:
         if lines and not lines[-1].endswith('\n'):
@@ -1503,7 +1775,6 @@ def write_env_file(env_values):
             else:
                 lines.append(f'{key}={value}\n')
     
-    # 写入文件
     try:
         with open(ENV_FILE_PATH, 'w', encoding='utf-8') as f:
             f.writelines(lines)
@@ -1558,7 +1829,7 @@ def get_public_config():
 _BRAND_DEFAULTS = {
     'app_name': 'QuantDinger',
     'copyright': '© 2025-2026 QuantDinger. All rights reserved.',
-    'contact_email': 'brokermr810@gmail.com',
+    'contact_email': 'support@quantdinger.com',
     'contact_support_url': 'https://t.me/quantdinger',
     'contact_feature_request_url': 'https://github.com/brokermr810/QuantDinger/issues',
     'contact_live_chat_url': 'https://t.me/quantdinger',
@@ -1646,7 +1917,6 @@ def get_settings_values():
     """Return current settings values including secrets (admin only)."""
     env_values = read_env_file()
     
-    # 构建返回数据，返回真实值
     result = {}
     for group_key, group in CONFIG_SCHEMA.items():
         result[group_key] = {}
@@ -1654,7 +1924,6 @@ def get_settings_values():
             key = item['key']
             value = env_values.get(key, item.get('default', ''))
             result[group_key][key] = value
-            # 标记密码类型是否已配置
             if item['type'] == 'password':
                 result[group_key][f'{key}_configured'] = bool(value)
     
@@ -1675,10 +1944,8 @@ def save_settings():
         if not data:
             return jsonify({'code': 0, 'msg': 'Invalid request payload'})
         
-        # 读取当前配置
         current_env = read_env_file()
         
-        # 更新配置
         updates = {}
         for group_key, group_values in data.items():
             if group_key not in CONFIG_SCHEMA:
@@ -1689,34 +1956,81 @@ def save_settings():
                 if key in group_values:
                     new_value = group_values[key]
                     
-                    # 空值处理
                     if new_value is None or new_value == '':
                         if not item.get('required', True):
                             updates[key] = ''
                     else:
                         updates[key] = str(new_value)
+
+        admin_email_sync = None
+        if 'ADMIN_EMAIL' in updates:
+            requested_admin_email = str(updates.get('ADMIN_EMAIL') or '').strip().lower()
+            if requested_admin_email and requested_admin_email != 'admin@example.com':
+                if not re.match(r'^[^@\s]+@[^@\s]+\.[^@\s]+$', requested_admin_email):
+                    return jsonify({'code': 0, 'msg': 'Invalid admin email'}), 400
+
+                from app.services.user_service import get_user_service
+                user_service = get_user_service()
+                admin_username = str(
+                    updates.get('ADMIN_USER')
+                    or current_env.get('ADMIN_USER')
+                    or os.getenv('ADMIN_USER')
+                    or ''
+                ).strip()
+                if not admin_username:
+                    try:
+                        from app.config.settings import Config
+                        admin_username = str(Config.ADMIN_USER or 'quantdinger')
+                    except Exception:
+                        admin_username = 'quantdinger'
+
+                admin_user = user_service.get_user_by_username(admin_username)
+                if not admin_user:
+                    first_id = user_service.get_first_user_id()
+                    admin_user = user_service.get_user_by_id(first_id) if first_id is not None else None
+
+                existing = user_service.get_user_by_email(requested_admin_email)
+                if existing and admin_user and int(existing.get('id')) != int(admin_user.get('id')):
+                    return jsonify({
+                        'code': 0,
+                        'msg': 'Admin email is already used by another account'
+                    }), 409
         
-        # 合并更新
         current_env.update(updates)
         
-        # 写入文件
         if write_env_file(current_env):
-            # 清除配置缓存
             clear_config_cache()
-            # 热重载运行时环境变量（无需重启进程）
             _reload_runtime_env()
-            # 重置依赖配置的服务单例（下次请求自动按新配置重建）
             _refresh_runtime_services()
+
+            if 'ADMIN_EMAIL' in updates:
+                try:
+                    from app.services.user_service import get_user_service
+                    admin_email_sync = get_user_service().sync_admin_email_from_config(
+                        updates.get('ADMIN_EMAIL'),
+                        overwrite_existing=True,
+                    )
+                except Exception as sync_error:
+                    logger.warning(f"Failed to sync admin email after settings save: {sync_error}")
+                    admin_email_sync = {
+                        'synced': False,
+                        'reason': 'error',
+                        'message': str(sync_error),
+                    }
+
+            response_data = {
+                'updated_keys': list(updates.keys()),
+                'requires_restart': False,
+                'hot_reloaded': True,
+                'services_refreshed': True
+            }
+            if admin_email_sync is not None:
+                response_data['admin_email_sync'] = admin_email_sync
             
             return jsonify({
                 'code': 1,
                 'msg': 'Settings saved successfully',
-                'data': {
-                    'updated_keys': list(updates.keys()),
-                    'requires_restart': False,
-                    'hot_reloaded': True,
-                    'services_refreshed': True
-                }
+                'data': response_data
             })
         else:
             return jsonify({'code': 0, 'msg': 'Failed to save settings'})
@@ -1743,7 +2057,6 @@ def get_openrouter_balance():
                 'data': None
             })
         
-        # 调用 OpenRouter API 查询余额
         # https://openrouter.ai/docs#limits
         resp = requests.get(
             'https://openrouter.ai/api/v1/auth/key',
@@ -1756,7 +2069,6 @@ def get_openrouter_balance():
         
         if resp.status_code == 200:
             data = resp.json()
-            # OpenRouter 返回格式: {"data": {"label": "...", "usage": 0.0, "limit": null, ...}}
             key_data = data.get('data', {})
             usage = key_data.get('usage', 0)  # 已使用金额
             limit = key_data.get('limit')  # 限额（可能为null表示无限制）
@@ -1814,7 +2126,6 @@ def test_connection():
         service = data.get('service')
         
         if service == 'openrouter':
-            # 测试 OpenRouter 连接
             from app.services.llm import LLMService
             llm = LLMService()
             result = llm.test_connection()
@@ -1824,7 +2135,6 @@ def test_connection():
                 return jsonify({'code': 0, 'msg': 'OpenRouter connection failed'})
         
         elif service == 'finnhub':
-            # 测试 Finnhub 连接
             import requests
             api_key = data.get('api_key') or os.getenv('FINNHUB_API_KEY')
             if not api_key:

@@ -6,10 +6,6 @@ Indicator Parameters Parser and Helper Functions
 2. 指标调用其他指标 - 提供 call_indicator() 函数
 
 参数声明格式：
-# @param param_name type default_value 描述
-# @param ma_fast int 5 短期均线周期
-# @param ma_slow int 20 长期均线周期
-# @param threshold float 0.5 阈值
 
 支持的类型：int, float, bool, str
 """
@@ -28,17 +24,8 @@ class StrategyConfigParser:
     解析指标代码中的 @strategy 注解，提取策略配置（止盈止损、仓位等）。
 
     支持的注解格式:
-        # @strategy stopLossPct 0.02 止损比例
-        # @strategy takeProfitPct 0.05 止盈比例
-        # @strategy entryPct 0.5 仓位比例 (0-1)
-        # 杠杆倍数由指标 IDE 回测面板单独设置，不再使用 @strategy leverage
-        # @strategy trailingEnabled true 启用追踪止损
-        # @strategy trailingStopPct 0.02 追踪止损比例
-        # @strategy trailingActivationPct 0.03 追踪激活比例
-        # @strategy tradeDirection long 交易方向
     """
 
-    # 允许 key 与数值之间使用可选冒号，与指标 IDE 前端解析一致
     STRATEGY_PATTERN = re.compile(
         r'#\s*@strategy\s+(\w+)\s*:?\s*(\S+)\s*(.*)',
         re.IGNORECASE
@@ -250,7 +237,6 @@ class StrategyConfigParser:
 class IndicatorParamsParser:
     """解析指标代码中的参数声明"""
     
-    # 参数声明正则：# @param name type default description
     PARAM_PATTERN = re.compile(
         r'#\s*@param\s+(\w+)\s+(int|float|bool|str|string)\s+(\S+)\s*(.*)',
         re.IGNORECASE
@@ -281,8 +267,6 @@ class IndicatorParamsParser:
             ]
 
         Optional sweep grammar (numeric params only):
-          # @param ma_fast int 5 短期均线周期 range=3:30:2
-          # @param threshold float 0.5 阈值 values=0.3,0.5,0.7,0.9
         Sweep markers are stripped from the human description before being returned.
         """
         params = []
@@ -298,10 +282,8 @@ class IndicatorParamsParser:
                 default_str = match.group(3)
                 description = match.group(4).strip() if match.group(4) else ''
                 
-                # 转换默认值类型
                 default = cls._convert_value(default_str, param_type)
                 
-                # 规范化类型名
                 if param_type == 'string':
                     param_type = 'str'
 
@@ -420,10 +402,8 @@ class IndicatorParamsParser:
             default = param['default']
             
             if name in user_params:
-                # 用户提供了值，转换为正确类型
                 result[name] = cls._convert_value(str(user_params[name]), param_type)
             else:
-                # 使用默认值
                 result[name] = default
         
         return result
@@ -467,14 +447,11 @@ class IndicatorCaller:
     指标调用器 - 允许一个指标调用另一个指标
     
     使用方式（在指标代码中）：
-        # 按ID调用
         rsi_df = call_indicator(5, df)
         
-        # 按名称调用（自己的指标）
         macd_df = call_indicator('My MACD', df)
     """
     
-    # 最大调用深度，防止循环依赖
     MAX_CALL_DEPTH = 5
     
     def __init__(self, user_id: int, current_indicator_id: int = None):
@@ -504,18 +481,15 @@ class IndicatorCaller:
         import pandas as pd
         import numpy as np
         
-        # 检查调用深度
         if _depth >= self.MAX_CALL_DEPTH:
             logger.error(f"Indicator call depth exceeded {self.MAX_CALL_DEPTH}")
             return df.copy()
         
-        # 获取指标代码
         indicator_code, indicator_id = self._get_indicator_code(indicator_ref)
         if not indicator_code:
             logger.warning(f"Indicator not found: {indicator_ref}")
             return df.copy()
         
-        # 检查循环依赖
         if indicator_id in self._call_stack:
             logger.error(f"Circular dependency detected: {self._call_stack} -> {indicator_id}")
             return df.copy()
@@ -523,11 +497,9 @@ class IndicatorCaller:
         self._call_stack.append(indicator_id)
         
         try:
-            # 解析并合并参数
             declared_params = IndicatorParamsParser.parse_params(indicator_code)
             merged_params = IndicatorParamsParser.merge_params(declared_params, params or {})
             
-            # 准备执行环境
             df_copy = df.copy()
             local_vars = {
                 'df': df_copy,
@@ -540,7 +512,6 @@ class IndicatorCaller:
                 'np': np,
                 'pd': pd,
                 'params': merged_params,
-                # 递归调用支持
                 'call_indicator': lambda ref, d, p=None: self.call_indicator(ref, d, p, _depth + 1)
             }
             
@@ -573,13 +544,11 @@ class IndicatorCaller:
                 cursor = db.cursor()
                 
                 if isinstance(indicator_ref, int):
-                    # 按ID查询
                     cursor.execute("""
                         SELECT id, code FROM qd_indicator_codes 
                         WHERE id = %s AND (user_id = %s OR publish_to_community = 1)
                     """, (indicator_ref, self.user_id))
                 else:
-                    # 按名称查询（优先自己的指标）
                     cursor.execute("""
                         SELECT id, code FROM qd_indicator_codes 
                         WHERE name = %s AND user_id = %s

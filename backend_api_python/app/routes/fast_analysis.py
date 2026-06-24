@@ -121,7 +121,7 @@ def analyze():
         market (required): Crypto, USStock, Forex, etc.
         symbol (required): e.g. BTC/USDT, AAPL
         language (optional, default en-US): Response language
-        model (optional): LLM model id, e.g. openai/gpt-4o
+        model (optional): LLM model id, e.g. openai/gpt-5.4
         timeframe (optional, default 1D): Analysis timeframe
         async_submit (optional): Submit as background task
     """

@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
-"""Bump fallback version files.
+"""Bump backend fallback version files.
 
 Usage:
     python scripts/bump_version.py 3.0.14
 
 Release builds should normally get the displayed version from a Git tag via
 Docker/CI build args. The repo-root ``VERSION`` file is only a local/dev
-fallback; this script updates that fallback and any optional frontend first
-paint fallbacks present in the checkout.
+fallback; this script updates that fallback and the backend fallback version.
 """
 
 from __future__ import annotations
@@ -29,11 +28,6 @@ PATCHES: list[tuple[str, str, str]] = [
         "backend_api_python/VERSION",
         rf"^{SEMVER}$",
         "{v}",
-    ),
-    (
-        "QuantDinger-Vue-src/package.json",
-        rf'"version"\s*:\s*"{SEMVER}"',
-        '"version": "{v}"',
     ),
 ]
 

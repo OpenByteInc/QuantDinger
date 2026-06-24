@@ -260,6 +260,37 @@ CREATE INDEX IF NOT EXISTS idx_security_logs_action ON qd_security_logs(action);
 CREATE INDEX IF NOT EXISTS idx_security_logs_created_at ON qd_security_logs(created_at);
 
 -- =============================================================================
+-- 1.10. User MFA (TOTP / Authenticator App)
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS qd_user_mfa (
+    user_id INTEGER PRIMARY KEY REFERENCES qd_users(id) ON DELETE CASCADE,
+    enabled BOOLEAN DEFAULT FALSE,
+    secret_encrypted TEXT NOT NULL,
+    recovery_codes_hash TEXT DEFAULT '',
+    last_used_counter BIGINT DEFAULT 0,
+    confirmed_at TIMESTAMP NULL,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS qd_mfa_challenges (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES qd_users(id) ON DELETE CASCADE,
+    challenge_hash VARCHAR(128) UNIQUE NOT NULL,
+    reason VARCHAR(50) DEFAULT 'risk_login',
+    ip_address VARCHAR(45),
+    user_agent TEXT,
+    attempts INTEGER DEFAULT 0,
+    expires_at TIMESTAMP NOT NULL,
+    consumed_at TIMESTAMP NULL,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_mfa_challenges_user_id ON qd_mfa_challenges(user_id);
+CREATE INDEX IF NOT EXISTS idx_mfa_challenges_expires ON qd_mfa_challenges(expires_at);
+
+-- =============================================================================
 -- 2. Trading Strategies
 -- =============================================================================
 
@@ -293,6 +324,27 @@ CREATE TABLE IF NOT EXISTS qd_strategies_trading (
 CREATE INDEX IF NOT EXISTS idx_strategies_user_id ON qd_strategies_trading(user_id);
 CREATE INDEX IF NOT EXISTS idx_strategies_status ON qd_strategies_trading(status);
 CREATE INDEX IF NOT EXISTS idx_strategies_group_id ON qd_strategies_trading(strategy_group_id);
+
+-- Script source library: reusable code assets separated from live/runtime strategy rows.
+CREATE TABLE IF NOT EXISTS qd_script_sources (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES qd_users(id) ON DELETE CASCADE,
+    name VARCHAR(255) NOT NULL,
+    description TEXT DEFAULT '',
+    code TEXT NOT NULL DEFAULT '',
+    template_key VARCHAR(80) DEFAULT '',
+    param_schema JSONB DEFAULT '{}'::jsonb,
+    source_marketplace_indicator_id INTEGER,
+    source_script_source_id INTEGER,
+    visibility VARCHAR(32) DEFAULT 'private',
+    status VARCHAR(32) DEFAULT 'draft',
+    metadata JSONB DEFAULT '{}'::jsonb,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_script_sources_user_id ON qd_script_sources(user_id);
+CREATE INDEX IF NOT EXISTS idx_script_sources_marketplace ON qd_script_sources(source_marketplace_indicator_id);
 
 -- Add strategy_mode and strategy_code columns (script strategy support)
 DO $$

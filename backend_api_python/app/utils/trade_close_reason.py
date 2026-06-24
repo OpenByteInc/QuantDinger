@@ -135,7 +135,6 @@ def resolve_close_reason_for_record(
     if bot_type in ("grid", "dca"):
         return infer_legacy_close_reason(trade_type, bot_type=bot_type, stored_reason="")
     # Indicator/script closes without an explicit reason: leave empty so UI uses
-    # per-side copy (信号触发平多/平空), not a generic bucket label.
     return ""
 
 

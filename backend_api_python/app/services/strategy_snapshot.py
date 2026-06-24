@@ -116,6 +116,16 @@ class StrategySnapshotResolver:
         except Exception:
             return ""
 
+    def _fetch_script_source_code(self, source_id: Optional[int]) -> str:
+        if not source_id:
+            return ""
+        try:
+            from app.services.script_source import get_script_source_service
+            source = get_script_source_service().get_source(int(source_id), user_id=self.user_id)
+            return (source or {}).get("code") or ""
+        except Exception:
+            return ""
+
     def resolve(self, strategy: Dict[str, Any], override_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         if not strategy:
             raise ValueError("strategy not found")
@@ -136,6 +146,29 @@ class StrategySnapshotResolver:
             symbol = maybe_symbol or symbol
 
         timeframe = str(override.get("timeframe") or trading_config.get("timeframe") or strategy.get("timeframe") or "1D").strip() or "1D"
+        market_type = str(
+            override.get("market_type")
+            or override.get("marketType")
+            or trading_config.get("market_type")
+            or trading_config.get("marketType")
+            or ""
+        ).strip().lower()
+        if market_type in ("futures", "future", "perp", "perpetual"):
+            market_type = "swap"
+        if market_type not in ("spot", "swap"):
+            market_type = ""
+        exchange_id = str(
+            override.get("exchange_id")
+            or override.get("exchangeId")
+            or trading_config.get("exchange_id")
+            or trading_config.get("exchangeId")
+            or ""
+        ).strip().lower()
+        if str(market or "").strip().lower() != "crypto":
+            market_type = ""
+            exchange_id = ""
+        elif market_type != "swap":
+            market_type = "spot"
         initial_capital = self._to_float(override.get("initialCapital", trading_config.get("initial_capital", strategy.get("initial_capital", 10000))), 10000.0)
         leverage = self._to_int(override.get("leverage", trading_config.get("leverage", strategy.get("leverage", 1))), 1)
         # Commission/slippage are backtest-only assumptions (not used by live ScriptStrategy execution).
@@ -162,6 +195,9 @@ class StrategySnapshotResolver:
         else:
             slippage = self._percent_to_ratio(slippage_raw)
         trade_direction = str(trading_config.get("trade_direction") or "long").strip().lower() or "long"
+        if market_type == "spot":
+            trade_direction = "long"
+            leverage = 1
 
         strategy_type = str(strategy.get("strategy_type") or "IndicatorStrategy").strip() or "IndicatorStrategy"
         strategy_mode = str(strategy.get("strategy_mode") or "signal").strip() or "signal"
@@ -169,7 +205,15 @@ class StrategySnapshotResolver:
 
         indicator_id = indicator_config.get("indicator_id") or strategy.get("indicator_id")
         indicator_name = indicator_config.get("indicator_name") or ""
-        code = (strategy.get("strategy_code") or "").strip() if is_script else (indicator_config.get("indicator_code") or "").strip()
+        script_source_id = trading_config.get("script_source_id") or trading_config.get("scriptSourceId")
+        script_source_id_int = int(script_source_id) if str(script_source_id or "").isdigit() else None
+        code = ""
+        if is_script:
+            code = self._fetch_script_source_code(script_source_id).strip() if script_source_id else ""
+            if not code:
+                code = (strategy.get("strategy_code") or "").strip()
+        else:
+            code = (indicator_config.get("indicator_code") or "").strip()
         if not code and indicator_id and not is_script:
             code = self._fetch_indicator_code(indicator_id)
 
@@ -188,6 +232,8 @@ class StrategySnapshotResolver:
             "market": market,
             "symbol": symbol,
             "timeframe": timeframe,
+            "market_type": market_type,
+            "exchange_id": exchange_id,
             "initial_capital": initial_capital,
             "commission": commission,
             "slippage": slippage,
@@ -206,17 +252,21 @@ class StrategySnapshotResolver:
                     "strategyType": strategy_type,
                     "strategyMode": strategy_mode,
                     "runType": "strategy_script" if is_script else "strategy_indicator",
+                    "scriptSourceId": script_source_id_int,
                 },
                 "marketConfig": {
                     "market": market,
                     "symbol": symbol,
                     "timeframe": timeframe,
+                    "marketType": market_type,
+                    "exchangeId": exchange_id,
                 },
                 "signalConfig": {
                     "indicatorId": int(indicator_id) if str(indicator_id or "").isdigit() else None,
                     "indicatorName": indicator_name,
                     "indicatorParams": trading_config.get("indicator_params") or {},
-                    "scriptSource": "strategy_code" if is_script else "indicator_code",
+                    "scriptSourceId": script_source_id_int,
+                    "scriptSource": f"script_source:{script_source_id}" if is_script and script_source_id else ("strategy_code" if is_script else "indicator_code"),
                 },
                 "riskConfig": strategy_config.get("risk") or {},
                 "positionConfig": strategy_config.get("position") or {},

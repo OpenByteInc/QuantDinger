@@ -1,5 +1,5 @@
 ﻿"""
-Grid fill quantity normalization 鈥?convert exchange order fields to base-asset qty.
+Grid fill quantity normalization: convert exchange order fields to base-asset qty.
 
 Sources (official API docs):
 - OKX v5: SWAP sz/accFillSz are contracts; base = contracts * ctVal
@@ -200,7 +200,7 @@ def extract_grid_fill_base_qty(
         if filled_amt > 0 and filled_total > 0:
             return filled_total / filled_amt
 
-    # Generic fallback (legacy path 鈥?may be wrong for contract-denominated exchanges).
+    # Generic fallback: legacy path, may be wrong for contract-denominated exchanges.
     return _float(
         data.get("filled")
         or data.get("executedQty")

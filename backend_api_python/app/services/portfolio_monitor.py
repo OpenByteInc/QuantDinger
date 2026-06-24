@@ -26,7 +26,6 @@ DEFAULT_USER_ID = 1
 _monitor_thread: Optional[threading.Thread] = None
 _stop_event = threading.Event()
 
-# 多语言消息模板
 ALERT_MESSAGES = {
     'zh-CN': {
         'price_above': '🔔 价格突破预警: {symbol} 当前价格 ${current_price:.4f} 已突破 ${threshold:.4f}',
@@ -1616,7 +1615,6 @@ def _check_position_alerts():
                         db.commit()
                         cur.close()
                     
-                    # Send notification（合并个人中心通知配置，与资产监控任务一致）
                     resolved = _resolve_notification_delivery(alert_user_id, notification_config)
                     channels = resolved.get('channels') or ['browser']
                     targets = resolved.get('targets', {})

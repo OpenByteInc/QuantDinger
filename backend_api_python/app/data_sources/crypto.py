@@ -24,7 +24,9 @@ def resolve_ccxt_for_live_trading(exchange_id: str, market_type: str) -> Tuple[s
     use the same venue as the strategy's configured exchange.
     """
     e = (exchange_id or "").strip().lower()
-    mt = (market_type or "swap").strip().lower()
+    if not e:
+        e = (CCXTConfig.DEFAULT_EXCHANGE or "binance").strip().lower()
+    mt = (market_type or "spot").strip().lower()
     if mt in ("futures", "future", "perp", "perpetual"):
         mt = "swap"
 
@@ -75,11 +77,11 @@ def resolve_crypto_venue(
     if not ex:
         ex = (CCXTConfig.DEFAULT_EXCHANGE or "binance").strip().lower()
 
-    mt = str(market_type or tc.get("market_type") or "swap").strip().lower()
+    mt = str(market_type or tc.get("market_type") or "spot").strip().lower()
     if mt in ("futures", "future", "perp", "perpetual"):
         mt = "swap"
     if mt not in ("spot", "swap"):
-        mt = "swap"
+        mt = "spot"
     return ex, mt
 
 
@@ -88,23 +90,16 @@ class CryptoDataSource(BaseDataSource):
     
     name = "Crypto/CCXT"
     
-    # 时间周期映射
     TIMEFRAME_MAP = CCXTConfig.TIMEFRAME_MAP
 
-    # 当某个交易所原生不支持某个CCXT周期时，从更细的granularity拉数据后聚合。
-    # 例如Coinbase Advanced Trade只暴露1m/5m/15m/30m/1h/2h/6h/1d，没有3m/4h/1w，
-    # 这里给出每个缺失目标对应的"源周期 + 倍数"候选（按优先顺序）。
     _RESAMPLE_CANDIDATES: Dict[str, List[Tuple[str, int]]] = {
         '3m': [('1m', 3)],
         '4h': [('2h', 2), ('1h', 4)],
         '1w': [('1d', 7)],
     }
 
-    # CCXT单次fetch_ohlcv请求上限（Coinbase REST是300，多数交易所也在300附近）。
-    # 聚合路径fetch源数据时按这个值兜底，避免请求被服务端截断。
     _SINGLE_FETCH_HARD_CAP = 300
 
-    # 常见的报价货币列表（按优先级排序）
     COMMON_QUOTES = ['USDT', 'USD', 'BTC', 'ETH', 'BUSD', 'USDC', 'BNB', 'EUR', 'GBP']
     
     def __init__(self):
@@ -180,7 +175,6 @@ class CryptoDataSource(BaseDataSource):
             return True
         
         try:
-            # 某些交易所需要显式加载 markets
             if hasattr(self.exchange, 'load_markets'):
                 self.exchange.load_markets(reload=False)
             self._markets_cache = getattr(self.exchange, 'markets', {})
@@ -206,13 +200,11 @@ class CryptoDataSource(BaseDataSource):
         
         sym = symbol.strip()
         
-        # 移除 swap/futures 后缀
         if ':' in sym:
             sym = sym.split(':', 1)[0]
         
         sym = sym.upper()
         
-        # 如果已经有分隔符，直接解析
         if '/' in sym:
             parts = sym.split('/', 1)
             base = parts[0].strip()
@@ -220,14 +212,12 @@ class CryptoDataSource(BaseDataSource):
             if base and quote:
                 return f"{base}/{quote}", base
         
-        # 尝试从常见报价货币中识别
         for quote in self.COMMON_QUOTES:
             if sym.endswith(quote) and len(sym) > len(quote):
                 base = sym[:-len(quote)]
                 if base:
                     return f"{base}/{quote}", base
         
-        # 如果无法识别，默认使用 USDT
         return f"{sym}/USDT", sym
     
     def _find_valid_symbol(self, base: str, preferred_quote: str = 'USDT') -> Optional[str]:
@@ -248,14 +238,12 @@ class CryptoDataSource(BaseDataSource):
         if not markets:
             return None
         
-        # 按优先级尝试不同的报价货币
         quotes_to_try = [preferred_quote] + [q for q in self.COMMON_QUOTES if q != preferred_quote]
         
         for quote in quotes_to_try:
             candidate = f"{base}/{quote}"
             if candidate in markets:
                 market = markets[candidate]
-                # 检查市场是否活跃
                 if market.get('active', True):
                     return candidate
         
@@ -278,9 +266,7 @@ class CryptoDataSource(BaseDataSource):
         
         exchange_id = getattr(self.exchange, 'id', '').lower()
         
-        # 特殊处理：某些交易所的符号映射
         if exchange_id == 'coinbase':
-            # Coinbase 通常使用 USD 而不是 USDT
             if normalized.endswith('/USDT'):
                 usd_version = normalized.replace('/USDT', '/USD')
                 if self._ensure_markets_loaded():
@@ -288,7 +274,6 @@ class CryptoDataSource(BaseDataSource):
                     if usd_version in markets:
                         return usd_version
         
-        # 尝试在交易所中查找有效符号
         if self._ensure_markets_loaded():
             valid_symbol = self._find_valid_symbol(base, normalized.split('/')[1] if '/' in normalized else 'USDT')
             if valid_symbol:
@@ -314,7 +299,6 @@ class CryptoDataSource(BaseDataSource):
             logger.warning(f"Failed to normalize symbol: {symbol}")
             return {'last': 0, 'symbol': symbol}
         
-        # 尝试获取 ticker
         try:
             ticker = self.exchange.fetch_ticker(normalized)
             if ticker and isinstance(ticker, dict):
@@ -330,7 +314,6 @@ class CryptoDataSource(BaseDataSource):
             ])
             
             if is_symbol_error:
-                # 尝试查找替代符号
                 base = normalized.split('/')[0] if '/' in normalized else normalized
                 if self._ensure_markets_loaded():
                     valid_symbol = self._find_valid_symbol(base)
@@ -343,7 +326,6 @@ class CryptoDataSource(BaseDataSource):
                         except Exception as e2:
                             logger.debug(f"Alternative symbol {valid_symbol} also failed: {e2}")
             
-            # 如果所有尝试都失败，记录警告并返回默认值
             logger.warning(
                 f"Symbol '{symbol}' (normalized: {normalized}) not found on {self.exchange.id}. "
                 f"Error: {str(e)[:100]}"
@@ -365,9 +347,6 @@ class CryptoDataSource(BaseDataSource):
         try:
             ccxt_timeframe = self.TIMEFRAME_MAP.get(timeframe, '1d')
 
-            # 如果当前交易所原生不支持这个周期（典型例子：Coinbase 没有 1w/4h/3m），
-            # 改为从更细的granularity拉数据，再在服务端聚合成目标周期。这样1W/4H在
-            # 不支持的交易所上仍可使用，无需前端改动。
             resample_bucket = 1
             fetch_ccxt_timeframe = ccxt_timeframe
             fetch_qd_timeframe = timeframe
@@ -387,8 +366,6 @@ class CryptoDataSource(BaseDataSource):
                 fetch_ccxt_timeframe = source_ccxt_tf
                 fetch_qd_timeframe = self._ccxt_to_qd_timeframe(source_ccxt_tf, timeframe)
                 resample_bucket = bucket
-                # 单次fetch_ohlcv受交易所上限制约（Coinbase=300），超出会被截断；
-                # 在这之内取尽量多的源candle以填满请求的聚合数。
                 fetch_limit = min(limit * bucket, self._SINGLE_FETCH_HARD_CAP)
                 logger.info(
                     f"Exchange '{self.exchange.id}' has no native '{ccxt_timeframe}' "
@@ -402,7 +379,6 @@ class CryptoDataSource(BaseDataSource):
                 logger.warning(f"Failed to normalize symbol for K-line: {symbol}")
                 return []
 
-            # logger.info(f"获取加密货币K线: {symbol_pair}, 周期: {ccxt_timeframe}, 条数: {limit}")
 
             ohlcv = self._fetch_ohlcv(
                 symbol_pair, fetch_ccxt_timeframe, fetch_limit,
@@ -422,7 +398,6 @@ class CryptoDataSource(BaseDataSource):
                     )
                     return []
 
-            # 转换数据格式
             for candle in ohlcv:
                 if len(candle) < 6:
                     continue
@@ -435,7 +410,6 @@ class CryptoDataSource(BaseDataSource):
                     volume=candle[5]
                 ))
             
-            # 过滤和限制（回测带 after_time 时保留整段窗口，避免 [-limit:] 丢掉左端历史）
             klines = self.filter_and_limit(
                 klines,
                 limit,
@@ -444,7 +418,6 @@ class CryptoDataSource(BaseDataSource):
                 truncate=(after_time is None),
             )
 
-            # 记录结果
             self.log_result(symbol, klines, timeframe)
 
             # Concise trace so backtest logs can correlate requested window with actual window
@@ -530,10 +503,7 @@ class CryptoDataSource(BaseDataSource):
         """获取OHLCV数据（支持分页获取完整数据）"""
         try:
             if before_time:
-                # 计算时间范围（UTC，与交易所 OHLCV 毫秒时间戳一致）
                 total_seconds = self.calculate_time_range(timeframe, limit)
-                # 回测里 before_time = end_date+1 天，常比「当前时刻」更晚；Coinbase 会报
-                # start must not be in the future（其 start 指查询上界/窗口边界）
                 now_ts = int(datetime.now(timezone.utc).timestamp())
                 safe_before_ts = min(int(before_time), now_ts)
                 if safe_before_ts < int(before_time):
@@ -615,7 +585,6 @@ class CryptoDataSource(BaseDataSource):
                         empty_streak += 1
                         if empty_streak >= max_empty:
                             break
-                        # 跳过可能的空档，避免卡死在同一 since
                         current_since += timeframe_ms * min(batch_limit, 64)
                         if inter_batch_sleep:
                             _t.sleep(inter_batch_sleep)
@@ -632,7 +601,6 @@ class CryptoDataSource(BaseDataSource):
                     if inter_batch_sleep:
                         _t.sleep(inter_batch_sleep)
 
-                # 按开盘时间去重并排序，防止分页重叠
                 by_ts = {int(row[0]): row for row in all_ohlcv if row and len(row) >= 6}
                 ohlcv = sorted(by_ts.values(), key=lambda r: r[0])
             else:
@@ -644,7 +612,6 @@ class CryptoDataSource(BaseDataSource):
                 safe_limit = min(int(limit), self._SINGLE_FETCH_HARD_CAP)
                 ohlcv = self.exchange.fetch_ohlcv(symbol_pair, ccxt_timeframe, limit=safe_limit)
 
-            # logger.info(f"CCXT 返回 {len(ohlcv) if ohlcv else 0} 条数据")
             return ohlcv
 
         except Exception as e:
@@ -690,7 +657,6 @@ class CryptoDataSource(BaseDataSource):
             # page of data, which downstream callers can then handle gracefully.
             safe_limit = min(int(limit), self._SINGLE_FETCH_HARD_CAP)
             ohlcv = self.exchange.fetch_ohlcv(symbol_pair, ccxt_timeframe, since=since, limit=safe_limit)
-            # logger.info(f"CCXT 备用方法返回 {len(ohlcv) if ohlcv else 0} 条数据")
             return ohlcv
         except Exception as e:
             logger.error(f"CCXT fallback method also failed: {str(e)}")

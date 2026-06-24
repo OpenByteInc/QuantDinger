@@ -49,7 +49,6 @@ class CircuitBreaker:
         self.cooldown_seconds = cooldown_seconds
         self.half_open_max_calls = half_open_max_calls
         
-        # 各数据源状态 {source_name: {state, failures, last_failure_time, half_open_calls}}
         self._states: Dict[str, Dict[str, Any]] = {}
     
     def _get_state(self, source: str) -> Dict[str, Any]:
@@ -78,10 +77,8 @@ class CircuitBreaker:
             return True
         
         if state['state'] == CircuitState.OPEN:
-            # 检查冷却时间
             time_since_failure = current_time - state['last_failure_time']
             if time_since_failure >= self.cooldown_seconds:
-                # 冷却完成，进入半开状态
                 state['state'] = CircuitState.HALF_OPEN
                 state['half_open_calls'] = 0
                 logger.info(f"[熔断器] {source} 冷却完成，进入半开状态")
@@ -92,7 +89,6 @@ class CircuitBreaker:
                 return False
         
         if state['state'] == CircuitState.HALF_OPEN:
-            # 半开状态下限制请求次数
             if state['half_open_calls'] < self.half_open_max_calls:
                 return True
             return False
@@ -104,10 +100,8 @@ class CircuitBreaker:
         state = self._get_state(source)
         
         if state['state'] == CircuitState.HALF_OPEN:
-            # 半开状态下成功，完全恢复
             logger.info(f"[熔断器] {source} 半开状态请求成功，恢复正常")
         
-        # 重置状态
         state['state'] = CircuitState.CLOSED
         state['failures'] = 0
         state['half_open_calls'] = 0
@@ -123,12 +117,10 @@ class CircuitBreaker:
         state['last_error'] = error
         
         if state['state'] == CircuitState.HALF_OPEN:
-            # 半开状态下失败，继续熔断
             state['state'] = CircuitState.OPEN
             state['half_open_calls'] = 0
             logger.warning(f"[熔断器] {source} 半开状态请求失败，继续熔断 {self.cooldown_seconds}s")
         elif state['failures'] >= self.failure_threshold:
-            # 达到阈值，进入熔断
             state['state'] = CircuitState.OPEN
             logger.warning(f"[熔断器] {source} 连续失败 {state['failures']} 次，进入熔断状态 "
                           f"(冷却 {self.cooldown_seconds}s)")
@@ -158,10 +150,8 @@ class CircuitBreaker:
 
 
 # ============================================
-# 全局熔断器实例
 # ============================================
 
-# 实时行情熔断器（更严格的策略）
 _realtime_circuit_breaker = CircuitBreaker(
     failure_threshold=2,      # 连续失败2次熔断
     cooldown_seconds=180.0,   # 冷却3分钟

@@ -46,15 +46,12 @@ class KlineService:
         normalized_market = DataSourceFactory.normalize_market(market or "")
         ex_key = (exchange_id or "").strip().lower()
         mt_key = (market_type or "").strip().lower()
-        # 构建缓存键（历史数据不缓存）
         if not before_time:
             cache_key = f"kline:{normalized_market}:{ex_key}:{mt_key}:{symbol}:{timeframe}:{limit}"
             cached = self.cache.get(cache_key)
             if cached:
-                # logger.info(f"命中缓存: {cache_key}")
                 return cached
         
-        # 获取数据
         klines = DataSourceFactory.get_kline(
             market=normalized_market,
             symbol=symbol,
@@ -65,11 +62,9 @@ class KlineService:
             market_type=market_type,
         )
         
-        # 设置缓存（仅最新数据）
         if klines and not before_time:
             ttl = self.cache_ttl.get(timeframe, 300)
             self.cache.set(cache_key, klines, ttl)
-            # logger.info(f"缓存设置: {cache_key}, TTL: {ttl}s")
         
         return klines
     
@@ -108,12 +103,10 @@ class KlineService:
                 'source': 数据来源 ('ticker' 或 'kline')
             }
         """
-        # 构建缓存键（短时间缓存，避免频繁请求）
         ex_key = (exchange_id or "").strip().lower()
         mt_key = (market_type or "").strip().lower()
         cache_key = f"realtime_price:{market}:{ex_key}:{mt_key}:{symbol}"
         
-        # 如果不是强制刷新，尝试使用缓存
         if not force_refresh:
             cached = self.cache.get(cache_key)
             if cached:
@@ -130,7 +123,6 @@ class KlineService:
             'source': 'unknown'
         }
         
-        # 优先尝试使用 ticker API 获取实时价格
         try:
             ticker = DataSourceFactory.get_ticker(
                 market, symbol, exchange_id=exchange_id, market_type=market_type
@@ -146,13 +138,11 @@ class KlineService:
                     'previousClose': ticker.get('previousClose', 0),
                     'source': 'ticker'
                 }
-                # 缓存 30 秒
                 self.cache.set(cache_key, result, 30)
                 return result
         except Exception as e:
             logger.debug(f"Ticker API failed for {market}:{symbol}, falling back to kline: {e}")
         
-        # 降级：使用 1 分钟 K 线
         try:
             klines = self.get_kline(
                 market, symbol, '1m', 2, exchange_id=exchange_id, market_type=market_type
@@ -175,13 +165,11 @@ class KlineService:
                     'previousClose': prev_close,
                     'source': 'kline_1m'
                 }
-                # 缓存 30 秒
                 self.cache.set(cache_key, result, 30)
                 return result
         except Exception as e:
             logger.debug(f"1m kline failed for {market}:{symbol}, trying daily: {e}")
         
-        # 最后降级：使用日线数据（适用于非交易时间）
         try:
             klines = self.get_kline(market, symbol, '1D', 2)
             if klines and len(klines) > 0:
@@ -202,7 +190,6 @@ class KlineService:
                     'previousClose': prev_close,
                     'source': 'kline_1d'
                 }
-                # 日线数据缓存 5 分钟
                 self.cache.set(cache_key, result, 300)
                 return result
         except Exception as e:

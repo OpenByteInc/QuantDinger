@@ -54,6 +54,12 @@ def _run_backtest(payload: dict) -> Any:
     market = payload.get("market") or "Crypto"
     symbol = payload.get("symbol")
     timeframe = payload.get("timeframe") or "1D"
+    market_type = str(payload.get("marketType") or payload.get("market_type") or "").strip().lower()
+    if market_type in ("futures", "future", "perp", "perpetual"):
+        market_type = "swap"
+    if market_type not in ("spot", "swap"):
+        market_type = ""
+    exchange_id = str(payload.get("exchangeId") or payload.get("exchange_id") or "").strip().lower()
     if not symbol:
         raise ValueError("symbol is required")
 
@@ -99,6 +105,8 @@ def _run_backtest(payload: dict) -> Any:
         strategy_config=strategy_config,
         indicator_params=indicator_params,
         user_id=int(payload.get("__user_id") or 1),
+        market_type=market_type or None,
+        exchange_id=exchange_id or None,
     )
 
 

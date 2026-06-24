@@ -1,5 +1,5 @@
 """
-Canonical default indicator templates (QuantDinger execution contract v1).
+Canonical default indicator templates for the QuantDinger execution contract.
 
 Used by AI fallback code generation and as the reference for IDE / docs examples.
 See docs/SIGNAL_EXECUTION_STANDARD_CN.md.
@@ -10,41 +10,42 @@ from __future__ import annotations
 
 def build_default_indicator_template(
     *,
-    name: str = "策略模板（四路信号）",
+    name: str = "EMA Four-Way Strategy Template",
     description: str = (
-        "双均线金叉/死叉：四路显式信号 + 边缘触发 + 引擎风控。"
-        "详见 docs/SIGNAL_EXECUTION_STANDARD_CN.md"
+        "EMA crossover with four-way execution columns, edge-triggered signals, "
+        "and engine-managed risk exits."
     ),
 ) -> str:
-    """Four-way EMA crossover starter (platform default)."""
-    safe_name = (name or "策略模板（四路信号）").replace("\\", "\\\\").replace('"', '\\"')
+    """Four-way EMA crossover starter used when LLM generation is unavailable."""
+    safe_name = (name or "EMA Four-Way Strategy Template").replace("\\", "\\\\").replace('"', '\\"')
     safe_desc = (description or "").replace("\\", "\\\\").replace('"', '\\"')
     return f'''# ============================================================
-# QuantDinger 默认指标模板 — 形态 B（四路信号）· 契约 v1
+# QuantDinger default indicator template - Pattern B contract v1
 # ------------------------------------------------------------
 # signal_form: four_way    exit_owner: engine    flip_mode: R2
-# 文档: docs/SIGNAL_EXECUTION_STANDARD_CN.md
+# Reference: docs/SIGNAL_EXECUTION_STANDARD_CN.md
 # ============================================================
 
 my_indicator_name = "{safe_name}"
 my_indicator_description = "{safe_desc}"
 
-# ===== 平台默认风控（引擎退出；指标内勿再写窄 tp/sl）=====
-# 单位：0–1 小数比例（与回测/实盘一致；按标的涨跌幅，不除杠杆）
-#   stopLossPct 0.03 = 3% 价格止损；0.001 = 0.1%；entryPct 1 = 100% 资金
-# close_* 只表达均线反转时的结构性平仓；若改成 TP/SL/轨道触及退出，请改为 exit_owner: indicator。
+# ===== Engine-managed risk defaults =====
+# Values are decimal price-move ratios, shared by backtest and live trading.
+# stopLossPct 0.03 means a 3% adverse price move; entryPct 1 means 100% capital.
+# close_* columns below express structural EMA reversals only. If the indicator
+# owns TP/SL/channel exits, change the header to exit_owner: indicator.
 # @strategy stopLossPct 0.03
 # @strategy takeProfitPct 0.06
 # @strategy entryPct 0.25
 # @strategy trailingEnabled false
 # @strategy tradeDirection both
 
-# ===== 可调参数（须用 params.get 读取）=====
-# @param fast_period int 10 快线 EMA 周期
-# @param slow_period int 30 慢线 EMA 周期
+# ===== Tunable parameters; always read them via params.get =====
+# @param fast_period int 10 Fast EMA period
+# @param slow_period int 30 Slow EMA period
 
 def edge(s):
-    """边缘触发：仅条件由 false→true 的 K 线记为信号。"""
+    """Return True only on the bar where a condition flips from false to true."""
     s = s.fillna(False).astype(bool)
     return s & ~s.shift(1).fillna(False)
 
@@ -60,8 +61,8 @@ ema_slow = df["close"].ewm(span=slow_period, adjust=False).mean()
 golden = (ema_fast > ema_slow) & (ema_fast.shift(1) <= ema_slow.shift(1))
 death = (ema_fast < ema_slow) & (ema_fast.shift(1) >= ema_slow.shift(1))
 
-# 反手 bar：同根 K 先平对侧再开（R2）；仅趋势翻转时触发
-# 这些 close_* 不是指标内固定止盈/止损；价格风控仍由 exit_owner: engine 负责。
+# Reversal bars may close the opposite side and open the new side on the same bar.
+# These close_* columns are structural exits, not fixed TP/SL rules.
 raw_open_long = golden
 raw_open_short = death
 raw_close_long = death
@@ -100,5 +101,6 @@ output = {{
         {{"type": "buy", "text": "L", "data": open_long_marks, "color": "#00E676"}},
         {{"type": "sell", "text": "S", "data": open_short_marks, "color": "#FF5252"}},
     ],
+    "layers": [],
 }}
 '''

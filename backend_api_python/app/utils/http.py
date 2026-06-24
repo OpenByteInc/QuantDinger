@@ -36,6 +36,5 @@ def get_retry_session(
     return session
 
 
-# 全局共享 Session
 global_session = get_retry_session()
 

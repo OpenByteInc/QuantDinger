@@ -235,7 +235,6 @@ class CommunityService:
             pass
     
     # ==========================================
-    # 指标市场
     # ==========================================
     
     def get_market_indicators(
@@ -245,8 +244,8 @@ class CommunityService:
         keyword: str = None,
         pricing_type: str = None,  # 'free' / 'paid' / None(all)
         sort_by: str = 'score',    # 'score' / 'newest' / 'hot' / 'price_asc' / 'price_desc' / 'rating'
-        user_id: int = None,       # 当前用户ID，用于判断是否已购买
-        accept_language: str = 'en-US',  # 用于挑选 name_i18n / description_i18n
+        user_id: int = None,       # Current user id, used to mark purchased items.
+        accept_language: str = 'en-US',  # Select name_i18n / description_i18n.
         asset_type: str = None,    # 'indicator' / 'script_template' / 'bot_preset' / None(all)
     ) -> Dict[str, Any]:
         """获取市场上已发布的指标列表
@@ -279,7 +278,6 @@ class CommunityService:
             with get_db_connection() as db:
                 cur = db.cursor()
 
-                # 构建查询条件 - 只显示已发布且审核通过的指标
                 where_clauses = ["i.publish_to_community = 1", "(i.review_status = 'approved' OR i.review_status IS NULL)"]
                 params = []
 
@@ -309,7 +307,6 @@ class CommunityService:
                     'rating': 'i.avg_rating DESC, i.rating_count DESC'
                 }
 
-                # 获取总数（无论哪种排序，total 都是一样的）
                 count_sql = f"SELECT COUNT(*) as count FROM qd_indicator_codes i WHERE {where_sql}"
                 cur.execute(count_sql, tuple(params))
                 total = cur.fetchone()['count']
@@ -378,7 +375,6 @@ class CommunityService:
                     rows = cur.fetchall() or []
                     page_kpis = _fetch_indicator_kpis(cur, [r['id'] for r in rows])
 
-                # 如果有当前用户，查询已购买的指标
                 purchased_ids = set()
                 if user_id:
                     indicator_ids = [r['id'] for r in rows]
@@ -392,12 +388,9 @@ class CommunityService:
 
                 cur.close()
 
-                # 格式化返回数据
                 items = []
                 for row in rows:
                     kpi = page_kpis.get(row['id'], _summarise_indicator_runs([]))
-                    # i18n 多语言：按当前 Accept-Language 选 name/description。
-                    # 未配置 i18n 字段的老指标会 fallback 到原始 name/description。
                     _src_lang = row.get('source_language') if isinstance(row, dict) else None
                     localized_name = pick_localized(
                         row['name'],
@@ -612,6 +605,29 @@ class CommunityService:
             data['bot_type'] = data['trading_config'].get('bot_type')
         return data
 
+    def _bot_preset_has_sync_update(
+        self,
+        local_strategy: Dict[str, Any],
+        preset_payload: Any,
+        preset_id: int,
+    ) -> bool:
+        """Return whether syncing would actually change a local bot strategy."""
+        preset = self._parse_bot_preset_json(preset_payload)
+        tc = dict(preset.get('trading_config') or {})
+        bot_type = preset.get('bot_type') or tc.get('bot_type')
+        if bot_type and not tc.get('bot_type'):
+            tc['bot_type'] = bot_type
+        tc['source_preset_id'] = int(preset_id)
+        tc['from_marketplace'] = True
+        local_tc = self._parse_trading_config_json(local_strategy.get('trading_config'))
+        merged_tc = {**local_tc, **tc}
+        new_code = preset.get('strategy_code') or local_strategy.get('strategy_code') or ''
+        return (
+            (local_strategy.get('strategy_code') or '') != new_code
+            or json.dumps(merged_tc, sort_keys=True, default=str)
+            != json.dumps(local_tc, sort_keys=True, default=str)
+        )
+
     def publish_bot_preset_from_strategy(
         self,
         *,
@@ -732,7 +748,6 @@ class CommunityService:
             with get_db_connection() as db:
                 cur = db.cursor()
                 
-                # 获取指标信息
                 cur.execute("""
                     SELECT 
                         i.id, i.name, i.description, i.pricing_type, i.price, COALESCE(i.vip_free, FALSE) as vip_free,
@@ -753,14 +768,12 @@ class CommunityService:
                     cur.close()
                     return None
                 
-                # 检查是否已发布到社区（或者是自己的指标）
                 is_owner = row['user_id'] == user_id
                 is_approved = row.get('review_status') in (None, '', 'approved')
                 if not is_owner and (not row['publish_to_community'] or not is_approved):
                     cur.close()
                     return None
                 
-                # 检查是否已购买
                 # We also pull `price` from the purchase row so the frontend can
                 # show the buyer their *actual paid amount* (which can differ
                 # from the indicator's current price after a discount / price
@@ -771,6 +784,7 @@ class CommunityService:
                 has_update = False
                 local_copy_id = None
                 purchased_strategy_id = None
+                purchased_script_source_id = None
                 if user_id:
                     cur.execute(
                         "SELECT id, price, created_at FROM qd_indicator_purchases "
@@ -788,18 +802,24 @@ class CommunityService:
                             your_purchase_time = purchase_row['created_at'].isoformat()
                         asset_type = str(row.get('asset_type') or 'indicator').strip().lower()
                         if asset_type == 'script_template':
-                            strat = self._find_buyer_strategy_from_template(
-                                cur, buyer_id=user_id, template_id=indicator_id
+                            cur.execute(
+                                """
+                                SELECT id, code FROM qd_script_sources
+                                WHERE user_id = ? AND source_marketplace_indicator_id = ?
+                                ORDER BY id DESC LIMIT 1
+                                """,
+                                (user_id, indicator_id),
                             )
-                            if strat:
-                                purchased_strategy_id = strat['id']
+                            source = cur.fetchone()
+                            if source:
+                                purchased_script_source_id = source['id']
                                 cur.execute(
                                     "SELECT code FROM qd_indicator_codes WHERE id = ?",
                                     (indicator_id,)
                                 )
                                 original_row = cur.fetchone()
                                 original_code = original_row['code'] if original_row else None
-                                local_code = strat.get('strategy_code')
+                                local_code = source.get('code')
                                 has_update = (original_code or '') != (local_code or '')
                         elif asset_type == 'bot_preset':
                             strat = self._find_buyer_strategy_from_preset(
@@ -814,10 +834,11 @@ class CommunityService:
                                 original_row = cur.fetchone()
                                 original_code = original_row['code'] if original_row else None
                                 try:
-                                    local_preset = self._serialize_bot_preset_from_strategy(strat)
+                                    has_update = self._bot_preset_has_sync_update(
+                                        strat, original_code, indicator_id
+                                    )
                                 except Exception:
-                                    local_preset = strat.get('strategy_code') or ''
-                                has_update = (original_code or '') != (local_preset or '')
+                                    has_update = False
                         else:
                             local_copy = self._find_buyer_local_copy(
                                 cur, buyer_id=user_id, indicator_id=indicator_id,
@@ -834,7 +855,6 @@ class CommunityService:
                                 local_code = local_copy.get('code')
                                 has_update = (original_code or '') != (local_code or '')
 
-                # 增加浏览次数
                 cur.execute(
                     "UPDATE qd_indicator_codes SET view_count = COALESCE(view_count, 0) + 1 WHERE id = ?",
                     (indicator_id,)
@@ -842,7 +862,6 @@ class CommunityService:
                 db.commit()
                 cur.close()
                 
-                # i18n 多语言：按 Accept-Language 命中 name_i18n / description_i18n
                 _src_lang = row.get('source_language') if isinstance(row, dict) else None
                 localized_name = pick_localized(
                     row['name'], row.get('name_i18n'), accept_language, _src_lang,
@@ -879,6 +898,7 @@ class CommunityService:
                     'local_copy_id': local_copy_id,
                     'asset_type': str(row.get('asset_type') or 'indicator'),
                     'purchased_strategy_id': purchased_strategy_id,
+                    'script_source_id': purchased_script_source_id,
                 }
                 
         except Exception as e:
@@ -886,7 +906,6 @@ class CommunityService:
             return None
     
     # ==========================================
-    # 购买功能
     # ==========================================
     
     def purchase_indicator(self, buyer_id: int, indicator_id: int) -> Tuple[bool, str, Dict[str, Any]]:
@@ -900,7 +919,6 @@ class CommunityService:
             with get_db_connection() as db:
                 cur = db.cursor()
                 
-                # 1. 获取指标信息
                 cur.execute("""
                     SELECT id, user_id, name, code, description, pricing_type, price, COALESCE(vip_free, FALSE) as vip_free,
                            preview_image, is_encrypted,
@@ -921,16 +939,16 @@ class CommunityService:
                 vip_free = bool(indicator.get('vip_free') or False)
                 asset_type = str(indicator.get('asset_type') or 'indicator').strip().lower()
                 is_vip, _ = self.billing.get_user_vip_status(buyer_id)
+                billing_enabled = self.billing.is_billing_enabled()
 
-                # VIP-free indicator: VIP users can get it without credits charge
-                effective_price = 0.0 if (vip_free and is_vip) else price
+                # Global billing-off means marketplace delivery remains available
+                # but no buyer/seller credit movement is recorded.
+                effective_price = 0.0 if ((not billing_enabled) or (vip_free and is_vip)) else price
                 
-                # 2. 检查是否购买自己的指标
                 if seller_id == buyer_id:
                     cur.close()
                     return False, 'cannot_buy_own', {}
                 
-                # 3. 检查是否已购买
                 cur.execute(
                     "SELECT id FROM qd_indicator_purchases WHERE indicator_id = ? AND buyer_id = ?",
                     (indicator_id, buyer_id)
@@ -939,7 +957,6 @@ class CommunityService:
                     cur.close()
                     return False, 'already_purchased', {}
                 
-                # 4. 如果是付费指标，检查并扣除积分
                 if pricing_type != 'free' and effective_price > 0:
                     buyer_credits = self.billing.get_user_credits(buyer_id)
                     if buyer_credits < effective_price:
@@ -949,14 +966,12 @@ class CommunityService:
                             'current': float(buyer_credits)
                         }
                     
-                    # 扣除买家积分
                     new_buyer_balance = buyer_credits - Decimal(str(effective_price))
                     cur.execute(
                         "UPDATE qd_users SET credits = ?, updated_at = NOW() WHERE id = ?",
                         (float(new_buyer_balance), buyer_id)
                     )
                     
-                    # 记录买家积分日志
                     cur.execute("""
                         INSERT INTO qd_credits_log 
                         (user_id, action, amount, balance_after, feature, reference_id, remark, created_at)
@@ -964,7 +979,6 @@ class CommunityService:
                     """, (buyer_id, -effective_price, float(new_buyer_balance), str(indicator_id), 
                           f"购买指标: {indicator['name']}"))
                     
-                    # 给卖家增加积分（可配置抽成比例，这里先100%给卖家）
                     seller_credits = self.billing.get_user_credits(seller_id)
                     new_seller_balance = seller_credits + Decimal(str(effective_price))
                     cur.execute(
@@ -972,7 +986,6 @@ class CommunityService:
                         (float(new_seller_balance), seller_id)
                     )
                     
-                    # 记录卖家积分日志
                     cur.execute("""
                         INSERT INTO qd_credits_log 
                         (user_id, action, amount, balance_after, feature, reference_id, remark, created_at)
@@ -980,7 +993,6 @@ class CommunityService:
                     """, (seller_id, effective_price, float(new_seller_balance), str(indicator_id),
                           f"出售指标: {indicator['name']}"))
                 
-                # 5. 创建购买记录
                 cur.execute("""
                     INSERT INTO qd_indicator_purchases 
                     (indicator_id, buyer_id, seller_id, price, created_at)
@@ -988,29 +1000,18 @@ class CommunityService:
                 """, (indicator_id, buyer_id, seller_id, effective_price))
                 
                 delivered_strategy_id = None
+                delivered_source_id = None
                 if asset_type == 'script_template':
-                    from app.services.strategy import get_strategy_service
-                    delivered_strategy_id = get_strategy_service().create_strategy({
-                        'user_id': buyer_id,
-                        'strategy_name': indicator['name'],
-                        'strategy_type': 'ScriptStrategy',
-                        'strategy_mode': 'script',
-                        'strategy_code': indicator['code'],
-                        'market_category': 'Crypto',
-                        'execution_mode': 'signal',
-                        'notification_config': {'channels': ['browser'], 'targets': {}},
-                        'trading_config': {
-                            'initial_capital': 1000,
-                            'leverage': 5,
-                            'trade_direction': 'both',
-                            'timeframe': '15m',
-                            'market_type': 'swap',
-                            'source_template_id': int(indicator_id),
-                            'from_marketplace': True,
-                            'lifecycle_verified': True,
-                            'script_verified': True,
+                    from app.services.script_source import get_script_source_service
+                    delivered_source_id = get_script_source_service().create_from_marketplace_asset(
+                        buyer_id,
+                        {
+                            'id': indicator_id,
+                            'name': indicator['name'],
+                            'description': indicator['description'],
+                            'code': indicator['code'],
                         },
-                    })
+                    )
                 elif asset_type == 'bot_preset':
                     from app.services.strategy import get_strategy_service
                     preset = self._parse_bot_preset_json(indicator['code'])
@@ -1034,7 +1035,6 @@ class CommunityService:
                         'trading_config': tc,
                     })
                 else:
-                    # 6. 复制指标到买家账户
                     now_ts = int(time.time())
                     # Get vip_free as boolean from indicator
                     vip_free_value = bool(indicator.get('vip_free') or False)
@@ -1057,7 +1057,6 @@ class CommunityService:
                         now_ts, now_ts
                     ))
                 
-                # 7. 更新指标购买次数
                 cur.execute("""
                     UPDATE qd_indicator_codes 
                     SET purchase_count = COALESCE(purchase_count, 0) + 1 
@@ -1072,9 +1071,11 @@ class CommunityService:
                     'indicator_name': indicator['name'],
                     'price': price,
                     'charged': effective_price,
+                    'billing_enabled': billing_enabled,
                     'vip_free': vip_free,
                     'asset_type': asset_type,
                     'strategy_id': delivered_strategy_id,
+                    'script_source_id': delivered_source_id,
                 }
                 
         except Exception as e:
@@ -1269,35 +1270,43 @@ class CommunityService:
 
                 asset_type = str(original.get('asset_type') or 'indicator').strip().lower()
                 if asset_type == 'script_template':
-                    local_strategy = self._find_buyer_strategy_from_template(
-                        cur, buyer_id=buyer_id, template_id=indicator_id
+                    cur.execute(
+                        """
+                        SELECT id, code
+                        FROM qd_script_sources
+                        WHERE user_id = ? AND source_marketplace_indicator_id = ?
+                        ORDER BY id DESC LIMIT 1
+                        """,
+                        (buyer_id, indicator_id),
                     )
-                    if not local_strategy:
+                    local_source = cur.fetchone()
+                    if not local_source:
                         cur.close()
                         return False, 'local_copy_not_found', {}
-                    if (local_strategy.get('strategy_code') or '') == (original.get('code') or ''):
+                    if (local_source.get('code') or '') == (original.get('code') or ''):
                         cur.close()
                         return True, 'already_latest', {
-                            'strategy_id': local_strategy['id'],
+                            'script_source_id': local_source['id'],
                             'updated': False,
                         }
                     cur.execute(
                         """
-                        UPDATE qd_strategies_trading
-                        SET strategy_code = ?, strategy_name = ?, updated_at = NOW()
+                        UPDATE qd_script_sources
+                        SET code = ?, name = ?, description = ?, updated_at = NOW()
                         WHERE id = ? AND user_id = ?
                         """,
                         (
                             original['code'],
                             original['name'],
-                            local_strategy['id'],
+                            original.get('description') or '',
+                            local_source['id'],
                             buyer_id,
                         ),
                     )
                     db.commit()
                     cur.close()
                     return True, 'success', {
-                        'strategy_id': local_strategy['id'],
+                        'script_source_id': local_source['id'],
                         'updated': True,
                         'indicator_name': original['name'],
                     }
@@ -1314,6 +1323,14 @@ class CommunityService:
                     except Exception:
                         cur.close()
                         return False, 'invalid_preset_payload', {}
+                    if not self._bot_preset_has_sync_update(
+                        local_strategy, original.get('code'), indicator_id
+                    ):
+                        cur.close()
+                        return True, 'already_latest', {
+                            'strategy_id': local_strategy['id'],
+                            'updated': False,
+                        }
                     tc = dict(preset.get('trading_config') or {})
                     bot_type = preset.get('bot_type') or tc.get('bot_type')
                     if bot_type and not tc.get('bot_type'):
@@ -1323,16 +1340,6 @@ class CommunityService:
                     local_tc = self._parse_trading_config_json(local_strategy.get('trading_config'))
                     merged_tc = {**local_tc, **tc}
                     new_code = preset.get('strategy_code') or local_strategy.get('strategy_code') or ''
-                    if (
-                        (local_strategy.get('strategy_code') or '') == new_code
-                        and json.dumps(merged_tc, sort_keys=True, default=str)
-                        == json.dumps(local_tc, sort_keys=True, default=str)
-                    ):
-                        cur.close()
-                        return True, 'already_latest', {
-                            'strategy_id': local_strategy['id'],
-                            'updated': False,
-                        }
                     cur.execute(
                         """
                         UPDATE qd_strategies_trading
@@ -1430,14 +1437,12 @@ class CommunityService:
             with get_db_connection() as db:
                 cur = db.cursor()
                 
-                # 获取总数
                 cur.execute(
                     "SELECT COUNT(*) as count FROM qd_indicator_purchases WHERE buyer_id = ?",
                     (user_id,)
                 )
                 total = cur.fetchone()['count']
                 
-                # 获取列表
                 cur.execute("""
                     SELECT 
                         p.id as purchase_id, p.price as purchase_price, p.created_at as purchase_time,
@@ -1457,12 +1462,20 @@ class CommunityService:
                 for row in rows:
                     asset_type = str(row.get('asset_type') or 'indicator').strip().lower()
                     purchased_strategy_id = None
+                    purchased_script_source_id = None
                     if asset_type == 'script_template' and row.get('id'):
-                        strat = self._find_buyer_strategy_from_template(
-                            cur, buyer_id=user_id, template_id=int(row['id'])
+                        cur.execute(
+                            """
+                            SELECT id
+                            FROM qd_script_sources
+                            WHERE user_id = ? AND source_marketplace_indicator_id = ?
+                            ORDER BY id DESC LIMIT 1
+                            """,
+                            (user_id, int(row['id'])),
                         )
-                        if strat:
-                            purchased_strategy_id = strat['id']
+                        source = cur.fetchone()
+                        if source:
+                            purchased_script_source_id = source['id']
                     elif asset_type == 'bot_preset' and row.get('id'):
                         strat = self._find_buyer_strategy_from_preset(
                             cur, buyer_id=user_id, preset_id=int(row['id'])
@@ -1474,6 +1487,8 @@ class CommunityService:
                         'purchase_price': float(row['purchase_price'] or 0),
                         'purchase_time': row['purchase_time'].isoformat() if row['purchase_time'] else None,
                         'purchased_strategy_id': purchased_strategy_id,
+                        'script_source_id': purchased_script_source_id,
+                        'purchased_script_source_id': purchased_script_source_id,
                         'indicator': {
                             'id': row['id'],
                             'name': row['name'],
@@ -1502,14 +1517,8 @@ class CommunityService:
             return {'items': [], 'total': 0, 'page': 1, 'page_size': page_size, 'total_pages': 0}
 
     # ==========================================
-    # 作者后台 (Author Dashboard)
     # ==========================================
     #
-    # 这三个方法服务于 /api/community/author/* 端点，给「上传过指标的普通用户」
-    # 一个轻量的销售/收入概览。设计原则：
-    #   - 全部按当前登录用户的 user_id 过滤，不暴露其它作者数据；
-    #   - 跨连接做 SUM/COUNT 时一次查完，避免前端再 N+1 聚合；
-    #   - 列表分页与 get_my_purchases 保持一致字段（items/total/page/total_pages）。
 
     def get_author_summary(self, user_id: int) -> Dict[str, Any]:
         """获取作者的总览统计：发布数 / 已通过数 / 待审核数 / 总销量 / 总收入 / 平均评分。
@@ -1548,9 +1557,6 @@ class CommunityService:
                 )
                 row = cur.fetchone() or {}
 
-                # 总收入：从 purchases 表按 seller_id 汇总（更准确，
-                # 因为 indicators.price 可能改过，而 purchases.price 记录的是
-                # 每一笔成交时的真实价格）
                 cur.execute(
                     """
                     SELECT COALESCE(SUM(price), 0) AS total_revenue
@@ -1561,9 +1567,6 @@ class CommunityService:
                 )
                 rev_row = cur.fetchone() or {}
 
-                # 平均评分：按所有有评分的指标做加权平均（rating_count 作为权重），
-                # 而不是简单平均 avg_rating，避免「只有一个 5 星」和「100 条 4.5」
-                # 同等权重。
                 cur.execute(
                     """
                     SELECT
@@ -1762,7 +1765,6 @@ class CommunityService:
             return {'items': [], 'total': 0, 'page': 1, 'page_size': page_size, 'total_pages': 0}
 
     # ==========================================
-    # 评论功能
     # ==========================================
     
     def get_comments(self, indicator_id: int, page: int = 1, page_size: int = 20) -> Dict[str, Any]:
@@ -1773,14 +1775,12 @@ class CommunityService:
             with get_db_connection() as db:
                 cur = db.cursor()
                 
-                # 获取总数（只统计一级评论）
                 cur.execute("""
                     SELECT COUNT(*) as count FROM qd_indicator_comments 
                     WHERE indicator_id = ? AND parent_id IS NULL AND is_deleted = 0
                 """, (indicator_id,))
                 total = cur.fetchone()['count']
                 
-                # 获取评论列表
                 cur.execute("""
                     SELECT 
                         c.id, c.rating, c.content, c.created_at,
@@ -1831,14 +1831,12 @@ class CommunityService:
         添加评论（只有购买过的用户可以评论，且只能评论一次）
         """
         try:
-            # 验证评分范围
             rating = max(1, min(5, int(rating)))
-            content = (content or '').strip()[:500]  # 限制500字
+            content = (content or '').strip()[:500]  # Limit review content length.
             
             with get_db_connection() as db:
                 cur = db.cursor()
                 
-                # 检查指标是否存在
                 cur.execute(
                     """
                     SELECT id, user_id
@@ -1853,12 +1851,10 @@ class CommunityService:
                     cur.close()
                     return False, 'indicator_not_found', {}
                 
-                # 不能评论自己的指标
                 if indicator['user_id'] == user_id:
                     cur.close()
                     return False, 'cannot_comment_own', {}
                 
-                # 检查是否已购买（免费指标也需要"获取"才能评论）
                 cur.execute(
                     "SELECT id FROM qd_indicator_purchases WHERE indicator_id = ? AND buyer_id = ?",
                     (indicator_id, user_id)
@@ -1867,7 +1863,6 @@ class CommunityService:
                     cur.close()
                     return False, 'not_purchased', {}
                 
-                # 检查是否已评论
                 cur.execute(
                     "SELECT id FROM qd_indicator_comments WHERE indicator_id = ? AND user_id = ? AND parent_id IS NULL",
                     (indicator_id, user_id)
@@ -1876,7 +1871,6 @@ class CommunityService:
                     cur.close()
                     return False, 'already_commented', {}
                 
-                # 添加评论
                 cur.execute("""
                     INSERT INTO qd_indicator_comments 
                     (indicator_id, user_id, rating, content, created_at, updated_at)
@@ -1884,7 +1878,6 @@ class CommunityService:
                 """, (indicator_id, user_id, rating, content))
                 comment_id = cur.lastrowid
                 
-                # 更新指标的评分统计
                 cur.execute("""
                     UPDATE qd_indicator_codes 
                     SET 
@@ -1924,7 +1917,6 @@ class CommunityService:
             with get_db_connection() as db:
                 cur = db.cursor()
                 
-                # 检查评论是否存在且属于当前用户
                 cur.execute("""
                     SELECT id, rating as old_rating FROM qd_indicator_comments 
                     WHERE id = ? AND user_id = ? AND indicator_id = ? AND is_deleted = 0
@@ -1937,14 +1929,12 @@ class CommunityService:
                 
                 old_rating = comment['old_rating']
                 
-                # 更新评论
                 cur.execute("""
                     UPDATE qd_indicator_comments 
                     SET rating = ?, content = ?, updated_at = NOW()
                     WHERE id = ?
                 """, (rating, content, comment_id))
                 
-                # 如果评分变了，更新指标的平均评分
                 if old_rating != rating:
                     cur.execute("""
                         UPDATE qd_indicator_codes 
@@ -1994,7 +1984,6 @@ class CommunityService:
             return None
     
     # ==========================================
-    # 管理员审核功能
     # ==========================================
     
     def get_pending_indicators(
@@ -2010,7 +1999,6 @@ class CommunityService:
             with get_db_connection() as db:
                 cur = db.cursor()
                 
-                # 构建查询条件
                 where_clauses = ["i.publish_to_community = 1"]
                 params = []
                 
@@ -2020,7 +2008,6 @@ class CommunityService:
                 
                 where_sql = " AND ".join(where_clauses)
                 
-                # 获取总数
                 count_sql = f"""
                     SELECT COUNT(*) as count 
                     FROM qd_indicator_codes i 
@@ -2029,7 +2016,6 @@ class CommunityService:
                 cur.execute(count_sql, tuple(params))
                 total = cur.fetchone()['count']
                 
-                # 获取列表
                 query_sql = f"""
                     SELECT 
                         i.id, i.name, i.description, i.pricing_type, i.price,
@@ -2059,7 +2045,7 @@ class CommunityService:
                         'pricing_type': row['pricing_type'] or 'free',
                         'price': float(row['price'] or 0),
                         'preview_image': row['preview_image'] or '',
-                        'code': row['code'] or '',  # 管理员可以看代码
+                        'code': row['code'] or '',  # Admin review can inspect source code.
                         'review_status': row['review_status'] or 'pending',
                         'review_note': row['review_note'] or '',
                         'asset_type': row.get('asset_type') or 'indicator',
@@ -2101,7 +2087,6 @@ class CommunityService:
             with get_db_connection() as db:
                 cur = db.cursor()
                 
-                # 检查指标是否存在且已发布到社区
                 cur.execute("""
                     SELECT id, name, user_id FROM qd_indicator_codes 
                     WHERE id = ? AND publish_to_community = 1
@@ -2112,7 +2097,6 @@ class CommunityService:
                     cur.close()
                     return False, 'indicator_not_found'
                 
-                # 更新审核状态
                 cur.execute("""
                     UPDATE qd_indicator_codes 
                     SET review_status = ?, review_note = ?, reviewed_at = NOW(), reviewed_by = ?
@@ -2137,7 +2121,6 @@ class CommunityService:
             with get_db_connection() as db:
                 cur = db.cursor()
                 
-                # 检查指标是否存在
                 cur.execute("""
                     SELECT id, name FROM qd_indicator_codes WHERE id = ?
                 """, (indicator_id,))
@@ -2147,7 +2130,6 @@ class CommunityService:
                     cur.close()
                     return False, 'indicator_not_found'
                 
-                # 下架（取消发布）
                 cur.execute("""
                     UPDATE qd_indicator_codes 
                     SET publish_to_community = 0, review_status = 'rejected', 
@@ -2171,7 +2153,6 @@ class CommunityService:
             with get_db_connection() as db:
                 cur = db.cursor()
                 
-                # 检查指标是否存在
                 cur.execute("SELECT id, name FROM qd_indicator_codes WHERE id = ?", (indicator_id,))
                 indicator = cur.fetchone()
                 
@@ -2179,13 +2160,10 @@ class CommunityService:
                     cur.close()
                     return False, 'indicator_not_found'
                 
-                # 删除关联的评论
                 cur.execute("DELETE FROM qd_indicator_comments WHERE indicator_id = ?", (indicator_id,))
                 
-                # 删除关联的购买记录
                 cur.execute("DELETE FROM qd_indicator_purchases WHERE indicator_id = ?", (indicator_id,))
                 
-                # 删除指标
                 cur.execute("DELETE FROM qd_indicator_codes WHERE id = ?", (indicator_id,))
                 
                 db.commit()
@@ -2224,7 +2202,6 @@ class CommunityService:
             return {'pending': 0, 'approved': 0, 'rejected': 0}
     
     # ==========================================
-    # 实盘表现（聚合回测 + 实盘交易数据）
     # ==========================================
 
     def get_indicator_performance(self, indicator_id: int) -> Dict[str, Any]:
@@ -2281,7 +2258,6 @@ class CommunityService:
             with get_db_connection() as db:
                 cur = db.cursor()
 
-                # ---------- Part 1: 回测聚合（评分 + KPI + 适用范围） ----------
                 # We re-use the same code path the list endpoint uses so
                 # detail and list pages never disagree on score / KPI.
                 cur.execute("""
@@ -2335,15 +2311,12 @@ class CommunityService:
                     except Exception:
                         logger.debug("equity_points query failed", exc_info=True)
 
-                # ---------- Part 2: 实盘交易数据 ----------
                 live_strategy_count = 0
                 live_trade_count = 0
                 live_win_rate = 0.0
                 live_total_profit = 0.0
 
                 try:
-                    # 找出使用该指标的策略（indicator_config JSON 中 indicator_id 匹配）
-                    # JSON 序列化有时带空格、有时不带，两种格式都试一遍。
                     cur.execute("""
                         SELECT id FROM qd_strategies_trading
                         WHERE indicator_config::text LIKE %s
@@ -2406,7 +2379,6 @@ class CommunityService:
                     bt_trades_total += int(rj.get('totalTrades') or 0)
                 total_trade_count = bt_trades_total + live_trade_count
 
-                # 综合胜率 / 总利润：实盘优先；没有实盘就退回回测中位。
                 # (Previously this used the *mean* of backtest win-rates. We
                 # switched to median because one weirdly successful run can
                 # otherwise drag the rate from 45% to 70% on three samples.)
@@ -2455,7 +2427,6 @@ class CommunityService:
             return default_result
 
 
-# 全局单例
 _community_service = None
 
 

@@ -56,7 +56,7 @@ from app.data_providers.sentiment import (
     fetch_yield_curve, fetch_vxn, fetch_gvz, fetch_put_call_ratio,
 )
 from app.data_providers.adanos_sentiment import fetch_adanos_market_sentiment
-from app.data_providers.news import fetch_financial_news, get_economic_calendar
+from app.data_providers.news import fetch_financial_news, get_economic_calendar_payload
 from app.data_providers.heatmap import generate_heatmap_data
 from app.data_providers.opportunities import (
     analyze_opportunities_crypto, analyze_opportunities_stocks,
@@ -164,10 +164,27 @@ def economic_calendar():
     """Get economic calendar events with impact indicators."""
     try:
         force = request.args.get("force", "").lower() in ("true", "1")
-        data = cached_or_compute(
-            "economic_calendar", get_economic_calendar, force=force
+        payload = cached_or_compute(
+            "economic_calendar_v3", get_economic_calendar_payload, force=force
         )
-        return jsonify({"code": 1, "msg": "success", "data": data})
+        if isinstance(payload, list):
+            data = payload
+            meta = {"status": "ok", "source": "legacy"}
+        elif isinstance(payload, dict):
+            data = payload.get("events") if isinstance(payload.get("events"), list) else []
+            meta = {
+                "status": payload.get("status") or "ok",
+                "source": payload.get("source") or "free_calendar_sources",
+                "config_key": payload.get("config_key") or "",
+                "message": payload.get("message") or "",
+                "fallback_from": payload.get("fallback_from") or "",
+                "fallback_reason": payload.get("fallback_reason") or "",
+                "insight_version": "macro_event_context_v1",
+            }
+        else:
+            data = []
+            meta = {"status": "error", "source": "free_calendar_sources", "message": "Calendar payload is unavailable."}
+        return jsonify({"code": 1, "msg": "success", "data": data, "meta": meta})
     except Exception as e:
         logger.error("economic_calendar failed: %s", e, exc_info=True)
         return jsonify({"code": 0, "msg": str(e), "data": None}), 500

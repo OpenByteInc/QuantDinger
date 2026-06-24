@@ -59,17 +59,14 @@ def _normalize_symbol_for_order(symbol: str, market_type: str = "swap") -> str:
     
     sym = symbol.strip()
     
-    # 移除 swap/futures 后缀
     if ':' in sym:
         sym = sym.split(':', 1)[0]
     
     sym = sym.upper()
     
-    # 如果已经有分隔符，直接返回（假设格式正确）
     if '/' in sym:
         return sym
     
-    # 尝试从常见报价货币中识别
     common_quotes = ['USDT', 'USD', 'BTC', 'ETH', 'BUSD', 'USDC']
     for quote in common_quotes:
         if sym.endswith(quote) and len(sym) > len(quote):
@@ -77,7 +74,6 @@ def _normalize_symbol_for_order(symbol: str, market_type: str = "swap") -> str:
             if base:
                 return f"{base}/{quote}"
     
-    # 如果无法识别，默认使用 USDT
     return f"{sym}/USDT"
 
 
@@ -172,7 +168,6 @@ def place_order_from_signal(
     if mt == "spot" and ("short" in (signal_type or "").lower()):
         raise LiveTradingError("spot market does not support short signals")
     
-    # 规范化符号格式（统一处理裸符号如 PI, TRX 等）
     symbol = _normalize_symbol_for_order(symbol, market_type=mt)
 
     if isinstance(client, BinanceFuturesClient):

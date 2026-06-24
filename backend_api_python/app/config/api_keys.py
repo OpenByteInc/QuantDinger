@@ -49,6 +49,46 @@ class MetaAPIKeys(type):
         from app.utils.config_loader import load_addon_config
         val = load_addon_config().get('adanos', {}).get('api_key')
         return val if val else ''
+
+    @property
+    def FRED_API_KEY(cls):
+        """FRED API key for US macro time series."""
+        env_val = os.getenv('FRED_API_KEY', '').strip()
+        if env_val:
+            return env_val
+        from app.utils.config_loader import load_addon_config
+        val = load_addon_config().get('fred', {}).get('api_key')
+        return val if val else ''
+
+    @property
+    def BLS_API_KEY(cls):
+        """Optional BLS registration key for official US labor/CPI data."""
+        env_val = os.getenv('BLS_API_KEY', '').strip()
+        if env_val:
+            return env_val
+        from app.utils.config_loader import load_addon_config
+        val = load_addon_config().get('bls', {}).get('api_key')
+        return val if val else ''
+
+    @property
+    def BEA_API_KEY(cls):
+        """BEA API key for official US national accounts data."""
+        env_val = os.getenv('BEA_API_KEY', '').strip()
+        if env_val:
+            return env_val
+        from app.utils.config_loader import load_addon_config
+        val = load_addon_config().get('bea', {}).get('api_key')
+        return val if val else ''
+
+    @property
+    def ALPHA_VANTAGE_API_KEY(cls):
+        """Alpha Vantage key for NEWS_SENTIMENT company news data."""
+        env_val = os.getenv('ALPHA_VANTAGE_API_KEY', '').strip()
+        if env_val:
+            return env_val
+        from app.utils.config_loader import load_addon_config
+        val = load_addon_config().get('alpha_vantage', {}).get('api_key')
+        return val if val else ''
     
     @property
     def OPENROUTER_API_KEY(cls):
@@ -191,7 +231,6 @@ class APIKeys(metaclass=MetaAPIKeys):
     @classmethod
     def get(cls, key_name: str, default: str = '') -> str:
         """获取 API 密钥"""
-        # 尝试从类属性获取
         if hasattr(cls, key_name):
             return getattr(cls, key_name)
         return default

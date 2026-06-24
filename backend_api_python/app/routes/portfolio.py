@@ -109,7 +109,6 @@ def _get_single_price(market: str, symbol: str, force_refresh: bool = False) -> 
         force_refresh: 是否强制刷新（跳过缓存）
     """
     try:
-        # 速率限制：同一市场的请求间隔
         with _request_lock:
             now = time.time()
             last_time = _last_request_time.get(market, 0)
@@ -118,7 +117,6 @@ def _get_single_price(market: str, symbol: str, force_refresh: bool = False) -> 
                 time.sleep(wait_time)
             _last_request_time[market] = time.time()
         
-        # 使用新的 get_realtime_price 方法获取实时价格
         price_data = kline_service.get_realtime_price(market, symbol, force_refresh=force_refresh)
         
         return {
@@ -619,7 +617,6 @@ def add_monitor():
             db.commit()
             cur.close()
 
-        # 创建后立即在后台跑一轮：立刻发通知，并以完成时刻为基准写入 next_run_at（间隔后再次执行）
         if is_active and monitor_id:
             try:
                 from app.services.portfolio_monitor import run_single_monitor as _run_single_monitor

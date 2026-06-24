@@ -10,9 +10,8 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List
 
-from app.services.indicator_params import StrategyConfigParser
+from app.services.indicator_params import IndicatorParamsParser, StrategyConfigParser
 
-# 历史代码里可能出现 @strategy leverage；已由回测面板接管，不计入「未知键」告警
 _IGNORED_STRATEGY_KEYS = frozenset({"leverage"})
 
 
@@ -66,6 +65,89 @@ def _declared_param_names(code: str) -> List[str]:
 def _uses_params_get(code: str, name: str) -> bool:
     pattern = rf"params\s*\.?\s*get\s*\(\s*['\"]{re.escape(name)}['\"]\s*,?"
     return bool(re.search(pattern, code or ""))
+
+
+def _normalize_param_default(value: Any, param_type: str) -> Any:
+    param_type = (param_type or "").lower()
+    if param_type == "string":
+        param_type = "str"
+    if param_type == "bool":
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in ("true", "1", "yes", "on")
+        return bool(value)
+    if param_type == "int":
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return value
+    if param_type == "float":
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return value
+    if param_type == "str":
+        return str(value)
+    return value
+
+
+def _param_default_mismatches(code: str) -> List[Dict[str, Any]]:
+    declared = {
+        p.get("name"): p
+        for p in IndicatorParamsParser.parse_params(code or "")
+        if p.get("name")
+    }
+    if not declared:
+        return []
+
+    try:
+        import ast
+
+        tree = ast.parse(code or "")
+    except SyntaxError:
+        return []
+
+    mismatches: List[Dict[str, Any]] = []
+
+    class Visitor(ast.NodeVisitor):
+        def visit_Call(self, node):  # type: ignore[override]
+            try:
+                func = node.func
+                is_params_get = (
+                    isinstance(func, ast.Attribute)
+                    and func.attr == "get"
+                    and isinstance(func.value, ast.Name)
+                    and func.value.id == "params"
+                )
+                if not is_params_get or len(node.args) < 2:
+                    return self.generic_visit(node)
+                first = node.args[0]
+                if not isinstance(first, ast.Constant) or not isinstance(first.value, str):
+                    return self.generic_visit(node)
+                name = first.value
+                spec = declared.get(name)
+                if not spec:
+                    return self.generic_visit(node)
+                second = node.args[1]
+                if not isinstance(second, ast.Constant):
+                    return self.generic_visit(node)
+                param_type = spec.get("type") or ""
+                declared_default = _normalize_param_default(spec.get("default"), param_type)
+                fallback = _normalize_param_default(second.value, param_type)
+                if declared_default != fallback:
+                    mismatches.append(
+                        {
+                            "name": name,
+                            "declared": spec.get("default"),
+                            "fallback": second.value,
+                        }
+                    )
+            finally:
+                self.generic_visit(node)
+
+    Visitor().visit(tree)
+    return mismatches
 
 
 def _uses_where_none_for_markers(code: str) -> bool:
@@ -346,6 +428,15 @@ def analyze_indicator_code_quality(code: str) -> List[Dict[str, Any]]:
                     "severity": "warn",
                     "code": "DECLARED_PARAMS_NOT_READ_VIA_PARAMS_GET",
                     "params": {"names": unread},
+                }
+            )
+        mismatches = _param_default_mismatches(raw)
+        if mismatches:
+            hints.append(
+                {
+                    "severity": "error",
+                    "code": "PARAM_DEFAULT_MISMATCH",
+                    "params": {"items": mismatches},
                 }
             )
 

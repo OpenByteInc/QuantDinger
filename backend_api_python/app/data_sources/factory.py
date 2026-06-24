@@ -10,7 +10,6 @@ from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-# 小写 / 别名 -> 与 _create_source 一致的 PascalCase key
 _MARKET_ALIASES: Dict[str, str] = {
     "crypto": "Crypto",
     "cryptocurrency": "Crypto",
@@ -184,7 +183,6 @@ class DataSourceFactory:
             source = cls._resolve_source(m, exchange_id=exchange_id, market_type=market_type)
             klines = source.get_kline(symbol, timeframe, limit, before_time, after_time)
             
-            # 确保数据按时间排序
             klines.sort(key=lambda x: x['time'])
             
             return klines
@@ -201,13 +199,14 @@ class DataSourceFactory:
         market_type: Optional[str] = None,
     ) -> BaseDataSource:
         """Pick data source; crypto live strategies may scope to execution exchange."""
-        if market == "Crypto" and (exchange_id or "").strip():
+        ex = (exchange_id or "").strip().lower()
+        mt = (market_type or "").strip().lower()
+        if mt in ("futures", "future", "perp", "perpetual"):
+            mt = "swap"
+        if market == "Crypto" and (ex or mt == "swap"):
             from app.data_sources.crypto import CryptoDataSource
 
-            mt = (market_type or "swap").strip().lower()
-            if mt in ("futures", "future", "perp", "perpetual"):
-                mt = "swap"
-            return CryptoDataSource.for_exchange(str(exchange_id).strip().lower(), mt)
+            return CryptoDataSource.for_exchange(ex, mt or "swap")
         return cls.get_source(market)
 
     @classmethod

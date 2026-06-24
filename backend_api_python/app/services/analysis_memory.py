@@ -48,7 +48,6 @@ class AnalysisMemory:
             with get_db_connection() as db:
                 cur = db.cursor()
                 
-                # 创建表（如果不存在）
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS qd_analysis_memory (
                         id SERIAL PRIMARY KEY,
@@ -80,7 +79,6 @@ class AnalysisMemory:
                     );
                 """)
                 
-                # 检查并添加缺失的列（用于已存在的表）
                 cur.execute("""
                     DO $$
                     BEGIN
@@ -151,7 +149,6 @@ class AnalysisMemory:
                     END $$;
                 """)
                 
-                # 创建索引
                 cur.execute("""
                     CREATE INDEX IF NOT EXISTS idx_analysis_memory_symbol 
                     ON qd_analysis_memory(market, symbol);
@@ -187,7 +184,6 @@ class AnalysisMemory:
             with get_db_connection() as db:
                 cur = db.cursor()
                 
-                # 准备数据
                 market = analysis_result.get("market")
                 symbol = analysis_result.get("symbol")
                 decision = analysis_result.get("decision")
@@ -221,7 +217,6 @@ class AnalysisMemory:
                     "completed", "",
                 ))
                 
-                # 使用 lastrowid 属性获取 ID（execute 内部已经处理了 RETURNING）
                 memory_id = cur.lastrowid
                 db.commit()
                 cur.close()
@@ -426,8 +421,6 @@ class AnalysisMemory:
                     summary, reasons, scores, indicators, raw,
                     "processing", "",
                 ))
-                # PostgresCursor.execute() 会在 INSERT 时提前 fetchone() 消耗 RETURNING 结果，
-                # 所以这里不要再 cur.fetchone()，直接取 lastrowid。
                 memory_id = cur.lastrowid
                 db.commit()
                 cur.close()

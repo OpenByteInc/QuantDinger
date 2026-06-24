@@ -387,7 +387,6 @@ class SignalNotifier:
         except Exception:
             self.timeout_sec = 6.0
 
-        # 公共 SMTP 配置（管理员在系统设置中配置）
         self.smtp_host = (os.getenv("SMTP_HOST") or "").strip()
         try:
             self.smtp_port = int(os.getenv("SMTP_PORT") or "587")
@@ -1032,7 +1031,6 @@ class SignalNotifier:
         token_override: str = "",
         parse_mode: str = "",
     ) -> Tuple[bool, str]:
-        # 用户必须在个人中心配置自己的 telegram_bot_token
         token = (token_override or "").strip()
         if not token:
             return False, "missing_telegram_bot_token (请在个人中心配置 Telegram Bot Token)"

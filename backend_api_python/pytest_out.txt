@@ -1,5 +1,0 @@
-﻿....................F.F...................                               [100%]
-=========================== short test summary info ===========================
-FAILED tests/test_grid_exchange_fill_contracts.py::test_query_grid_order_fill_contract[gate_spot_filled]
-FAILED tests/test_grid_exchange_fill_contracts.py::test_query_grid_order_fill_contract[kucoin_spot_wrapped_filled]
-2 failed, 40 passed in 0.63s

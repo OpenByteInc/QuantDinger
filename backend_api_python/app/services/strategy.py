@@ -13,6 +13,16 @@ from app.services.exchange_execution import coalesce_exchange_config_from_payloa
 
 logger = get_logger(__name__)
 
+_strategy_service_singleton: Optional["StrategyService"] = None
+
+
+def get_strategy_service() -> "StrategyService":
+    """Return a shared strategy service for callers that use service factories."""
+    global _strategy_service_singleton
+    if _strategy_service_singleton is None:
+        _strategy_service_singleton = StrategyService()
+    return _strategy_service_singleton
+
 
 def _normalize_cross_sectional_symbol_list(
     symbol_list: List[Any],
@@ -1206,6 +1216,15 @@ class StrategyService:
 
         strategy_mode = payload.get('strategy_mode') or 'signal'
         strategy_code = payload.get('strategy_code') or ''
+        if strategy_type == 'ScriptStrategy' or strategy_mode in ('script', 'bot'):
+            script_source_id = (trading_config or {}).get('script_source_id') or (trading_config or {}).get('scriptSourceId')
+            if script_source_id:
+                from app.services.script_source import get_script_source_service
+                source = get_script_source_service().get_source(int(script_source_id), user_id=user_id)
+                if not source:
+                    raise ValueError("script source not found")
+                trading_config['script_source_id'] = int(script_source_id)
+                trading_config['script_role'] = trading_config.get('script_role') or 'runtime'
 
         with get_db_connection() as db:
             cur = db.cursor()
@@ -1480,8 +1499,6 @@ class StrategyService:
         exchange_config = payload.get('exchange_config') if payload.get('exchange_config') is not None else (existing.get('exchange_config') or {})
         ai_model_config = payload.get('ai_model_config') if payload.get('ai_model_config') is not None else (existing.get('ai_model_config') or {})
 
-        # Merge trading_config 而不是整体替换,避免覆盖后端写入的运行时状态字段
-        # (如 script_runtime_state、马丁 layer/total_cost、网格 bp/sp/prev_price、DCA total_qty 等)
         existing_tc = existing.get('trading_config') or {}
         if not isinstance(existing_tc, dict):
             existing_tc = {}
@@ -1495,7 +1512,6 @@ class StrategyService:
             merged_tc = dict(existing_tc)
             merged_tc.update(incoming_tc)
             merged_tc = _strip_legacy_risk_pct_basis(merged_tc)
-            # 保护这些运行时字段:仅当前端显式给出时才覆盖,否则保留后端写入的最新值
             runtime_protected_keys = (
                 'script_runtime_state',
                 'last_signal_time',
@@ -1608,6 +1624,15 @@ class StrategyService:
             strategy_code = payload.get('strategy_code') or ''
         else:
             strategy_code = existing.get('strategy_code') or ''
+        if strategy_type == 'ScriptStrategy' or strategy_mode in ('script', 'bot'):
+            script_source_id = (trading_config or {}).get('script_source_id') or (trading_config or {}).get('scriptSourceId')
+            if script_source_id:
+                from app.services.script_source import get_script_source_service
+                source = get_script_source_service().get_source(int(script_source_id), user_id=int(existing.get('user_id') or 1))
+                if not source:
+                    raise ValueError("script source not found")
+                trading_config['script_source_id'] = int(script_source_id)
+                trading_config['script_role'] = trading_config.get('script_role') or 'runtime'
 
         with get_db_connection() as db:
             cur = db.cursor()

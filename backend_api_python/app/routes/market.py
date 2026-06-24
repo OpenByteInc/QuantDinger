@@ -164,10 +164,8 @@ def get_public_config():
         if not isinstance(models, dict) or not models:
             # Fallback defaults (offline friendly)
             models = {
-                # Keep some legacy defaults
-                'openai/gpt-4o': 'GPT-4o',
-
                 # Unified frontend model list (OpenRouter-style ids)
+                'openai/gpt-5.4': 'OpenAI: GPT-5.4',
                 'x-ai/grok-code-fast-1': 'xAI: Grok Code Fast 1',
                 'x-ai/grok-4-fast': 'xAI: Grok 4 Fast',
                 'x-ai/grok-4.1-fast': 'xAI: Grok 4.1 Fast',
@@ -176,6 +174,7 @@ def get_public_config():
                 'google/gemini-3-pro-preview': 'Google: Gemini 3 Pro Preview',
                 'google/gemini-2.5-flash-lite': 'Google: Gemini 2.5 Flash Lite',
                 'google/gemini-2.5-pro': 'Google: Gemini 2.5 Pro',
+                'openai/gpt-4o': 'OpenAI: GPT-4o',
                 'openai/gpt-4o-mini': 'OpenAI: GPT-4o-mini',
                 'openai/gpt-5-mini': 'OpenAI: GPT-5 Mini',
                 'openai/gpt-4.1-mini': 'OpenAI: GPT-4.1 Mini',
@@ -582,8 +581,6 @@ def remove_watchlist():
 def get_single_price(market: str, symbol: str) -> dict:
     """获取单个标的的价格数据"""
     try:
-        # 使用 get_realtime_price 获取实时价格（内部已有30秒缓存）
-        # 相比原先的 '1D' K线逻辑，这能更及时地反映 Crypto 等 24h 市场的变化
         price_data = kline_service.get_realtime_price(market, symbol)
         
         return {
@@ -659,7 +656,6 @@ def get_watchlist_prices():
                 future = executor.submit(get_single_price, market, symbol)
                 futures[future] = (market, symbol)
         
-        # 收集结果（带超时保护）
         completed_futures = set()
         try:
             for future in as_completed(futures, timeout=30):
@@ -678,7 +674,6 @@ def get_watchlist_prices():
                         'changePercent': 0
                     })
         except TimeoutError:
-            # 超时时，为未完成的任务添加默认结果
             for future, (market, symbol) in futures.items():
                 if future not in completed_futures:
                     logger.warning(f"Price fetch timed out: {market}:{symbol}")

@@ -206,7 +206,7 @@ class GridRestingRunner:
             append_strategy_log(
                 self.strategy_id,
                 "error",
-                "Grid startup aborted: resting limit orders failed (check exchange credentials)",
+                "Grid startup aborted: resting limit orders failed (check exchange error and order parameters)",
             )
             return False, "grid resting limit orders failed during startup"
         self._started = True

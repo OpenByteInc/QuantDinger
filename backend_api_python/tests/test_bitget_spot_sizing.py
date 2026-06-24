@@ -59,3 +59,24 @@ def test_bitget_market_sell_normalizes_base(mock_meta):
     body = mock_req.call_args.kwargs.get("json_body") or mock_req.call_args[1].get("json_body")
     assert body["size"] == "10.9"
     assert body["side"] == "sell"
+
+
+@patch.object(BitgetSpotClient, "get_symbol_meta")
+def test_bitget_limit_order_normalizes_price_precision(mock_meta):
+    mock_meta.return_value = {
+        "quantityPrecision": "6",
+        "pricePrecision": "2",
+        "minTradeAmount": "0.001",
+    }
+    client = BitgetSpotClient(
+        api_key="k",
+        secret_key="s",
+        passphrase="p",
+    )
+    with patch.object(client, "_signed_request") as mock_req:
+        mock_req.return_value = {"data": {"orderId": "3"}}
+        client.place_limit_order(symbol="ETH/USDT", side="buy", size=0.013333333, price=1200.009)
+    body = mock_req.call_args.kwargs.get("json_body") or mock_req.call_args[1].get("json_body")
+    assert body["size"] == "0.013333"
+    assert body["price"] == "1200"
+    assert body["side"] == "buy"

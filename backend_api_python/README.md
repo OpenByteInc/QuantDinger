@@ -34,7 +34,8 @@ backend_api_python/
 
 ## Architecture and quality guardrails
 
-- Backend architecture guide: `docs/backend_architecture.md`
+- Backend module boundaries: `../docs/MODULE_BOUNDARIES.md`
+- Concurrency model: `../docs/CONCURRENCY_MODEL.md`
 - Canonical live-trading venue matrix: `app/services/live_trading/capabilities.py`
 - Stable live order contracts: `app/services/live_trading/contracts.py`
 - Structural regression guard:
@@ -247,6 +248,18 @@ The response normalizes common compare fields across sources, including
 `trend`, `trend_history`, and source-specific activity metrics such as
 `subreddit_count`, `unique_tweets`, `source_count`, `trade_count`,
 `market_count`, and `total_liquidity`.
+
+### Economic Calendar Data
+
+The global-market economic calendar is free-first. By default it uses the
+no-key AkShare/WallstreetCN calendar fallback. If you configure
+`TRADING_ECONOMICS_CLIENT` and `TRADING_ECONOMICS_KEY`, QuantDinger will try
+Trading Economics as the official international calendar provider before
+falling back. Finnhub paid-only calendar and social-sentiment endpoints are
+skipped by default through `FINNHUB_FREE_ONLY=true`.
+
+Only set `FINNHUB_FREE_ONLY=false` if your Finnhub plan explicitly includes
+those paid endpoints.
 
 ## AI analysis & memory
 

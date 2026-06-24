@@ -92,8 +92,13 @@ def run_backtest():
         indicator_id = data.get('indicatorId')
         symbol = (data.get('symbol') or '').strip()
         market = (data.get('market') or '').strip()
-        # 数据源仅由请求里的市场分类决定（与前端自选一致）；此处只做大小写/别名规范化
         market = DataSourceFactory.normalize_market(market)
+        market_type = str(data.get('marketType') or data.get('market_type') or '').strip().lower()
+        if market_type in ('futures', 'future', 'perp', 'perpetual'):
+            market_type = 'swap'
+        if market_type not in ('spot', 'swap'):
+            market_type = ''
+        exchange_id = str(data.get('exchangeId') or data.get('exchange_id') or '').strip().lower()
         timeframe = data.get('timeframe', '1D')
         start_date_str = data.get('startDate', '')
         end_date_str = data.get('endDate', '')
@@ -137,7 +142,6 @@ def run_backtest():
             except Exception:
                 pass
 
-        # 参数验证
         if not all([indicator_code, symbol, market, timeframe, start_date_str, end_date_str]):
             return jsonify({
                 'code': 0,
@@ -153,13 +157,9 @@ def run_backtest():
                 'data': None
             }), 400
         
-        # 转换日期
-        # 开始日期：当天的 00:00:00
         start_date = datetime.strptime(start_date_str, '%Y-%m-%d')
-        # 结束日期：当天的 23:59:59，确保包含整天的数据
         end_date = datetime.strptime(end_date_str, '%Y-%m-%d').replace(hour=23, minute=59, second=59)
         
-        # 验证时间范围限制
         days_diff = (end_date - start_date).days
         warmup_bars = backtest_service._estimate_warmup_bars(
             indicator_code,
@@ -203,12 +203,18 @@ def run_backtest():
             leverage=leverage,
             trade_direction=trade_direction,
             strategy_config=strategy_config,
+            market_type=market_type or None,
+            exchange_id=exchange_id or None,
         )
 
         ea = dict(result.get('executionAssumptions') or {})
         ea['commission'] = round(float(commission), 6)
         ea['slippage'] = round(float(slippage), 6)
         ea['strictMode'] = bool(strict_mode)
+        if market_type:
+            ea['marketType'] = market_type
+        if exchange_id:
+            ea['exchangeId'] = exchange_id
         result['executionAssumptions'] = ea
 
         run_id = None
@@ -232,6 +238,10 @@ def run_backtest():
                     'indicatorId': int(indicator_id) if indicator_id is not None else None,
                     'executionConfig': {
                         'strictMode': bool(strict_mode),
+                    },
+                    'marketConfig': {
+                        'marketType': market_type,
+                        'exchangeId': exchange_id,
                     },
                 },
                 status='success',

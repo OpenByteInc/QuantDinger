@@ -91,12 +91,10 @@ def verify_token(token: str) -> dict:
         _configure_jwt_secret_warnings()
         payload = jwt.decode(token, Config.SECRET_KEY, algorithms=['HS256'])
         
-        # 验证 token_version（单一客户端登录控制）
         user_id = payload.get('user_id')
         token_version = payload.get('token_version')
         
         if user_id and token_version is not None:
-            # 检查数据库中的 token_version 是否匹配
             if not _verify_token_version(user_id, token_version):
                 logger.debug(f"Token version mismatch for user {user_id}: expected current, got {token_version}")
                 return None
@@ -140,7 +138,6 @@ def _verify_token_version(user_id: int, token_version: int) -> bool:
             return int(token_version) == int(db_token_version)
     except Exception as e:
         logger.error(f"_verify_token_version failed: {e}")
-        # 如果验证失败，为了安全起见，返回 False
         return False
 
 

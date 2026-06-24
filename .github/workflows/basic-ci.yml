@@ -112,3 +112,6 @@ jobs:
         # repo) and are skipped when absent. Run bump_version.py locally with
         # the full FE checkout to sync those files before building the image.
         run: python scripts/check_version.py
+
+      - name: Check for mojibake in tracked text files
+        run: python scripts/check_mojibake.py

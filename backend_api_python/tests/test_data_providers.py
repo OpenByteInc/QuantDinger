@@ -32,22 +32,20 @@ def test_economic_calendar_not_empty(monkeypatch):
 
         @staticmethod
         def json():
-            return {
-                "economicCalendar": [
-                    {
-                        "event": "US CPI m/m",
-                        "country": "US",
-                        "date": "2026-06-01",
-                        "time": "08:30",
-                        "impact": "high",
-                        "unit": "%",
-                        "estimate": 0.3,
-                        "prev": 0.4,
-                    }
-                ]
-            }
+            return [
+                {
+                    "Event": "US CPI m/m",
+                    "CountryCode": "US",
+                    "Date": "2026-06-01T08:30:00",
+                    "Importance": 3,
+                    "Unit": "%",
+                    "Forecast": 0.3,
+                    "Previous": 0.4,
+                }
+            ]
 
-    monkeypatch.setenv("FINNHUB_API_KEY", "test_finnhub_key")
+    monkeypatch.setenv("TRADING_ECONOMICS_CLIENT", "test_client")
+    monkeypatch.setenv("TRADING_ECONOMICS_KEY", "test_key")
     monkeypatch.setattr(
         "app.data_providers.economic_calendar.requests.get",
         lambda *args, **kwargs: FakeResponse(),

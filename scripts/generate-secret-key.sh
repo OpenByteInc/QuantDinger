@@ -6,17 +6,17 @@ set -e
 
 ENV_FILE="backend_api_python/.env"
 
-# Check if .env exists
+# Check if .env exists.
 if [ ! -f "$ENV_FILE" ]; then
     echo "Error: $ENV_FILE not found"
     echo "Please run: cp backend_api_python/env.example backend_api_python/.env"
     exit 1
 fi
 
-# Generate a secure random key
+# Generate a secure random key.
 NEW_KEY=$(python3 -c "import secrets; print(secrets.token_hex(32))")
 
-# Update SECRET_KEY in .env file
+# Update SECRET_KEY in .env file.
 if [[ "$OSTYPE" == "darwin"* ]]; then
     # macOS
     sed -i '' "s|^SECRET_KEY=.*|SECRET_KEY=$NEW_KEY|" "$ENV_FILE"
@@ -25,7 +25,7 @@ else
     sed -i "s|^SECRET_KEY=.*|SECRET_KEY=$NEW_KEY|" "$ENV_FILE"
 fi
 
-echo "✅ SECRET_KEY generated and updated in $ENV_FILE"
+echo "[OK] SECRET_KEY generated and updated in $ENV_FILE"
 echo ""
 echo "Generated key: $NEW_KEY"
 echo ""

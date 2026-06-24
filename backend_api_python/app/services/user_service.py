@@ -15,6 +15,7 @@ logger = get_logger(__name__)
 
 # IANA timezone id subset check (e.g. Asia/Shanghai, America/New_York)
 _TIMEZONE_ID_RE = re.compile(r'^[A-Za-z0-9_/+\-.]+$')
+_EMAIL_RE = re.compile(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
 
 # Try to import bcrypt for secure password hashing
 try:
@@ -131,6 +132,28 @@ class UserService:
             return str(os.getenv('ADMIN_PASSWORD', '') or '')
 
     @classmethod
+    def _configured_admin_username(cls) -> str:
+        """Return the configured bootstrap admin username."""
+        try:
+            from app.config.settings import Config
+            return str(Config.ADMIN_USER or os.getenv('ADMIN_USER', 'quantdinger') or 'quantdinger').strip()
+        except Exception:
+            return str(os.getenv('ADMIN_USER', 'quantdinger') or 'quantdinger').strip()
+
+    @classmethod
+    def _configured_admin_email(cls) -> str:
+        """Return the configured bootstrap admin email."""
+        try:
+            from app.config.settings import Config
+            return str(getattr(Config, 'ADMIN_EMAIL', '') or os.getenv('ADMIN_EMAIL', '') or '').strip()
+        except Exception:
+            return str(os.getenv('ADMIN_EMAIL', '') or '').strip()
+
+    @staticmethod
+    def _normalize_email(email: Optional[str]) -> str:
+        return str(email or '').strip().lower()
+
+    @classmethod
     def _is_bootstrap_default_plain_password(cls, password: str) -> bool:
         return str(password or '') == cls.BOOTSTRAP_DEFAULT_PASSWORD
 
@@ -233,6 +256,81 @@ class UserService:
         except Exception as e:
             logger.warning(f"sync_bootstrap_admin_password_from_env failed: {e}")
             return False
+
+    def sync_admin_email_from_config(
+        self,
+        admin_email: Optional[str] = None,
+        overwrite_existing: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Sync ADMIN_EMAIL into the bootstrap admin account.
+
+        Startup sync only fills empty/default emails. Explicit settings saves may
+        overwrite the admin account email, but never take an email used by another
+        user.
+        """
+        email = self._normalize_email(
+            admin_email if admin_email is not None else self._configured_admin_email()
+        )
+        if not email:
+            return {'synced': False, 'reason': 'empty'}
+        if email == 'admin@example.com':
+            return {'synced': False, 'reason': 'placeholder'}
+        if not _EMAIL_RE.match(email):
+            return {'synced': False, 'reason': 'invalid_email'}
+
+        try:
+            admin_username = self._configured_admin_username()
+            admin_user = self.get_user_by_username(admin_username) if admin_username else None
+            if not admin_user:
+                first_id = self.get_first_user_id()
+                admin_user = self.get_user_by_id(first_id) if first_id is not None else None
+            if not admin_user:
+                return {'synced': False, 'reason': 'admin_user_not_found'}
+
+            admin_id = int(admin_user.get('id'))
+            existing = self.get_user_by_email(email)
+            if existing and int(existing.get('id')) != admin_id:
+                return {
+                    'synced': False,
+                    'reason': 'email_in_use',
+                    'user_id': int(existing.get('id')),
+                }
+
+            current_email = self._normalize_email(admin_user.get('email'))
+            if current_email == email:
+                return {
+                    'synced': False,
+                    'reason': 'already_current',
+                    'user_id': admin_id,
+                    'email': email,
+                }
+            if current_email and current_email != 'admin@example.com' and not overwrite_existing:
+                return {
+                    'synced': False,
+                    'reason': 'existing_email_kept',
+                    'user_id': admin_id,
+                    'email': current_email,
+                }
+
+            with get_db_connection() as db:
+                cur = db.cursor()
+                cur.execute(
+                    """
+                    UPDATE qd_users
+                    SET email = ?, email_verified = TRUE, updated_at = NOW()
+                    WHERE id = ?
+                    """,
+                    (email, admin_id),
+                )
+                db.commit()
+                cur.close()
+
+            logger.info("Synchronized admin email from ADMIN_EMAIL")
+            return {'synced': True, 'user_id': admin_id, 'email': email}
+        except Exception as e:
+            logger.warning(f"sync_admin_email_from_config failed: {e}")
+            return {'synced': False, 'reason': 'error', 'message': str(e)}
 
     def get_first_user_id(self) -> Optional[int]:
         """Return the lowest user id (bootstrap / first account created on install)."""
@@ -414,7 +512,7 @@ class UserService:
             logger.error(f"get_user_by_email failed: {e}")
             return None
     
-    def authenticate(self, username: str, password: str) -> Optional[Dict[str, Any]]:
+    def authenticate(self, username: str, password: str, update_last_login: bool = True) -> Optional[Dict[str, Any]]:
         """
         Authenticate user with username/email and password.
         Supports both username and email login.
@@ -446,27 +544,33 @@ class UserService:
         if not self.verify_password(password, password_hash):
             return None
         
-        # Update last login time
+        if update_last_login:
+            self.touch_last_login(user['id'])
+        
+        # Remove password_hash from return value
+        user.pop('password_hash', None)
+        return user
+
+    def touch_last_login(self, user_id: int) -> bool:
+        """Update last_login_at after the full login flow has completed."""
         try:
             with get_db_connection() as db:
                 cur = db.cursor()
                 cur.execute(
                     "UPDATE qd_users SET last_login_at = NOW() WHERE id = ?",
-                    (user['id'],)
+                    (user_id,)
                 )
                 db.commit()
                 affected = cur.rowcount
                 cur.close()
                 if affected == 0:
-                    logger.error(f"Failed to update last_login_at: no rows affected for user_id={user['id']}")
-                else:
-                    logger.info(f"Updated last_login_at for user_id={user['id']}")
+                    logger.error(f"Failed to update last_login_at: no rows affected for user_id={user_id}")
+                    return False
+                logger.info(f"Updated last_login_at for user_id={user_id}")
+                return True
         except Exception as e:
-            logger.error(f"Failed to update last_login_at for user_id={user.get('id')}: {e}")
-        
-        # Remove password_hash from return value
-        user.pop('password_hash', None)
-        return user
+            logger.error(f"Failed to update last_login_at for user_id={user_id}: {e}")
+            return False
     
     def get_token_version(self, user_id: int) -> int:
         """
@@ -508,7 +612,6 @@ class UserService:
         try:
             with get_db_connection() as db:
                 cur = db.cursor()
-                # 递增 token_version
                 cur.execute(
                     """
                     UPDATE qd_users 
@@ -519,7 +622,6 @@ class UserService:
                 )
                 db.commit()
                 
-                # 获取新的 token_version
                 cur.execute(
                     "SELECT token_version FROM qd_users WHERE id = ?",
                     (user_id,)
@@ -944,6 +1046,7 @@ class UserService:
                     logger.info(f"Created admin user: {admin_user} ({admin_email})")
                 else:
                     self.sync_bootstrap_admin_password_from_env()
+                    self.sync_admin_email_from_config(overwrite_existing=False)
         except Exception as e:
             logger.error(f"ensure_admin_exists failed: {e}")
 

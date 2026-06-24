@@ -600,6 +600,8 @@ class BacktestService:
         indicator_params: Optional[Dict[str, Any]] = None,
         user_id: int = 1,
         indicator_id: Optional[int] = None,
+        market_type: Optional[str] = None,
+        exchange_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Multi-timeframe backtest.
@@ -684,6 +686,8 @@ class BacktestService:
                 indicator_params=indicator_params,
                 user_id=user_id,
                 indicator_id=indicator_id,
+                market_type=market_type,
+                exchange_id=exchange_id,
             )
             result['precision_info'] = precision_info or {
                 'enabled': False,
@@ -714,7 +718,15 @@ class BacktestService:
         )
         
         # 1. Fetch strategy timeframe candles (for signal generation)
-        df_signal_full = self._fetch_kline_data(market, symbol, timeframe, signal_start_date, end_date)
+        df_signal_full = self._fetch_kline_data(
+            market,
+            symbol,
+            timeframe,
+            signal_start_date,
+            end_date,
+            market_type=market_type,
+            exchange_id=exchange_id,
+        )
         if df_signal_full.empty:
             raise ValueError("No candle data available in the backtest date range")
         
@@ -737,7 +749,15 @@ class BacktestService:
         
         # 3. Fetch execution timeframe candles (for precise trade simulation)
         logger.info(f"Fetching execution timeframe data: {exec_tf} for {market}:{symbol}")
-        df_exec = self._fetch_kline_data(market, symbol, exec_tf, start_date, end_date)
+        df_exec = self._fetch_kline_data(
+            market,
+            symbol,
+            exec_tf,
+            start_date,
+            end_date,
+            market_type=market_type,
+            exchange_id=exchange_id,
+        )
         logger.info(f"Execution timeframe data fetched: {len(df_exec)} candles")
         if df_exec.empty:
             logger.warning(f"Cannot fetch {exec_tf} candles, falling back to standard backtest")
@@ -757,6 +777,8 @@ class BacktestService:
                 indicator_params=indicator_params,
                 user_id=user_id,
                 indicator_id=indicator_id,
+                market_type=market_type,
+                exchange_id=exchange_id,
             )
             result['precision_info'] = {
                 'enabled': False,
@@ -838,6 +860,7 @@ class BacktestService:
                 warmup_start=signal_start_date,
                 requested_start=start_date,
             )
+            self._attach_buy_hold_benchmark(result, df_exec, initial_capital, symbol)
             self._attach_actual_range_to_result(result, df_signal)
             logger.info("Backtest result formatted successfully")
         except Exception as e:
@@ -1191,7 +1214,6 @@ class BacktestService:
             if i > 0 and i % progress_log_interval == 0:
                 progress_pct = (i / total_exec_candles) * 100
                 logger.info(f"Execution progress: {i}/{total_exec_candles} ({progress_pct:.1f}%), trades={executed_trades_count}, position={position}")
-            # 爆仓后直接停止回测，输出结果
             if is_liquidated:
                 break
 
@@ -1592,7 +1614,6 @@ class BacktestService:
                             executed_trades_count += 1
                             if executed_trades_count <= 10:
                                 logger.info(f"Trade #{executed_trades_count}: close_short (before open_long) @ {timestamp}, price={close_price:.4f}, profit={close_profit:.2f}")
-                            # 检查是否爆仓
                             if capital < min_capital_to_trade:
                                 is_liquidated = True
                                 capital = 0
@@ -1651,7 +1672,6 @@ class BacktestService:
                         highest_since_entry = None
                         lowest_since_entry = None
                         pending_signal = None
-                        # 检查是否爆仓
                         if capital < min_capital_to_trade:
                             is_liquidated = True
                             capital = 0
@@ -1683,7 +1703,6 @@ class BacktestService:
                             executed_trades_count += 1
                             if executed_trades_count <= 10:
                                 logger.info(f"Trade #{executed_trades_count}: close_long (before open_short) @ {timestamp}, price={close_price:.4f}, profit={close_profit:.2f}")
-                            # 检查是否爆仓
                             if capital < min_capital_to_trade:
                                 is_liquidated = True
                                 capital = 0
@@ -1743,7 +1762,6 @@ class BacktestService:
                         highest_since_entry = None
                         lowest_since_entry = None
                         pending_signal = None
-                        # 检查是否爆仓
                         if capital < min_capital_to_trade:
                             is_liquidated = True
                             capital = 0
@@ -1812,6 +1830,10 @@ class BacktestService:
         indicator_id = snapshot.get('indicator_id')
         user_id = int(snapshot.get('user_id') or 1)
         run_type = str(snapshot.get('run_type') or 'strategy_indicator')
+        config_snapshot = snapshot.get('config_snapshot') if isinstance(snapshot.get('config_snapshot'), dict) else {}
+        market_config = config_snapshot.get('marketConfig') if isinstance(config_snapshot.get('marketConfig'), dict) else {}
+        market_type = snapshot.get('market_type') or market_config.get('marketType')
+        exchange_id = snapshot.get('exchange_id') or market_config.get('exchangeId')
 
         if run_type == 'strategy_script':
             return self._run_script_strategy(
@@ -1827,6 +1849,8 @@ class BacktestService:
                 leverage=leverage,
                 trade_direction=trade_direction,
                 strategy_config=strategy_config,
+                market_type=market_type,
+                exchange_id=exchange_id,
             )
 
         strict_mode = bool(snapshot.get('strict_mode', True))
@@ -1847,6 +1871,8 @@ class BacktestService:
             indicator_params=indicator_params,
             user_id=user_id,
             indicator_id=indicator_id,
+            market_type=market_type,
+            exchange_id=exchange_id,
         )
 
     def _run_script_strategy(
@@ -1864,8 +1890,18 @@ class BacktestService:
         leverage: int,
         trade_direction: str,
         strategy_config: Optional[Dict[str, Any]] = None,
+        market_type: Optional[str] = None,
+        exchange_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        df = self._fetch_kline_data(market, symbol, timeframe, start_date, end_date)
+        df = self._fetch_kline_data(
+            market,
+            symbol,
+            timeframe,
+            start_date,
+            end_date,
+            market_type=market_type,
+            exchange_id=exchange_id,
+        )
         if df.empty:
             raise ValueError("No candle data available in the backtest date range")
 
@@ -1899,7 +1935,12 @@ class BacktestService:
         ea['strictMode'] = False
         ea['simulationMode'] = 'script_standard'
         ea['fillRule'] = 'next_bar_open'
+        if market_type:
+            ea['marketType'] = market_type
+        if exchange_id:
+            ea['exchangeId'] = exchange_id
         result['executionAssumptions'] = ea
+        self._attach_buy_hold_benchmark(result, df, initial_capital, symbol)
         self._attach_actual_range_to_result(result, df)
         return result
     
@@ -1974,6 +2015,8 @@ class BacktestService:
         indicator_params: Optional[Dict[str, Any]] = None,
         user_id: int = 1,
         indicator_id: Optional[int] = None,
+        market_type: Optional[str] = None,
+        exchange_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Live-aligned backtest: strict → closed-bar signals + next-bar open;
@@ -2004,6 +2047,8 @@ class BacktestService:
                 indicator_params=indicator_params,
                 user_id=user_id,
                 indicator_id=indicator_id,
+                market_type=market_type,
+                exchange_id=exchange_id,
             )
             result['precision_info'] = precision_info_for_run(
                 strict_mode=True, strategy_timeframe=timeframe,
@@ -2036,6 +2081,8 @@ class BacktestService:
                 indicator_params=indicator_params,
                 user_id=user_id,
                 indicator_id=indicator_id,
+                market_type=market_type,
+                exchange_id=exchange_id,
             )
             pi_raw = result.get('precision_info') or {}
             mtf_active = bool(pi_raw.get('enabled'))
@@ -2076,6 +2123,8 @@ class BacktestService:
             indicator_params=indicator_params,
             user_id=user_id,
             indicator_id=indicator_id,
+            market_type=market_type,
+            exchange_id=exchange_id,
         )
         result['precision_info'] = precision_info_for_run(
             strict_mode=False,
@@ -2111,6 +2160,8 @@ class BacktestService:
         indicator_params: Optional[Dict[str, Any]] = None,
         user_id: int = 1,
         indicator_id: Optional[int] = None,
+        market_type: Optional[str] = None,
+        exchange_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Run backtest.
@@ -2135,7 +2186,15 @@ class BacktestService:
 
         # 1. Fetch candle data. Indicators execute on warmup+window data, while
         # trading starts strictly at the user-requested start_date.
-        df_full = self._fetch_kline_data(market, symbol, timeframe, signal_start_date, end_date)
+        df_full = self._fetch_kline_data(
+            market,
+            symbol,
+            timeframe,
+            signal_start_date,
+            end_date,
+            market_type=market_type,
+            exchange_id=exchange_id,
+        )
         if df_full.empty:
             raise ValueError("No candle data available in the backtest date range")
         
@@ -2179,12 +2238,17 @@ class BacktestService:
             simulation_mode='standard',
             signal_timeframe=timeframe,
         )
+        if market_type:
+            result['executionAssumptions']['marketType'] = market_type
+        if exchange_id:
+            result['executionAssumptions']['exchangeId'] = exchange_id
         self._attach_warmup_to_result(
             result,
             warmup_bars=warmup_bars,
             warmup_start=signal_start_date,
             requested_start=start_date,
         )
+        self._attach_buy_hold_benchmark(result, df, initial_capital, symbol)
         self._attach_actual_range_to_result(result, df)
         return result
     
@@ -2199,6 +2263,115 @@ class BacktestService:
         ea["actualDataRange"] = ar
         ea["requestedRangeAdjusted"] = True
         result["executionAssumptions"] = ea
+
+    @staticmethod
+    def _parse_curve_time(raw: Any) -> Optional[pd.Timestamp]:
+        if raw is None:
+            return None
+        try:
+            ts = pd.to_datetime(raw)
+            if pd.isna(ts):
+                return None
+            if getattr(ts, "tzinfo", None) is not None:
+                ts = ts.tz_convert(None)
+            return ts
+        except Exception:
+            return None
+
+    def _build_buy_hold_benchmark_curve(
+        self,
+        df: pd.DataFrame,
+        equity_curve: List[Dict[str, Any]],
+        initial_capital: float,
+    ) -> Dict[str, Any]:
+        """Build a same-period spot buy-and-hold benchmark aligned to equity points."""
+        if df is None or df.empty or not equity_curve or "close" not in df.columns:
+            return {}
+        try:
+            closes = df["close"].astype(float).replace([np.inf, -np.inf], np.nan).dropna()
+        except Exception:
+            return {}
+        closes = closes[closes > 0]
+        if closes.empty:
+            return {}
+
+        close_index = pd.to_datetime(closes.index)
+        try:
+            if getattr(close_index, "tz", None) is not None:
+                close_index = close_index.tz_convert(None)
+        except Exception:
+            pass
+        close_series = pd.Series(closes.to_numpy(dtype=float), index=close_index).sort_index()
+        if close_series.empty:
+            return {}
+
+        base_price = float(close_series.iloc[0])
+        if not math.isfinite(base_price) or base_price <= 0:
+            return {}
+
+        curve: List[Dict[str, Any]] = []
+        last_price = base_price
+        for point in equity_curve:
+            ts = self._parse_curve_time((point or {}).get("time"))
+            if ts is not None:
+                pos = close_series.index.searchsorted(ts, side="right") - 1
+                if pos < 0:
+                    pos = 0
+                try:
+                    candidate = float(close_series.iloc[pos])
+                    if math.isfinite(candidate) and candidate > 0:
+                        last_price = candidate
+                except Exception:
+                    pass
+            value = float(initial_capital or 0) * last_price / base_price
+            curve.append({
+                "time": (point or {}).get("time", ""),
+                "value": round(value, 2),
+                "price": round(last_price, 8),
+            })
+
+        if not curve:
+            return {}
+        initial = float(initial_capital or 0)
+        final_value = float(curve[-1]["value"])
+        benchmark_return = ((final_value - initial) / initial * 100) if initial > 0 else 0.0
+        return {
+            "benchmarkCurve": curve,
+            "benchmarkReturn": round(benchmark_return, 2),
+            "benchmarkFinalValue": round(final_value, 2),
+            "benchmarkStartPrice": round(base_price, 8),
+            "benchmarkEndPrice": round(last_price, 8),
+        }
+
+    def _attach_buy_hold_benchmark(
+        self,
+        result: Dict[str, Any],
+        df: pd.DataFrame,
+        initial_capital: float,
+        symbol: str = "",
+    ) -> None:
+        benchmark = self._build_buy_hold_benchmark_curve(
+            df,
+            result.get("equityCurve") or [],
+            initial_capital,
+        )
+        if not benchmark:
+            return
+        result.update(benchmark)
+        try:
+            total_return = float(result.get("totalReturn") or 0)
+            result["alphaReturn"] = round(total_return - float(benchmark.get("benchmarkReturn") or 0), 2)
+        except Exception:
+            pass
+        result["benchmark"] = {
+            "type": "buy_hold_spot",
+            "label": "Spot buy-and-hold",
+            "symbol": symbol or "",
+            "return": result.get("benchmarkReturn"),
+            "finalValue": result.get("benchmarkFinalValue"),
+            "startPrice": result.get("benchmarkStartPrice"),
+            "endPrice": result.get("benchmarkEndPrice"),
+        }
     
     def _fetch_kline_data(
         self,
@@ -2206,7 +2379,9 @@ class BacktestService:
         symbol: str,
         timeframe: str,
         start_date: datetime,
-        end_date: datetime
+        end_date: datetime,
+        market_type: Optional[str] = None,
+        exchange_id: Optional[str] = None,
     ) -> pd.DataFrame:
         """Fetch candle data and convert to DataFrame (with in-memory caching)"""
         # Calculate required candle count (+ slack for 2y-class windows & upstream gaps)
@@ -2221,7 +2396,9 @@ class BacktestService:
         # Calculate before_time (end date + 1 day)
         before_time = int((end_date + timedelta(days=1)).timestamp())
 
-        cache_key = f"{market}:{symbol}:{timeframe}:{start_date.date()}:{end_date.date()}"
+        mt_key = str(market_type or "").strip().lower()
+        ex_key = str(exchange_id or "").strip().lower()
+        cache_key = f"{market}:{symbol}:{timeframe}:{mt_key}:{ex_key}:{start_date.date()}:{end_date.date()}"
         cached = _kline_cache.get(cache_key)
         if cached is not None and not cached.empty:
             logger.info(f"K-line cache HIT for {cache_key} ({len(cached)} candles)")
@@ -2240,6 +2417,8 @@ class BacktestService:
                 limit=limit,
                 before_time=before_time,
                 after_time=after_time,
+                exchange_id=exchange_id,
+                market_type=market_type,
             )
         except Exception as exc:
             logger.warning(
@@ -2294,7 +2473,6 @@ class BacktestService:
                     f"requested=[{start_date} ~ {end_date}], upstream=[{data_start} ~ {data_end}]"
                 )
 
-            # 首选：请求区间与可用数据的交集（例如不满2年时自动从首根可用K开始）
             rs = pd.Timestamp(start_date)
             re = pd.Timestamp(end_date)
             effective_start = max(rs, pd.Timestamp(data_start))
@@ -2304,7 +2482,6 @@ class BacktestService:
             if effective_start <= effective_end:
                 df_filtered = df[(df.index >= effective_start) & (df.index <= effective_end)].copy()
             else:
-                # 无交集：从第一根可用 K 回测到「用户结束日」与「数据末」的较早者，不视为错误
                 alt_start = pd.Timestamp(data_start)
                 alt_end = min(re, pd.Timestamp(data_end))
                 if alt_start <= alt_end:
@@ -2337,7 +2514,6 @@ class BacktestService:
             coverage_ratio = covered_seconds / requested_seconds if requested_seconds > 0 else 0.0
 
             if df_filtered.empty:
-                # Last-resort：取最近 N 根（上游时间戳异常等），仅记 debug，不对用户报错
                 requested_candles = max(1, math.ceil(requested_seconds / tf_seconds))
                 if len(df) > 0:
                     df_filtered = df.tail(min(len(df), requested_candles)).copy()
@@ -2419,16 +2595,11 @@ class BacktestService:
                 local_vars['commission'] = backtest_params.get('commission', 0.0002)
                 local_vars['trade_direction'] = backtest_params.get('trade_direction', 'both')
             
-            # === 指标参数支持 ===
-            # 从 backtest_params 获取用户设置的指标参数
             user_indicator_params = (backtest_params or {}).get('indicator_params', {})
-            # 解析指标代码中声明的参数
             declared_params = IndicatorParamsParser.parse_params(code)
-            # 合并参数（用户值优先，否则使用默认值）
             merged_params = IndicatorParamsParser.merge_params(declared_params, user_indicator_params)
             local_vars['params'] = merged_params
             
-            # === 指标调用器支持 ===
             user_id = (backtest_params or {}).get('user_id', 1)
             indicator_id = (backtest_params or {}).get('indicator_id')
             indicator_caller = IndicatorCaller(user_id, indicator_id)
@@ -2989,7 +3160,6 @@ class BacktestService:
         add_short_price_arr = signals.get('add_short_price', pd.Series([0.0] * len(df))).values
         
         for i, (timestamp, row) in enumerate(df.iterrows()):
-            # 爆仓后直接停止回测，输出结果
             if is_liquidated:
                 break
 
@@ -3674,7 +3844,6 @@ class BacktestService:
                         lowest_since_entry = None
                         trend_add_times = dca_add_times = trend_reduce_times = adverse_reduce_times = 0
                         last_trend_add_anchor = last_dca_add_anchor = last_trend_reduce_anchor = last_adverse_reduce_anchor = None
-                        # 检查是否爆仓
                         if capital < min_capital_to_trade:
                             is_liquidated = True
                             capital = 0
@@ -3799,7 +3968,6 @@ class BacktestService:
                         lowest_since_entry = None
                         trend_add_times = dca_add_times = trend_reduce_times = adverse_reduce_times = 0
                         last_trend_add_anchor = last_dca_add_anchor = last_trend_reduce_anchor = last_adverse_reduce_anchor = None
-                        # 检查是否爆仓
                         if capital < min_capital_to_trade:
                             is_liquidated = True
                             capital = 0
@@ -3902,7 +4070,6 @@ class BacktestService:
             # If liquidation hit, check SL signal first
             if position != 0 and not is_liquidated:
                 if position_type == 'long' and low <= liquidation_price:
-                    # Long触及爆仓线：检查是否有止损信号
                     has_stop_loss = close_long_arr[i] and close_long_price_arr[i] > 0
                     stop_loss_price = close_long_price_arr[i] if has_stop_loss else 0
                     
@@ -3945,7 +4112,6 @@ class BacktestService:
                     continue
                     
                 elif position_type == 'short' and high >= liquidation_price:
-                    # Short触及爆仓线：检查是否有止损信号
                     has_stop_loss = close_short_arr[i] and close_short_price_arr[i] > 0
                     stop_loss_price = close_short_price_arr[i] if has_stop_loss else 0
                     
@@ -4359,10 +4525,33 @@ class BacktestService:
         # Clean trades
         cleaned_trades = []
         # Don't truncate trades: return all (frontend can paginate)
+        def infer_trade_reason(trade_type: str) -> str:
+            t = str(trade_type or '').lower()
+            if 'liquidation' in t:
+                return 'liquidation'
+            if 'trailing' in t:
+                return 'trailing_stop'
+            if 'stop' in t:
+                return 'stop_loss'
+            if 'profit' in t:
+                return 'take_profit'
+            if 'reduce' in t:
+                return 'reduce_position'
+            if 'add' in t:
+                return 'add_position'
+            if 'close' in t:
+                return 'signal_close'
+            return ''
+
         for trade in trades:
             cleaned_trade = {}
             for key, value in trade.items():
                 cleaned_trade[key] = clean_value(value)
+            inferred_reason = infer_trade_reason(cleaned_trade.get('type'))
+            if inferred_reason and not cleaned_trade.get('reason'):
+                cleaned_trade['reason'] = inferred_reason
+            if inferred_reason and not cleaned_trade.get('close_reason'):
+                cleaned_trade['close_reason'] = inferred_reason
             cleaned_trades.append(cleaned_trade)
         
         return {

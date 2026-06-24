@@ -363,7 +363,9 @@ paths:
 
         Login with email verification code (quick login / register).
 
-        If user doesn''t exist, create a new account automatically.'
+        If user doesn''t exist, create a new account automatically.
+
+        If an existing user requires MFA, returns mfa_required with a challenge_id.'
       tags:
       - Auth
       operationId: postApiAuthLoginCode
@@ -388,7 +390,7 @@ paths:
 
         email: str
 
-        type: str (register, reset_password, change_password, change_email)
+        type: str (login, register, reset_password, change_password, change_email)
 
         turnstile_token: str (optional)'
       tags:
@@ -4785,7 +4787,7 @@ paths:
 
         language (optional, default en-US): Response language
 
-        model (optional): LLM model id, e.g. openai/gpt-4o
+        model (optional): LLM model id, e.g. openai/gpt-5.4
 
         timeframe (optional, default 1D): Analysis timeframe
 

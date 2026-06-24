@@ -5,11 +5,13 @@ Experiment orchestration API routes.
 import json
 import queue
 import threading
+import time
 
 from flask import Response, g, jsonify, request
 from app.openapi.blueprint import HumanBlueprint as Blueprint
 
 from app.services.experiment.runner import ExperimentRunnerService
+from app.services.billing_service import get_billing_service
 from app.utils.auth import login_required
 from app.utils.logger import get_logger
 
@@ -35,6 +37,19 @@ def ai_optimize():
         return jsonify({'code': 0, 'msg': 'Request body is required', 'data': None}), 400
 
     user_id = int(g.user_id or 1)
+    billing = get_billing_service()
+    ok, billing_msg = billing.check_and_consume(
+        user_id=user_id,
+        feature='ai_tuning',
+        reference_id=f"ai_tuning_{user_id}_{int(time.time())}",
+    )
+    if not ok:
+        return Response(
+            _sse('error', {'msg': f'Insufficient credits: {billing_msg}'}),
+            mimetype='text/event-stream',
+            headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'},
+        )
+
     progress_queue: queue.Queue = queue.Queue()
 
     def on_progress(data):

@@ -28,7 +28,6 @@ def get_kline():
         before_time: Return bars before this Unix timestamp (optional)
     """
     try:
-        # 强制 GET, 使用 request.args
         market = request.args.get('market', 'USStock')
         symbol = request.args.get('symbol', '')
         timeframe = request.args.get('timeframe', '1D')
@@ -56,7 +55,6 @@ def get_kline():
         )
         
         if not klines:
-            # 针对特定情况给出更详细的提示
             msg = 'No data found'
             if market == 'Forex' and timeframe == '1m':
                 msg = 'Forex 1-minute data requires Tiingo paid subscription'

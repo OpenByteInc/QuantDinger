@@ -1,8 +1,9 @@
-"""Tests for Finnhub-backed economic calendar."""
+"""Tests for the free-first economic calendar providers."""
 from __future__ import annotations
 
 from app.data_providers.economic_calendar import (
     _fetch_finnhub_calendar,
+    _fetch_tradingeconomics_calendar,
     _normalize_finnhub_event,
     _should_include_finnhub_row,
     get_economic_calendar,
@@ -57,8 +58,56 @@ def test_normalize_finnhub_event_maps_gb_to_uk():
 
 def test_get_economic_calendar_without_api_key(monkeypatch):
     monkeypatch.delenv("FINNHUB_API_KEY", raising=False)
+    monkeypatch.setenv("FINNHUB_FREE_ONLY", "true")
+    monkeypatch.setattr(
+        "app.data_providers.economic_calendar._fetch_tradingeconomics_calendar",
+        lambda: [],
+    )
+    monkeypatch.setattr(
+        "app.data_providers.economic_calendar._fallback_calendar_payload",
+        lambda *args, **kwargs: None,
+    )
     events = get_economic_calendar()
     assert events == []
+
+
+def test_get_economic_calendar_fetches_from_tradingeconomics(monkeypatch):
+    class FakeResponse:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return [
+                {
+                    "Event": "US CPI m/m",
+                    "Country": "United States",
+                    "CountryCode": "US",
+                    "Date": "2026-06-01T08:30:00",
+                    "Importance": 3,
+                    "Unit": "%",
+                    "Forecast": 0.3,
+                    "Previous": 0.4,
+                }
+            ]
+
+        @staticmethod
+        def raise_for_status():
+            return None
+
+    monkeypatch.setenv("TRADING_ECONOMICS_CLIENT", "test_client")
+    monkeypatch.setenv("TRADING_ECONOMICS_KEY", "test_key")
+    monkeypatch.setattr(
+        "app.data_providers.economic_calendar.requests.get",
+        lambda *args, **kwargs: FakeResponse(),
+    )
+
+    events = get_economic_calendar()
+    assert len(events) == 1
+    assert events[0]["name_en"] == "US CPI m/m"
+    assert events[0]["country"] == "US"
+    assert events[0]["forecast"] == "0.30%"
+    assert events[0]["source"] == "tradingeconomics"
+    assert events[0]["ai_insight"]["event_type"] == "inflation"
 
 
 def test_get_economic_calendar_fetches_from_finnhub(monkeypatch):
@@ -87,6 +136,15 @@ def test_get_economic_calendar_fetches_from_finnhub(monkeypatch):
             return None
 
     monkeypatch.setenv("FINNHUB_API_KEY", "test_finnhub_key")
+    monkeypatch.setenv("FINNHUB_FREE_ONLY", "false")
+    monkeypatch.setattr(
+        "app.data_providers.economic_calendar._fetch_tradingeconomics_calendar",
+        lambda: [],
+    )
+    monkeypatch.setattr(
+        "app.data_providers.economic_calendar._fallback_calendar_payload",
+        lambda *args, **kwargs: None,
+    )
     monkeypatch.setattr(
         "app.data_providers.economic_calendar.requests.get",
         lambda *args, **kwargs: FakeResponse(),
@@ -158,3 +216,45 @@ def test_fetch_finnhub_calendar_dedupes_same_holiday_across_countries(monkeypatc
     events = _fetch_finnhub_calendar()
     assert len(events) == 1
     assert events[0]["name_en"] == "Non Farm Payrolls"
+
+
+def test_fetch_tradingeconomics_calendar_normalizes_and_filters(monkeypatch):
+    class FakeResponse:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {
+                "Calendar": [
+                    {
+                        "Event": "Non Farm Payrolls",
+                        "CountryCode": "US",
+                        "Date": "2026-06-05T08:30:00",
+                        "Importance": 3,
+                        "Unit": "K",
+                        "Forecast": 180,
+                        "Previous": 175,
+                    },
+                    {
+                        "Event": "Bank Holiday",
+                        "CountryCode": "US",
+                        "Date": "2026-06-05T00:00:00",
+                        "Importance": 1,
+                    },
+                ]
+            }
+
+        @staticmethod
+        def raise_for_status():
+            return None
+
+    monkeypatch.setattr(
+        "app.data_providers.economic_calendar.requests.get",
+        lambda *args, **kwargs: FakeResponse(),
+    )
+
+    events = _fetch_tradingeconomics_calendar()
+    assert len(events) == 1
+    assert events[0]["name_en"] == "Non Farm Payrolls"
+    assert events[0]["forecast"] == "180K"
+    assert events[0]["source"] == "tradingeconomics"

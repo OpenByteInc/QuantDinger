@@ -1,20 +1,21 @@
 # QuantDinger Docker Compose - GHCR prebuilt images (zero-repo deploy)
 #
 # Pulls both backend and frontend images from GitHub Container Registry. The
-# repository does NOT need to be cloned — only this file (plus a backend.env
+# repository does NOT need to be cloned - only this file (plus a backend.env
 # for runtime config) is required.
 #
 # Minimal install (Linux / macOS):
 #
 #   curl -O https://raw.githubusercontent.com/brokermr810/QuantDinger/main/docker-compose.ghcr.yml
 #   curl -o backend.env https://raw.githubusercontent.com/brokermr810/QuantDinger/main/backend_api_python/env.example
+#   # Edit backend.env and set ADMIN_USER / ADMIN_PASSWORD before first start.
 #   docker compose -f docker-compose.ghcr.yml up -d
-#   # open http://localhost:8888  (login: quantdinger / 123456)
+#   # open http://localhost:8888  (login with your configured admin account)
 #
 # Two-file separation of concerns:
-#   - backend.env   — backend runtime config (SECRET_KEY, API keys, broker creds, ...);
+#   - backend.env   - backend runtime config (SECRET_KEY, API keys, broker creds, ...);
 #                     bind-mounted into the backend container as /app/.env
-#   - .env (optional) — docker compose orchestration knobs (IMAGE_TAG, ports, mirrors);
+#   - .env (optional) - docker compose orchestration knobs (IMAGE_TAG, ports, mirrors);
 #                       read by `docker compose` itself for ${VAR} substitution
 #
 # Database schema is bootstrapped automatically: the backend re-applies
@@ -31,7 +32,7 @@
 #
 # Normal use: set IMAGE_TAG once and both services move in lockstep.
 # Per-side overrides only kick in when BACKEND_TAG / FRONTEND_TAG are
-# explicitly set — useful for testing a frontend hotfix against a
+# explicitly set - useful for testing a frontend hotfix against a
 # stable backend, or vice versa.
 
 services:
@@ -93,7 +94,7 @@ services:
     volumes:
       - backend_logs:/app/logs
       - backend_data:/app/data
-      # Backend runtime config. Must exist as a *file* on the host — if missing,
+      # Backend runtime config. Must exist as a *file* on the host - if missing,
       # docker silently creates a directory at the mount target and shadows
       # /app/.env. The entrypoint will auto-generate SECRET_KEY on first start
       # and write it back through the bind mount, so the host file gets the

@@ -21,7 +21,8 @@
 #   To switch source globally, set a single `IMAGE_PREFIX` in project-root `.env`.
 #   Examples: empty (official), `docker.m.daocloud.io/library/`,
 #   `docker.xuanyuan.me/library/`.
-# Backend Dockerfile tries Aliyun apt/PyPI first and falls back to official (no extra env).
+# Backend Dockerfile uses official Debian/PyPI sources by default.
+# For mainland China builds, set BUILD_REGION=cn to use Aliyun mirrors with fallback.
 # For slow pulls of base images, optionally set IMAGE_PREFIX or Docker Engine registry-mirrors.
 
 services:
@@ -86,9 +87,9 @@ services:
       dockerfile: Dockerfile
       args:
         BASE_IMAGE: ${IMAGE_PREFIX:-}python:3.12-slim-bookworm
-        # cn (default): use Aliyun apt/PyPI mirrors with fallback to official.
-        # global: use official sources directly (recommended for overseas builds).
-        BUILD_REGION: ${BUILD_REGION:-cn}
+        # global (default): use official Debian/PyPI sources.
+        # cn: use Aliyun apt/PyPI mirrors with fallback to official.
+        BUILD_REGION: ${BUILD_REGION:-global}
         # Release CI injects APP_VERSION from the Git tag. Local builds may set
         # APP_VERSION explicitly, or GIT_TAG/IMAGE_TAG as a non-floating fallback.
         APP_VERSION: ${APP_VERSION:-}

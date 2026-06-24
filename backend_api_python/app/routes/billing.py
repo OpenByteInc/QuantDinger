@@ -47,8 +47,10 @@ def usdt_list_chains():
     so the frontend chain picker can render the response verbatim.
     """
     try:
+        if not get_billing_service().is_billing_enabled():
+            return jsonify({"code": 1, "msg": "success", "data": {"chains": [], "billing_enabled": False}})
         chains = get_usdt_payment_service().list_chains()
-        return jsonify({"code": 1, "msg": "success", "data": {"chains": chains}})
+        return jsonify({"code": 1, "msg": "success", "data": {"chains": chains, "billing_enabled": True}})
     except Exception as e:
         logger.error(f"usdt_list_chains failed: {e}", exc_info=True)
         return jsonify({"code": 0, "msg": str(e), "data": None}), 500
@@ -73,6 +75,8 @@ def usdt_create_order():
         chain = (data.get("chain") or "").strip().upper() or None
         if not plan:
             return jsonify({"code": 0, "msg": "missing_plan", "data": None}), 400
+        if not get_billing_service().is_billing_enabled():
+            return jsonify({"code": 0, "msg": "billing_disabled", "data": None}), 403
 
         ok, msg, out = get_usdt_payment_service().create_order(user_id, plan, chain=chain)
         if ok:

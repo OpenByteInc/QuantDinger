@@ -118,6 +118,46 @@ def _userinfo_must_change_initial_password(user_id: int) -> bool:
         return False
 
 
+def _build_userinfo(user: dict, user_id: int, username: str) -> dict:
+    return {
+        'id': user.get('id') or user.get('user_id', user_id),
+        'username': user.get('username', username),
+        'nickname': user.get('nickname', 'User'),
+        'avatar': user.get('avatar', '/avatar2.jpg'),
+        'timezone': str(user.get('timezone') or '').strip(),
+        'role': {
+            'id': user.get('role', 'admin'),
+            'permissions': _get_permissions(user.get('role', 'admin'))
+        },
+        'must_change_initial_password': _userinfo_must_change_initial_password(user_id),
+    }
+
+
+def _issue_login_token(user: dict, user_id: int, username: str) -> tuple:
+    from app.services.user_service import get_user_service
+    try:
+        new_token_version = get_user_service().increment_token_version(user_id)
+    except Exception as e:
+        logger.warning(f"Failed to increment token_version: {e}")
+        new_token_version = 1
+
+    token = generate_token(
+        user_id=user_id,
+        username=user.get('username', username),
+        role=user.get('role', 'admin'),
+        token_version=new_token_version
+    )
+    return token, _build_userinfo(user, user_id, username)
+
+
+def _touch_last_login(user_id: int) -> None:
+    try:
+        from app.services.user_service import get_user_service
+        get_user_service().touch_last_login(int(user_id))
+    except Exception as e:
+        logger.warning(f"Failed to touch last_login_at for user {user_id}: {e}")
+
+
 # =============================================================================
 # Security Config Endpoint
 # =============================================================================
@@ -195,7 +235,7 @@ def login():
         if not _is_single_user_mode():
             try:
                 from app.services.user_service import get_user_service
-                user = get_user_service().authenticate(username, password)
+                user = get_user_service().authenticate(username, password, update_last_login=False)
                 
                 # Check if user has no password set (code-login user)
                 if user and user.get('_no_password'):
@@ -234,27 +274,45 @@ def login():
         if user.get('status') == 'pending':
             return jsonify({'code': 0, 'msg': 'Account is pending activation', 'data': None}), 403
         
-        # Step 4: Increment token_version (invalidates old sessions for single-client login)
         user_id = user.get('id') or user.get('user_id', 1)
+
         try:
-            from app.services.user_service import get_user_service
-            new_token_version = get_user_service().increment_token_version(user_id)
+            from app.services.mfa_service import get_mfa_service
+            mfa = get_mfa_service()
+            need_mfa, reason = mfa.needs_login_mfa(int(user_id), ip_address, user_agent)
+            if need_mfa:
+                challenge = mfa.create_login_challenge(int(user_id), reason, ip_address, user_agent)
+                security.record_login_attempt(ip_address, 'ip', True, ip_address, user_agent)
+                security.record_login_attempt(username, 'account', True, ip_address, user_agent)
+                security.clear_login_attempts(ip_address, 'ip')
+                security.clear_login_attempts(username, 'account')
+                security.log_security_event(
+                    'mfa_required',
+                    int(user_id),
+                    ip_address,
+                    user_agent,
+                    {'username': username, 'reason': reason}
+                )
+                return jsonify({
+                    'code': 1,
+                    'msg': 'MFA verification required',
+                    'data': {
+                        'mfa_required': True,
+                        **challenge
+                    }
+                })
         except Exception as e:
-            logger.warning(f"Failed to increment token_version: {e}")
-            new_token_version = 1
-        
-        # Step 5: Generate token with new token_version
-        token = generate_token(
-            user_id=user_id,
-            username=user.get('username', username),
-            role=user.get('role', 'admin'),
-            token_version=new_token_version  # 包含新的 token_version
-        )
+            logger.error(f"MFA check failed after password authentication: {e}")
+            return jsonify({'code': 0, 'msg': 'MFA service unavailable', 'data': None}), 503
+
+        token, userinfo = _issue_login_token(user, int(user_id), username)
         
         if not token:
             return jsonify({'code': 500, 'msg': 'Token generation error', 'data': None}), 500
+
+        _touch_last_login(int(user_id))
         
-        # Step 6: Record successful login
+        # Step 4: Record successful login
         security.record_login_attempt(ip_address, 'ip', True, ip_address, user_agent)
         security.record_login_attempt(username, 'account', True, ip_address, user_agent)
         security.clear_login_attempts(ip_address, 'ip')
@@ -268,20 +326,6 @@ def login():
             extra_details={'method': 'password'},
         )
 
-        # Build user info for frontend
-        userinfo = {
-            'id': user.get('id') or user.get('user_id', 1),
-            'username': user.get('username', username),
-            'nickname': user.get('nickname', 'User'),
-            'avatar': user.get('avatar', '/avatar2.jpg'),
-            'timezone': str(user.get('timezone') or '').strip(),
-            'role': {
-                'id': user.get('role', 'admin'),
-                'permissions': _get_permissions(user.get('role', 'admin'))
-            },
-            'must_change_initial_password': _userinfo_must_change_initial_password(user_id),
-        }
-        
         return jsonify({
             'code': 1,
             'msg': 'Login successful',
@@ -293,6 +337,73 @@ def login():
             
     except Exception as e:
         logger.error(f"Login error: {e}")
+        return jsonify({'code': 500, 'msg': str(e), 'data': None}), 500
+
+
+@auth_blp.route('/mfa/verify-login', methods=['POST'])
+def verify_login_mfa():
+    """Complete a password login that was paused for TOTP verification."""
+    ip_address = _get_client_ip()
+    user_agent = _get_user_agent()
+
+    try:
+        data = request.get_json() or {}
+        challenge_id = data.get('challenge_id') or ''
+        code = data.get('code') or ''
+
+        from app.services.mfa_service import get_mfa_service
+        from app.services.security_service import get_security_service
+        from app.services.user_service import get_user_service
+
+        security = get_security_service()
+        ok, msg, user_id = get_mfa_service().verify_login_challenge(challenge_id, code)
+        if not ok:
+            security.log_security_event(
+                'mfa_failed',
+                user_id,
+                ip_address,
+                user_agent,
+                {'reason': msg}
+            )
+            return jsonify({'code': 0, 'msg': msg or 'Invalid verification code', 'data': None}), 401
+
+        user = get_user_service().get_user_by_id(int(user_id))
+        if not user or user.get('status') != 'active':
+            return jsonify({'code': 0, 'msg': 'User not found or disabled', 'data': None}), 403
+
+        username = user.get('username') or ''
+        token, userinfo = _issue_login_token(user, int(user_id), username)
+        if not token:
+            return jsonify({'code': 500, 'msg': 'Token generation error', 'data': None}), 500
+
+        _touch_last_login(int(user_id))
+
+        from app.services.login_notify import notify_successful_login
+        notify_successful_login(
+            user_id=int(user_id),
+            action='mfa_login_success',
+            ip_address=ip_address,
+            user_agent=user_agent,
+            extra_details={'method': 'password_totp'},
+        )
+        security.log_security_event(
+            'mfa_success',
+            int(user_id),
+            ip_address,
+            user_agent,
+            {'method': 'totp'}
+        )
+
+        return jsonify({
+            'code': 1,
+            'msg': 'Login successful',
+            'data': {
+                'token': token,
+                'userinfo': userinfo
+            }
+        })
+    except Exception as e:
+        logger.error(f"verify_login_mfa error: {e}")
         return jsonify({'code': 500, 'msg': str(e), 'data': None}), 500
 
 
@@ -435,6 +546,36 @@ def login_with_code():
             security.log_security_event('login_blocked', user.get('id'), ip_address, user_agent,
                                        {'reason': 'account_disabled'})
             return jsonify({'code': 0, 'msg': 'Account is disabled', 'data': None}), 403
+
+        if user.get('status') == 'pending':
+            return jsonify({'code': 0, 'msg': 'Account is pending activation', 'data': None}), 403
+
+        if not is_new_user:
+            try:
+                from app.services.mfa_service import get_mfa_service
+                mfa = get_mfa_service()
+                user_id_for_mfa = int(user.get('id'))
+                need_mfa, reason = mfa.needs_login_mfa(user_id_for_mfa, ip_address, user_agent)
+                if need_mfa:
+                    challenge = mfa.create_login_challenge(user_id_for_mfa, reason, ip_address, user_agent)
+                    security.log_security_event(
+                        'mfa_required',
+                        user_id_for_mfa,
+                        ip_address,
+                        user_agent,
+                        {'email': email, 'reason': reason, 'method': 'email_code'}
+                    )
+                    return jsonify({
+                        'code': 1,
+                        'msg': 'MFA verification required',
+                        'data': {
+                            'mfa_required': True,
+                            **challenge
+                        }
+                    })
+            except Exception as e:
+                logger.error(f"MFA check failed after email-code authentication: {e}")
+                return jsonify({'code': 0, 'msg': 'MFA service unavailable', 'data': None}), 503
         
         # Increment token_version (invalidates old sessions for single-client login)
         try:

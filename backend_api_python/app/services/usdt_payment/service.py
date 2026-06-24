@@ -648,7 +648,8 @@ class UsdtOrderWorker:
             try:
                 svc = get_usdt_payment_service()
                 cfg = svc._get_cfg()
-                if cfg["enabled"]:
+                billing_enabled = get_billing_service().is_billing_enabled()
+                if cfg["enabled"] and billing_enabled:
                     updated = svc.refresh_all_active_orders()
                     if updated > 0:
                         logger.info("UsdtOrderWorker tick #%s: %s orders changed state", tick, updated)
@@ -662,8 +663,8 @@ class UsdtOrderWorker:
                         )
                 elif not self._pay_disabled_logged:
                     logger.info(
-                        "UsdtOrderWorker: USDT_PAY_ENABLED=false — worker idle until "
-                        "you flip the switch."
+                        "UsdtOrderWorker idle; enable both BILLING_ENABLED and "
+                        "USDT_PAY_ENABLED to scan orders."
                     )
                     self._pay_disabled_logged = True
             except Exception as exc:

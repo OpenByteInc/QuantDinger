@@ -383,6 +383,38 @@ class BitgetSpotClient(BaseRestClient):
             return (Decimal("0"), quote_precision)
         return (req, quote_precision)
 
+    def _normalize_limit_price(self, *, symbol: str, price: float) -> Tuple[Decimal, Optional[int]]:
+        req = self._to_dec(price)
+        if req <= 0:
+            return (Decimal("0"), None)
+
+        meta: Dict[str, Any] = {}
+        try:
+            meta = self.get_symbol_meta(symbol=symbol) or {}
+        except Exception:
+            meta = {}
+
+        step = Decimal("0")
+        price_precision = None
+        for key in ("priceStep", "tickSize", "priceTick", "minPriceIncrement"):
+            raw = meta.get(key)
+            if raw is not None and str(raw).strip() not in ("", "0"):
+                try:
+                    st = self._to_dec(raw)
+                except Exception:
+                    st = Decimal("0")
+                if st > 0:
+                    step = st
+                    break
+        if step <= 0:
+            step, price_precision = self._precision_to_step(
+                meta.get("pricePrecision") or meta.get("pricePlace") or meta.get("priceScale")
+            )
+
+        if step > 0:
+            req = self._floor_to_step(req, step)
+        return (req, price_precision)
+
     def place_limit_order(self, *, symbol: str, side: str, size: float, price: float, client_order_id: Optional[str] = None) -> LiveOrderResult:
         sym = to_bitget_um_symbol(symbol)
         sd = (side or "").lower()
@@ -395,6 +427,9 @@ class BitgetSpotClient(BaseRestClient):
         sz_dec, sz_precision = self._normalize_base_size(symbol=symbol, base_size=req)
         if float(sz_dec or 0) <= 0:
             raise LiveTradingError(f"Invalid size (below step/min): requested={req}")
+        px_dec, px_precision = self._normalize_limit_price(symbol=symbol, price=px)
+        if float(px_dec or 0) <= 0:
+            raise LiveTradingError(f"Invalid price (below tick/min): requested={px}")
 
         body: Dict[str, Any] = {
             "side": sd,
@@ -402,7 +437,7 @@ class BitgetSpotClient(BaseRestClient):
             "size": self._dec_str(sz_dec, strict_precision=sz_precision),
             "orderType": "limit",
             "force": "gtc",
-            "price": str(px),
+            "price": self._dec_str(px_dec, strict_precision=px_precision),
         }
         if client_order_id:
             body["clientOid"] = str(client_order_id)

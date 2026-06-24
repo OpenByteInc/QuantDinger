@@ -42,8 +42,6 @@ from app.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
-# 项目当前支持的全部 UI 语言（与 locales/lang/*.js 一一对应）。
-# 如果未来加新语言，在这里加一行即可，翻译会自动覆盖。
 SUPPORTED_LANGUAGES: Dict[str, str] = {
     'zh-CN': 'Simplified Chinese',
     'zh-TW': 'Traditional Chinese',
@@ -58,9 +56,6 @@ SUPPORTED_LANGUAGES: Dict[str, str] = {
 }
 
 
-# ASCII / 拉丁 字符占比阈值。用来粗判原文是中文还是英文。
-# 实际只用于「无 source_language 传入」的兜底，正式流程会让前端把当前 UI 语言
-# 作为 source_language 传上来，更准确。
 _ASCII_RATIO_FOR_LATIN = 0.85
 
 
@@ -96,8 +91,6 @@ def detect_source_language(text: str, fallback: str = 'en-US') -> str:
     return fallback
 
 
-# 单条 LLM prompt：要求模型一次返回 JSON，覆盖所有目标语言。
-# 我们把 name 和 description 一起翻译，节省一半往返；模型按字典嵌套结构输出。
 def _build_prompt(name: str, description: str, source_lang: str) -> Tuple[str, str]:
     """组装 system + user prompt。"""
     target_pairs = "\n".join(
@@ -169,14 +162,11 @@ def translate_indicator(
     """
     src = source_language if source_language in SUPPORTED_LANGUAGES else None
     if not src:
-        # 用 description 优先做语言检测（一般比 name 更长 → 信号更强），
-        # 没有 description 才退到 name。
         src = detect_source_language(description or name, fallback='en-US')
 
     name = (name or '').strip()
     description = (description or '').strip()
 
-    # 没有可翻译的文本就直接返回，避免无意义的 LLM 调用。
     if not name and not description:
         return None, None, src
 
@@ -184,8 +174,6 @@ def translate_indicator(
         system_prompt, user_prompt = _build_prompt(name, description, src)
 
         llm = LLMService()
-        # 用最小 / 最经济的默认 provider。temperature 故意低一点，
-        # 我们要求是「准确翻译」不是「创意发挥」。
         result = llm.safe_call_llm(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
@@ -202,8 +190,6 @@ def translate_indicator(
             )
             return None, None, src
 
-        # 归一化：只保留我们支持的语言键，其他丢弃；缺失的语言保留原文（如果是源语言）
-        # 或英文（如果 LLM 没生成）。
         name_i18n: Dict[str, str] = {}
         desc_i18n: Dict[str, str] = {}
 
@@ -211,8 +197,6 @@ def translate_indicator(
             n_val = _coerce_str((raw_name or {}).get(code))
             d_val = _coerce_str((raw_desc or {}).get(code))
 
-            # 源语言一律使用用户原文，避免 LLM 把中文译成另一种「中性中文」、
-            # 把英文译成更书面的英文等导致原文风味丢失。
             if code == src:
                 if name:        n_val = name
                 if description: d_val = description
@@ -222,7 +206,6 @@ def translate_indicator(
             if d_val:
                 desc_i18n[code] = d_val
 
-        # 至少要有源语言键。一个键都没有就不写库。
         if src not in name_i18n and src not in desc_i18n:
             logger.warning(
                 "translate_indicator: no entry for source language %s after coercion",
@@ -261,7 +244,6 @@ def pick_localized(
     if not i18n_payload:
         return raw_text or ''
 
-    # JSONB 在驱动里通常已经被反序列化为 dict，但为防万一，做兼容。
     if isinstance(i18n_payload, str):
         try:
             i18n_payload = json.loads(i18n_payload)
@@ -271,12 +253,10 @@ def pick_localized(
     if not isinstance(i18n_payload, dict):
         return raw_text or ''
 
-    # 精确命中
     val = i18n_payload.get(accept_lang)
     if val:
         return val
 
-    # 主语言模糊匹配 (例如 accept_lang='zh-HK' 时可命中 'zh-CN' 或 'zh-TW')
     if accept_lang and '-' in accept_lang:
         prefix = accept_lang.split('-')[0].lower() + '-'
         for k, v in i18n_payload.items():
@@ -287,9 +267,7 @@ def pick_localized(
     if 'en-US' in i18n_payload and i18n_payload['en-US']:
         return i18n_payload['en-US']
 
-    # 源语言（用户上传时的原文）
     if source_lang and source_lang in i18n_payload and i18n_payload[source_lang]:
         return i18n_payload[source_lang]
 
-    # 最后兜底：原始字段
     return raw_text or ''

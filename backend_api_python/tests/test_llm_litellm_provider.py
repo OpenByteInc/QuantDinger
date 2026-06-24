@@ -4,11 +4,13 @@ from types import SimpleNamespace
 import pytest
 
 from app.services.llm import LLMProvider, LLMService
+import app.utils.config_loader as config_loader
 from app.utils.config_loader import clear_config_cache, load_addon_config
 
 
 def _reset_config_cache():
     clear_config_cache()
+    config_loader._env_loaded = True
 
 
 def test_litellm_env_mapping(monkeypatch):
@@ -26,30 +28,34 @@ def test_litellm_env_mapping(monkeypatch):
 
 def test_atlascloud_env_mapping(monkeypatch):
     monkeypatch.setenv("ATLASCLOUD_API_KEY", "atlas-key")
-    monkeypatch.setenv("ATLASCLOUD_MODEL", "deepseek-v3")
+    monkeypatch.setenv("ATLASCLOUD_MODEL", "openai/gpt-5.4")
     monkeypatch.setenv("ATLASCLOUD_BASE_URL", "https://api.atlascloud.ai/v1")
     _reset_config_cache()
 
     cfg = load_addon_config()
 
     assert cfg["atlascloud"]["api_key"] == "atlas-key"
-    assert cfg["atlascloud"]["model"] == "deepseek-v3"
+    assert cfg["atlascloud"]["model"] == "openai/gpt-5.4"
     assert cfg["atlascloud"]["base_url"] == "https://api.atlascloud.ai/v1"
 
 
 def test_atlascloud_provider_defaults_and_model_prefix(monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER", "atlascloud")
-    monkeypatch.setenv("ATLASCLOUD_MODEL", "deepseek-v3")
+    monkeypatch.setenv("ATLASCLOUD_MODEL", "openai/gpt-5.4")
     _reset_config_cache()
 
     service = LLMService()
 
     assert service.provider == LLMProvider.ATLASCLOUD
-    assert service.get_default_model() == "deepseek-v3"
+    assert service.get_default_model() == "openai/gpt-5.4"
     assert service.get_base_url() == "https://api.atlascloud.ai/v1"
     assert (
         service._normalize_model_for_provider("atlascloud/deepseek-v3", LLMProvider.ATLASCLOUD)
         == "deepseek-v3"
+    )
+    assert (
+        service._normalize_model_for_provider("openai/gpt-5.4", LLMProvider.ATLASCLOUD)
+        == "openai/gpt-5.4"
     )
     assert service._detect_provider_from_model("atlascloud/deepseek-v3") == LLMProvider.ATLASCLOUD
 

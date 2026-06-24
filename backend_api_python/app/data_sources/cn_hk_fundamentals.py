@@ -529,7 +529,6 @@ def fetch_cn_financial_indicators(tencent_code: str) -> Dict[str, Any]:
         import akshare as ak  # type: ignore
 
         with _bypass_proxy():
-            # --- profit sheet (利润表) for revenue growth & margins ---
             try:
                 profit_df = ak.stock_profit_sheet_by_report_em(symbol=sym6)
                 if profit_df is not None and not profit_df.empty:
@@ -551,7 +550,6 @@ def fetch_cn_financial_indicators(tencent_code: str) -> Dict[str, Any]:
             except Exception as e:
                 logger.debug("A-share profit sheet failed %s: %s", sym6, e)
 
-            # --- balance sheet (资产负债表) for debt/equity, current ratio ---
             try:
                 balance_df = ak.stock_balance_sheet_by_report_em(symbol=sym6)
                 if balance_df is not None and not balance_df.empty:
@@ -573,7 +571,6 @@ def fetch_cn_financial_indicators(tencent_code: str) -> Dict[str, Any]:
             except Exception as e:
                 logger.debug("A-share balance sheet failed %s: %s", sym6, e)
 
-            # --- cash flow (现金流量表) for FCF ---
             try:
                 cashflow_df = ak.stock_cash_flow_sheet_by_report_em(symbol=sym6)
                 if cashflow_df is not None and not cashflow_df.empty:

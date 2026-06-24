@@ -173,7 +173,6 @@ _STOCK_FALSE_POSITIVES = {
 
 # Word-boundary helper: Python's `\b` treats Chinese characters as word
 # characters under default Unicode mode, so `\bXAU\b` does NOT match in
-# '请根据XAU走势' (because '据' before X is a \w). We use explicit
 # negative lookarounds against [A-Z0-9] instead, which works regardless of
 # whether the surrounding characters are CJK, punctuation or whitespace.
 def _wbound(token: str) -> str:

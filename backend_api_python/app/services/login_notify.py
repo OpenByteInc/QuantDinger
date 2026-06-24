@@ -18,7 +18,7 @@ from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-LOGIN_ACTIONS = frozenset({"login_success", "login_via_code", "oauth_login"})
+LOGIN_ACTIONS = frozenset({"login_success", "login_via_code", "oauth_login", "mfa_login_success"})
 
 
 def _parse_user_agent(ua: str) -> str:
@@ -118,7 +118,7 @@ def _load_prior_login_fingerprints(user_id: int) -> Tuple[Set[str], Set[str]]:
                 """
                 SELECT details FROM qd_security_logs
                 WHERE user_id = ?
-                  AND action IN ('login_success', 'login_via_code', 'oauth_login')
+                  AND action IN ('login_success', 'login_via_code', 'oauth_login', 'mfa_login_success')
                 ORDER BY created_at DESC
                 LIMIT 50
                 """,
@@ -153,6 +153,8 @@ def _action_label(action: str, details: Dict[str, Any], zh: bool = True) -> str:
     if action == "oauth_login":
         provider = str(details.get("provider") or "OAuth").title()
         return f"{provider} 登录" if zh else f"{provider} login"
+    if action == "mfa_login_success":
+        return "密码 + 二次验证" if zh else "Password + MFA"
     return "密码登录" if zh else "Password login"
 
 

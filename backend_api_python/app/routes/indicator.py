@@ -351,6 +351,18 @@ def _indicator_hint_to_text(hint_code: str, params: Dict[str, Any] | None = None
             if is_zh else
             f"Declared parameters are not being read via params.get(...): {joined}."
         )
+    if hint_code == "PARAM_DEFAULT_MISMATCH":
+        items = params.get("items") or []
+        parts = [
+            f"{item.get('name')}: @param={item.get('declared')}, params.get fallback={item.get('fallback')}"
+            for item in items
+        ]
+        detail = "; ".join(parts) or "parameter defaults"
+        return (
+            f"参数默认值不一致：{detail}。# @param 的默认值必须和 params.get(..., 默认值) 完全一致。"
+            if is_zh else
+            f"Parameter default mismatch: {detail}. The # @param default must exactly match the params.get(..., default) fallback."
+        )
     if hint_code == "SIGNAL_MARKERS_USE_WHERE_NONE":
         return (
             "已检测到信号标记使用 where(..., None).tolist()，建议改为显式 None 列表以避免 NaN 渲染问题。"
@@ -613,7 +625,6 @@ def save_indicator():
 
         now = _now_ts()  # For BIGINT fields (createtime, updatetime)
 
-        # 检查用户是否是管理员（管理员发布的指标自动通过审核）
         user_role = getattr(g, 'user_role', 'user')
         is_admin = user_role == 'admin'
         
@@ -629,7 +640,6 @@ def save_indicator():
                 cur.execute("ALTER TABLE qd_indicator_codes ADD COLUMN IF NOT EXISTS description_i18n JSONB")
             except Exception:
                 pass
-            # 市场购买的副本不可改库中源码：应「另存为」新建 is_buy=0 的指标再编辑
             if indicator_id and indicator_id > 0:
                 cur.execute(
                     "SELECT is_buy FROM qd_indicator_codes WHERE id = ? AND user_id = ?",
@@ -646,7 +656,6 @@ def save_indicator():
                         }
                     ), 403
             if indicator_id and indicator_id > 0:
-                # 检查是否从未发布改为发布，需要设置审核状态
                 if publish_to_community:
                     cur.execute(
                         "SELECT publish_to_community, review_status FROM qd_indicator_codes WHERE id = ? AND user_id = ?",
@@ -654,8 +663,6 @@ def save_indicator():
                     )
                     existing = cur.fetchone()
                     was_published = existing and existing.get('publish_to_community')
-                    # 如果之前未发布，现在发布，设置审核状态
-                    # 管理员发布的直接通过，普通用户需要待审核
                     new_review_status = 'approved' if is_admin else 'pending'
                     reviewer_id = user_id if is_admin else None
                     if not was_published:
@@ -692,7 +699,6 @@ def save_indicator():
                              new_review_status, new_review_status, reviewer_id, now, indicator_id, user_id),
                         )
                 else:
-                    # 取消发布，清除审核状态
                     cur.execute(
                         """
                         UPDATE qd_indicator_codes
@@ -706,7 +712,6 @@ def save_indicator():
                         (name, code, description, publish_to_community, pricing_type, price, preview_image, asset_type, now, indicator_id, user_id),
                     )
             else:
-                # 新建指标 - 管理员发布的直接通过，普通用户需要待审核
                 review_status = None
                 if publish_to_community:
                     review_status = 'approved' if is_admin else 'pending'
@@ -725,15 +730,7 @@ def save_indicator():
             cur.close()
 
         # ============================================================
-        # 多语言：发布到指标市场时同步触发 LLM 翻译
         # ============================================================
-        # 设计取舍：
-        #   - 仅在 publish_to_community=1 时才翻译，私有指标不浪费 LLM 额度。
-        #   - 同步阻塞（一次调用约 2-5s）。如果以后 P99 超过用户耐心，可改成
-        #     后台 worker；现在保持同步是为了「保存成功 = 全语言立即可见」
-        #     最简单的 UX 契约。
-        #   - 翻译失败不会让保存失败：translate_indicator 内部 try/except，
-        #     返回 (None, None, src) 时下游接口仍能 fallback 到原文。
         if publish_to_community and indicator_id > 0:
             try:
                 ui_lang = (
@@ -772,7 +769,6 @@ def save_indicator():
                     db.commit()
                     cur.close()
             except Exception as _e:
-                # 翻译是 nice-to-have，永远不能让 save_indicator 失败。
                 logger.warning(f"save_indicator: i18n translation skipped: {_e}")
 
         return jsonify({"code": 1, "msg": "success", "data": {"id": indicator_id, "userid": user_id}})
@@ -962,7 +958,7 @@ Pick exactly one price-exit owner and make the code consistent:
 
 After computation, set:
 
-`output = { 'name': ..., 'plots': [...], 'signals': [...] }`  (use the same string keys as below)
+`output = { 'name': ..., 'plots': [...], 'signals': [...], 'layers': [...] }`  (use the same string keys as below; `layers` is optional)
 
 - **`name`**: str, usually `my_indicator_name`.
 - **`plots`**: list of dicts, each with:
@@ -971,9 +967,15 @@ After computation, set:
   - Price-scale series (MA, Bollinger on price): `overlay: True`. Oscillators (RSI 0–100): `overlay: False`.
 - **`signals`**: optional list for markers; each item:
   - `type`: `'buy'` or `'sell'`, `text` (short label), `color`, `data`: list length **`len(df)`**, value `None` or a float price for marker Y.
+- **`layers`**: optional list for advanced K-line overlays. Use it for zones, horizontal/diagonal lines, and labels that should look like chart annotations rather than trade markers. Keep overlays sparse and readable.
+  - Zone layer: `{ 'type': 'zone', 'startIndex': int, 'endIndex': int, 'top': float, 'bottom': float, 'text': str, 'fillColor': '#RRGGBB', 'borderColor': '#RRGGBB', 'opacity': 0.12 }`.
+  - Line layer: `{ 'type': 'line', 'startIndex': int, 'endIndex': int, 'price': float, 'text': str, 'color': '#RRGGBB', 'dashed': true }`; for sloped lines use `startPrice` and `endPrice`.
+  - Label layer: `{ 'type': 'label', 'index': int, 'price': float, 'text': str, 'color': '#RRGGBB', 'textColor': '#FFFFFF' }`.
+  - Prefer `startIndex` / `endIndex` / `index` for generated code because they are stable with the current `df`. `startTime` / `endTime` / `time` are also supported if they match K-line timestamps.
+  - Do not use layers as execution signals. Backtest/live only read DataFrame boolean columns.
 - **`calculatedVars`**: optional dict for future UI; may be `{}` or omitted.
 
-**Length rule:** every `plot['data']` and every `signal['data']` list must have the **same length as `df`** (same as number of rows).
+**Length rule:** every `plot['data']` and every `signal['data']` list must have the **same length as `df`** (same as number of rows). Layer objects do not need per-bar arrays, but their indices/times and prices must be valid for the visible `df`.
 
 # Optional tunable parameters: `# @param`
 
@@ -993,6 +995,12 @@ create Python variables automatically. If you declare:
 you must read it explicitly in code, for example:
 
 `fast_period = params.get('fast_period', 10)`
+
+The fallback default in `params.get` must exactly match the declared `# @param`
+default after type conversion. Example: if you declare
+`# @param fast_period int 18 Fast MA period`, the code must read
+`fast_period = int(params.get('fast_period', 18))`; never use 10, 30, or any
+second hard-coded default for the same parameter.
 
 Never use declared parameter names directly unless you first assign them from `params`.
 
@@ -1027,13 +1035,15 @@ Pick defaults that match the strategy style (trend vs mean-reversion).
   - `buy_marks = [df['low'].iloc[i] * 0.995 if bool(df['open_long'].iloc[i]) else None for i in range(len(df))]`
   - `sell_marks = [df['high'].iloc[i] * 1.005 if bool(df['open_short'].iloc[i]) else None for i in range(len(df))]`
   - Avoid `series.where(mask, None).tolist()` for marker data because float series may still contain `NaN` instead of real `None`.
+- Use `output['layers']` only when it improves readability, for example supply/demand zones, premium/discount ranges, support/resistance lines, BOS/CHoCH labels, or invalidation levels. Do not flood every bar with labels.
 - Before returning code, self-check:
   1. every declared `# @param` used in code is read via `params.get(...)`
-  2. `df['open_long']`, `df['close_long']`, `df['open_short']`, and `df['close_short']` are assigned boolean Series
-  3. every `plot['data']` and `signal['data']` length equals `len(df)`
-  4. `output` exists and is a dict
-  5. **type audit**: scan every `.rolling` / `.fillna` / `.shift` / `.ewm` / `.iloc` / `.tolist` call site; confirm its left-hand side is a Series. If it came from `np.where` / `np.maximum` / `np.minimum` / a custom helper returning ndarray, you MUST wrap with `pd.Series(arr, index=df.index)` first
-  6. **index audit**: any `pd.Series(arr)` where `arr` is ndarray sized `len(df)` MUST pass `index=df.index`, otherwise it will silently misalign with DatetimeIndex-based `df`
+  2. every `params.get('name', fallback)` fallback exactly equals that parameter's declared `# @param` default
+  3. `df['open_long']`, `df['close_long']`, `df['open_short']`, and `df['close_short']` are assigned boolean Series
+  4. every `plot['data']` and `signal['data']` length equals `len(df)`
+  5. `output` exists and is a dict
+  6. **type audit**: scan every `.rolling` / `.fillna` / `.shift` / `.ewm` / `.iloc` / `.tolist` call site; confirm its left-hand side is a Series. If it came from `np.where` / `np.maximum` / `np.minimum` / a custom helper returning ndarray, you MUST wrap with `pd.Series(arr, index=df.index)` first
+  7. **index audit**: any `pd.Series(arr)` where `arr` is ndarray sized `len(df)` MUST pass `index=df.index`, otherwise it will silently misalign with DatetimeIndex-based `df`
 
 # Output format for this chat turn
 
@@ -1084,7 +1094,8 @@ Return **only** valid Python source: **no** markdown fences, **no** ` ``` `, **n
                 + existing.strip()
                 + "\n```\n\n# Change request:\n\n"
                 + prompt
-                + "\n\nReturn one full replacement script: same QuantDinger rules (my_indicator_name/description, df = df.copy(), declared @param values must be read via params.get(...), four-way execution columns, output dict, list lengths == len(df)). "
+                + "\n\nReturn one full replacement script: same QuantDinger rules (my_indicator_name/description, df = df.copy(), declared @param values must be read via params.get(...), four-way execution columns, output dict with optional layers, list lengths == len(df)). "
+                "For every declared @param, the params.get fallback default must exactly match the declared default. "
                 "Python only — no markdown, no prose outside the code."
             )
 
@@ -1115,6 +1126,7 @@ Return **only** valid Python source: **no** markdown fences, **no** ` ``` `, **n
 
     AUTO_FIX_HINT_CODES = {
         "DECLARED_PARAMS_NOT_READ_VIA_PARAMS_GET",
+        "PARAM_DEFAULT_MISMATCH",
         "SIGNAL_MARKERS_USE_WHERE_NONE",
         "MISSING_OUTPUT",
         "MISSING_BUY_SELL_COLUMNS",
@@ -1168,7 +1180,7 @@ Return **only** valid Python source: **no** markdown fences, **no** ` ``` `, **n
             + "\n```\n\n"
             "# Repair requirements\n"
             "- Keep QuantDinger indicator contract intact.\n"
-            "- If code declares # @param, read each declared param via params.get(...).\n"
+            "- If code declares # @param, read each declared param via params.get(...), and the fallback default must exactly match the declared # @param default.\n"
             "- Ensure df['open_long'], df['close_long'], df['open_short'], and df['close_short'] are boolean Series.\n"
             "- Ensure output exists and all plot/signal data lengths equal len(df).\n"
             "- For signal markers, prefer explicit None-or-price lists, not .where(..., None).tolist().\n"
