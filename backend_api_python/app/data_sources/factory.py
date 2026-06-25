@@ -7,6 +7,7 @@ from typing import Dict, List, Any, Optional
 from app.data_sources.base import BaseDataSource
 from app.data_sources.errors import UnsupportedMarketError
 from app.utils.logger import get_logger
+from app.utils.market_visibility import is_market_visible
 
 logger = get_logger(__name__)
 
@@ -180,6 +181,21 @@ class DataSourceFactory:
         """
         try:
             m = cls.normalize_market(market or "")
+            # Market visibility gate: short-circuit when the operator has
+            # hidden this market via ``ENABLED_MARKETS`` / ``SHOW_*``. This
+            # stops every caller — /api/kline route, KlineService, backtest,
+            # market_data_collector, trading_executor, opportunities radar —
+            # from instantiating the underlying data source and firing
+            # upstream requests (CCXT → Binance being the most painful when
+            # GFW blocks it). Hidden markets return an empty list so callers
+            # degrade gracefully (empty chart, no signal, etc.).
+            if not is_market_visible(m):
+                logger.debug(
+                    "DataSourceFactory.get_kline: market %r hidden by env config — "
+                    "returning [] for %s:%s %s",
+                    m, m, symbol, timeframe,
+                )
+                return []
             source = cls._resolve_source(m, exchange_id=exchange_id, market_type=market_type)
             klines = source.get_kline(symbol, timeframe, limit, before_time, after_time)
             
@@ -230,6 +246,14 @@ class DataSourceFactory:
         """
         try:
             m = cls.normalize_market(market or "")
+            # Market visibility gate — see ``get_kline`` for rationale.
+            if not is_market_visible(m):
+                logger.debug(
+                    "DataSourceFactory.get_ticker: market %r hidden by env config — "
+                    "returning zero ticker for %s:%s",
+                    m, m, symbol,
+                )
+                return {'last': 0, 'symbol': symbol}
             source = cls._resolve_source(m, exchange_id=exchange_id, market_type=market_type)
             return source.get_ticker(symbol)
         except NotImplementedError:

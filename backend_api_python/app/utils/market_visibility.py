@@ -12,12 +12,13 @@ Resolution order (first match wins):
 1. ``ENABLED_MARKETS`` (CSV whitelist). When non-empty, ONLY the listed
    markets are visible. Unknown values are ignored. This is the primary knob
    for "I want X and Y, nothing else".
-2. ``SHOW_CN_STOCK`` (legacy boolean, default ``false``). Drops ``CNStock``
-   when off. Kept for back-compat with deployments that predate
-   ``ENABLED_MARKETS``.
-3. ``SHOW_HK_STOCK`` (legacy boolean, default ``true``). Drops ``HKStock``
-   when off. Same back-compat reasoning.
-4. Everything else defaults to visible.
+2. Legacy per-market boolean flags (kept for back-compat):
+   - ``SHOW_CN_STOCK`` (default ``true``) — A股 (CNStock)
+   - ``SHOW_HK_STOCK`` (default ``true``) — H股 (HKStock)
+   - ``SHOW_US_STOCK`` (default ``true``) — 美股 (USStock)
+3. All other markets (Crypto / Forex / Futures / MOEX) default to **hidden**.
+   To enable any of them, either set ``ENABLED_MARKETS`` (recommended) or the
+   corresponding ``SHOW_*`` flag, e.g. ``SHOW_CRYPTO=true``.
 
 The whitelist completely overrides the legacy flags — if ``ENABLED_MARKETS``
 is set and does not list ``CNStock``, the market is hidden regardless of
@@ -33,6 +34,28 @@ from typing import Any, Iterable, List, Set
 _KNOWN_MARKETS = frozenset({
     'Crypto', 'USStock', 'CNStock', 'HKStock', 'Forex', 'Futures', 'MOEX',
 })
+
+# Markets that are visible by default (without any env override).
+# Current product focus: A股 + H股 + 美股.
+# Other markets (Crypto / Forex / Futures / MOEX) must be enabled explicitly
+# via ``ENABLED_MARKETS`` or the matching ``SHOW_*`` flag.
+_DEFAULT_VISIBLE_MARKETS = frozenset({
+    'USStock', 'CNStock', 'HKStock',
+})
+
+# Map each market to its legacy ``SHOW_*`` env flag and the default value
+# used when neither the flag nor ``ENABLED_MARKETS`` is set.
+# Defaults match :data:`_DEFAULT_VISIBLE_MARKETS` — three stock markets on,
+# everything else off.
+_LEGACY_SHOW_FLAGS = {
+    'CNStock':  ('SHOW_CN_STOCK',  'true'),
+    'HKStock':  ('SHOW_HK_STOCK',  'true'),
+    'USStock':  ('SHOW_US_STOCK',  'true'),
+    'Crypto':   ('SHOW_CRYPTO',    'false'),
+    'Forex':    ('SHOW_FOREX',     'false'),
+    'Futures':  ('SHOW_FUTURES',   'false'),
+    'MOEX':     ('SHOW_MOEX',      'false'),
+}
 
 
 def _flag(name: str, default: str) -> bool:
@@ -56,20 +79,32 @@ def enabled_markets_whitelist() -> Set[str]:
 
 
 def is_market_visible(market: str) -> bool:
-    """True iff ``market`` should be exposed in user-facing market pickers."""
+    """True iff ``market`` should be exposed in user-facing market pickers.
+
+    Defaults to showing only the three stock markets (USStock / CNStock /
+    HKStock). To show any other market, either:
+      * set ``ENABLED_MARKETS=Crypto,CNStock,...`` (recommended — overrides
+        everything), or
+      * set the matching ``SHOW_<MARKET>=true`` legacy flag.
+    """
     m = (market or '').strip()
     if not m:
         return False
 
+    # 1. ENABLED_MARKETS whitelist always wins when set.
     whitelist = enabled_markets_whitelist()
     if whitelist:
         return m in whitelist
 
-    if m == 'CNStock':
-        return _flag('SHOW_CN_STOCK', 'false')
-    if m == 'HKStock':
-        return _flag('SHOW_HK_STOCK', 'true')
-    return True
+    # 2. Legacy per-market SHOW_* flag (with sensible default).
+    #    Unknown markets (not in _KNOWN_MARKETS) fall through to False.
+    entry = _LEGACY_SHOW_FLAGS.get(m)
+    if entry is None:
+        # Unknown market: hide by default to avoid surfacing typos / future
+        # values that the operator hasn't opted into.
+        return m in _DEFAULT_VISIBLE_MARKETS
+    flag_name, default_val = entry
+    return _flag(flag_name, default_val)
 
 
 def filter_market_items(items: Iterable[Any], key: str = 'value') -> List[Any]:

@@ -18,10 +18,10 @@ from app.services.broker_market_policy import list_supported_brokers_for_market
 
 
 MARKET_ORDER = [
-    "Crypto",
     "USStock",
     "CNStock",
     "HKStock",
+    "Crypto",
     "Forex",
     "Futures",
     "MOEX",
@@ -238,15 +238,32 @@ def _flag(env: Mapping[str, str], name: str, default: str) -> bool:
 
 
 def _enabled_from_env(env: Mapping[str, str], market: str) -> bool:
+    """Mirror :func:`app.utils.market_visibility.is_market_visible`.
+
+    Kept as a local re-implementation (rather than imported) so this module
+    can be loaded in settings/CLI tools that don't pull in Flask — see the
+    top-of-file docstring. Defaults MUST stay in sync with
+    :data:`app.utils.market_visibility._LEGACY_SHOW_FLAGS`.
+    """
     raw = str(env.get("ENABLED_MARKETS", "") or "").strip()
     if raw:
         allowed = {part.strip() for part in raw.split(",") if part.strip()}
         return market in allowed
-    if market == "CNStock":
-        return _flag(env, "SHOW_CN_STOCK", "false")
-    if market == "HKStock":
-        return _flag(env, "SHOW_HK_STOCK", "true")
-    return True
+    # Defaults: only the three stock markets are visible.
+    defaults = {
+        "CNStock":  ("SHOW_CN_STOCK",  "true"),
+        "HKStock":  ("SHOW_HK_STOCK",  "true"),
+        "USStock":  ("SHOW_US_STOCK",  "true"),
+        "Crypto":   ("SHOW_CRYPTO",    "false"),
+        "Forex":    ("SHOW_FOREX",     "false"),
+        "Futures":  ("SHOW_FUTURES",   "false"),
+        "MOEX":     ("SHOW_MOEX",      "false"),
+    }
+    entry = defaults.get(market)
+    if entry is None:
+        return False
+    flag_name, default_val = entry
+    return _flag(env, flag_name, default_val)
 
 
 def _requirement_status(req: DataRequirement, env: Mapping[str, str]) -> Dict[str, object]:

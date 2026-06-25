@@ -6,6 +6,7 @@ from typing import Dict, List, Any, Optional
 from app.data_sources import DataSourceFactory
 from app.utils.cache import CacheManager
 from app.utils.logger import get_logger
+from app.utils.market_visibility import is_market_visible
 from app.config import CacheConfig
 
 logger = get_logger(__name__)
@@ -103,6 +104,31 @@ class KlineService:
                 'source': 数据来源 ('ticker' 或 'kline')
             }
         """
+        # Market visibility gate: short-circuit to a zero-price payload when
+        # the operator has hidden this market via ``ENABLED_MARKETS`` / the
+        # legacy ``SHOW_*`` flag. This stops background workers (portfolio
+        # monitor alerts, position price refresh) and UI routes from firing
+        # the underlying data source — most importantly CCXT → Binance,
+        # which is unreachable from CN deployments and emits the noisy
+        # ``CCXT fetch_ohlcv failed: binance …`` errors that operators see
+        # in the log even after hiding Crypto in the market picker.
+        normalized = DataSourceFactory.normalize_market(market or "")
+        if not is_market_visible(normalized):
+            logger.debug(
+                "get_realtime_price: market %r hidden by env config — returning zero price for %s:%s",
+                normalized, normalized, symbol,
+            )
+            return {
+                'price': 0,
+                'change': 0,
+                'changePercent': 0,
+                'high': 0,
+                'low': 0,
+                'open': 0,
+                'previousClose': 0,
+                'source': 'hidden',
+            }
+
         ex_key = (exchange_id or "").strip().lower()
         mt_key = (market_type or "").strip().lower()
         cache_key = f"realtime_price:{market}:{ex_key}:{mt_key}:{symbol}"

@@ -6,8 +6,22 @@ from typing import Any, Dict, List
 
 from app.utils.logger import get_logger
 from app.data_providers import safe_float
+from app.utils.market_visibility import is_market_visible
 
 logger = get_logger(__name__)
+
+
+def _crypto_visible() -> bool:
+    """Return True iff the Crypto market is exposed by the current env config.
+
+    Centralised gate so that *all* top-level crypto fetchers (CCXT, yfinance,
+    CoinGecko, CoinCap) short-circuit when the operator has hidden Crypto via
+    ``ENABLED_MARKETS`` or the legacy ``SHOW_CRYPTO`` flag. Skipping the fetch
+    avoids firing requests at ``api.binance.com`` / ``api.coingecko.com`` /
+    ``api.coincap.io`` — important when those endpoints are unreachable from
+    the deployment (e.g. GFW blocking Binance) or simply unused.
+    """
+    return is_market_visible("Crypto")
 
 TOP_CRYPTO_SYMBOLS = [
     {"yf": "BTC-USD", "symbol": "BTC", "name": "Bitcoin"},
@@ -27,6 +41,9 @@ TOP_CRYPTO_SYMBOLS = [
 
 def fetch_crypto_prices_ccxt() -> List[Dict[str, Any]]:
     """Fetch crypto prices using CCXT (system's existing data source)."""
+    if not _crypto_visible():
+        logger.debug("Crypto market hidden by env config — skipping CCXT fetch")
+        return []
     try:
         from app.data_sources.crypto import CryptoDataSource
 
@@ -119,6 +136,9 @@ def fetch_crypto_prices_yfinance() -> List[Dict[str, Any]]:
 
 def fetch_crypto_prices(*, fast: bool = False) -> List[Dict[str, Any]]:
     """Fetch top crypto prices — try CCXT → yfinance → CoinGecko."""
+    if not _crypto_visible():
+        logger.debug("Crypto market hidden by env config — skipping fetch_crypto_prices")
+        return []
     if not fast:
         result = fetch_crypto_prices_ccxt()
         if result and len(result) >= 5:
@@ -174,6 +194,9 @@ def fetch_crypto_prices(*, fast: bool = False) -> List[Dict[str, Any]]:
 
 def fetch_crypto_heatmap_coingecko() -> List[Dict[str, Any]]:
     """Fetch crypto heatmap from CoinGecko with retry."""
+    if not _crypto_visible():
+        logger.debug("Crypto market hidden by env config — skipping CoinGecko heatmap")
+        return []
     for attempt in range(2):
         try:
             resp = requests.get("https://api.coingecko.com/api/v3/coins/markets", params={
@@ -208,6 +231,9 @@ def fetch_crypto_heatmap_coingecko() -> List[Dict[str, Any]]:
 
 def fetch_crypto_heatmap_coincap() -> List[Dict[str, Any]]:
     """Fetch crypto heatmap from CoinCap API (free, no key needed)."""
+    if not _crypto_visible():
+        logger.debug("Crypto market hidden by env config — skipping CoinCap heatmap")
+        return []
     try:
         resp = requests.get("https://api.coincap.io/v2/assets", params={"limit": 30}, timeout=15)
         resp.raise_for_status()

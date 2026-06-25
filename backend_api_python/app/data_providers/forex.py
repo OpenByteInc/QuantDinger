@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List
 
 from app.utils.logger import get_logger
+from app.utils.market_visibility import is_market_visible
 
 logger = get_logger(__name__)
 
@@ -157,6 +158,9 @@ def _fetch_tiingo(pairs: list) -> List[Dict[str, Any]]:
 
 def fetch_forex_pairs() -> List[Dict[str, Any]]:
     """Fetch major forex pairs.  Priority: Twelve Data → yfinance → Tiingo."""
+    if not is_market_visible("Forex"):
+        logger.debug("Forex market hidden by env config — skipping fetch_forex_pairs")
+        return []
     pairs = FOREX_PAIRS
     result: List[Dict[str, Any]] = []
     for fetcher in (_fetch_td, _fetch_yf, _fetch_tiingo):

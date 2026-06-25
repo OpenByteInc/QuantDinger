@@ -72,26 +72,47 @@ global_market_blp = Blueprint("global_market", __name__)
 
 def _compute_market_overview():
     """Fan-out four upstream pulls in parallel; never raise — return empty
-    lists on failure so the route always returns 200."""
+    lists on failure so the route always returns 200.
+
+    Crypto / Forex fetchers respect the ``ENABLED_MARKETS`` whitelist so that
+    a hidden market neither fires upstream requests (CCXT → Binance being
+    the most painful when GFW blocks it) nor wastes a thread slot.
+    ``Indices`` and ``Commodities`` are cross-market reference data (not in
+    the market picker) and always run.
+    """
+    from app.utils.market_visibility import is_market_visible as _vis
+
     result = {
         "indices": [], "forex": [], "crypto": [], "commodities": [],
         "timestamp": int(time.time()),
     }
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        futures = {
-            executor.submit(fetch_stock_indices): "indices",
-            executor.submit(fetch_forex_pairs): "forex",
-            executor.submit(fetch_crypto_prices): "crypto",
-            executor.submit(fetch_commodities): "commodities",
-        }
-        for future in as_completed(futures):
-            key = futures[future]
-            try:
-                data = future.result()
-                result[key] = data if data else []
-            except Exception as e:
-                logger.error("Failed to fetch %s: %s", key, e, exc_info=True)
-                result[key] = []
+
+    # Build the dispatch table — only schedule fetchers whose market is
+    # exposed by the current env config.
+    jobs = [
+        (fetch_stock_indices, "indices"),
+        (fetch_commodities,   "commodities"),
+    ]
+    if _vis("Forex"):
+        jobs.append((fetch_forex_pairs, "forex"))
+    else:
+        logger.debug("Forex hidden by env config — skipping fetch_forex_pairs in market overview")
+    if _vis("Crypto"):
+        jobs.append((fetch_crypto_prices, "crypto"))
+    else:
+        logger.debug("Crypto hidden by env config — skipping fetch_crypto_prices in market overview")
+
+    if jobs:
+        with ThreadPoolExecutor(max_workers=min(4, len(jobs))) as executor:
+            futures = {executor.submit(fn): key for fn, key in jobs}
+            for future in as_completed(futures):
+                key = futures[future]
+                try:
+                    data = future.result()
+                    result[key] = data if data else []
+                except Exception as e:
+                    logger.error("Failed to fetch %s: %s", key, e, exc_info=True)
+                    result[key] = []
 
     logger.info(
         "Market overview compute: indices=%d, forex=%d, crypto=%d, commodities=%d",
