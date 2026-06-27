@@ -253,8 +253,8 @@ def login():
             except Exception as e:
                 logger.warning(f"Multi-user auth failed, trying legacy: {e}")
         
-        # Fallback to legacy single-user mode
-        if not user:
+        # Legacy env-admin auth is only valid in explicit single-user mode.
+        if not user and _is_single_user_mode():
             user = authenticate_legacy(username, password)
         
         if not user:

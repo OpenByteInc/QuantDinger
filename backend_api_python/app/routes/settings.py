@@ -1923,9 +1923,11 @@ def get_settings_values():
         for item in group['items']:
             key = item['key']
             value = env_values.get(key, item.get('default', ''))
-            result[group_key][key] = value
             if item['type'] == 'password':
+                result[group_key][key] = ''
                 result[group_key][f'{key}_configured'] = bool(value)
+            else:
+                result[group_key][key] = value
     
     return jsonify({
         'code': 1,

@@ -24,6 +24,74 @@ def get_strategy_service() -> "StrategyService":
     return _strategy_service_singleton
 
 
+_STRATEGY_SECRET_KEYS = {
+    "api_key",
+    "apikey",
+    "secret_key",
+    "secretkey",
+    "secret",
+    "passphrase",
+    "password",
+    "private_key",
+    "privatekey",
+    "access_token",
+    "accesstoken",
+    "refresh_token",
+    "refreshtoken",
+    "bot_token",
+    "bottoken",
+    "webhook_secret",
+    "webhooksecret",
+    "signing_secret",
+    "signingsecret",
+    "client_secret",
+    "clientsecret",
+}
+
+
+def _secret_key_name(key: Any) -> bool:
+    return str(key or "").replace("-", "_").lower() in _STRATEGY_SECRET_KEYS
+
+
+def _contains_secret(value: Any) -> bool:
+    if isinstance(value, dict):
+        return any((_secret_key_name(k) and v not in (None, "", False)) or _contains_secret(v) for k, v in value.items())
+    if isinstance(value, list):
+        return any(_contains_secret(v) for v in value)
+    return False
+
+
+def reject_inline_strategy_secrets(exchange_config: Any) -> None:
+    if not isinstance(exchange_config, dict) or exchange_config.get("credential_id"):
+        return
+    if _contains_secret(exchange_config):
+        raise ValueError("Inline exchange secrets are not stored in strategies. Save credentials first and use credential_id.")
+
+
+def redact_strategy_secrets(value: Any) -> Any:
+    if isinstance(value, dict):
+        out: Dict[str, Any] = {}
+        for k, v in value.items():
+            if _secret_key_name(k) and v not in (None, "", False):
+                out[k] = "***"
+            else:
+                out[k] = redact_strategy_secrets(v)
+        return out
+    if isinstance(value, list):
+        return [redact_strategy_secrets(v) for v in value]
+    return value
+
+
+def redact_strategy_row(row: Dict[str, Any] | None) -> Dict[str, Any] | None:
+    if not row:
+        return row
+    out = dict(row)
+    for field in ("exchange_config", "trading_config", "notification_config", "ai_model_config"):
+        if field in out:
+            out[field] = redact_strategy_secrets(out[field])
+    return out
+
+
 def _normalize_cross_sectional_symbol_list(
     symbol_list: List[Any],
     market_category: str,
@@ -1143,6 +1211,7 @@ class StrategyService:
         from app.services.exchange_execution import coalesce_exchange_config_from_payload, resolve_exchange_config
 
         exchange_config = coalesce_exchange_config_from_payload(payload)
+        reject_inline_strategy_secrets(exchange_config)
 
         resolved_ex_cfg = resolve_exchange_config(
             exchange_config if isinstance(exchange_config, dict) else {},
@@ -1578,6 +1647,7 @@ class StrategyService:
             'exchange_config': exchange_config,
             'trading_config': trading_config,
         })
+        reject_inline_strategy_secrets(exchange_config)
 
         _merged_ex = _resolve_ex_upd(
             exchange_config if isinstance(exchange_config, dict) else {},

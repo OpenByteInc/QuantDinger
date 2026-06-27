@@ -134,7 +134,7 @@ services:
     container_name: quantdinger-frontend
     restart: unless-stopped
     ports:
-      - "${FRONTEND_PORT:-8888}:80"
+      - "${FRONTEND_HOST:-127.0.0.1}:${FRONTEND_PORT:-8888}:80"
     environment:
       - BACKEND_URL=${BACKEND_URL:-http://backend:5000}
     depends_on:

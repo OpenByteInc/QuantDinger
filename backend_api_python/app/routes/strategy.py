@@ -17,6 +17,7 @@ from app.utils.logger import get_logger
 from app.utils.db import get_db_connection
 
 from app.utils.auth import login_required
+from app.services.strategy import redact_strategy_row
 
 logger = get_logger(__name__)
 
@@ -332,7 +333,7 @@ def list_strategies():
     try:
         user_id = g.user_id
         items = get_strategy_service().list_strategies(user_id=user_id)
-        return jsonify({'code': 1, 'msg': 'success', 'data': {'strategies': items}})
+        return jsonify({'code': 1, 'msg': 'success', 'data': {'strategies': [redact_strategy_row(item) for item in items]}})
     except Exception as e:
         logger.error(f"list_strategies failed: {str(e)}")
         logger.error(traceback.format_exc())
@@ -350,7 +351,7 @@ def get_strategy_detail():
         st = get_strategy_service().get_strategy(strategy_id, user_id=user_id)
         if not st:
             return jsonify({'code': 0, 'msg': 'Strategy not found', 'data': None}), 404
-        return jsonify({'code': 1, 'msg': 'success', 'data': st})
+        return jsonify({'code': 1, 'msg': 'success', 'data': redact_strategy_row(st)})
     except Exception as e:
         logger.error(f"get_strategy_detail failed: {str(e)}")
         logger.error(traceback.format_exc())

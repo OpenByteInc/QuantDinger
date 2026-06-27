@@ -167,7 +167,7 @@ services:
     container_name: quantdinger-frontend
     restart: unless-stopped
     ports:
-      - "${FRONTEND_PORT:-8888}:80"
+      - "${FRONTEND_HOST:-127.0.0.1}:${FRONTEND_PORT:-8888}:80"
     environment:
       # nginx envsubst will inject this into the proxy_pass directive at start.
       # Override with the backend's reachable URL when deploying outside compose

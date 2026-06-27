@@ -22,7 +22,9 @@
 .env
 .env.local
 .env.*.local
+backend.env
 backend_api_python/.env
+.codex-review/
 
 # ========================
 # IDE & OS

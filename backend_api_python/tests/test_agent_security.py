@@ -9,6 +9,7 @@ from app.routes.agent_v1._security import (
     redact_secrets,
     redact_strategy_row,
 )
+from app.utils.agent_auth import _redact
 
 
 def test_redact_secrets_masks_known_keys():
@@ -22,6 +23,19 @@ def test_redact_secrets_masks_known_keys():
     assert out["nested"]["passphrase"] == "***"
     assert out["nested"]["label"] == "ok"
     assert out["items"][0]["secret"] == "***"
+
+
+def test_agent_audit_redact_masks_common_secret_keys():
+    out = _redact({
+        "secret_key": "s",
+        "secretKey": "camel",
+        "passphrase": "p",
+        "nested": {"client_secret": "c"},
+    })
+    assert out["secret_key"] == "<redacted>"
+    assert out["secretKey"] == "<redacted>"
+    assert out["passphrase"] == "<redacted>"
+    assert out["nested"]["client_secret"] == "<redacted>"
 
 
 def test_redact_strategy_row_covers_config_blocks():
