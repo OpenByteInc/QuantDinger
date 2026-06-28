@@ -17,6 +17,9 @@ notification_config = {
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import html
 import json
 import os
@@ -25,9 +28,105 @@ import time
 from datetime import datetime, timezone
 from email.message import EmailMessage
 from typing import Any, Dict, List, Optional, Tuple
-
+from urllib.parse import quote_plus, urlsplit, urlunsplit
 from zoneinfo import ZoneInfo
 
+import requests
+
+from app.utils.db import get_db_connection
+from app.utils.logger import get_logger
+from app.utils.notification_display import with_display
+
+logger = get_logger(__name__)
+
+
+def _shorten(value: Any, max_len: int = 200) -> str:
+    text = str(value or "")
+    return text if len(text) <= max_len else text[: max(0, max_len - 3)] + "..."
+
+
+def _fmt_float(value: Any, max_decimals: int = 8) -> str:
+    try:
+        num = float(value or 0)
+    except Exception:
+        return "0"
+    if not num:
+        return "0"
+    text = f"{num:.{max(0, int(max_decimals))}f}".rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def _payload_text(payload: Dict[str, Any]) -> str:
+    display = (payload or {}).get("display") or {}
+    if isinstance(display, dict):
+        for key in ("plain", "message", "title"):
+            value = display.get(key)
+            if value:
+                return str(value)
+    for key in ("plain", "message", "title", "event"):
+        value = (payload or {}).get(key)
+        if value:
+            return str(value)
+    return json.dumps(payload or {}, ensure_ascii=False, default=str)
+
+
+def _detect_webhook_dialect(url: str) -> str:
+    host = (urlsplit(str(url or "")).netloc or "").lower()
+    raw = str(url or "").lower()
+    if "discord.com/api/webhooks" in raw:
+        return "discord"
+    if "open.feishu.cn" in host or "larksuite.com" in host:
+        return "feishu"
+    if "oapi.dingtalk.com" in host:
+        return "dingtalk"
+    if "qyapi.weixin.qq.com" in host or "work.weixin.qq.com" in host:
+        return "wecom"
+    if "hooks.slack.com" in host:
+        return "slack"
+    return "generic"
+
+
+def _adapt_payload_for_dialect(dialect: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    text = _payload_text(payload)
+    if dialect == "feishu":
+        return {"msg_type": "text", "content": {"text": text}}
+    if dialect in ("dingtalk", "wecom"):
+        return {"msgtype": "text", "text": {"content": text}}
+    if dialect == "slack":
+        return {"text": text}
+    return payload or {}
+
+
+def _feishu_sign(secret: str, timestamp: str) -> str:
+    string_to_sign = f"{timestamp}\n{secret}".encode("utf-8")
+    digest = hmac.new(string_to_sign, b"", hashlib.sha256).digest()
+    return base64.b64encode(digest).decode("utf-8")
+
+
+def _dingtalk_signed_url(url: str, secret: str) -> str:
+    ts = str(int(time.time() * 1000))
+    string_to_sign = f"{ts}\n{secret}".encode("utf-8")
+    digest = hmac.new(secret.encode("utf-8"), string_to_sign, hashlib.sha256).digest()
+    sign = quote_plus(base64.b64encode(digest).decode("utf-8"))
+    parts = urlsplit(str(url))
+    sep = "&" if parts.query else ""
+    query = f"{parts.query}{sep}timestamp={ts}&sign={sign}"
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, query, parts.fragment))
+
+
+def _check_vendor_response(dialect: str, status_code: int, text: str) -> Tuple[bool, str]:
+    if not (200 <= int(status_code or 0) < 300):
+        return False, f"http_{status_code}:{_shorten(text, 300)}"
+    try:
+        data = json.loads(text or "{}")
+    except Exception:
+        data = {}
+    if dialect in ("feishu", "dingtalk", "wecom") and isinstance(data, dict):
+        code = data.get("StatusCode", data.get("code", data.get("errcode", 0)))
+        if str(code) not in ("", "0", "200"):
+            msg = data.get("msg") or data.get("errmsg") or data.get("StatusMessage") or text
+            return False, f"vendor_{code}:{_shorten(msg, 300)}"
+    return True, ""
 
 
 def _as_list(value: Any) -> List[str]:

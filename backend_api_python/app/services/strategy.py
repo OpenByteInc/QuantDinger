@@ -15,6 +15,7 @@ from app.services.strategy_config import (
     apply_risk_flat_from_indicator_code as _apply_risk_flat_from_indicator_code,
     strip_legacy_risk_pct_basis as _strip_legacy_risk_pct_basis,
 )
+from app.services.symbol_name import normalize_crypto_symbol
 
 logger = get_logger(__name__)
 
@@ -1340,6 +1341,7 @@ class StrategyService:
                 exchange_config.pop(_secret_key, None)
 
         # Handle cross-sectional strategy config updates
+        symbol = (trading_config or {}).get('symbol')
         _upd_cs = payload.get('cs_strategy_type')
         if _upd_cs is None:
             _upd_cs = trading_config.get('cs_strategy_type')
@@ -1403,7 +1405,7 @@ class StrategyService:
                 "Live order placement on MOEX is not implemented."
             )
 
-        symbol = (trading_config or {}).get('symbol')
+        symbol = (trading_config or {}).get('symbol') or symbol
         # Same canonicalisation as create_strategy: keep the persisted shape
         # consistent regardless of whether the row was written by create or
         # update. The runtime executor reads symbol from trading_config, so

@@ -772,7 +772,9 @@ class StrategyReviewService:
             "report": "",
         }
 
-        is_zh = str(language or "").lower().startswith("zh")
+        language_norm = str(language or "").lower()
+        is_zh = language_norm.startswith("zh")
+        is_zh_tw = is_zh and ("tw" in language_norm or "hant" in language_norm)
         metrics = base_report.get("metrics") or {}
         diagnostics = base_report.get("diagnostics") or []
         recommendations = base_report.get("recommendations") or []
