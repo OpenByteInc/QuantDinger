@@ -101,6 +101,16 @@ class MetaAPIKeys(type):
         return val if val else ''
     
     @property
+    def REQUESTY_API_KEY(cls):
+        # Always check env var first to avoid stale cache issues
+        env_val = os.getenv('REQUESTY_API_KEY', '').strip()
+        if env_val:
+            return env_val
+        from app.utils.config_loader import load_addon_config
+        val = load_addon_config().get('requesty', {}).get('api_key')
+        return val if val else ''
+    
+    @property
     def OPENAI_API_KEY(cls):
         """OpenAI direct API key"""
         env_val = os.getenv('OPENAI_API_KEY', '').strip()
