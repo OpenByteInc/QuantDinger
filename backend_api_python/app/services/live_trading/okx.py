@@ -258,21 +258,15 @@ class OkxClient(BaseRestClient):
         if lot_sz > 0:
             req = self._floor_to_step(req, lot_sz)
         
-        # Infer precision from lotSz
+        # Infer precision from lotSz. Use the Decimal exponent instead of string
+        # parsing: normalize() renders small steps in scientific notation
+        # (0.00000001 -> "1E-8", no '.'), which would misread precision as 0.
         size_precision = None
         if lot_sz > 0:
             try:
-                lot_sz_normalized = lot_sz.normalize()
-                lot_sz_str = str(lot_sz_normalized)
-                if '.' in lot_sz_str:
-                    decimal_part = lot_sz_str.split('.')[1]
-                    size_precision = len(decimal_part)
-                    if size_precision < 0:
-                        size_precision = 0
-                    if size_precision > 18:
-                        size_precision = 18
-                else:
-                    size_precision = 0
+                exp = lot_sz.normalize().as_tuple().exponent
+                if isinstance(exp, int):
+                    size_precision = min(max(0, -exp), 18)
             except Exception:
                 pass
 
