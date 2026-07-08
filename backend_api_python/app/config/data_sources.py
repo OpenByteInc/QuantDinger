@@ -283,6 +283,27 @@ class TiingoConfig(metaclass=MetaTiingoConfig):
     pass
 
 
+class MetaFXMacroDataConfig(type):
+    @property
+    def BASE_URL(cls):
+        return _config_str('fxmacrodata', 'base_url', 'FXMACRODATA_BASE_URL', 'https://fxmacrodata.com/api/v1').rstrip('/')
+
+    @property
+    def API_KEY(cls):
+        return _config_str('fxmacrodata', 'api_key', 'FXMACRODATA_API_KEY') or _config_str(
+            'fxmacrodata', 'api_key', 'FXMD_API_KEY'
+        )
+
+    @property
+    def TIMEOUT(cls):
+        return _config_int('fxmacrodata', 'timeout', 'FXMACRODATA_TIMEOUT', 12)
+
+
+class FXMacroDataConfig(metaclass=MetaFXMacroDataConfig):
+    """FXMacroData daily FX reference-rate configuration."""
+    pass
+
+
 class MetaYFinanceConfig(type):
     @property
     def TIMEOUT(cls):
