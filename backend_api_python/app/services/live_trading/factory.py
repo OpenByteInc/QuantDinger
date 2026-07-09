@@ -272,7 +272,7 @@ def create_ibkr_client(exchange_config: Dict[str, Any]):
 
     exchange_config should contain:
     - ibkr_host: TWS/Gateway host (default: 127.0.0.1)
-    - ibkr_port: TWS/Gateway port (default: 7497 = TWS Paper; TWS Live default is 7496)
+    - ibkr_port: TWS/Gateway port (default 7497 = TWS Paper per IB; Live TWS default 7496)
     - ibkr_client_id: Client ID (see below — must not collide with /api/ibkr UI)
     - ibkr_account: Account ID (optional, auto-select if empty)
 

@@ -27,7 +27,7 @@ pip install ib_insync
 | TWS    | 7496      | 7497       |
 | IB Gateway | 4001  | 4002       |
 
-> Per IBKR TWS API defaults: production TWS uses **7496**, paper TWS uses **7497**. Ports are configurable in TWS/Gateway, so your client must match the value shown under API settings.
+> Per [IB TWS API Initial Setup](https://interactivebrokers.github.io/tws-api/initial_setup.html): production TWS defaults to **7496**, paper TWS to **7497**. Ports are configurable in TWS/Gateway — your client must match the value shown under API → Settings.
 
 ## TWS / IB Gateway Configuration
 
@@ -117,7 +117,7 @@ GET  /api/ibkr/quote?symbol=AAPL&marketType=USStock
 ```bash
 curl -X POST http://localhost:5000/api/ibkr/connect \
   -H "Content-Type: application/json" \
-  -d '{"host": "127.0.0.1", "port": 7497, "clientId": 1}'  # TWS Paper default
+  -d '{"host": "127.0.0.1", "port": 7497, "clientId": 1}'  # 7497 = TWS Paper default
 ```
 
 ### Place Order
