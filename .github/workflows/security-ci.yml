@@ -53,9 +53,12 @@ jobs:
           fetch-depth: 0
 
       - name: Run Gitleaks
-        uses: gitleaks/gitleaks-action@v3
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            --volume "$GITHUB_WORKSPACE:/repo:ro" \
+            ghcr.io/gitleaks/gitleaks:v8.30.1 \
+            git --redact --verbose /repo
 
   codeql:
     name: CodeQL

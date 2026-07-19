@@ -14,7 +14,7 @@ name: Publish backend image to GHCR
 # keeps the GitHub-hosted runner off the Aliyun mirror detour.
 #
 # First-time setup: after the first successful run, visit
-#   https://github.com/users/<owner>/packages/container/quantdinger-backend/settings
+#   https://github.com/orgs/<owner>/packages/container/quantdinger-backend/settings
 # and set package visibility to public if anonymous `docker pull` is desired.
 
 on:
