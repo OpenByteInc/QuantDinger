@@ -8,6 +8,8 @@ rules:
   openapi-tags: warn
   oas3-api-servers: off
   path-params: error
+  # Spectral's JSONPath crashes on valid OpenAPI 3.0 nullable enum entries.
+  duplicated-entry-in-enum: off
 
   qd-require-operation-summary:
     description: Every operation must have a summary

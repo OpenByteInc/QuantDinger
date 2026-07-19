@@ -117,7 +117,6 @@ def worker_health_check():
     summary="Prometheus metrics",
     tags=["Health"],
     operationId="getPrometheusMetrics",
-    x_visibility="internal",
 )
 def metrics():
     body, content_type = render_metrics()

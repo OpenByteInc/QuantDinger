@@ -741,7 +741,6 @@ paths:
       - Health
       summary: Prometheus metrics
       operationId: getPrometheusMetrics
-      x_visibility: internal
       x-visibility: internal
   /api/policy/broker-market:
     get:
@@ -3933,7 +3932,7 @@ paths:
                 $ref: '#/components/schemas/HumanSuccessEnvelope'
       summary: Return executable script strategy assets.
       tags:
-      - strategy
+      - Strategy
       operationId: getApiStrategyAssets
       x-visibility: internal
   /api/strategies/dry-run-deviation:

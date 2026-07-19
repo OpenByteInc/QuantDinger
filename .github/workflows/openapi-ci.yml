@@ -68,7 +68,7 @@ jobs:
           node-version: '20'
 
       - name: Install Spectral CLI
-        run: npm install -g @stoplight/spectral-cli@6.15.1
+        run: npm install -g @stoplight/spectral-cli@6.16.1
 
       - name: Lint human Web API spec
         run: spectral lint docs/api/openapi.yaml --ruleset .spectral.yaml
