@@ -401,7 +401,7 @@ services:
     #   FRONTEND_TAG   — per-side override, decouples FE from BE
     #   IMAGE_TAG      — unified knob, sets both FE and BE (BE only relevant in ghcr.yml)
     #   latest         — fallback; pin semver in project-root .env (e.g. IMAGE_TAG=5.0.1)
-    image: ${FRONTEND_IMAGE:-ghcr.io/brokermr810/quantdinger-frontend}:${FRONTEND_TAG:-${IMAGE_TAG:-latest}}
+    image: ${FRONTEND_IMAGE:-ghcr.io/openbyteinc/quantdinger-frontend}:${FRONTEND_TAG:-${IMAGE_TAG:-latest}}
     pull_policy: always
     container_name: quantdinger-frontend
     restart: unless-stopped
@@ -429,7 +429,7 @@ services:
   # It proxies /api to the same backend service, so users do not need to
   # manually configure a server URL for the one-click Docker stack.
   mobile:
-    image: ${MOBILE_IMAGE:-ghcr.io/brokermr810/quantdinger-mobile}:${MOBILE_TAG:-${IMAGE_TAG:-latest}}
+    image: ${MOBILE_IMAGE:-ghcr.io/openbyteinc/quantdinger-mobile}:${MOBILE_TAG:-${IMAGE_TAG:-latest}}
     pull_policy: always
     container_name: quantdinger-mobile
     restart: unless-stopped

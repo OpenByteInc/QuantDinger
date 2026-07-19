@@ -332,9 +332,9 @@ docker compose -f docker-compose.ghcr.yml pull
 如果 GHCR 镜像拉取失败：
 
 ```bash
-docker pull ghcr.io/brokermr810/quantdinger-backend:latest
-docker pull ghcr.io/brokermr810/quantdinger-frontend:latest
-docker pull ghcr.io/brokermr810/quantdinger-mobile:latest
+docker pull ghcr.io/openbyteinc/quantdinger-backend:latest
+docker pull ghcr.io/openbyteinc/quantdinger-frontend:latest
+docker pull ghcr.io/openbyteinc/quantdinger-mobile:latest
 ```
 
 常见原因包括网络阻断、包可见性不是 public、或者固定的 tag 不存在。

@@ -26,9 +26,9 @@
 #   IMAGE_TAG       - unified tag for backend AND frontend  (optional; see per-side defaults below)
 #   BACKEND_TAG     - per-side override: pins backend only  (default: $IMAGE_TAG)
 #   FRONTEND_TAG    - per-side override: pins frontend only (default: $IMAGE_TAG)
-#   BACKEND_IMAGE   - backend image path  (default: ghcr.io/brokermr810/quantdinger-backend)
-#   FRONTEND_IMAGE  - frontend image path (default: ghcr.io/brokermr810/quantdinger-frontend)
-#   MOBILE_IMAGE    - mobile H5 image path (default: ghcr.io/brokermr810/quantdinger-mobile)
+#   BACKEND_IMAGE   - backend image path  (default: ghcr.io/openbyteinc/quantdinger-backend)
+#   FRONTEND_IMAGE  - frontend image path (default: ghcr.io/openbyteinc/quantdinger-frontend)
+#   MOBILE_IMAGE    - mobile H5 image path (default: ghcr.io/openbyteinc/quantdinger-mobile)
 #   IMAGE_PREFIX    - postgres/redis registry prefix (e.g. docker.m.daocloud.io/library/)
 #
 # Normal use: set IMAGE_TAG once and both services move in lockstep.
@@ -123,7 +123,7 @@ services:
 
   migration:
     <<: *backend-runtime
-    image: ${BACKEND_IMAGE:-ghcr.io/brokermr810/quantdinger-backend}:${BACKEND_TAG:-${IMAGE_TAG:-latest}}
+    image: ${BACKEND_IMAGE:-ghcr.io/openbyteinc/quantdinger-backend}:${BACKEND_TAG:-${IMAGE_TAG:-latest}}
     pull_policy: always
     container_name: quantdinger-migration
     restart: "no"
@@ -146,7 +146,7 @@ services:
   backend:
     <<: *backend-runtime
     # Tag resolution: BACKEND_TAG > IMAGE_TAG > latest. See header comment.
-    image: ${BACKEND_IMAGE:-ghcr.io/brokermr810/quantdinger-backend}:${BACKEND_TAG:-${IMAGE_TAG:-latest}}
+    image: ${BACKEND_IMAGE:-ghcr.io/openbyteinc/quantdinger-backend}:${BACKEND_TAG:-${IMAGE_TAG:-latest}}
     pull_policy: always
     container_name: quantdinger-backend
     restart: unless-stopped
@@ -221,7 +221,7 @@ services:
 
   trading-worker:
     <<: *backend-runtime
-    image: ${BACKEND_IMAGE:-ghcr.io/brokermr810/quantdinger-backend}:${BACKEND_TAG:-${IMAGE_TAG:-latest}}
+    image: ${BACKEND_IMAGE:-ghcr.io/openbyteinc/quantdinger-backend}:${BACKEND_TAG:-${IMAGE_TAG:-latest}}
     pull_policy: always
     container_name: quantdinger-trading-worker
     restart: unless-stopped
@@ -262,7 +262,7 @@ services:
 
   scheduler-worker:
     <<: *backend-runtime
-    image: ${BACKEND_IMAGE:-ghcr.io/brokermr810/quantdinger-backend}:${BACKEND_TAG:-${IMAGE_TAG:-latest}}
+    image: ${BACKEND_IMAGE:-ghcr.io/openbyteinc/quantdinger-backend}:${BACKEND_TAG:-${IMAGE_TAG:-latest}}
     pull_policy: always
     container_name: quantdinger-scheduler-worker
     restart: unless-stopped
@@ -301,7 +301,7 @@ services:
 
   celery-worker:
     <<: *backend-runtime
-    image: ${BACKEND_IMAGE:-ghcr.io/brokermr810/quantdinger-backend}:${BACKEND_TAG:-${IMAGE_TAG:-latest}}
+    image: ${BACKEND_IMAGE:-ghcr.io/openbyteinc/quantdinger-backend}:${BACKEND_TAG:-${IMAGE_TAG:-latest}}
     pull_policy: always
     container_name: quantdinger-celery-worker
     restart: unless-stopped
@@ -345,7 +345,7 @@ services:
 
   celery-beat:
     <<: *backend-runtime
-    image: ${BACKEND_IMAGE:-ghcr.io/brokermr810/quantdinger-backend}:${BACKEND_TAG:-${IMAGE_TAG:-latest}}
+    image: ${BACKEND_IMAGE:-ghcr.io/openbyteinc/quantdinger-backend}:${BACKEND_TAG:-${IMAGE_TAG:-latest}}
     pull_policy: always
     container_name: quantdinger-celery-beat
     restart: unless-stopped
@@ -387,7 +387,7 @@ services:
 
   frontend:
     # Tag resolution: FRONTEND_TAG > IMAGE_TAG > latest. See header comment.
-    image: ${FRONTEND_IMAGE:-ghcr.io/brokermr810/quantdinger-frontend}:${FRONTEND_TAG:-${IMAGE_TAG:-latest}}
+    image: ${FRONTEND_IMAGE:-ghcr.io/openbyteinc/quantdinger-frontend}:${FRONTEND_TAG:-${IMAGE_TAG:-latest}}
     pull_policy: always
     container_name: quantdinger-frontend
     restart: unless-stopped
@@ -407,7 +407,7 @@ services:
 
   mobile:
     # Tag resolution: MOBILE_TAG > IMAGE_TAG > latest. See header comment.
-    image: ${MOBILE_IMAGE:-ghcr.io/brokermr810/quantdinger-mobile}:${MOBILE_TAG:-${IMAGE_TAG:-latest}}
+    image: ${MOBILE_IMAGE:-ghcr.io/openbyteinc/quantdinger-mobile}:${MOBILE_TAG:-${IMAGE_TAG:-latest}}
     pull_policy: always
     container_name: quantdinger-mobile
     restart: unless-stopped

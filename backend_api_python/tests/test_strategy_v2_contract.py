@@ -32,6 +32,158 @@ def handle_data(context, data):
     assert compile_strategy_v2(code).manifest.primary_frequency == "1m"
 
 
+def test_contract_rejects_symbol_in_get_history_count_position():
+    code = '''
+def initialize(context):
+    context.set_universe(["Crypto:ZEC/USDT@swap"])
+    context.subscribe(frequency="30m")
+
+def handle_data(context, data):
+    symbol = "Crypto:ZEC/USDT@swap"
+    get_history(symbol, "30m", ["close"], [symbol])
+'''
+    with pytest.raises(StrategyV2ContractError, match="strategyV2.apiCallInvalid:get_history:expectedCountFirst"):
+        compile_strategy_v2(code)
+
+
+def test_contract_rejects_reversed_data_history_arguments():
+    code = '''
+def initialize(context):
+    context.set_universe(["Crypto:ZEC/USDT@spot"])
+    context.subscribe(frequency="30m")
+
+def handle_data(context, data):
+    symbol = "Crypto:ZEC/USDT@spot"
+    data.history(200, symbol, ["close", "high", "low"])
+'''
+    with pytest.raises(StrategyV2ContractError, match="strategyV2.apiCallInvalid:data.history:expectedSymbolsThenCount"):
+        compile_strategy_v2(code)
+
+
+def test_contract_rejects_context_passed_to_global_order_helper():
+    code = '''
+def initialize(context):
+    context.set_universe(["Crypto:ZEC/USDT@spot"])
+    context.subscribe(frequency="30m")
+
+def handle_data(context, data):
+    symbol = "Crypto:ZEC/USDT@spot"
+    order_target_percent(context, 1.0, symbol)
+'''
+    with pytest.raises(StrategyV2ContractError, match="strategyV2.apiCallInvalid:order_target_percent:expectedSymbolAndValue"):
+        compile_strategy_v2(code)
+
+
+def test_contract_rejects_symbol_index_on_single_history_dataframe():
+    code = '''
+def initialize(context):
+    context.set_universe(["Crypto:ZEC/USDT@spot"])
+    context.subscribe(frequency="30m")
+
+def handle_data(context, data):
+    symbol = "Crypto:ZEC/USDT@spot"
+    history_data = get_history(
+        count=200,
+        frequency="30m",
+        field=["close", "high", "low"],
+        security_list=[symbol],
+    )
+    close = history_data[symbol]["close"]
+'''
+    with pytest.raises(StrategyV2ContractError, match="strategyV2.apiCallInvalid:history:singleSymbolResultIsDataFrame"):
+        compile_strategy_v2(code)
+
+
+def test_contract_rejects_plural_fields_keyword_for_get_history():
+    code = '''
+def initialize(context):
+    context.set_universe(["Crypto:ZEC/USDT@spot"])
+    context.subscribe(frequency="30m")
+
+def handle_data(context, data):
+    get_history(
+        count=200,
+        frequency="30m",
+        fields=["close", "high", "low"],
+        security_list=["Crypto:ZEC/USDT@spot"],
+    )
+'''
+    with pytest.raises(StrategyV2ContractError, match="strategyV2.apiCallInvalid:get_history:unsupportedArgument:fields"):
+        compile_strategy_v2(code)
+
+
+def test_contract_rejects_chained_symbol_index_on_single_history_dataframe():
+    code = '''
+def initialize(context):
+    g.symbol = "Crypto:ZEC/USDT@spot"
+    context.set_universe([g.symbol])
+    context.subscribe(frequency="30m")
+
+def handle_data(context, data):
+    bars = get_history(
+        80,
+        frequency="30m",
+        field=None,
+        security_list=[g.symbol],
+    )[g.symbol]
+'''
+    with pytest.raises(StrategyV2ContractError, match="strategyV2.apiCallInvalid:history:singleSymbolResultIsDataFrame"):
+        compile_strategy_v2(code)
+
+
+def test_contract_accepts_canonical_history_and_order_calls():
+    code = '''
+def initialize(context):
+    g.symbol = "Crypto:ZEC/USDT@spot"
+    context.set_universe([g.symbol])
+    context.subscribe(frequency="30m")
+
+def handle_data(context, data):
+    bars = data.history(g.symbol, count=200, fields=["close", "high", "low"])
+    if len(bars) < 20:
+        return
+    order_target_percent(g.symbol, 1.0, reason="entry")
+'''
+    assert compile_strategy_v2(code).manifest.primary_frequency == "30m"
+
+
+@pytest.mark.parametrize(
+    "invalid_access",
+    [
+        '"amount" in position',
+        'position["amount"] > 0',
+        'position.get("amount", 0) > 0',
+    ],
+)
+def test_contract_rejects_dictionary_access_on_position_object(invalid_access):
+    code = f'''
+def initialize(context):
+    context.set_universe(["Crypto:ZEC/USDT@spot"])
+    context.subscribe(frequency="30m")
+
+def handle_data(context, data):
+    position = get_position("Crypto:ZEC/USDT@spot")
+    if {invalid_access}:
+        return
+'''
+    with pytest.raises(StrategyV2ContractError, match="strategyV2.apiCallInvalid:get_position:returnsPositionObject"):
+        compile_strategy_v2(code)
+
+
+def test_contract_accepts_position_object_attributes():
+    code = '''
+def initialize(context):
+    context.set_universe(["Crypto:ZEC/USDT@spot"])
+    context.subscribe(frequency="30m")
+
+def handle_data(context, data):
+    position = get_position("Crypto:ZEC/USDT@spot")
+    if float(position.amount or 0.0) > 0:
+        order_target_percent("Crypto:ZEC/USDT@spot", 0.0)
+'''
+    assert compile_strategy_v2(code).manifest.primary_frequency == "30m"
+
+
 def test_instrument_parser_normalizes_ptrade_and_crypto_symbols():
     assert parse_instrument("600519.XSHG").key == "CNStock:600519.SH"
     assert parse_instrument("USStock:MSFT").key == "USStock:MSFT"

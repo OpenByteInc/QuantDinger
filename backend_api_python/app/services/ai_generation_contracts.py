@@ -21,13 +21,16 @@ Return Python source only. Do not use markdown fences or explanatory prose.
 
 ## Event model
 - CTA strategies implement `handle_data(context, data)`.
-- Portfolio strategies normally register `run_daily`, `run_weekly`, or `run_monthly` callbacks in `initialize` and rebalance inside the callback.
+- Single-symbol signal strategies normally implement `handle_data(context, data)`. Do not add a schedule unless the user requests one or the strategy is explicitly a periodic portfolio rebalance.
+- Portfolio strategies may register the global helpers `run_daily(callback, time="HH:MM")`, `run_weekly(callback, weekday=1, time="HH:MM")`, or `run_monthly(callback, monthday=1, time="HH:MM")` in `initialize` and rebalance inside the callback. These are runtime-bound global helpers; call them directly and never as `context.run_daily`, `context.run_weekly`, or `context.run_monthly`.
 - Optional lifecycle handlers are `before_trading_start(context, data)` and `after_trading_end(context, data)`.
 - Store per-run state on the global `g` namespace.
 - Confirm decisions from visible completed data only. Never read future rows, use negative shifts, or otherwise introduce look-ahead bias.
 
 ## Data and factors
-- Use `get_history(count, frequency, field, security_list)` or `history(...)` for historical bars.
+- Historical-bar signatures are exact: `get_history(count, frequency=None, field=None, security_list=None)` and `data.history(symbols, count, fields=None)`.
+- In `get_history(...)`, `count` is always the first argument and must be an integer. In `data.history(...)`, symbols are first and the integer count is second. Prefer explicit keywords when using `data.history`, for example `data.history(symbol, count=60, fields=["close"])`.
+- A history request for one symbol returns a pandas `DataFrame` directly. Use `bars["close"]`; never index the result again with `bars[symbol]`. Multiple-symbol requests return a dictionary keyed by canonical symbol.
 - Use `indicator(name, symbol, **params)`, `factor(name, symbol, **params)`, or `get_factors(symbols, names, **params)` for technical factors.
 - TA-Lib indicators and factors are available through the registered 129-function adapter; use canonical TA-Lib names and valid parameters.
 - Use `get_fundamentals(fields, symbols)` only for real point-in-time fundamental fields supported by the platform. Do not invent fields or use future reports.
@@ -35,8 +38,10 @@ Return Python source only. Do not use markdown fences or explanatory prose.
 - Use `get_universe_stocks()` for the currently selected platform universe pool. Do not copy pool constituents into source code.
 
 ## Orders and positions
-- Use `order`, `order_value`, `order_target`, `order_target_value`, or `order_target_percent`.
-- Use `get_position(symbol)` or `get_positions(...)` to inspect holdings.
+- Order-helper signatures are exact: `order(symbol, amount)`, `order_value(symbol, value)`, `order_target(symbol, amount)`, `order_target_value(symbol, value)`, and `order_target_percent(symbol, percent)`.
+- These are runtime-bound global helpers. Never pass `context` as their first argument. Optional execution and protection values must be keyword arguments after the two required arguments.
+- `get_position(symbol)` returns a `Position` object. Read `position.amount`, `position.avg_cost`, and `position.last_price` directly; never use dictionary membership, subscripting, `.get(...)`, or `getattr(...)` on it.
+- Use `get_positions(...)` when a dictionary of multiple positions is required.
 - Values passed to value-based order APIs are quote-currency exposure targets. Keep sizing bounded by available capital and explicit allocation rules.
 - Keep long entry, long exit, short entry, and short exit conditions independent. A bearish long exit is not automatically a short entry.
 - Spot and all non-crypto markets are long-only for now.
@@ -54,17 +59,6 @@ Return Python source only. Do not use markdown fences or explanatory prose.
 - Do not use `eval`, `exec`, `compile`, `open`, `getattr`, `setattr`, dunder access, or unsafe imports.
 """
 
-INDICATOR_TO_STRATEGY_CONTRACT = """# Indicator-to-Strategy API V2 conversion
-
-- Convert the indicator's signal meaning into Strategy API V2 source with `initialize(context)` and executable handlers.
-- Remove chart-only `output`, plot, layer, and marker structures from the result.
-- Preserve event algebra and recursive indicator semantics without look-ahead.
-- Preserve the source timeframe in `context.subscribe(...)` when it is declared by the source; otherwise choose a conservative strategy-owned default.
-- Map an explicit bullish entry to a long entry and an explicit bearish exit to a long exit. Do not invent short, leverage, reversal, grid, DCA, or martingale behavior.
-- Add short logic only when the user explicitly requests it and supplies a distinct bearish entry rule.
-- Keep visual-only colors, label offsets, and layout parameters out of executable code.
-"""
-
 SCRIPT_STRATEGY_QUICK_TOOL_SYSTEM_PROMPT = SCRIPT_STRATEGY_SYSTEM_PROMPT + """
 
 # Homepage quick-tool entry
@@ -73,24 +67,17 @@ SCRIPT_STRATEGY_QUICK_TOOL_SYSTEM_PROMPT = SCRIPT_STRATEGY_SYSTEM_PROMPT + """
 - Do not return a research memo, checklist, or pseudo-code.
 """
 
-INDICATOR_TO_STRATEGY_SYSTEM_PROMPT = (
-    SCRIPT_STRATEGY_SYSTEM_PROMPT
-    + "\n\n"
-    + INDICATOR_TO_STRATEGY_CONTRACT
-    + """
-
-# Indicator conversion entry
-- The generated source may be saved directly and must compile as Strategy API V2.
-- Preserve the source indicator's visible signal meaning before adding execution behavior.
-"""
-)
-
 SCRIPT_STRATEGY_REPAIR_REQUIREMENTS = """# Strategy API V2 repair requirements
 - Return Python source only.
 - Require a metadata docstring and `initialize(context)`.
 - Require a source-owned universe and subscription.
 - Require at least one executable handler or registered schedule callback.
 - Use only Strategy API V2 data, factor, fundamental, position, and order APIs.
+- Prefer `handle_data(context, data)` for single-symbol signal strategies. Use schedules only for an explicitly requested schedule or periodic portfolio rebalance.
+- Schedule helpers are global calls: `run_daily(callback, time="HH:MM")`, `run_weekly(callback, weekday=1, time="HH:MM")`, and `run_monthly(callback, monthday=1, time="HH:MM")`. Never call them through `context`.
+- Enforce exact history signatures: `get_history(count, frequency, field, security_list)` and `data.history(symbols, count, fields)`. A single-symbol result is already a DataFrame.
+- Enforce exact order signatures such as `order_target_percent(symbol, percent)` and never pass `context` to a global order helper.
+- Treat `get_position(symbol)` as a `Position` object with direct `.amount`, `.avg_cost`, and `.last_price` attributes. Never treat it as a dictionary or use `getattr`.
 - Preserve completed-data-only execution and remove look-ahead.
 - Keep symbol, market, frequency, schedule, and universe in source code.
 - Permit user-adjustable leverage only for Crypto `@swap` instruments and only after `context.allow_leverage(max_leverage=N)`.

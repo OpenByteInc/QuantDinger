@@ -332,9 +332,9 @@ docker compose -f docker-compose.ghcr.yml pull
 If GHCR images fail:
 
 ```bash
-docker pull ghcr.io/brokermr810/quantdinger-backend:latest
-docker pull ghcr.io/brokermr810/quantdinger-frontend:latest
-docker pull ghcr.io/brokermr810/quantdinger-mobile:latest
+docker pull ghcr.io/openbyteinc/quantdinger-backend:latest
+docker pull ghcr.io/openbyteinc/quantdinger-frontend:latest
+docker pull ghcr.io/openbyteinc/quantdinger-mobile:latest
 ```
 
 Common causes include network blocks, private package visibility, or a pinned tag that does not exist.

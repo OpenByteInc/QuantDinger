@@ -5,7 +5,6 @@ from app.services.ai_generation_contracts import (
     INDICATOR_GENERATION_CONTRACT,
     INDICATOR_REPAIR_REQUIREMENTS,
     INDICATOR_SYSTEM_CONTRACT,
-    INDICATOR_TO_STRATEGY_CONTRACT,
     SCRIPT_STRATEGY_REPAIR_REQUIREMENTS,
     SCRIPT_STRATEGY_SYSTEM_PROMPT,
 )
@@ -36,10 +35,24 @@ def test_strategy_generation_prompt_exposes_v2_factor_and_fundamental_contract()
     assert "context.set_universe(pool=" in SCRIPT_STRATEGY_SYSTEM_PROMPT
 
 
-def test_indicator_conversion_targets_v2_without_inventing_execution_behavior():
-    assert "Strategy API V2" in INDICATOR_TO_STRATEGY_CONTRACT
-    assert "Remove chart-only" in INDICATOR_TO_STRATEGY_CONTRACT
-    assert "Do not invent short, leverage" in INDICATOR_TO_STRATEGY_CONTRACT
+def test_strategy_generation_prompt_documents_exact_history_and_order_signatures():
+    assert "get_history(count, frequency=None, field=None, security_list=None)" in SCRIPT_STRATEGY_SYSTEM_PROMPT
+    assert "data.history(symbols, count, fields=None)" in SCRIPT_STRATEGY_SYSTEM_PROMPT
+    assert "one symbol returns a pandas `DataFrame` directly" in SCRIPT_STRATEGY_SYSTEM_PROMPT
+    assert "order_target_percent(symbol, percent)" in SCRIPT_STRATEGY_SYSTEM_PROMPT
+    assert "Never pass `context` as their first argument" in SCRIPT_STRATEGY_SYSTEM_PROMPT
+    assert "`get_position(symbol)` returns a `Position` object" in SCRIPT_STRATEGY_SYSTEM_PROMPT
+    assert "`position.amount`" in SCRIPT_STRATEGY_SYSTEM_PROMPT
+    assert "single-symbol result is already a DataFrame" in SCRIPT_STRATEGY_REPAIR_REQUIREMENTS
+    assert "Treat `get_position(symbol)` as a `Position` object" in SCRIPT_STRATEGY_REPAIR_REQUIREMENTS
+
+
+def test_strategy_generation_prompt_documents_global_schedule_helpers():
+    assert "Single-symbol signal strategies normally implement `handle_data(context, data)`" in SCRIPT_STRATEGY_SYSTEM_PROMPT
+    assert "global helpers `run_daily(callback, time=\"HH:MM\")`" in SCRIPT_STRATEGY_SYSTEM_PROMPT
+    assert "never as `context.run_daily`" in SCRIPT_STRATEGY_SYSTEM_PROMPT
+    assert "Schedule helpers are global calls" in SCRIPT_STRATEGY_REPAIR_REQUIREMENTS
+    assert "Never call them through `context`" in SCRIPT_STRATEGY_REPAIR_REQUIREMENTS
 
 
 def test_indicator_prompt_remains_chart_only():

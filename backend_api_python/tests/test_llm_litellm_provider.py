@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.services.llm import LLMProvider, LLMService
+from app.services.llm import LLMAPIError, LLMProvider, LLMService
 import app.utils.config_loader as config_loader
 from app.utils.config_loader import clear_config_cache, load_addon_config
 
@@ -91,6 +91,79 @@ def test_atlascloud_openai_compatible_call_skips_response_format(monkeypatch):
     assert captured["headers"]["Authorization"] == "Bearer atlas-key"
     assert captured["json"]["model"] == "deepseek-v3"
     assert "response_format" not in captured["json"]
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        ({"message": "Unsupported parameter: temperature"}, "Unsupported parameter: temperature"),
+        ({"error": {"message": "Model access denied"}}, "Model access denied"),
+        (
+            {
+                "detail": [
+                    {
+                        "loc": ["body", "messages", 0, "content"],
+                        "msg": "Value is not valid",
+                    }
+                ]
+            },
+            "body.messages.0.content: Value is not valid",
+        ),
+    ],
+)
+def test_atlascloud_http_error_preserves_provider_detail(monkeypatch, payload, expected):
+    class FakeResponse:
+        status_code = 400
+        headers = {"x-request-id": "atlas-request-42"}
+        text = ""
+
+        def json(self):
+            return payload
+
+    service = LLMService(provider="atlascloud")
+    monkeypatch.setattr(service, "_llm_post", lambda *args, **kwargs: FakeResponse())
+
+    with pytest.raises(LLMAPIError) as exc_info:
+        service._call_openai_compatible(
+            [{"role": "user", "content": "hello"}],
+            "openai/gpt-5.4",
+            0.4,
+            "atlas-key",
+            "https://api.atlascloud.ai/v1",
+            30,
+            use_json_mode=False,
+        )
+
+    message = str(exc_info.value)
+    assert "AtlasCloud API 400" in message
+    assert "model=openai/gpt-5.4" in message
+    assert "request_id=atlas-request-42" in message
+    assert expected in message
+    assert exc_info.value.status_code == 400
+
+
+def test_atlascloud_http_error_falls_back_to_plain_response_text(monkeypatch):
+    class FakeResponse:
+        status_code = 400
+        headers = {}
+        text = "invalid request body"
+
+        def json(self):
+            raise ValueError("not json")
+
+    service = LLMService(provider="atlascloud")
+    monkeypatch.setattr(service, "_llm_post", lambda *args, **kwargs: FakeResponse())
+
+    with pytest.raises(LLMAPIError, match="invalid request body"):
+        service._call_openai_compatible(
+            [{"role": "user", "content": "hello"}],
+            "deepseek-v3",
+            0.4,
+            "atlas-key",
+            "https://api.atlascloud.ai/v1",
+            30,
+            use_json_mode=False,
+        )
 
 
 def test_litellm_keeps_provider_prefixed_model(monkeypatch):

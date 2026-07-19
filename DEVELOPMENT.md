@@ -81,7 +81,7 @@ git tag v5.0.1
 git push origin v5.0.1
 ```
 
-The `release-frontend.yml` workflow there builds `linux/amd64 + linux/arm64` images via buildx and pushes them to `ghcr.io/brokermr810/quantdinger-frontend`, tagged with the semver value, `{major}.{minor}`, and `latest`.
+The `release-frontend.yml` workflow there builds `linux/amd64 + linux/arm64` images via buildx and pushes them to `ghcr.io/openbyteinc/quantdinger-frontend`, tagged with the semver value, `{major}.{minor}`, and `latest`.
 
 This repo's `docker-compose.yml` (and `docker-compose.ghcr.yml`) references that image by default. To pin a version while testing:
 

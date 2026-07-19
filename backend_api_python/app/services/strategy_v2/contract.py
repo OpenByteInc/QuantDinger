@@ -178,6 +178,7 @@ def compile_strategy_v2(code: str) -> CompiledStrategyV2:
     if not raw:
         raise StrategyV2ContractError("strategyV2.codeRequired")
     _validate_dataframe_truthiness(raw)
+    _validate_strategy_api_calls(raw)
 
     context = DiscoveryContext()
     state = StateNamespace()
@@ -298,6 +299,23 @@ _DATAFRAME_API_NAMES = {
     "factor",
 }
 
+_ORDER_API_ARGUMENTS = {
+    "order": ("symbol", "amount"),
+    "order_value": ("symbol", "value"),
+    "order_target": ("symbol", "amount"),
+    "order_target_value": ("symbol", "value"),
+    "order_target_percent": ("symbol", "percent"),
+}
+
+_CANONICAL_SYMBOL_PREFIXES = (
+    "CNStock:",
+    "Crypto:",
+    "Forex:",
+    "Future:",
+    "Futures:",
+    "USStock:",
+)
+
 
 def _validate_dataframe_truthiness(code: str) -> None:
     try:
@@ -338,6 +356,305 @@ def _uses_direct_boolean_name(node: ast.AST, names: set[str]) -> bool:
     if isinstance(node, ast.BoolOp):
         return any(_uses_direct_boolean_name(value, names) for value in node.values)
     return False
+
+
+def _validate_strategy_api_calls(code: str) -> None:
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return
+    static_values = _collect_static_api_values(tree)
+    single_frame_names: set[str] = set()
+    position_names: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        call_name, call_owner = _api_call_identity(node)
+        if call_name in _ORDER_API_ARGUMENTS and call_owner in {"", "context"}:
+            _validate_order_call(node, call_name, static_values)
+        elif call_name in {"get_history", "history"} and call_owner == "":
+            _validate_get_history_call(node, call_name, static_values)
+        elif call_name == "history" and call_owner == "data":
+            _validate_data_history_call(node, static_values)
+        if _history_call_returns_single_frame(node, call_name, call_owner, static_values):
+            parent_target = _assigned_name_for_call(tree, node)
+            if parent_target:
+                single_frame_names.add(parent_target)
+        if call_name == "get_position" and call_owner in {"", "context"}:
+            parent_target = _assigned_name_for_call(tree, node)
+            if parent_target:
+                position_names.add(parent_target)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Subscript):
+            if isinstance(node.value, ast.Call):
+                call_name, call_owner = _api_call_identity(node.value)
+                if _history_call_returns_single_frame(
+                    node.value,
+                    call_name,
+                    call_owner,
+                    static_values,
+                ):
+                    kind, _ = _static_api_value(node.slice, static_values)
+                    if kind == "symbol":
+                        raise StrategyV2ContractError(
+                            "strategyV2.apiCallInvalid:history:singleSymbolResultIsDataFrame"
+                        )
+            if not isinstance(node.value, ast.Name):
+                continue
+            if node.value.id in position_names:
+                raise StrategyV2ContractError(
+                    "strategyV2.apiCallInvalid:get_position:returnsPositionObject"
+                )
+            if node.value.id not in single_frame_names:
+                continue
+            kind, _ = _static_api_value(node.slice, static_values)
+            if kind != "symbol":
+                continue
+            raise StrategyV2ContractError(
+                "strategyV2.apiCallInvalid:history:singleSymbolResultIsDataFrame"
+            )
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id in position_names
+            and node.func.attr in {"get", "items", "keys", "values"}
+        ):
+            raise StrategyV2ContractError(
+                "strategyV2.apiCallInvalid:get_position:returnsPositionObject"
+            )
+        if isinstance(node, ast.Compare):
+            operands = [node.left, *node.comparators]
+            for index, operator in enumerate(node.ops):
+                if not isinstance(operator, (ast.In, ast.NotIn)):
+                    continue
+                container = operands[index + 1]
+                if isinstance(container, ast.Name) and container.id in position_names:
+                    raise StrategyV2ContractError(
+                        "strategyV2.apiCallInvalid:get_position:returnsPositionObject"
+                    )
+
+
+def _collect_static_api_values(tree: ast.AST) -> dict[str, tuple[str, int | None]]:
+    assignments: list[tuple[str, ast.AST]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        for target in targets:
+            key = _static_target_key(target)
+            if key:
+                assignments.append((key, node.value))
+    values: dict[str, tuple[str, int | None]] = {}
+    for _ in range(len(assignments) + 1):
+        changed = False
+        for key, value in assignments:
+            resolved = _static_api_value(value, values)
+            if resolved[0] != "unknown" and values.get(key) != resolved:
+                values[key] = resolved
+                changed = True
+        if not changed:
+            break
+    return values
+
+
+def _static_target_key(node: ast.AST) -> str:
+    if isinstance(node, ast.Name):
+        return node.id
+    if (
+        isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "g"
+    ):
+        return f"g.{node.attr}"
+    return ""
+
+
+def _static_api_value(
+    node: ast.AST | None,
+    values: dict[str, tuple[str, int | None]],
+) -> tuple[str, int | None]:
+    if node is None:
+        return "unknown", None
+    if isinstance(node, ast.Constant):
+        if isinstance(node.value, bool):
+            return "boolean", None
+        if isinstance(node.value, (int, float)):
+            return "number", None
+        if isinstance(node.value, str):
+            raw = node.value.strip()
+            if raw.startswith(_CANONICAL_SYMBOL_PREFIXES):
+                return "symbol", None
+            return "string", None
+    if isinstance(node, ast.Name):
+        if node.id == "context":
+            return "context", None
+        return values.get(node.id, ("unknown", None))
+    if (
+        isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "g"
+    ):
+        return values.get(f"g.{node.attr}", ("unknown", None))
+    if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        items = [_static_api_value(item, values) for item in node.elts]
+        if items and all(kind == "symbol" for kind, _ in items):
+            return "symbols", len(items)
+        return "collection", len(items)
+    return "unknown", None
+
+
+def _api_call_identity(node: ast.Call) -> tuple[str, str]:
+    if isinstance(node.func, ast.Name):
+        return node.func.id, ""
+    if isinstance(node.func, ast.Attribute):
+        owner = node.func.value.id if isinstance(node.func.value, ast.Name) else ""
+        return node.func.attr, owner
+    return "", ""
+
+
+def _call_keywords(node: ast.Call) -> dict[str, ast.AST]:
+    return {item.arg: item.value for item in node.keywords if item.arg}
+
+
+def _validate_order_call(
+    node: ast.Call,
+    call_name: str,
+    static_values: dict[str, tuple[str, int | None]],
+) -> None:
+    required = _ORDER_API_ARGUMENTS[call_name]
+    keywords = _call_keywords(node)
+    if len(node.args) > 2:
+        raise StrategyV2ContractError(
+            f"strategyV2.apiCallInvalid:{call_name}:expectedSymbolAndValue"
+        )
+    for index, argument_name in enumerate(required):
+        if index < len(node.args) and argument_name in keywords:
+            raise StrategyV2ContractError(
+                f"strategyV2.apiCallInvalid:{call_name}:duplicateArgument:{argument_name}"
+            )
+        if index >= len(node.args) and argument_name not in keywords:
+            raise StrategyV2ContractError(
+                f"strategyV2.apiCallInvalid:{call_name}:missingArgument:{argument_name}"
+            )
+    symbol_node = node.args[0] if node.args else keywords.get("symbol")
+    value_node = node.args[1] if len(node.args) > 1 else keywords.get(required[1])
+    symbol_kind, _ = _static_api_value(symbol_node, static_values)
+    value_kind, _ = _static_api_value(value_node, static_values)
+    if symbol_kind in {"context", "number", "boolean"} or value_kind in {
+        "context",
+        "symbol",
+        "symbols",
+    }:
+        raise StrategyV2ContractError(
+            f"strategyV2.apiCallInvalid:{call_name}:expectedSymbolAndValue"
+        )
+
+
+def _validate_get_history_call(
+    node: ast.Call,
+    call_name: str,
+    static_values: dict[str, tuple[str, int | None]],
+) -> None:
+    keywords = _call_keywords(node)
+    if "fields" in keywords:
+        raise StrategyV2ContractError(
+            f"strategyV2.apiCallInvalid:{call_name}:unsupportedArgument:fields"
+        )
+    if len(node.args) > 4:
+        raise StrategyV2ContractError(
+            f"strategyV2.apiCallInvalid:{call_name}:expectedCountFirst"
+        )
+    positional_names = ("count", "frequency", "field", "security_list")
+    for index, name in enumerate(positional_names):
+        if len(node.args) > index and name in keywords:
+            raise StrategyV2ContractError(
+                f"strategyV2.apiCallInvalid:{call_name}:duplicateArgument:{name}"
+            )
+    count_node = node.args[0] if node.args else keywords.get("count")
+    if count_node is None:
+        raise StrategyV2ContractError(
+            f"strategyV2.apiCallInvalid:{call_name}:missingArgument:count"
+        )
+    count_kind, _ = _static_api_value(count_node, static_values)
+    if count_kind in {"context", "string", "symbol", "symbols", "collection", "boolean"}:
+        raise StrategyV2ContractError(
+            f"strategyV2.apiCallInvalid:{call_name}:expectedCountFirst"
+        )
+    security_node = node.args[3] if len(node.args) > 3 else keywords.get("security_list")
+    security_kind, _ = _static_api_value(security_node, static_values)
+    if security_kind in {"context", "number", "boolean"}:
+        raise StrategyV2ContractError(
+            f"strategyV2.apiCallInvalid:{call_name}:invalidSecurityList"
+        )
+
+
+def _validate_data_history_call(
+    node: ast.Call,
+    static_values: dict[str, tuple[str, int | None]],
+) -> None:
+    keywords = _call_keywords(node)
+    unsupported = set(keywords) - {"symbols", "count", "fields"}
+    if unsupported:
+        name = sorted(unsupported)[0]
+        raise StrategyV2ContractError(
+            f"strategyV2.apiCallInvalid:data.history:unsupportedArgument:{name}"
+        )
+    if len(node.args) > 3:
+        raise StrategyV2ContractError(
+            "strategyV2.apiCallInvalid:data.history:expectedSymbolsThenCount"
+        )
+    positional_names = ("symbols", "count", "fields")
+    for index, name in enumerate(positional_names):
+        if len(node.args) > index and name in keywords:
+            raise StrategyV2ContractError(
+                f"strategyV2.apiCallInvalid:data.history:duplicateArgument:{name}"
+            )
+    symbols_node = node.args[0] if node.args else keywords.get("symbols")
+    count_node = node.args[1] if len(node.args) > 1 else keywords.get("count")
+    if symbols_node is None or count_node is None:
+        raise StrategyV2ContractError(
+            "strategyV2.apiCallInvalid:data.history:expectedSymbolsThenCount"
+        )
+    symbols_kind, _ = _static_api_value(symbols_node, static_values)
+    count_kind, _ = _static_api_value(count_node, static_values)
+    if symbols_kind in {"context", "number", "boolean"} or count_kind in {
+        "context",
+        "string",
+        "symbol",
+        "symbols",
+        "collection",
+        "boolean",
+    }:
+        raise StrategyV2ContractError(
+            "strategyV2.apiCallInvalid:data.history:expectedSymbolsThenCount"
+        )
+
+
+def _history_call_returns_single_frame(
+    node: ast.Call,
+    call_name: str,
+    call_owner: str,
+    static_values: dict[str, tuple[str, int | None]],
+) -> bool:
+    keywords = _call_keywords(node)
+    target_node: ast.AST | None = None
+    if call_name in {"get_history", "history"} and call_owner == "":
+        target_node = node.args[3] if len(node.args) > 3 else keywords.get("security_list")
+    elif call_name == "history" and call_owner == "data":
+        target_node = node.args[0] if node.args else keywords.get("symbols")
+    kind, count = _static_api_value(target_node, static_values)
+    return kind == "symbol" or (kind == "symbols" and count == 1)
+
+
+def _assigned_name_for_call(tree: ast.AST, target_call: ast.Call) -> str:
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)) or node.value is not target_call:
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        if len(targets) == 1 and isinstance(targets[0], ast.Name):
+            return targets[0].id
+    return ""
 
 
 def is_strategy_v2_code(code: str) -> bool:
