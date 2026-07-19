@@ -537,6 +537,12 @@ class MultiAssetSimulationBroker:
                 continue
             delta = feasible_delta
             target_qty = current.amount + delta
+            remaining_quantity = max(0.0, abs(requested_delta) - abs(delta))
+            has_tradable_remainder = (
+                remaining_quantity + 1e-12 >= lot_size
+                and remaining_quantity * open_price + 1e-12 >= 0.01
+            )
+            execution_status = "partial" if has_tradable_remainder else "filled"
             notional = abs(delta * fill_price)
             fee = notional * self.commission
             projected_cash = self.portfolio.available_cash - delta * fill_price - fee
@@ -584,15 +590,17 @@ class MultiAssetSimulationBroker:
                 "signal_time": str(order.signal_time) if order.signal_time is not None else str(pd.Timestamp(timestamp)),
                 "fill_reference": "bar_open",
                 "reference_price": open_price,
-                "status": "partial" if abs(delta) + 1e-12 < abs(requested_delta) else "filled",
+                "status": execution_status,
                 "requested_quantity": abs(requested_delta),
             }
             self.executions.append(execution)
-            reason = constraint_reason or (
-                "insufficient_liquidity"
-                if liquidity_cap is not None and abs(requested_delta) > liquidity_cap
-                else "filled"
-            )
+            reason = "filled"
+            if execution_status == "partial":
+                reason = constraint_reason or (
+                    "insufficient_liquidity"
+                    if liquidity_cap is not None and abs(requested_delta) > liquidity_cap
+                    else "partial_fill"
+                )
             self.order_ledger.append(self._order_event(
                 order_id,
                 order,

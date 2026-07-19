@@ -368,3 +368,67 @@ def handle_data(context, data):
         item["statusReason"] == "target_already_met"
         for item in result["orderLedger"]
     )
+
+
+def test_crypto_lot_rounding_is_filled_without_a_tail_retry():
+    frame = _frame([58_700, 58_700, 58_700])
+    code = """
+def initialize(context):
+    g.symbol = "Crypto:BTC/USDT@swap"
+    g.sent = False
+    context.set_universe([g.symbol])
+    context.subscribe(frequency="1m")
+
+def handle_data(context, data):
+    if not g.sent:
+        order_target_percent(g.symbol, 0.95, reason="entry")
+        g.sent = True
+"""
+    result = StrategyV2BacktestRunner(
+        code=code,
+        frames={"Crypto:BTC/USDT@swap": frame},
+        initial_capital=10_000,
+        commission=0.0005,
+        slippage=0.0005,
+    ).run()
+
+    assert result["totalExecutions"] == 1
+    assert result["rawTrades"][0]["status"] == "filled"
+    assert result["attribution"]["orderStatus"] == {
+        "filled": 1,
+        "partial": 0,
+        "deferred": 0,
+        "rejected": 0,
+    }
+    assert not any(
+        item["statusReason"] == "target_already_met"
+        for item in result["orderLedger"]
+    )
+
+
+def test_crypto_target_reversals_do_not_retry_untradable_tail_quantities():
+    frame = _frame([58_700] * 6)
+    code = """
+def initialize(context):
+    g.symbol = "Crypto:BTC/USDT@swap"
+    g.step = 0
+    context.set_universe([g.symbol])
+    context.subscribe(frequency="1m")
+
+def handle_data(context, data):
+    target = 0.95 if g.step % 2 == 0 else -0.95
+    order_target_percent(g.symbol, target, reason="regime_change")
+    g.step += 1
+"""
+    result = StrategyV2BacktestRunner(
+        code=code,
+        frames={"Crypto:BTC/USDT@swap": frame},
+        initial_capital=10_000,
+        commission=0.0005,
+        slippage=0.0005,
+    ).run()
+
+    assert result["totalExecutions"] == 5
+    assert {item["status"] for item in result["rawTrades"]} == {"filled"}
+    assert result["attribution"]["orderStatus"]["partial"] == 0
+    assert result["attribution"]["orderStatus"]["rejected"] == 0
