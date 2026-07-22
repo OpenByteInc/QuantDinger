@@ -37,13 +37,13 @@ def test_binance_futures_fee_rate_uses_concatenated_symbol():
 def test_binance_spot_fee_rate_uses_concatenated_symbol():
     client = _fake_client(
         BinanceSpotClient,
-        [{"makerCommission": "0.001", "takerCommission": "0.001"}],
+        {"standardCommission": {"maker": "0.001", "taker": "0.001"}},
     )
 
     result = client.get_fee_rate("ETH/USDT:USDT")
 
     assert result == {"maker": 0.001, "taker": 0.001}
-    assert client.seen[-1]["path"] == "/sapi/v1/asset/tradeFee"
+    assert client.seen[-1]["path"] == "/api/v3/account/commission"
     assert client.seen[-1]["params"] == {"symbol": "ETHUSDT"}
 
 

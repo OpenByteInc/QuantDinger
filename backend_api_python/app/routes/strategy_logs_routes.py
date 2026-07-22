@@ -16,6 +16,16 @@ except Exception:  # pragma: no cover
 logger = get_logger(__name__)
 
 
+def normalize_strategy_log_level(level: str, message: str) -> str:
+    """Keep expected strategy-policy rejections out of the error bucket."""
+    normalized = str(level or "info").strip().lower()
+    if normalized == "warn":
+        normalized = "warning"
+    if "strategyV2.directionModeViolation:" in str(message or ""):
+        return "warning"
+    return normalized
+
+
 @strategy_blp.route('/strategies/logs', methods=['GET'])
 @login_required
 def get_strategy_logs():
@@ -54,6 +64,7 @@ def get_strategy_logs():
             msg = str(rr.get('message') or '')
             if msg.startswith('tick price=') or msg.startswith('tick price '):
                 continue
+            rr['level'] = normalize_strategy_log_level(rr.get('level'), msg)
             ts = rr.get('timestamp')
             if ts is not None:
                 from app.utils.timeutil import to_utc_iso

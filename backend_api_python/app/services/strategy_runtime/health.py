@@ -11,6 +11,12 @@ from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+# Terminal order failures are retained for audit, so counting every historical
+# failure would leave a recovered strategy permanently degraded.  Keep a short
+# attention window instead: recurring failures refresh it, while a transient
+# exchange error clears automatically after healthy operation resumes.
+FAILED_ORDER_ATTENTION_WINDOW_SEC = 300
+
 
 def load_runtime_health(
     strategy_ids: Iterable[int],
@@ -94,6 +100,9 @@ def _empty_snapshot() -> Dict[str, Any]:
         "last_event_severity": "",
         "pending_orders": 0,
         "failed_orders": 0,
+        "historical_failed_orders": 0,
+        "last_failed_order_at": None,
+        "failure_attention_window_sec": FAILED_ORDER_ATTENTION_WINDOW_SEC,
         "last_order_at": None,
         "last_signal_at": 0,
         "open_positions": 0,
@@ -202,23 +211,37 @@ def _load_latest_events(snapshots, placeholders, ids):
 def _load_pending_orders(snapshots, placeholders, ids):
     rows = _query(
         f"""
-        SELECT strategy_id,
+        SELECT strategy_id, strategy_run_id,
                SUM(CASE WHEN status IN ('pending', 'processing') THEN 1 ELSE 0 END) AS pending_orders,
-               SUM(CASE WHEN status IN ('failed', 'error', 'rejected') THEN 1 ELSE 0 END) AS failed_orders,
+               SUM(CASE
+                       WHEN status IN ('failed', 'error', 'rejected')
+                        AND updated_at >= NOW() - (%s * INTERVAL '1 second')
+                       THEN 1 ELSE 0
+                   END) AS failed_orders,
+               SUM(CASE WHEN status IN ('failed', 'error', 'rejected') THEN 1 ELSE 0 END)
+                   AS historical_failed_orders,
+               MAX(CASE WHEN status IN ('failed', 'error', 'rejected') THEN updated_at END)
+                   AS last_failed_order_at,
                MAX(updated_at) AS last_order_at,
                MAX(signal_ts) AS last_signal_at
         FROM pending_orders
         WHERE strategy_id IN ({placeholders})
-        GROUP BY strategy_id
+        GROUP BY strategy_id, strategy_run_id
         """,
-        tuple(ids),
+        (FAILED_ORDER_ATTENTION_WINDOW_SEC, *ids),
     )
     for row in rows:
         strategy_id = int(row.get("strategy_id") or 0)
-        if strategy_id in snapshots:
+        strategy_run_id = int(row.get("strategy_run_id") or 0)
+        if (
+            strategy_id in snapshots
+            and strategy_run_id == int(snapshots[strategy_id].get("run_id") or 0)
+        ):
             snapshots[strategy_id].update({
                 "pending_orders": int(row.get("pending_orders") or 0),
                 "failed_orders": int(row.get("failed_orders") or 0),
+                "historical_failed_orders": int(row.get("historical_failed_orders") or 0),
+                "last_failed_order_at": row.get("last_failed_order_at"),
                 "last_order_at": row.get("last_order_at"),
                 "last_signal_at": int(row.get("last_signal_at") or 0),
             })

@@ -428,12 +428,14 @@ class OkxClient(BaseRestClient):
         code, data, _ = self._request("GET", "/api/v5/public/time")
         return code == 200 and isinstance(data, dict)
 
-    def get_ticker(self, *, inst_id: str) -> Dict[str, Any]:
+    def get_ticker(self, *, inst_id: str = "", symbol: str = "") -> Dict[str, Any]:
         """
         Get ticker price for an instrument.
         
         Endpoint: GET /api/v5/market/ticker?instId=...
         """
+        if not inst_id and symbol:
+            inst_id = to_okx_spot_inst_id(symbol)
         if not inst_id:
             return {}
         raw = self._public_request("GET", "/api/v5/market/ticker", params={"instId": inst_id})
@@ -757,7 +759,13 @@ class OkxClient(BaseRestClient):
 
     def get_order_fills(self, *, inst_id: str, ord_id: str, inst_type: str = "SWAP") -> Dict[str, Any]:
         params: Dict[str, Any] = {"instId": str(inst_id), "ordId": str(ord_id), "instType": str(inst_type)}
-        return self._signed_request("GET", "/api/v5/trade/fills", params=params)
+        current = self._signed_request("GET", "/api/v5/trade/fills", params=params)
+        data = current.get("data") if isinstance(current, dict) else None
+        if isinstance(data, list) and data:
+            return current
+        # The current-fills endpoint has a short retention window. Historical
+        # reconciliation must use the three-month fills-history endpoint.
+        return self._signed_request("GET", "/api/v5/trade/fills-history", params=params)
 
     def wait_for_fill(
         self,

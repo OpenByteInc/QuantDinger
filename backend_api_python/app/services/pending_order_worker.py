@@ -180,7 +180,7 @@ class PendingOrderWorker(PendingOrderPositionSyncMixin):
             self._stale_processing_sec = int(os.getenv("PENDING_ORDER_STALE_SEC", "90"))
         except Exception:
             self._stale_processing_sec = 90
-
+        self._fee_sync_retry_sec = max(60, int(os.getenv("LIVE_FEE_SYNC_RETRY_SEC", "300")))
         # Position sync self-check (best-effort): keep local positions aligned with exchange.
         self._position_sync_enabled = os.getenv("POSITION_SYNC_ENABLED", "true").lower() == "true"
         self._position_sync_interval_sec = float(os.getenv("POSITION_SYNC_INTERVAL_SEC", "30"))
@@ -758,12 +758,12 @@ class PendingOrderWorker(PendingOrderPositionSyncMixin):
                             OR (
                                 status = 'filled'
                                 AND COALESCE(filled, 0) > 0
-                                AND COALESCE(dispatch_note, '') <> 'live_fee_sync:no_fee'
+                                AND (COALESCE(dispatch_note, '') NOT IN ('live_fee_sync:no_fee', 'live_fee_sync:retry') OR updated_at < NOW() - (%s * INTERVAL '1 second'))
                                 AND EXISTS (
                                     SELECT 1
                                     FROM qd_strategy_trades t
                                     WHERE t.pending_order_id = pending_orders.id
-                                      AND COALESCE(t.commission_quote, t.commission, 0) = 0
+                                      AND COALESCE(t.commission_quote, 0) = 0
                                 )
                             )
                           )
@@ -773,7 +773,7 @@ class PendingOrderWorker(PendingOrderPositionSyncMixin):
                     ORDER BY sent_at ASC NULLS FIRST, id ASC
                     LIMIT %s
                     """,
-                    (int(limit),),
+                    (int(self._fee_sync_retry_sec), int(limit)),
                 )
                 rows = cur.fetchall() or []
                 cur.close()
@@ -804,12 +804,12 @@ class PendingOrderWorker(PendingOrderPositionSyncMixin):
                         OR (
                             status = 'filled'
                             AND COALESCE(filled, 0) > 0
-                            AND COALESCE(dispatch_note, '') <> 'live_fee_sync:no_fee'
+                            AND (COALESCE(dispatch_note, '') NOT IN ('live_fee_sync:no_fee', 'live_fee_sync:retry') OR updated_at < NOW() - (%s * INTERVAL '1 second'))
                             AND EXISTS (
                                 SELECT 1
                                 FROM qd_strategy_trades t
                                 WHERE t.pending_order_id = pending_orders.id
-                                  AND COALESCE(t.commission_quote, t.commission, 0) = 0
+                                  AND COALESCE(t.commission_quote, 0) = 0
                             )
                         )
                       )
@@ -817,7 +817,7 @@ class PendingOrderWorker(PendingOrderPositionSyncMixin):
                   AND COALESCE(exchange_order_id, '') <> ''
                 RETURNING *
                 """,
-                (int(order_id),),
+                (int(order_id), int(self._fee_sync_retry_sec)),
             )
             row = cur.fetchone()
             db.commit()
@@ -1038,7 +1038,7 @@ class PendingOrderWorker(PendingOrderPositionSyncMixin):
                 ensure_ascii=False,
             ),
             dispatch_note=(
-                "live_fee_sync:no_fee"
+                "live_fee_sync:retry"
                 if queue_status == "filled" and not cumulative_fees and delta <= ALPACA_FILL_DELTA_EPSILON
                 else ""
             ),

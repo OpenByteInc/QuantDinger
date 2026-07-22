@@ -15,6 +15,10 @@ from app.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
+class StrategyDirectionModeViolation(RuntimeError):
+    """A strategy requested a direction outside its declared live capability."""
+
+
 def normalize_strategy_position_side(value: Any) -> str:
     side = str(value or "").strip().lower()
     if side in {"neutral", "hedged", "both", "dual"}:
@@ -104,7 +108,9 @@ def validate_strategy_signal_direction(strategy: Dict[str, Any], signal_type: An
     side = "short" if "short" in signal else ("long" if "long" in signal else "")
     mode = resolve_strategy_direction_mode(strategy)
     if mode and side and not direction_mode_allows(mode, side):
-        raise RuntimeError(f"strategyV2.directionModeViolation:{mode}:{side}")
+        raise StrategyDirectionModeViolation(
+            f"strategyV2.directionModeViolation:{mode}:{side}"
+        )
 
 
 def strategy_live_lock_key(strategy: Dict[str, Any], user_id: int) -> Optional[Tuple[Any, ...]]:

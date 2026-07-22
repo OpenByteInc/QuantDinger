@@ -40,6 +40,7 @@ def _robot_payload(executor_type: str, **overrides):
         "trailing_activation_pct": 0.01,
         "trailing_callback_pct": 0.003,
         "hard_stop_pct": 0.1,
+        "dca_interval_minutes": 60,
     }
     payload.update(overrides)
     return payload
@@ -79,10 +80,15 @@ def test_every_robot_generates_a_compilable_strategy_v2_source(executor_type):
     assert payload["trading_config"]["strategy_family"] == "robot"
     assert program.manifest.api_version == 2
     assert program.manifest.strategy_type == "cta"
-    assert program.manifest.primary_frequency == "15m"
-    assert program.manifest.leverage_allowed is True
-    assert program.manifest.max_leverage == 100
-    assert program.manifest.universe.instruments[0].key == "Crypto:BTC/USDT@swap"
+    if executor_type == "dca":
+        assert program.manifest.primary_frequency == "1h"
+        assert program.manifest.leverage_allowed is False
+        assert program.manifest.universe.instruments[0].key == "Crypto:BTC/USDT@spot"
+    else:
+        assert program.manifest.primary_frequency == "15m"
+        assert program.manifest.leverage_allowed is True
+        assert program.manifest.max_leverage == 100
+        assert program.manifest.universe.instruments[0].key == "Crypto:BTC/USDT@swap"
     assert payload["compatibility"]["strategy"]["editable_source"] is True
 
 
@@ -108,7 +114,11 @@ def test_every_robot_runs_in_backtest_and_live_v2_engines(executor_type):
         ),
         user_id=7,
     )
-    instrument = "Crypto:BTC/USDT@swap"
+    instrument = (
+        "Crypto:BTC/USDT@spot"
+        if executor_type == "dca"
+        else "Crypto:BTC/USDT@swap"
+    )
     frame = _runtime_frame()
 
     result = StrategyV2BacktestRunner(
@@ -117,8 +127,8 @@ def test_every_robot_runs_in_backtest_and_live_v2_engines(executor_type):
         initial_capital=1000,
         commission=0,
         slippage=0,
-        leverage_enabled=True,
-        leverage=3,
+        leverage_enabled=executor_type != "dca",
+        leverage=1 if executor_type == "dca" else 3,
     ).run()
     session = StrategyV2LiveSession(
         code=payload["code"],
@@ -137,7 +147,11 @@ def test_every_robot_runs_in_backtest_and_live_v2_engines(executor_type):
 @pytest.mark.parametrize("executor_type", ["dca", "martingale", "layered_martingale"])
 def test_robot_trailing_take_profit_activates_and_closes_after_pullback(executor_type):
     payload = build_executor_strategy_payload(_robot_payload(executor_type), user_id=7)
-    instrument = "Crypto:BTC/USDT@swap"
+    instrument = (
+        "Crypto:BTC/USDT@spot"
+        if executor_type == "dca"
+        else "Crypto:BTC/USDT@swap"
+    )
     frame = _runtime_frame().iloc[:2]
     session = StrategyV2LiveSession(
         code=payload["code"],
@@ -188,7 +202,11 @@ def test_robot_can_disable_trailing_take_profit_and_keep_fixed_take_profit(execu
         _robot_payload(executor_type, trailing_take_profit_enabled=False),
         user_id=7,
     )
-    instrument = "Crypto:BTC/USDT@swap"
+    instrument = (
+        "Crypto:BTC/USDT@spot"
+        if executor_type == "dca"
+        else "Crypto:BTC/USDT@swap"
+    )
     frame = _runtime_frame().iloc[:2]
     session = StrategyV2LiveSession(
         code=payload["code"],
@@ -225,7 +243,7 @@ def test_robot_preview_keeps_each_algorithm_shape():
     assert len(grid["levels"]) == 5
     assert len(dca["levels"]) == 4
     assert [level["amount_quote"] for level in dca["levels"]] == [0.25] * 4
-    assert [level["scheduled_bar"] for level in dca["levels"]] == [1, 61, 121, 181]
+    assert [level.get("scheduled_offset_minutes", 0) for level in dca["levels"]] == [0, 60, 120, 180]
     assert {level["side"] for level in martingale["levels"]} == {"short"}
     assert len({level["amount_quote"] for level in martingale["levels"]}) > 1
     assert all("scheduled_bar" not in level for level in martingale["levels"])
@@ -249,24 +267,29 @@ def test_dca_catalog_and_source_use_a_time_based_fixed_allocation_plan():
         **defaults,
     }, user_id=7)
 
-    assert defaults["dca_interval_bars"] == 60
+    assert defaults["market_type"] == "spot"
+    assert defaults["side"] == "long"
+    assert defaults["timeframe"] == "1H"
+    assert defaults["dca_interval_minutes"] == 1440
     assert defaults["dca_max_orders"] == 5
     assert defaults["dca_total_budget_pct"] == pytest.approx(1.0)
     assert "volume_multiplier" not in defaults
     assert [level["amount_quote"] for level in preview["levels"]] == [0.2] * 5
-    assert [level["scheduled_bar"] for level in preview["levels"]] == [1, 61, 121, 181, 241]
-    assert "DCA_INTERVAL_BARS = 60" in payload["code"]
+    assert [level.get("scheduled_offset_minutes", 0) for level in preview["levels"]] == [0, 1440, 2880, 4320, 5760]
+    assert "DCA_INTERVAL_MINUTES = 1440" in payload["code"]
     assert "DCA_ORDER_PCT = 0.2" in payload["code"]
+    assert "Crypto:BTC/USDT@spot" in payload["code"]
+    assert "allow_leverage" not in payload["code"]
     assert 'reason="dca_scheduled_order"' in payload["code"]
     assert "PRICE_LEVELS" not in payload["code"]
     assert 'reason="robot_level"' not in payload["code"]
 
 
-def test_dca_backtest_places_equal_orders_on_the_configured_bar_schedule():
+def test_dca_backtest_places_equal_orders_on_the_configured_time_schedule():
     payload = build_executor_strategy_payload(
         _robot_payload(
             "dca",
-            dca_interval_bars=2,
+            dca_interval_minutes=30,
             dca_max_orders=3,
             dca_total_budget_pct=0.6,
             trailing_take_profit_enabled=False,
@@ -275,7 +298,7 @@ def test_dca_backtest_places_equal_orders_on_the_configured_bar_schedule():
         ),
         user_id=7,
     )
-    instrument = "Crypto:BTC/USDT@swap"
+    instrument = "Crypto:BTC/USDT@spot"
     index = pd.date_range("2026-01-01", periods=10, freq="15min")
     frame = pd.DataFrame({
         "open": [100.0] * len(index),
@@ -375,19 +398,23 @@ def test_live_robot_requires_a_saved_exchange_credential():
     assert payload["exchange_config"]["credential_id"] == 42
 
 
-def test_spot_robot_is_forced_to_long_and_cannot_enable_leverage():
+def test_dca_is_forced_to_spot_long_and_cannot_enable_leverage():
     payload = build_executor_strategy_payload(
-        _robot_payload("dca", market_type="spot", side="short", leverage=20),
+        _robot_payload("dca", market_type="swap", side="short", leverage=20, timeframe="1m"),
         user_id=7,
     )
     program = compile_strategy_v2(payload["code"])
 
     assert payload["trade_direction"] == "long"
+    assert payload["market_type"] == "spot"
+    assert payload["timeframe"] == "1H"
+    assert payload["leverage"] == 1
     assert payload["leverage_enabled"] is False
     assert program.manifest.leverage_allowed is False
     assert program.manifest.direction_mode == "long_only"
     assert program.manifest.universe.instruments[0].key == "Crypto:BTC/USDT@spot"
-    assert "DIRECTION = 1.0" in payload["code"]
+    assert 'context.set_metadata(direction_mode="long_only", market_type="spot")' in payload["code"]
+    assert "DIRECTION" not in payload["code"]
 
 
 def test_neutral_grid_generates_dual_leg_v2_and_resting_live_config():

@@ -121,7 +121,7 @@ def backfill_zero_commission_trades(
             SELECT id, COALESCE(value, 0) AS value, COALESCE(amount, 0) AS amount
             FROM qd_strategy_trades
             WHERE pending_order_id = %s
-              AND COALESCE(commission_quote, commission, 0) = 0
+              AND (COALESCE(commission, 0) = 0 OR COALESCE(commission_quote, 0) = 0)
             ORDER BY id ASC
             """,
             (int(order_id),),
@@ -140,9 +140,11 @@ def backfill_zero_commission_trades(
             cur.execute(
                 """
                 UPDATE qd_strategy_trades
-                SET commission = %s, commission_ccy = %s, commission_quote = %s
+                SET commission = CASE WHEN COALESCE(commission, 0) = 0 THEN %s ELSE commission END,
+                    commission_ccy = CASE WHEN COALESCE(commission, 0) = 0 THEN %s ELSE commission_ccy END,
+                    commission_quote = CASE WHEN COALESCE(commission_quote, 0) = 0 THEN %s ELSE commission_quote END
                 WHERE id = %s
-                  AND COALESCE(commission_quote, commission, 0) = 0
+                  AND (COALESCE(commission, 0) = 0 OR COALESCE(commission_quote, 0) = 0)
                 """,
                 (
                     native_total * ratio,

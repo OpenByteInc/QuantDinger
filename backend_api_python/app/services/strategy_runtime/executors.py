@@ -139,6 +139,21 @@ def _market_type(value: Any) -> str:
     return "spot" if out == "spot" else "swap"
 
 
+def _timeframe_minutes(value: Any) -> int:
+    text = str(value or "1m").strip().lower()
+    units = {
+        "m": 1,
+        "h": 60,
+        "d": 1440,
+        "w": 10080,
+    }
+    try:
+        amount = int(text[:-1])
+    except (TypeError, ValueError):
+        return 1
+    return max(1, amount * units.get(text[-1:], 1))
+
+
 def _linspace(start: float, end: float, count: int) -> List[float]:
     if count <= 1:
         return [round((start + end) / 2.0, 8)]
@@ -181,6 +196,7 @@ class ExecutorLevel:
     layer_index: int = 0
     order_index: int = 0
     scheduled_bar: int = 0
+    scheduled_offset_minutes: int = 0
     cumulative_amount_quote: float = 0.0
 
     def to_dict(self) -> Dict[str, Any]:
@@ -198,6 +214,10 @@ class ExecutorLevel:
         }
         if self.scheduled_bar:
             payload["scheduled_bar"] = int(self.scheduled_bar)
+        if self.scheduled_offset_minutes:
+            payload["scheduled_offset_minutes"] = int(
+                self.scheduled_offset_minutes
+            )
         if self.cumulative_amount_quote:
             payload["cumulative_amount_quote"] = round(
                 float(self.cumulative_amount_quote), 8
@@ -235,9 +255,13 @@ def normalize_executor_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     symbol = str(raw.get("symbol") or "BTC/USDT").strip() or "BTC/USDT"
     market_type = _market_type(raw.get("market_type") or raw.get("marketType"))
     side = _side(raw.get("side"), allow_neutral=executor_type == "grid")
+    if executor_type == "dca":
+        market_type = "spot"
+        side = "long"
+        raw["timeframe"] = "1H"
     if side == "neutral" and market_type == "spot":
         raise ValueError("NEUTRAL_GRID_REQUIRES_SWAP")
-    leverage = max(1, _int(raw.get("leverage"), 1))
+    leverage = 1 if executor_type == "dca" else max(1, _int(raw.get("leverage"), 1))
     execution_mode = str(raw.get("execution_mode") or raw.get("executionMode") or "signal").strip().lower()
     if execution_mode not in ("signal", "live"):
         execution_mode = "signal"
@@ -293,11 +317,11 @@ def executor_templates() -> Dict[str, Any]:
                 "executor_type": "dca",
                 "defaults": {
                     "side": "long",
-                    "market_type": "swap",
-                    "timeframe": "1m",
+                    "market_type": "spot",
+                    "timeframe": "1H",
                     "dynamic_anchor": True,
                     "entry_price": 1,
-                    "dca_interval_bars": 60,
+                    "dca_interval_minutes": 1440,
                     "dca_max_orders": 5,
                     "dca_total_budget_pct": 1.0,
                     "dca_price_filter_enabled": False,
@@ -527,7 +551,7 @@ def _preview_grid(cfg: Dict[str, Any]) -> ExecutorPreview:
 
 def _preview_dca(cfg: Dict[str, Any]) -> ExecutorPreview:
     entry = _float(cfg.get("entry_price") or cfg.get("entryPrice"), 1.0)
-    interval_bars = max(
+    legacy_interval_bars = max(
         1,
         _int(
             cfg.get("dca_interval_bars")
@@ -535,6 +559,14 @@ def _preview_dca(cfg: Dict[str, Any]) -> ExecutorPreview:
             or cfg.get("interval_bars")
             or cfg.get("intervalBars"),
             60,
+        ),
+    )
+    interval_minutes = max(
+        1,
+        _int(
+            cfg.get("dca_interval_minutes")
+            or cfg.get("dcaIntervalMinutes"),
+            legacy_interval_bars * _timeframe_minutes(cfg.get("timeframe")),
         ),
     )
     max_orders = max(
@@ -613,7 +645,7 @@ def _preview_dca(cfg: Dict[str, Any]) -> ExecutorPreview:
                 0.0,
                 layer_index=order_index,
                 order_index=order_index,
-                scheduled_bar=1 + ((order_index - 1) * interval_bars),
+                scheduled_offset_minutes=(order_index - 1) * interval_minutes,
                 cumulative_amount_quote=cumulative,
             )
         )
@@ -621,7 +653,7 @@ def _preview_dca(cfg: Dict[str, Any]) -> ExecutorPreview:
         "side": cfg["side"],
         "market_type": cfg["market_type"],
         "entry_price": entry,
-        "dca_interval_bars": interval_bars,
+        "dca_interval_minutes": interval_minutes,
         "dca_max_orders": max_orders,
         "dca_total_budget_pct": total_budget_pct,
         "dca_order_pct": order_pct,

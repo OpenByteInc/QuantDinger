@@ -665,9 +665,18 @@ class TradingExecutor:
         strategy_id = int(values["strategy_id"])
         strategy = self._load_strategy(strategy_id) or {}
         if str(values.get("execution_mode") or "signal").strip().lower() == "live":
-            from app.services.strategy_live_guard import validate_strategy_signal_direction
+            from app.services.strategy_live_guard import (
+                StrategyDirectionModeViolation,
+                validate_strategy_signal_direction,
+            )
 
-            validate_strategy_signal_direction(strategy, values.get("signal_type"))
+            try:
+                validate_strategy_signal_direction(strategy, values.get("signal_type"))
+            except StrategyDirectionModeViolation as exc:
+                message = f"Signal blocked by strategy direction guard: {exc}"
+                logger.warning("Strategy %s %s", strategy_id, message)
+                append_strategy_log(strategy_id, "warning", message)
+                return False
         quantity = float(values.get("script_base_qty") or 0)
         reference_price = float(values.get("current_price") or 0)
         initial_capital = float(values.get("initial_capital") or 0)

@@ -7,6 +7,7 @@ BILLING_CONFIG_PREFIX = "BILLING_"
 DEFAULT_BILLING_CONFIG = {
     "enabled": False,
     "cost_backtest": 30,
+    "cost_ai_review": 10,
     "cost_ai_analysis": 10,
     "cost_ai_code_gen": 30,
     "cost_ai_indicator_to_strategy": 30,
@@ -18,6 +19,7 @@ DEFAULT_BILLING_CONFIG = {
 
 FEATURE_NAMES = {
     "backtest": "Strategy Backtest",
+    "ai_review": "AI Strategy Review",
     "ai_analysis": "AI Analysis",
     "ai_code_gen": "AI Code Generation",
     "ai_indicator_to_strategy": "AI Indicator to Strategy",

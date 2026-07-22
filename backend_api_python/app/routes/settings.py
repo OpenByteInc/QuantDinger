@@ -1613,6 +1613,13 @@ CONFIG_SCHEMA = {
                 'description': 'Credits charged for each strategy backtest run'
             },
             {
+                'key': 'BILLING_COST_AI_REVIEW',
+                'label': 'AI Strategy Review Cost',
+                'type': 'number',
+                'default': '10',
+                'description': 'Credits charged for each successful AI-assisted strategy review'
+            },
+            {
                 'key': 'BILLING_COST_AI_ANALYSIS',
                 'label': 'AI Analysis Cost (per symbol)',
                 'type': 'number',

@@ -63,7 +63,8 @@ def test_claim_live_sent_order_transitions_the_claimed_row(monkeypatch):
         def execute(self, sql, params):
             assert "status = 'syncing'" in sql
             assert "COALESCE(filled, 0) <= 0" in sql
-            assert params == (41,)
+            assert "live_fee_sync:retry" in sql
+            assert params == (41, 300)
 
         def fetchone(self):
             return {"id": 41, "status": "syncing"}
@@ -86,6 +87,7 @@ def test_claim_live_sent_order_transitions_the_claimed_row(monkeypatch):
 
     monkeypatch.setattr(worker_module, "get_db_connection", lambda: Database())
     worker = object.__new__(worker_module.PendingOrderWorker)
+    worker._fee_sync_retry_sec = 300
 
     assert worker._claim_live_sent_order(41) == {"id": 41, "status": "syncing"}
 

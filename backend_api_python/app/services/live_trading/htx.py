@@ -938,7 +938,34 @@ class HtxClient(BaseRestClient):
             order_id=order_id,
             client_order_id=client_order_id,
         )
-        return self._swap_v5_request("GET", "/v5/trade/order/details", params=params)
+        try:
+            return self._swap_v5_request(
+                "GET",
+                "/v5/trade/order/details",
+                params=params,
+            )
+        except LiveTradingError as exc:
+            if not order_id:
+                raise
+            endpoint = (
+                "/linear-swap-api/v1/swap_order_detail"
+                if self.margin_mode == "isolated"
+                else "/linear-swap-api/v1/swap_cross_order_detail"
+            )
+            logger.info(
+                "HTX V5 order details unavailable; using %s for order=%s: %s",
+                endpoint,
+                order_id,
+                exc,
+            )
+            return self._swap_private_request_raw(
+                "POST",
+                endpoint,
+                json_body={
+                    "contract_code": to_htx_contract_code(symbol),
+                    "order_id": str(order_id),
+                },
+            )
 
     @staticmethod
     def _match_fee_breakdown(raw: Dict[str, Any], *, default_ccy: str = "") -> Dict[str, float]:

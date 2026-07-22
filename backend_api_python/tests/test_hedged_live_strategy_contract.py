@@ -221,6 +221,30 @@ def test_direction_capability_rejects_incompatible_signal():
         strategy_live_guard.validate_strategy_signal_direction(strategy, "open_short")
 
 
+def test_live_direction_guard_logs_warning_without_failing_runtime(monkeypatch):
+    import app.services.trading_executor as trading_executor_module
+
+    executor = TradingExecutor()
+    logs = []
+    monkeypatch.setattr(executor, "_load_strategy", lambda _sid: _strategy(21, "long"))
+    monkeypatch.setattr(
+        trading_executor_module,
+        "append_strategy_log",
+        lambda *args: logs.append(args),
+    )
+
+    submitted = executor._execute_signal(
+        strategy_id=21,
+        execution_mode="live",
+        signal_type="open_short",
+    )
+
+    assert submitted is False
+    assert len(logs) == 1
+    assert logs[0][0:2] == (21, "warning")
+    assert "strategyV2.directionModeViolation:long_only:short" in logs[0][2]
+
+
 def test_dual_direction_strategy_conflicts_with_either_owned_leg(monkeypatch):
     target = _strategy(30, "neutral")
     other = _strategy(31, "long")

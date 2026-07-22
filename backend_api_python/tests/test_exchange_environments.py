@@ -3,12 +3,20 @@ import pytest
 from app.routes.credentials import _crypto_credential_config, _probe_crypto_credential
 from app.services.exchange_execution import resolve_exchange_config
 from app.services.live_trading.base import LiveTradingError
+from app.services.live_trading.binance import BinanceFuturesClient
+from app.services.live_trading.binance_spot import BinanceSpotClient
+from app.services.live_trading.bitget import BitgetMixClient
+from app.services.live_trading.bitget_spot import BitgetSpotClient
+from app.services.live_trading.bybit import BybitClient
 from app.services.live_trading.factory import (
     create_client,
     exchange_market_scope,
     exchange_trading_environment,
     validate_exchange_environment,
 )
+from app.services.live_trading.gate import GateSpotClient, GateUsdtFuturesClient
+from app.services.live_trading.htx import HtxClient
+from app.services.live_trading.okx import OkxClient
 
 
 def _config(exchange_id, environment, market_scope="both"):
@@ -40,6 +48,27 @@ def test_exchange_environment_routes_match_official_demo_hosts():
 
     assert create_client(_config("gate", "testnet"), market_type="spot").base_url == "https://api-testnet.gateapi.io"
     assert create_client(_config("gate", "testnet"), market_type="swap").base_url == "https://api-testnet.gateapi.io"
+
+
+def test_fee_clients_preserve_spot_vs_contract_market_routing():
+    assert isinstance(create_client(_config("binance", "live"), market_type="spot"), BinanceSpotClient)
+    assert isinstance(create_client(_config("binance", "live"), market_type="swap"), BinanceFuturesClient)
+    assert isinstance(create_client(_config("okx", "live"), market_type="spot"), OkxClient)
+    assert isinstance(create_client(_config("okx", "live"), market_type="swap"), OkxClient)
+    assert isinstance(create_client(_config("bitget", "live"), market_type="spot"), BitgetSpotClient)
+    assert isinstance(create_client(_config("bitget", "live"), market_type="swap"), BitgetMixClient)
+
+    bybit_spot = create_client(_config("bybit", "live"), market_type="spot")
+    bybit_swap = create_client(_config("bybit", "live"), market_type="swap")
+    assert isinstance(bybit_spot, BybitClient) and bybit_spot.category == "spot"
+    assert isinstance(bybit_swap, BybitClient) and bybit_swap.category == "linear"
+    assert isinstance(create_client(_config("gate", "live"), market_type="spot"), GateSpotClient)
+    assert isinstance(create_client(_config("gate", "live"), market_type="swap"), GateUsdtFuturesClient)
+
+    htx_spot = create_client(_config("htx", "live"), market_type="spot")
+    htx_swap = create_client(_config("htx", "live"), market_type="swap")
+    assert isinstance(htx_spot, HtxClient) and htx_spot.market_type == "spot"
+    assert isinstance(htx_swap, HtxClient) and htx_swap.market_type == "swap"
 
 
 def test_legacy_demo_flags_map_to_exchange_specific_environment():

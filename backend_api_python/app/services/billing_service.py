@@ -713,6 +713,7 @@ class BillingService:
             'billing_enabled': config.get('enabled', False),
             'feature_costs': {
                 'backtest': config.get('cost_backtest', 30),
+                'ai_review': config.get('cost_ai_review', 10),
                 'ai_analysis': config.get('cost_ai_analysis', 0),
                 'ai_code_gen': config.get('cost_ai_code_gen', 0),
                 'ai_indicator_to_strategy': config.get('cost_ai_indicator_to_strategy', 0),

@@ -192,11 +192,11 @@ def _build_dca_v2_source(
     *,
     instrument: str,
     timeframe: str,
-    market_type: str,
 ) -> str:
-    side = str(config.get("side") or "long").strip().lower()
-    direction = -1.0 if side == "short" else 1.0
-    interval_bars = max(1, int(config.get("dca_interval_bars") or 1))
+    interval_minutes = max(
+        1,
+        int(config.get("dca_interval_minutes") or 1),
+    )
     max_orders = max(1, int(config.get("dca_max_orders") or 1))
     total_budget_pct = min(
         1.0,
@@ -218,16 +218,10 @@ def _build_dca_v2_source(
     trailing_callback = float(config.get("trailing_callback_pct") or 0.0)
     take_profit = 0.0 if trailing_enabled else float(config.get("take_profit_pct") or 0.0)
     hard_stop = float(config.get("hard_stop_pct") or 0.0)
-    leverage_line = (
-        "    context.allow_leverage(max_leverage=100)\n"
-        if market_type == "swap"
-        else ""
-    )
     constants = (
         f"INSTRUMENT = {instrument!r}\n"
         f"TIMEFRAME = {timeframe!r}\n"
-        f"DIRECTION = {direction!r}\n"
-        f"DCA_INTERVAL_BARS = {interval_bars!r}\n"
+        f"DCA_INTERVAL_MINUTES = {interval_minutes!r}\n"
         f"DCA_MAX_ORDERS = {max_orders!r}\n"
         f"DCA_TOTAL_BUDGET_PCT = {total_budget_pct!r}\n"
         f"DCA_ORDER_PCT = {order_pct!r}\n"
@@ -246,17 +240,17 @@ def _build_dca_v2_source(
 def initialize(context):
     context.set_universe([INSTRUMENT])
     context.subscribe(frequency=TIMEFRAME)
-    context.set_metadata(direction_mode={"short_only" if direction < 0 else "long_only"!r})
+    context.set_metadata(direction_mode="long_only", market_type="spot")
     context.set_warmup(2)
-{leverage_line}    g.dca_order_count = 0
-    g.dca_elapsed_bars = DCA_INTERVAL_BARS
+    g.dca_order_count = 0
+    g.dca_last_schedule_at = None
     g.dca_target_value = 0.0
     g.dca_anchor_price = 0.0
 
 
 def _reset():
     g.dca_order_count = 0
-    g.dca_elapsed_bars = DCA_INTERVAL_BARS
+    g.dca_last_schedule_at = None
     g.dca_target_value = 0.0
     g.dca_anchor_price = 0.0
 
@@ -272,7 +266,7 @@ def _risk_exit(price):
     amount, average = _position_state()
     if amount == 0 or average <= 0:
         return False
-    profit = ((price - average) / average) * DIRECTION
+    profit = (price - average) / average
     if TAKE_PROFIT > 0 and profit >= TAKE_PROFIT:
         order_target_value(INSTRUMENT, 0.0, reason="dca_take_profit")
         _reset()
@@ -292,8 +286,6 @@ def _price_filter_allows(price):
             g.dca_anchor_price = float(DCA_REFERENCE_PRICE)
     if not DCA_PRICE_FILTER_ENABLED:
         return True
-    if DIRECTION < 0:
-        return price >= g.dca_anchor_price * (1.0 - DCA_MAX_ADVERSE_PRICE_PCT)
     return price <= g.dca_anchor_price * (1.0 + DCA_MAX_ADVERSE_PRICE_PCT)
 
 
@@ -309,11 +301,14 @@ def handle_data(context, data):
         _reset()
     if g.dca_order_count >= DCA_MAX_ORDERS:
         return
-    if g.dca_order_count > 0:
-        g.dca_elapsed_bars += 1
-    if g.dca_elapsed_bars < DCA_INTERVAL_BARS:
+    now = context.current_dt
+    if now is None:
         return
-    g.dca_elapsed_bars = 0
+    if g.dca_last_schedule_at is not None:
+        elapsed_minutes = (now - g.dca_last_schedule_at).total_seconds() / 60.0
+        if elapsed_minutes < DCA_INTERVAL_MINUTES:
+            return
+    g.dca_last_schedule_at = now
     if not _price_filter_allows(price):
         return
     budget_value = float(context.portfolio.starting_cash) * DCA_TOTAL_BUDGET_PCT
@@ -326,7 +321,7 @@ def handle_data(context, data):
     g.dca_order_count += 1
     order_target_value(
         INSTRUMENT,
-        DIRECTION * g.dca_target_value,
+        g.dca_target_value,
         reason="dca_scheduled_order",
         stop_loss_pct=HARD_STOP,
         take_profit_pct=TAKE_PROFIT,
@@ -346,6 +341,8 @@ def build_robot_v2_source(
     market_type: str,
     timeframe: str,
 ) -> str:
+    if kind == "dca":
+        market_type = "spot"
     instrument = f"Crypto:{str(symbol or 'BTC/USDT').strip()}@{market_type}"
     side = str(config.get("side") or "long").strip().lower()
     if kind == "dca":
@@ -353,7 +350,6 @@ def build_robot_v2_source(
             config,
             instrument=instrument,
             timeframe=timeframe,
-            market_type=market_type,
         )
     if kind == "grid" and side == "neutral":
         return _build_neutral_grid_v2_source(
