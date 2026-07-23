@@ -92,6 +92,9 @@ def load_addon_config() -> Dict[str, Any]:
         ('OPENROUTER_TIMEOUT', 'openrouter.timeout', 'int'),
         ('OPENROUTER_CONNECT_TIMEOUT', 'openrouter.connect_timeout', 'int'),
         
+        # Requesty (OpenAI-compatible LLM gateway)
+        ('REQUESTY_API_KEY', 'requesty.api_key', 'string'),
+        
         # OpenAI Direct
         ('OPENAI_API_KEY', 'openai.api_key', 'string'),
         ('OPENAI_BASE_URL', 'openai.base_url', 'string'),

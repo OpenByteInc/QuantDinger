@@ -29,6 +29,7 @@ class LLMAPIError(ValueError):
 class LLMProvider(Enum):
     """Supported LLM providers"""
     OPENROUTER = "openrouter"
+    REQUESTY = "requesty"
     OPENAI = "openai"
     GOOGLE = "google"
     DEEPSEEK = "deepseek"
@@ -43,6 +44,11 @@ class LLMProvider(Enum):
 PROVIDER_CONFIGS = {
     LLMProvider.OPENROUTER: {
         "base_url": "https://openrouter.ai/api/v1",
+        "default_model": "openai/gpt-5.4",
+        "fallback_model": "openai/gpt-4o-mini",
+    },
+    LLMProvider.REQUESTY: {
+        "base_url": "https://router.requesty.ai/v1",
         "default_model": "openai/gpt-5.4",
         "fallback_model": "openai/gpt-4o-mini",
     },
@@ -134,6 +140,7 @@ class LLMService:
             LLMProvider.OPENAI,
             LLMProvider.GOOGLE,
             LLMProvider.OPENROUTER,
+            LLMProvider.REQUESTY,
         ]
         
         for p in priority_order:
@@ -150,6 +157,7 @@ class LLMService:
         
         key_map = {
             LLMProvider.OPENROUTER: APIKeys.OPENROUTER_API_KEY,
+            LLMProvider.REQUESTY: APIKeys.REQUESTY_API_KEY,
             LLMProvider.OPENAI: APIKeys.OPENAI_API_KEY,
             LLMProvider.GOOGLE: APIKeys.GOOGLE_API_KEY,
             LLMProvider.DEEPSEEK: APIKeys.DEEPSEEK_API_KEY,
