@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
+from app.utils import i18n
+
 ALERT_MESSAGES: Dict[str, Dict[str, str]] = {
     "zh-CN": {
         "price_above": "价格突破预警：{symbol} 当前价格 ${current_price:.4f} 已高于 ${threshold:.4f}",
@@ -27,8 +29,21 @@ def normalize_language(language: str = "en-US") -> str:
 
 
 def get_alert_message(alert_type: str, language: str = "en-US", **kwargs: Any) -> str:
-    """Return a localized alert message."""
+    """Return a localized alert message.
+
+    Prefer translations from the project's copilot-zh-cn JSON if available; fall back to
+    the built-in ALERT_MESSAGES mapping otherwise.
+    """
     lang = normalize_language(language)
+    # Try project translations first
+    tpl = i18n.t(alert_type, locale=lang)
+    if tpl:
+        try:
+            return tpl.format(**kwargs)
+        except Exception:
+            # formatting failed; fall back
+            pass
+    # Fallback to built-in messages
     template = ALERT_MESSAGES.get(lang, ALERT_MESSAGES["en-US"]).get(alert_type, "")
     return template.format(**kwargs) if template else ""
 
@@ -36,4 +51,7 @@ def get_alert_message(alert_type: str, language: str = "en-US", **kwargs: Any) -
 def get_alert_title(language: str = "en-US") -> str:
     """Return a localized alert title."""
     lang = normalize_language(language)
+    tpl = i18n.t("alert_title", locale=lang)
+    if tpl:
+        return tpl
     return ALERT_MESSAGES.get(lang, ALERT_MESSAGES["en-US"]).get("alert_title", "Alert")
