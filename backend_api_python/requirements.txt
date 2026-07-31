@@ -1,46 +1,46 @@
 # Flask 3.1.3+ / Werkzeug 3.1.6+: GHSA-68rp-wp8r-4726 (session/Vary: Cookie), GHSA-29vq-49wr-vm6x (safe_join)
 Flask==3.1.3
-Werkzeug>=3.1.6
-flask-cors==6.0.0
-finnhub-python>=2.4.18
-yfinance>=0.2.18
-ccxt>=4.0.0
-pandas>=1.5.0
+Werkzeug>=3.1.8
+flask-cors==6.0.5
+finnhub-python>=2.4.29
+yfinance>=1.5.2
+ccxt>=4.5.69
+pandas>=3.0.5
 # Strategy API V2 technical indicator runtime. The 0.6.x wheels bundle the C library.
-TA-Lib==0.6.8
-exchange-calendars>=4.13,<5
-requests>=2.32.0
-websocket-client>=1.8.0,<2
-litellm>=1.80,<1.87
-certifi>=2024.2.2
+TA-Lib==0.7.1
+exchange-calendars>=4.13.2,<5
+requests>=2.34.2
+websocket-client>=1.9.0,<2
+litellm>=1.93.0,<1.94
+certifi>=2026.7.22
 PySocks>=1.7.1
-akshare>=1.12.0
+akshare>=1.18.80
 # GHSA-752w-5fwx-jx9f (crit header); 2.12.0+
-PyJWT>=2.12.0,<3
-python-dotenv>=1.0.1
-cryptography>=43.0.0
+PyJWT>=2.13.0,<3
+python-dotenv>=1.2.2
+cryptography>=49.0.0
 # TOTP MFA and QR code generation
-pyotp>=2.9.0
-qrcode[pil]>=7.4.2
+pyotp>=2.10.0
+qrcode[pil]>=8.2
 # PostgreSQL support (multi-user mode)
-psycopg2-binary>=2.9.9
+psycopg2-binary>=2.9.12
 # Runtime metrics
-prometheus-client>=0.22.0,<1
+prometheus-client>=0.26.0,<1
 # Redis cache (optional but recommended for multi-worker setups)
-redis>=5.0.0
+redis>=8.0.1
 # Durable background jobs and periodic maintenance
-celery[redis]>=5.5.0,<6
+celery[redis]>=5.6.3,<6
 # Production WSGI server
-gunicorn>=22.0.0
+gunicorn>=26.0.0
 # OpenAPI generation (flask-smorest)
-flask-smorest>=0.44.0,<0.48
-marshmallow>=3.24.1,<5
-PyYAML>=6.0
+flask-smorest>=0.47.0,<0.48
+marshmallow>=4.3.0,<5
+PyYAML>=6.0.3
 # Server-side PDF export for AI analysis reports
-pypdf>=6.0,<7
-reportlab>=4.2.0
+pypdf>=6.14.2,<7
+reportlab>=5.0.0
 # Password hashing
-bcrypt>=4.1.0
+bcrypt>=5.0.0
 # Interactive Brokers trading (optional, for US stock trading via TWS/IB Gateway)
 ib_insync>=0.9.86
 # Enhanced search services (optional, for better news search)
@@ -48,4 +48,4 @@ ib_insync>=0.9.86
 # tavily-python>=0.3.0
 # SerpAPI - Google/Bing search scraper (free 100 requests/month)
 # google-search-results>=2.4.0
-alpaca-py>=0.30.0
+alpaca-py>=0.43.5
