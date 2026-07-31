@@ -28,7 +28,7 @@ jobs:
 
       - name: Install lint dependency
         working-directory: ./backend_api_python
-        run: python -m pip install --disable-pip-version-check "ruff>=0.12.0,<0.15" "packaging>=24,<27"
+        run: python -m pip install --disable-pip-version-check "ruff>=0.16.0,<0.17" "packaging>=24,<27"
 
       - name: Python syntax check
         working-directory: ./backend_api_python

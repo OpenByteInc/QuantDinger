@@ -12,7 +12,9 @@ exchange-calendars>=4.13.2,<5
 requests>=2.34.2
 websocket-client>=1.9.0,<2
 litellm>=1.93.0,<1.94
-certifi>=2026.7.22
+# ccxt 4.5.69/4.5.70 pins certifi==2026.6.17. Keep the direct floor
+# aligned with the exchange client until ccxt relaxes its constraint.
+certifi>=2026.6.17
 PySocks>=1.7.1
 akshare>=1.18.80
 # GHSA-752w-5fwx-jx9f (crit header); 2.12.0+
@@ -26,8 +28,10 @@ qrcode[pil]>=8.2
 psycopg2-binary>=2.9.12
 # Runtime metrics
 prometheus-client>=0.26.0,<1
-# Redis cache (optional but recommended for multi-worker setups)
-redis>=8.0.1
+# Redis cache (optional but recommended for multi-worker setups).
+# Celery 5.6 / Kombu 5.6 currently require redis-py <6.5. This client remains
+# compatible with the Redis 8 server used by the production stack.
+redis>=6.4.0,<6.5
 # Durable background jobs and periodic maintenance
 celery[redis]>=5.6.3,<6
 # Production WSGI server
