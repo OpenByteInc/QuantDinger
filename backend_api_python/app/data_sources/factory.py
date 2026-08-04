@@ -187,27 +187,38 @@ class DataSourceFactory:
         """创建数据源实例"""
         if market == 'Crypto':
             from app.data_sources.crypto import CryptoDataSource
-            return CryptoDataSource()
+            source = CryptoDataSource()
         elif market == 'CNStock':
             from app.data_sources.cn_stock import CNStockDataSource
-            return CNStockDataSource()
+            source = CNStockDataSource()
         elif market == 'HKStock':
             from app.data_sources.hk_stock import HKStockDataSource
-            return HKStockDataSource()
+            source = HKStockDataSource()
         elif market == 'USStock':
             from app.data_sources.us_stock import USStockDataSource
-            return USStockDataSource()
+            source = USStockDataSource()
         elif market == 'Forex':
             from app.data_sources.forex import ForexDataSource
-            return ForexDataSource()
+            source = ForexDataSource()
         elif market == 'Futures':
             from app.data_sources.futures import FuturesDataSource
-            return FuturesDataSource()
+            source = FuturesDataSource()
         elif market == 'MOEX':
             from app.data_sources.moex import MOEXDataSource
-            return MOEXDataSource()
+            source = MOEXDataSource()
         else:
             raise UnsupportedMarketError(market)
+        return cls._wrap_optional_source(market, source)
+
+    @staticmethod
+    def _wrap_optional_source(market: str, source: BaseDataSource) -> BaseDataSource:
+        """Wrap an existing source with Qveris only when explicitly enabled."""
+        from app.data_sources.qveris import QverisDataSource
+
+        if QverisDataSource.is_enabled_for(market):
+            logger.info("Qveris data source enabled for %s with %s fallback", market, source.name)
+            return QverisDataSource(market, source)
+        return source
     
     @classmethod
     def get_kline(

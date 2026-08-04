@@ -218,6 +218,12 @@ docker compose ps
 Windows、国内镜像、数据库迁移等问题见
 [安装故障排查](deployment/INSTALL_TROUBLESHOOTING.md)和[云部署指南](deployment/CLOUD_DEPLOYMENT_CN.md)。
 
+### 可选 Qveris 数据源
+
+QuantDinger 可以按需启用 Qveris 作为统一行情数据层，并在调用失败时自动回退到
+现有数据源。配置方式、支持市场、安全行为与验证步骤见
+[Qveris 数据源接入指南](integrations/QVERIS_DATA_SOURCE.md)。
+
 ## 生产部署
 
 启动前校验全部生产密钥：
