@@ -4,23 +4,23 @@ Werkzeug>=3.1.8
 flask-cors==6.0.5
 finnhub-python>=2.4.29
 yfinance>=1.5.2
-ccxt>=4.5.69
+ccxt>=4.5.71
 pandas>=3.0.5
 # Strategy API V2 technical indicator runtime. The 0.6.x wheels bundle the C library.
 TA-Lib==0.7.1
 exchange-calendars>=4.13.2,<5
 requests>=2.34.2
 websocket-client>=1.9.0,<2
-litellm>=1.93.0,<1.94
+litellm>=1.95.0,<1.96
 # ccxt 4.5.69/4.5.70 pins certifi==2026.6.17. Keep the direct floor
 # aligned with the exchange client until ccxt relaxes its constraint.
-certifi>=2026.6.17
+certifi>=2026.7.22
 PySocks>=1.7.1
-akshare>=1.18.80
+akshare>=1.18.81
 # GHSA-752w-5fwx-jx9f (crit header); 2.12.0+
 PyJWT>=2.13.0,<3
 python-dotenv>=1.2.2
-cryptography>=49.0.0
+cryptography>=50.0.0
 # TOTP MFA and QR code generation
 pyotp>=2.10.0
 qrcode[pil]>=8.2
@@ -31,7 +31,7 @@ prometheus-client>=0.26.0,<1
 # Redis cache (optional but recommended for multi-worker setups).
 # Celery 5.6 / Kombu 5.6 currently require redis-py <6.5. This client remains
 # compatible with the Redis 8 server used by the production stack.
-redis>=6.4.0,<6.5
+redis>=8.1.0,<8.2
 # Durable background jobs and periodic maintenance
 celery[redis]>=5.6.3,<6
 # Production WSGI server
