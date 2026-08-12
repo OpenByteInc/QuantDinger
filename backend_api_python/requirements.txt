@@ -20,7 +20,8 @@ akshare>=1.18.80
 # GHSA-752w-5fwx-jx9f (crit header); 2.12.0+
 PyJWT>=2.13.0,<3
 python-dotenv>=1.2.2
-cryptography>=49.0.0
+# PYSEC-2026-3552; 50.0.0+
+cryptography>=50.0.0
 # TOTP MFA and QR code generation
 pyotp>=2.10.0
 qrcode[pil]>=8.2
@@ -41,7 +42,8 @@ flask-smorest>=0.47.0,<0.48
 marshmallow>=4.3.0,<5
 PyYAML>=6.0.3
 # Server-side PDF export for AI analysis reports
-pypdf>=6.14.2,<7
+# PYSEC-2026-3655 / PYSEC-2026-3656; 6.15.0+
+pypdf>=6.15.0,<7
 reportlab>=5.0.0
 # Password hashing
 bcrypt>=5.0.0
