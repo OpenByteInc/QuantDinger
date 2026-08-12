@@ -509,26 +509,38 @@ def _fetch_ibkr_snapshot(
                     qty = 0.0
                 if abs(qty) <= 0:
                     continue
+                # avgPrice is per unit; avgCost is per contract and would show a
+                # futures entry inflated by the multiplier.
+                entry = p.get("avgPrice")
+                if entry in (None, ""):
+                    entry = p.get("avgCost")
                 positions_out.append({
-                    "symbol": str(p.get("symbol") or p.get("ib_symbol") or "").strip(),
+                    # localSymbol distinguishes futures expiries (MGCV6 vs MGCZ6).
+                    "symbol": str(
+                        p.get("localSymbol") or p.get("symbol") or p.get("ib_symbol") or ""
+                    ).strip(),
                     "side": "long" if qty > 0 else "short",
                     "size": abs(qty),
-                    "entry_price": float(p.get("avgCost") or 0.0),
+                    "entry_price": float(entry or 0.0),
                     "market_type": "spot",
                     "inst_id": str(p.get("ib_symbol") or "").strip(),
                 })
             for o in client.get_open_orders() or []:
-                lmt = o.get("limitPrice")
+                # A stop order keeps its trigger in stopPrice, not limitPrice.
+                price = o.get("price")
+                if price in (None, ""):
+                    price = o.get("limitPrice")
                 try:
-                    lmt_f = float(lmt) if lmt not in (None, "") else None
+                    price_f = float(price) if price not in (None, "") else None
                 except (TypeError, ValueError):
-                    lmt_f = None
+                    price_f = None
                 orders_out.append({
-                    "symbol": str(o.get("symbol") or "").strip(),
+                    "symbol": str(o.get("localSymbol") or o.get("symbol") or "").strip(),
                     "side": str(o.get("action") or "").strip().lower(),
-                    "price": lmt_f,
+                    "price": price_f,
                     "size": float(o.get("quantity") or 0.0),
                     "status": str(o.get("status") or "").strip(),
+                    "exchange_order_id": str(o.get("orderId") or "").strip(),
                 })
         except Exception as e:
             _append_snapshot_error(errors, e, context="IBKR 账户连接")

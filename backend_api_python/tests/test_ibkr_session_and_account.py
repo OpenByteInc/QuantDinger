@@ -10,6 +10,7 @@ Two failures motivated these:
 """
 
 import threading
+from types import SimpleNamespace
 from typing import Any, Dict
 
 import pytest
@@ -17,7 +18,7 @@ import pytest
 from app.services.ibkr_trading import config as ibkr_config
 from app.services.ibkr_trading import session as ibkr_session
 from app.services.ibkr_trading.account import flatten_account_summary
-from app.services.ibkr_trading.client import IBKRConfig
+from app.services.ibkr_trading.client import IBKRClient, IBKRConfig
 from app.services.ibkr_trading.config import build_ibkr_config
 
 
@@ -214,3 +215,87 @@ def test_flatten_omits_missing_tags_rather_than_reporting_zero():
 def test_flatten_ignores_unusable_input():
     assert flatten_account_summary(None) == {}
     assert flatten_account_summary({"NetLiquidation": {"value": "", "currency": "USD"}}) == {}
+
+
+class _FakeContract(SimpleNamespace):
+    pass
+
+
+def _futures_position():
+    """A real MGC micro gold future: multiplier 10, avgCost already multiplied."""
+    contract = _FakeContract(
+        symbol="MGC", localSymbol="MGCV6", secType="FUT", exchange="",
+        primaryExchange="", currency="USD", multiplier="10",
+        lastTradeDateOrContractMonth="20261028",
+    )
+    return SimpleNamespace(contract=contract, position=1.0, avgCost=44332.96)
+
+
+def _stock_position():
+    contract = _FakeContract(
+        symbol="AAPL", localSymbol="AAPL", secType="STK", exchange="SMART",
+        primaryExchange="NASDAQ", currency="USD", multiplier="",
+        lastTradeDateOrContractMonth="",
+    )
+    return SimpleNamespace(contract=contract, position=10.0, avgCost=205.25)
+
+
+def _client_with_positions(positions):
+    client = object.__new__(IBKRClient)
+    client._ib = SimpleNamespace(positions=lambda account: positions)
+    client._account = "DU1"
+    client._ensure_connected = lambda: None
+    return client
+
+
+def test_futures_average_price_is_reported_per_unit():
+    """avgCost is per contract; showing it as the entry price inflates it 10x."""
+    row = _client_with_positions([_futures_position()]).get_positions()[0]
+
+    assert row["multiplier"] == 10
+    assert row["avgCost"] == pytest.approx(44332.96)
+    assert row["avgPrice"] == pytest.approx(4433.296)
+    assert row["localSymbol"] == "MGCV6"
+    assert row["lastTradeDate"] == "20261028"
+
+
+def test_stock_average_price_is_unchanged_by_the_multiplier():
+    row = _client_with_positions([_stock_position()]).get_positions()[0]
+
+    assert row["multiplier"] == 1
+    assert row["avgPrice"] == pytest.approx(205.25)
+    assert row["avgCost"] == pytest.approx(205.25)
+
+
+def _client_with_order(order_type, lmt_price, aux_price):
+    order = SimpleNamespace(
+        orderId=40, permId=515101143, action="SELL", totalQuantity=1.0,
+        orderType=order_type, lmtPrice=lmt_price, auxPrice=aux_price,
+    )
+    trade = SimpleNamespace(
+        order=order,
+        contract=_FakeContract(symbol="MGC", localSymbol="MGCV6"),
+        orderStatus=SimpleNamespace(
+            status="PreSubmitted", filled=0, remaining=1, avgFillPrice=0
+        ),
+    )
+    client = object.__new__(IBKRClient)
+    client._ib = SimpleNamespace(openTrades=lambda: [trade])
+    client._ensure_connected = lambda: None
+    return client
+
+
+def test_stop_order_reports_its_trigger_price():
+    """A protective stop keeps its price in auxPrice; lmtPrice is 0."""
+    row = _client_with_order("STP", 0.0, 4350.0).get_open_orders()[0]
+
+    assert row["stopPrice"] == pytest.approx(4350.0)
+    assert row["price"] == pytest.approx(4350.0)
+    assert row["id"] == 40
+
+
+def test_limit_order_still_reports_its_limit_price():
+    row = _client_with_order("LMT", 4400.0, 0.0).get_open_orders()[0]
+
+    assert row["price"] == pytest.approx(4400.0)
+    assert row["stopPrice"] is None
