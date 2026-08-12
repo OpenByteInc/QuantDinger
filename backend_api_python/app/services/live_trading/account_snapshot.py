@@ -10,6 +10,9 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.services.exchange_execution import resolve_exchange_config
+from app.services.ibkr_trading.account import (
+    position_entry_price as ibkr_position_entry_price,
+)
 from app.services.live_trading.factory import create_client
 from app.services.live_trading.records import normalize_strategy_symbol
 from app.services.live_trading.spot_wallet_snapshot import list_spot_wallet_positions
@@ -509,11 +512,6 @@ def _fetch_ibkr_snapshot(
                     qty = 0.0
                 if abs(qty) <= 0:
                     continue
-                # avgPrice is per unit; avgCost is per contract and would show a
-                # futures entry inflated by the multiplier.
-                entry = p.get("avgPrice")
-                if entry in (None, ""):
-                    entry = p.get("avgCost")
                 positions_out.append({
                     # localSymbol distinguishes futures expiries (MGCV6 vs MGCZ6).
                     "symbol": str(
@@ -521,7 +519,7 @@ def _fetch_ibkr_snapshot(
                     ).strip(),
                     "side": "long" if qty > 0 else "short",
                     "size": abs(qty),
-                    "entry_price": float(entry or 0.0),
+                    "entry_price": ibkr_position_entry_price(p),
                     "market_type": "spot",
                     "inst_id": str(p.get("ib_symbol") or "").strip(),
                 })

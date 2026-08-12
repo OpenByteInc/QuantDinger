@@ -48,6 +48,27 @@ def _tag_currency(summary: Mapping[str, Any], tag: str) -> str:
     return str(row.get("currency") or "").strip()
 
 
+def position_entry_price(position: Mapping[str, Any]) -> float:
+    """Per-unit entry price for a position row from ``IBKRClient.get_positions``.
+
+    ``avgCost`` is reported per contract, i.e. already multiplied, so a futures
+    position read through it is inflated by the contract multiplier. Callers
+    that compare against quotes, stops or fills want ``avgPrice``; ``avgCost``
+    remains the fallback for rows produced before it existed.
+    """
+    if not isinstance(position, Mapping):
+        return 0.0
+    for field in ("avgPrice", "avgCost"):
+        raw = position.get(field)
+        if raw in (None, ""):
+            continue
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            continue
+    return 0.0
+
+
 def flatten_account_summary(summary: Any) -> Dict[str, Any]:
     """Return the flat numeric fields the broker-account UI reads.
 
@@ -79,4 +100,4 @@ def flatten_account_summary(summary: Any) -> Dict[str, Any]:
     return flat
 
 
-__all__ = ["flatten_account_summary"]
+__all__ = ["flatten_account_summary", "position_entry_price"]

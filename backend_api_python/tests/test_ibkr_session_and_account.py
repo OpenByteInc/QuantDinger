@@ -17,7 +17,10 @@ import pytest
 
 from app.services.ibkr_trading import config as ibkr_config
 from app.services.ibkr_trading import session as ibkr_session
-from app.services.ibkr_trading.account import flatten_account_summary
+from app.services.ibkr_trading.account import (
+    flatten_account_summary,
+    position_entry_price,
+)
 from app.services.ibkr_trading.client import IBKRClient, IBKRConfig
 from app.services.ibkr_trading.config import build_ibkr_config
 
@@ -299,3 +302,20 @@ def test_limit_order_still_reports_its_limit_price():
 
     assert row["price"] == pytest.approx(4400.0)
     assert row["stopPrice"] is None
+
+
+def test_entry_price_prefers_the_per_unit_average():
+    """Reconciliation and account mirrors must not use the per-contract cost."""
+    row = _client_with_positions([_futures_position()]).get_positions()[0]
+
+    assert position_entry_price(row) == pytest.approx(4433.296)
+
+
+def test_entry_price_falls_back_to_avg_cost_for_rows_without_avg_price():
+    assert position_entry_price({"avgCost": 205.25}) == pytest.approx(205.25)
+
+
+def test_entry_price_ignores_unusable_rows():
+    assert position_entry_price(None) == 0.0
+    assert position_entry_price({}) == 0.0
+    assert position_entry_price({"avgPrice": "", "avgCost": "n/a"}) == 0.0
