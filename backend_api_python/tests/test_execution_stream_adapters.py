@@ -9,6 +9,7 @@ from app.services.execution_streams.adapters import (
     AlpacaExecutionAdapter,
     BitgetExecutionAdapter,
     BybitExecutionAdapter,
+    FutuExecutionAdapter,
     GateExecutionAdapter,
     HtxExecutionAdapter,
     OkxExecutionAdapter,
@@ -55,6 +56,86 @@ def test_adapter_registry_covers_six_exchanges_and_three_brokers():
         "ibkr",
         "futu",
     }
+
+
+def _futu_adapter(events):
+    return FutuExecutionAdapter(
+        credential_id=9,
+        user_id=3,
+        config={},
+        on_event=events.append,
+        on_state=lambda *_args: None,
+    )
+
+
+def test_futu_order_then_deal_push_is_recorded_once():
+    events = []
+    adapter = _futu_adapter(events)
+    order = {
+        "code": "HK.00700",
+        "order_id": "OID-1",
+        "dealt_avg_price": 350,
+        "trd_side": "BUY",
+        "order_status": "FILLED_PART",
+        "updated_time": "2026-08-10 10:00:00",
+    }
+
+    adapter._emit_order({**order, "dealt_qty": 10})
+    adapter._emit_deal({**order, "deal_id": "D-1", "qty": 10, "price": 350})
+    adapter._emit_order({**order, "dealt_qty": 20})
+    adapter._emit_deal({**order, "deal_id": "D-2", "qty": 10, "price": 351})
+    adapter._emit_deal({**order, "deal_id": "D-2", "qty": 10, "price": 351})
+
+    assert [event.cumulative_quantity for event in events] == [10, 20]
+
+
+def test_futu_deal_then_order_push_is_recorded_once():
+    events = []
+    adapter = _futu_adapter(events)
+    base = {
+        "code": "US.AAPL",
+        "order_id": "OID-2",
+        "trd_side": "BUY",
+        "order_status": "FILLED_PART",
+        "updated_time": "2026-08-10 10:00:00",
+    }
+
+    adapter._emit_deal({**base, "deal_id": "D-1", "qty": 10, "price": 220})
+    adapter._emit_order({**base, "dealt_qty": 10, "dealt_avg_price": 220})
+    adapter._emit_deal({**base, "deal_id": "D-2", "qty": 10, "price": 221})
+    adapter._emit_order({**base, "dealt_qty": 20, "dealt_avg_price": 220.5})
+
+    assert [event.exchange_fill_id for event in events] == ["D-1", "D-2"]
+
+
+def test_futu_failed_order_ingest_does_not_suppress_authoritative_deal():
+    def fail_ingest(_event):
+        raise RuntimeError("database unavailable")
+
+    adapter = FutuExecutionAdapter(
+        credential_id=9,
+        user_id=3,
+        config={},
+        on_event=fail_ingest,
+        on_state=lambda *_args: None,
+    )
+    order = {
+        "code": "HK.00700",
+        "order_id": "OID-3",
+        "dealt_qty": 10,
+        "dealt_avg_price": 350,
+        "trd_side": "BUY",
+        "order_status": "FILLED_PART",
+        "updated_time": "2026-08-10 10:00:00",
+    }
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        adapter._emit_order(order)
+
+    events = []
+    adapter.on_event = events.append
+    adapter._emit_deal({**order, "deal_id": "D-3", "qty": 10, "price": 350})
+
+    assert [event.exchange_fill_id for event in events] == ["D-3"]
 
 
 @pytest.mark.parametrize(

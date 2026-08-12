@@ -418,6 +418,62 @@ components:
           type: string
           default: ''
           maxLength: 128
+        futu_host:
+          type: string
+          default: 127.0.0.1
+          maxLength: 255
+        futu_port:
+          type: integer
+          default: 11111
+          minimum: 1
+          maximum: 65535
+        host:
+          type: string
+          default: ''
+          maxLength: 255
+        port:
+          type: integer
+          default: 0
+          minimum: 0
+          maximum: 65535
+        trade_env:
+          type: string
+          default: ''
+          maxLength: 32
+        trade_market:
+          type: string
+          default: ''
+          maxLength: 32
+        tradeMarket:
+          type: string
+          default: ''
+          maxLength: 32
+        security_firm:
+          type: string
+          default: ''
+          maxLength: 64
+        securityFirm:
+          type: string
+          default: ''
+          maxLength: 64
+        acc_id:
+          type: integer
+          default: 0
+        accId:
+          type: integer
+          default: 0
+        unlock_password:
+          type: string
+          default: ''
+          maxLength: 128
+        unlockPassword:
+          type: string
+          default: ''
+          maxLength: 128
+        market_category:
+          type: string
+          default: ''
+          maxLength: 32
       required:
       - exchange_id
       additionalProperties: false
@@ -598,8 +654,8 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/Error'
-    UNPROCESSABLE_ENTITY:
-      description: Unprocessable Entity
+    UNPROCESSABLE_CONTENT:
+      description: Unprocessable Content
       content:
         application/json:
           schema:
@@ -651,6 +707,8 @@ tags:
   description: Interactive Brokers adapter (Internal)
 - name: Alpaca
   description: Alpaca adapter (Internal)
+- name: Futu
+  description: Futu OpenAPI / OpenD adapter (Internal)
 servers:
 - url: http://localhost:5000
   description: Backend direct (python run.py)
@@ -826,7 +884,7 @@ paths:
     post:
       responses:
         '422':
-          $ref: '#/components/responses/UNPROCESSABLE_ENTITY'
+          $ref: '#/components/responses/UNPROCESSABLE_CONTENT'
         '200':
           description: OK
           content:
@@ -936,7 +994,7 @@ paths:
     post:
       responses:
         '422':
-          $ref: '#/components/responses/UNPROCESSABLE_ENTITY'
+          $ref: '#/components/responses/UNPROCESSABLE_CONTENT'
         '200':
           description: OK
           content:
@@ -975,7 +1033,7 @@ paths:
     post:
       responses:
         '422':
-          $ref: '#/components/responses/UNPROCESSABLE_ENTITY'
+          $ref: '#/components/responses/UNPROCESSABLE_CONTENT'
         '400':
           description: Bad Request
           content:
@@ -1010,7 +1068,7 @@ paths:
     post:
       responses:
         '422':
-          $ref: '#/components/responses/UNPROCESSABLE_ENTITY'
+          $ref: '#/components/responses/UNPROCESSABLE_CONTENT'
         '400':
           description: Bad Request
           content:
@@ -3368,6 +3426,27 @@ paths:
       - Indicator
       operationId: getApiIndicatorGetIndicatorParams
       x-visibility: public
+  /api/indicator/chart-preview:
+    post:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      summary: Return candles, indicator plots, and visual signals without creating
+        a task.
+      tags:
+      - Indicator
+      operationId: postApiIndicatorChartPreview
+      x-visibility: public
   /api/indicator/aiGenerate:
     post:
       responses:
@@ -4255,6 +4334,46 @@ paths:
       - Strategy
       operationId: getApiStrategiesPositions
       x-visibility: internal
+  /api/strategies/position-ownership:
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - Strategy
+      operationId: getApiStrategiesPositionOwnership
+      summary: Get Api Strategies Position Ownership
+      x-visibility: internal
+  /api/strategies/position-ownership/repair:
+    post:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - Strategy
+      operationId: postApiStrategiesPositionOwnershipRepair
+      summary: Post Api Strategies Position Ownership Repair
+      x-visibility: internal
   /api/strategies/review-report:
     post:
       responses:
@@ -4558,12 +4677,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HumanSuccessEnvelope'
-      summary: Whether IBKR (local TWS or IB Gateway) may be configured on this deployment.
+      summary: Whether IBKR / Futu (local TWS, IB Gateway, or FutuOpenD) may be configured.
       tags:
       - Credentials
       operationId: getApiCredentialsDesktopBrokersPolicy
-      description: 'Whether IBKR (local TWS or IB Gateway) may be configured on this
-        deployment.
+      description: 'Whether IBKR / Futu (local TWS, IB Gateway, or FutuOpenD) may
+        be configured.
 
         Frontend uses this to disable options and show guidance before save/test.'
       x-visibility: private
@@ -4616,7 +4735,7 @@ paths:
     post:
       responses:
         '422':
-          $ref: '#/components/responses/UNPROCESSABLE_ENTITY'
+          $ref: '#/components/responses/UNPROCESSABLE_CONTENT'
         '400':
           description: Bad Request
           content:
@@ -4644,7 +4763,7 @@ paths:
     post:
       responses:
         '422':
-          $ref: '#/components/responses/UNPROCESSABLE_ENTITY'
+          $ref: '#/components/responses/UNPROCESSABLE_CONTENT'
         '200':
           description: OK
           content:
@@ -4664,7 +4783,7 @@ paths:
             schema:
               $ref: '#/components/schemas/CredentialCreateRequest'
       summary: Create a new credential for the current user.
-      description: Supports crypto exchanges, IBKR (US stocks), and Alpaca.
+      description: Supports crypto exchanges, IBKR (US stocks), Alpaca, and Futu (HK/US).
       tags:
       - Credentials
       operationId: postApiCredentialsCreate
@@ -4721,7 +4840,7 @@ paths:
         required: true
       responses:
         '422':
-          $ref: '#/components/responses/UNPROCESSABLE_ENTITY'
+          $ref: '#/components/responses/UNPROCESSABLE_CONTENT'
         '400':
           description: Bad Request
           content:
@@ -5848,6 +5967,170 @@ paths:
       schema:
         type: string
         minLength: 1
+  /api/futu/status:
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      summary: Get FutuOpenD connection status for the current user session.
+      tags:
+      - Futu
+      operationId: getApiFutuStatus
+      x-visibility: internal
+  /api/futu/connect:
+    post:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      summary: Connect to FutuOpenD (diagnostics only — no orders placed).
+      description: 'Body: host, port, trade_env (demo|live), trade_market (HK|US),
+
+        security_firm, acc_id, unlock_password (optional).'
+      tags:
+      - Futu
+      operationId: postApiFutuConnect
+      x-visibility: internal
+  /api/futu/disconnect:
+    post:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - Futu
+      operationId: postApiFutuDisconnect
+      summary: Post Api Futu Disconnect
+      x-visibility: internal
+  /api/futu/probe:
+    post:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      summary: Connect (or reuse session) and return permissions / account probe (no
+        orders).
+      tags:
+      - Futu
+      operationId: postApiFutuProbe
+      x-visibility: internal
+  /api/futu/account:
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - Futu
+      operationId: getApiFutuAccount
+      summary: Get Api Futu Account
+      x-visibility: internal
+  /api/futu/positions:
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - Futu
+      operationId: getApiFutuPositions
+      summary: Get Api Futu Positions
+      x-visibility: internal
+  /api/futu/orders:
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - Futu
+      operationId: getApiFutuOrders
+      summary: Get Api Futu Orders
+      x-visibility: internal
+  /api/futu/quote:
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      summary: 'Get a snapshot quote (query: symbol, marketType=HKStock|USStock).'
+      tags:
+      - Futu
+      operationId: getApiFutuQuote
+      x-visibility: internal
   /api/global-market/overview:
     get:
       responses:
@@ -6830,7 +7113,7 @@ paths:
     post:
       responses:
         '422':
-          $ref: '#/components/responses/UNPROCESSABLE_ENTITY'
+          $ref: '#/components/responses/UNPROCESSABLE_CONTENT'
         '400':
           description: Bad Request
           content:
@@ -6895,7 +7178,7 @@ paths:
     post:
       responses:
         '422':
-          $ref: '#/components/responses/UNPROCESSABLE_ENTITY'
+          $ref: '#/components/responses/UNPROCESSABLE_CONTENT'
         '400':
           description: Bad Request
           content:
@@ -6983,7 +7266,7 @@ paths:
     post:
       responses:
         '422':
-          $ref: '#/components/responses/UNPROCESSABLE_ENTITY'
+          $ref: '#/components/responses/UNPROCESSABLE_CONTENT'
         '400':
           description: Bad Request
           content:

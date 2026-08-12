@@ -42,6 +42,7 @@ flask-cors==6.0.5
 flask-smorest==0.47.0
 frozenlist==1.8.0
 fsspec==2026.6.0
+futu-api==10.09.6908
 gunicorn==26.0.0
 h11==0.16.0
 hf-xet==1.5.1

@@ -357,6 +357,21 @@ class TradingExecutor:
             account_exchange = str(
                 exchange_config.get("exchange_id") or exchange_config.get("exchangeId") or ""
             ).strip().lower()
+            if execution_mode == "live" and account_exchange == "futu":
+                from app.services.futu_trading.config import normalize_trade_market
+
+                credential_market = normalize_trade_market(
+                    exchange_config.get("trade_market") or exchange_config.get("tradeMarket"),
+                    market_category=str(exchange_config.get("market_category") or ""),
+                )
+                strategy_markets = {
+                    str(member.get("market") or "")
+                    for member in candidates
+                    if str(member.get("market") or "") in {"HKStock", "USStock"}
+                }
+                expected_markets = {"HKStock": "HK", "USStock": "US"}
+                if any(expected_markets[market] != credential_market for market in strategy_markets):
+                    raise RuntimeError("strategyV2.futuCredentialMarketMismatch")
             if execution_mode == "live" and account_exchange:
                 for member in candidates:
                     member_market = str(member.get("market") or "")
@@ -512,8 +527,9 @@ class TradingExecutor:
                             "age_ms": int(snapshot.get("age_ms") or 0),
                             "connected": bool(snapshot.get("connected")),
                         })
-                        prices = dict(snapshot.get("prices") or {})
-                        return prices or rest_runtime_prices()
+                        # A Futu live account must fail closed when OpenD quotes
+                        # are stale; public REST prices are not executable prices.
+                        return dict(snapshot.get("prices") or {})
                 else:
                     from app.services.market_price_stream import PublicMarketPriceFeed
 

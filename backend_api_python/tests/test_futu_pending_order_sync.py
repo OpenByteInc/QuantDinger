@@ -143,7 +143,32 @@ def test_retry_uses_durable_trade_ledger_to_avoid_duplicate_fill(monkeypatch):
         20,
         5.0,
         fail_closed=True,
+        include_stream_events=True,
     )
     persist.assert_not_called()
     update = worker._update_futu_sent_order_snapshot.call_args.kwargs
     assert update["filled"] == 5
+
+
+def test_futu_rest_sync_accounts_for_ingested_stream_events(monkeypatch):
+    cursor = MagicMock()
+    cursor.fetchone.side_effect = [
+        {"recorded": 2},
+        {"cumulative": 5, "incremental": 3},
+    ]
+    connection = MagicMock()
+    connection.cursor.return_value = cursor
+    context = MagicMock()
+    context.__enter__.return_value = connection
+    context.__exit__.return_value = False
+    monkeypatch.setattr(worker_module, "get_db_connection", lambda: context)
+
+    delta = PendingOrderWorker._unrecorded_pending_fill(
+        20,
+        6,
+        fail_closed=True,
+        include_stream_events=True,
+    )
+
+    assert delta == 1
+    assert cursor.execute.call_count == 2

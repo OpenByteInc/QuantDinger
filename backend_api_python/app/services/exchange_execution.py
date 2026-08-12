@@ -86,7 +86,16 @@ def safe_exchange_config_for_log(cfg: Dict[str, Any]) -> Dict[str, Any]:
     )
 
     out = redact_partner_attribution(strip_partner_config(cfg))
-    for k in ["api_key", "secret_key", "passphrase", "apiKey", "secret", "password"]:
+    for k in [
+        "api_key",
+        "secret_key",
+        "passphrase",
+        "apiKey",
+        "secret",
+        "password",
+        "unlock_password",
+        "unlockPassword",
+    ]:
         if k in out and out.get(k):
             out[k] = mask_secret(str(out.get(k)))
     return out

@@ -1,9 +1,10 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
 import pytest
 
 from app.data_sources.factory import DataSourceFactory
+from app.data_sources.errors import UnsupportedMarketError
 from app.data_sources.futu import FutuDataSource
 from app.services.futu_trading.config import FutuConfig
 from app.services.futu_trading.quote_client import FutuQuoteClient
@@ -126,3 +127,36 @@ def test_quote_client_rejects_remote_host_before_loading_sdk(monkeypatch):
 
     assert client.connect() is False
     ensure_futu.assert_not_called()
+
+
+def test_four_hour_resampling_aligns_to_first_exchange_session_bar():
+    source = FutuDataSource(market="USStock")
+    start = datetime(2026, 1, 5, 14, 30, tzinfo=timezone.utc)
+    offsets = [0, 1, 4]  # Missing source bars must not shift the 13:30 bucket.
+    rows = [
+        {
+            "time": int((start + timedelta(hours=hour_offset)).timestamp()),
+            "open": 100 + index,
+            "high": 101 + index,
+            "low": 99 + index,
+            "close": 100.5 + index,
+            "volume": 10,
+        }
+        for index, hour_offset in enumerate(offsets)
+    ]
+
+    resampled = source._resample_hours(rows, hours=4)
+
+    assert len(resampled) == 2
+    assert resampled[0]["time"] == rows[0]["time"]
+    assert resampled[0]["open"] == 100
+    assert resampled[0]["close"] == 101.5
+    assert resampled[0]["volume"] == 20
+    assert resampled[1]["time"] == rows[2]["time"]
+
+
+def test_futu_broker_alias_requires_explicit_market():
+    with pytest.raises(UnsupportedMarketError, match="HKStock or USStock"):
+        DataSourceFactory.normalize_market("futu")
+    with pytest.raises(UnsupportedMarketError, match="HKStock or USStock"):
+        DataSourceFactory.get_data_source("futu")

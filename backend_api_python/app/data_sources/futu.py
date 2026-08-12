@@ -198,19 +198,29 @@ class FutuDataSource(BaseDataSource):
             truncate=(after_time is None),
         )
 
-    @staticmethod
-    def _resample_hours(rows: List[Dict[str, Any]], hours: int = 4) -> List[Dict[str, Any]]:
+    def _resample_hours(
+        self,
+        rows: List[Dict[str, Any]],
+        hours: int = 4,
+    ) -> List[Dict[str, Any]]:
         if not rows:
             return rows
-        bucket_sec = int(hours) * 3600
-        buckets: Dict[int, Dict[str, Any]] = {}
-        for row in rows:
+        from app.services.futu_trading.timezones import market_timezone
+
+        bucket_seconds = max(1, int(hours)) * 3600
+        exchange_tz = market_timezone(self.market)
+        buckets: Dict[tuple[Any, int], Dict[str, Any]] = {}
+        for row in sorted(rows, key=lambda item: int(item.get("time") or 0)):
             t = int(row.get("time") or 0)
-            key = t - (t % bucket_sec)
+            local_time = datetime.fromtimestamp(t, tz=timezone.utc).astimezone(exchange_tz)
+            trading_date = local_time.date()
+            session_open = local_time.replace(hour=9, minute=30, second=0, microsecond=0)
+            bucket_index = int((local_time - session_open).total_seconds() // bucket_seconds)
+            key = (trading_date, bucket_index)
             cur = buckets.get(key)
             if cur is None:
                 buckets[key] = {
-                    "time": key,
+                    "time": t,
                     "open": float(row["open"]),
                     "high": float(row["high"]),
                     "low": float(row["low"]),
@@ -223,4 +233,4 @@ class FutuDataSource(BaseDataSource):
                 cur["low"] = min(cur["low"], float(row["low"]))
                 cur["close"] = float(row["close"])
                 cur["volume"] = float(cur.get("volume") or 0) + float(row.get("volume") or 0)
-        return [buckets[k] for k in sorted(buckets.keys())]
+        return sorted(buckets.values(), key=lambda item: item["time"])

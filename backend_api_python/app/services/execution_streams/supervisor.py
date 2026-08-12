@@ -120,6 +120,7 @@ class ExecutionStreamSupervisor:
             f"{exchange}:{int(credential_id or 0)}:{market}",
             f"{exchange}:{int(credential_id or 0)}:all",
             f"{exchange}:{int(credential_id or 0)}:usstock",
+            f"{exchange}:{int(credential_id or 0)}:stock",
         ]
         with self._lock:
             return any(bool(self._adapters.get(key) and self._adapters[key].connected) for key in keys)
@@ -170,9 +171,9 @@ class ExecutionStreamSupervisor:
                 existing_spec = self._specs.get(key)
                 existing = self._adapters.get(key)
             if existing and existing_spec == spec:
-                if not existing.connected:
-                    self._run_rest_catchup_limited(spec)
-                continue
+                if existing.connected:
+                    continue
+                self._run_rest_catchup_limited(spec)
             if existing:
                 if not existing.stop():
                     logger.warning(
@@ -243,6 +244,8 @@ class ExecutionStreamSupervisor:
             market = "all"
         elif event.exchange_id in {"alpaca", "ibkr"}:
             market = "usstock"
+        elif event.exchange_id == "futu":
+            market = "stock"
         else:
             market = event.market_type
         return f"{event.exchange_id}:{event.credential_id}:{market}"
@@ -293,7 +296,7 @@ class ExecutionStreamSupervisor:
         crypto = supported_crypto_exchange_ids()
         for row in credentials:
             exchange = str(row.get("exchange_id") or "").strip().lower()
-            if exchange not in crypto | {"alpaca", "ibkr"}:
+            if exchange not in crypto | {"alpaca", "ibkr", "futu"}:
                 continue
             try:
                 plain = decrypt_credential_blob(row.get("encrypted_config"))
@@ -314,6 +317,8 @@ class ExecutionStreamSupervisor:
             scope = str(config.get("market_scope") or config.get("marketScope") or "both").lower()
             if exchange in {"alpaca", "ibkr"}:
                 markets = ["usstock"]
+            elif exchange == "futu":
+                markets = ["stock"]
             elif exchange in {"okx", "bybit"}:
                 markets = ["all"]
             elif scope == "spot":
@@ -364,7 +369,7 @@ class ExecutionStreamSupervisor:
                 """,
                 (
                     active_ids,
-                    sorted(supported_crypto_exchange_ids() | {"alpaca", "ibkr"}),
+                    sorted(supported_crypto_exchange_ids() | {"alpaca", "ibkr", "futu"}),
                 ),
             )
             rows = [dict(row) for row in (cur.fetchall() or [])]

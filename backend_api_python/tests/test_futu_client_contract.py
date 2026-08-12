@@ -55,6 +55,14 @@ class _FakeFT:
     class SubType:
         QUOTE = "QUOTE"
 
+    class TradeOrderHandlerBase:
+        def on_recv_rsp(self, rsp_pb):
+            return rsp_pb
+
+    class TradeDealHandlerBase:
+        def on_recv_rsp(self, rsp_pb):
+            return rsp_pb
+
 
 def _client_with_mocks():
     cfg = FutuConfig(host="127.0.0.1", port=11111, trade_env="demo", trade_market="HK")
@@ -71,6 +79,18 @@ def _client_with_mocks():
     client._connected = True
     client._acc_id = 99
     return client, quote, trade
+
+
+@patch("app.services.futu_trading.client._ensure_futu", return_value=_FakeFT)
+def test_start_push_registers_order_and_deal_handlers(_ensure):
+    client, _quote, trade = _client_with_mocks()
+
+    assert client.start_push()
+
+    handlers = [call.args[0] for call in trade.set_handler.call_args_list]
+    assert len(handlers) == 2
+    assert any(isinstance(handler, _FakeFT.TradeOrderHandlerBase) for handler in handlers)
+    assert any(isinstance(handler, _FakeFT.TradeDealHandlerBase) for handler in handlers)
 
 
 @patch("app.services.futu_trading.client._ensure_futu", return_value=_FakeFT)

@@ -259,17 +259,25 @@ def test_credential(data):
                 'unlock_password': str(data.get('unlock_password') or data.get('unlockPassword') or ''),
             }
             client = create_client(config, market_type='spot')
-            probe = client.probe_permissions() if hasattr(client, 'probe_permissions') else {}
-            return jsonify({
-                'code': 1,
-                'msg': 'CREDENTIAL_CONNECTION_OK',
-                'data': {
-                    'environment': trade_env,
-                    'market_scope': 'spot',
-                    'probe': probe,
-                    'status': client.get_connection_status() if hasattr(client, 'get_connection_status') else {},
-                },
-            })
+            try:
+                probe = client.probe_permissions() if hasattr(client, 'probe_permissions') else {}
+                return jsonify({
+                    'code': 1,
+                    'msg': 'CREDENTIAL_CONNECTION_OK',
+                    'data': {
+                        'environment': trade_env,
+                        'market_scope': 'spot',
+                        'probe': probe,
+                        'status': client.get_connection_status() if hasattr(client, 'get_connection_status') else {},
+                    },
+                })
+            finally:
+                disconnect = getattr(client, 'disconnect', None)
+                if callable(disconnect):
+                    try:
+                        disconnect()
+                    except Exception:
+                        pass
         return jsonify({'code': 0, 'msg': 'UNSUPPORTED_EXCHANGE', 'data': None}), 400
     except Exception as exc:
         return jsonify({'code': 0, 'msg': str(exc) or 'CREDENTIAL_CONNECTION_FAILED', 'data': None}), 400

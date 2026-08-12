@@ -86,7 +86,34 @@ class CredentialCreateRequestSchema(Schema):
 
     @validates_schema
     def validate_exchange_secret(self, data, **kwargs):
-        if str(data.get("exchange_id") or "").lower() in ("ibkr", "futu"):
+        exchange_id = str(data.get("exchange_id") or "").lower()
+        if exchange_id == "futu":
+            trade_market = str(data.get("trade_market") or data.get("tradeMarket") or "").strip()
+            market_category = str(data.get("market_category") or "").strip()
+            if not trade_market and not market_category:
+                raise ValidationError(
+                    "trade_market or market_category is required for Futu",
+                    field_name="trade_market",
+                )
+            from app.services.futu_trading.config import normalize_trade_market
+
+            normalized_trade_market = normalize_trade_market(
+                trade_market,
+                market_category=market_category,
+            )
+            expected = {"HKStock": "HK", "USStock": "US"}.get(market_category)
+            if normalized_trade_market not in {"HK", "US"} or (market_category and not expected):
+                raise ValidationError(
+                    "Futu market must be HK/HKStock or US/USStock",
+                    field_name="trade_market",
+                )
+            if expected and normalized_trade_market != expected:
+                raise ValidationError(
+                    "trade_market does not match market_category",
+                    field_name="trade_market",
+                )
+            return
+        if exchange_id == "ibkr":
             return
         if not (data.get("api_key") or data.get("apiKey")):
             raise ValidationError("api_key is required", field_name="api_key")

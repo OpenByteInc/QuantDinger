@@ -914,6 +914,7 @@ class PendingOrderWorker(PendingOrderPositionSyncMixin):
                 order_id,
                 cumulative_filled,
                 fail_closed=True,
+                include_stream_events=True,
             )
             if delta > FUTU_FILL_DELTA_EPSILON and cumulative_avg > 0:
                 delta_avg = cumulative_avg
@@ -1113,7 +1114,7 @@ class PendingOrderWorker(PendingOrderPositionSyncMixin):
                             dispatch_note = 'live_fill_sync:requeued_stale_sync',
                             updated_at = NOW()
                         WHERE status = 'syncing'
-                          AND LOWER(COALESCE(exchange_id, '')) <> 'alpaca'
+                          AND LOWER(COALESCE(exchange_id, '')) NOT IN ('alpaca', 'futu')
                           AND updated_at < NOW() - (%s * INTERVAL '1 second')
                         """,
                         (stale_sec,),
@@ -1142,7 +1143,7 @@ class PendingOrderWorker(PendingOrderPositionSyncMixin):
                                 )
                             )
                           )
-                      AND LOWER(COALESCE(exchange_id, '')) <> 'alpaca'
+                      AND LOWER(COALESCE(exchange_id, '')) NOT IN ('alpaca', 'futu')
                       AND COALESCE(exchange_id, '') <> ''
                       AND COALESCE(exchange_order_id, '') <> ''
                     ORDER BY sent_at ASC NULLS FIRST, id ASC
@@ -1188,7 +1189,7 @@ class PendingOrderWorker(PendingOrderPositionSyncMixin):
                             )
                         )
                       )
-                  AND LOWER(COALESCE(exchange_id, '')) <> 'alpaca'
+                  AND LOWER(COALESCE(exchange_id, '')) NOT IN ('alpaca', 'futu')
                   AND COALESCE(exchange_order_id, '') <> ''
                 RETURNING *
                 """,
@@ -2058,17 +2059,23 @@ class PendingOrderWorker(PendingOrderPositionSyncMixin):
                 pass
 
         if FutuClient is not None and isinstance(client, FutuClient):
-            self._execute_futu_order(
-                order_id=order_id,
-                order_row=order_row,
-                payload=payload,
-                client=client,
-                strategy_id=strategy_id,
-                exchange_config=exchange_config,
-                market_category=market_category,
-                _notify_live_best_effort=_notify_live_best_effort,
-                _console_print=_console_print,
-            )
+            try:
+                self._execute_futu_order(
+                    order_id=order_id,
+                    order_row=order_row,
+                    payload=payload,
+                    client=client,
+                    strategy_id=strategy_id,
+                    exchange_config=exchange_config,
+                    market_category=market_category,
+                    _notify_live_best_effort=_notify_live_best_effort,
+                    _console_print=_console_print,
+                )
+            finally:
+                try:
+                    client.disconnect()
+                except Exception:
+                    pass
             return
 
         client_oid = make_client_order_id(exchange_id=exchange_id, strategy_id=strategy_id, order_id=order_id)
@@ -3258,7 +3265,11 @@ class PendingOrderWorker(PendingOrderPositionSyncMixin):
             )
 
             try:
-                recordable_filled = self._unrecorded_pending_fill(order_id, filled)
+                recordable_filled = self._unrecorded_pending_fill(
+                    order_id,
+                    filled,
+                    include_stream_events=True,
+                )
                 if recordable_filled > 0 and avg_price > 0:
                     profit, matched_entry = persist_strategy_fill(
                         strategy_id=int(strategy_id),
@@ -3396,6 +3407,7 @@ class PendingOrderWorker(PendingOrderPositionSyncMixin):
         cumulative_filled: float,
         *,
         fail_closed: bool = False,
+        include_stream_events: bool = False,
     ) -> float:
         """Prevent the immediate REST result racing the private stream event."""
         if int(order_id or 0) <= 0:
@@ -3412,8 +3424,42 @@ class PendingOrderWorker(PendingOrderPositionSyncMixin):
                     (int(order_id),),
                 )
                 row = cur.fetchone() or {}
+                stream_observed = 0.0
+                if include_stream_events:
+                    cur.execute(
+                        """
+                        SELECT
+                            COALESCE(MAX(
+                                CASE WHEN event.is_cumulative
+                                     THEN event.cumulative_quantity ELSE 0 END
+                            ), 0) AS cumulative,
+                            COALESCE(SUM(
+                                CASE WHEN event.is_cumulative
+                                     THEN 0 ELSE event.quantity END
+                            ), 0) AS incremental
+                        FROM qd_live_order_bindings binding
+                        JOIN qd_execution_events event
+                          ON event.credential_id = binding.credential_id
+                         AND event.exchange_id = binding.exchange_id
+                         AND (
+                              (binding.exchange_order_id <> ''
+                               AND event.exchange_order_id = binding.exchange_order_id)
+                           OR (binding.client_order_id <> ''
+                               AND event.client_order_id = binding.client_order_id)
+                         )
+                        WHERE binding.pending_order_id = %s
+                          AND binding.exchange_id = 'futu'
+                        """,
+                        (int(order_id),),
+                    )
+                    event_row = cur.fetchone() or {}
+                    stream_observed = max(
+                        float(event_row.get("cumulative") or 0.0),
+                        float(event_row.get("incremental") or 0.0),
+                    )
                 cur.close()
-            return max(0.0, float(cumulative_filled or 0.0) - float(row.get("recorded") or 0.0))
+            already_recorded = max(float(row.get("recorded") or 0.0), stream_observed)
+            return max(0.0, float(cumulative_filled or 0.0) - already_recorded)
         except Exception:
             if fail_closed:
                 raise

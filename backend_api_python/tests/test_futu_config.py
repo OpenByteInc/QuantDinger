@@ -1,5 +1,8 @@
 import pytest
+from marshmallow import ValidationError
 
+from app.openapi.schemas.high_risk import CredentialCreateRequestSchema
+from app.services.exchange_execution import safe_exchange_config_for_log
 from app.services.futu_trading.config import (
     FutuConfig,
     config_from_exchange_config,
@@ -86,3 +89,33 @@ def test_validate_opend_host_rejects_remote_by_default(monkeypatch):
 def test_validate_opend_host_allows_remote_only_with_explicit_opt_in(monkeypatch):
     monkeypatch.setenv("FUTU_ALLOW_REMOTE_OPEND", "true")
     assert validate_opend_host("203.0.113.8") == "203.0.113.8"
+
+
+def test_futu_credential_requires_and_cross_validates_market():
+    schema = CredentialCreateRequestSchema()
+    with pytest.raises(ValidationError, match="trade_market"):
+        schema.load({"exchange_id": "futu"})
+    with pytest.raises(ValidationError, match="does not match"):
+        schema.load({
+            "exchange_id": "futu",
+            "trade_market": "US",
+            "market_category": "HKStock",
+        })
+    with pytest.raises(ValidationError, match="HK/HKStock"):
+        schema.load({"exchange_id": "futu", "trade_market": "unsupported"})
+    loaded = schema.load({
+        "exchange_id": "futu",
+        "trade_market": "US",
+        "market_category": "USStock",
+    })
+    assert loaded["trade_market"] == "US"
+
+
+def test_safe_exchange_config_masks_futu_unlock_password():
+    safe = safe_exchange_config_for_log({
+        "exchange_id": "futu",
+        "unlock_password": "super-secret-password",
+        "unlockPassword": "second-secret-password",
+    })
+    assert "super-secret-password" not in str(safe)
+    assert "second-secret-password" not in str(safe)

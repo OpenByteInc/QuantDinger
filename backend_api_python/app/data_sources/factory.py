@@ -42,7 +42,6 @@ _MARKET_ALIASES: Dict[str, str] = {
     "equities": "USStock",
     "alpaca": "USStock",
     "ibkr": "USStock",
-    "futu": "HKStock",
     "cnstock": "CNStock",
     "cn_stock": "CNStock",
     "ashare": "CNStock",
@@ -132,6 +131,10 @@ class DataSourceFactory:
         if raw in cls._CANONICAL_MARKETS:
             return raw
         key = raw.lower().replace(" ", "").replace("-", "_")
+        if key == "futu":
+            raise UnsupportedMarketError(
+                "futu is a broker, not a market; specify HKStock or USStock"
+            )
         if key in _MARKET_ALIASES:
             return _MARKET_ALIASES[key]
         cls._log_limited(
@@ -182,7 +185,11 @@ class DataSourceFactory:
             return cls.get_source("Forex")
         if key in ("usstock", "us_stocks", "stock", "stocks", "ibkr", "alpaca"):
             return cls.get_source("USStock")
-        if key in ("futu", "hkstock", "hk_stock"):
+        if key == "futu":
+            raise UnsupportedMarketError(
+                "futu is a broker, not a market; specify HKStock or USStock"
+            )
+        if key in ("hkstock", "hk_stock"):
             return cls.get_source("HKStock")
         # Unknown alias — log and default to Crypto (legacy behavior). Callers
         # should migrate to the explicit `get_source(market)` API.

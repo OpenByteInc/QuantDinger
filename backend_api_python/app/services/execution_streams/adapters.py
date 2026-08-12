@@ -10,6 +10,7 @@ import json
 import ssl
 import threading
 import time
+from collections import OrderedDict
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Iterable, List, Optional
 from urllib.parse import urlencode, urlparse
@@ -751,6 +752,11 @@ class FutuExecutionAdapter:
         self._client: Any = None
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
+        self._fill_lock = threading.Lock()
+        self._deal_ids_by_order: Dict[str, set[str]] = {}
+        self._deal_quantity_by_order: Dict[str, float] = {}
+        self._order_cumulative_by_order: Dict[str, float] = {}
+        self._fill_order_lru: OrderedDict[str, None] = OrderedDict()
 
     @property
     def stream_key(self) -> str:
@@ -783,10 +789,40 @@ class FutuExecutionAdapter:
         return not self.is_alive
 
     def _emit_deal(self, payload: Dict[str, Any]) -> None:
-        for event in parse_futu_deal(payload if isinstance(payload, dict) else {}):
-            event.credential_id = self.credential_id
-            event.user_id = self.user_id
-            self.on_event(event)
+        if not isinstance(payload, dict):
+            return
+        order_id = str(payload.get("order_id") or payload.get("orderId") or "")
+        deal_id = str(
+            payload.get("deal_id")
+            or payload.get("exchange_fill_id")
+            or payload.get("exec_id")
+            or ""
+        )
+        order_key = order_id or f"deal:{deal_id}"
+        try:
+            quantity = abs(float(payload.get("qty") or payload.get("quantity") or 0.0))
+        except (TypeError, ValueError):
+            quantity = 0.0
+        with self._fill_lock:
+            self._touch_fill_order_unlocked(order_key)
+            deal_ids = self._deal_ids_by_order.setdefault(order_key, set())
+            if deal_id and deal_id in deal_ids:
+                return
+            previous_deals = float(self._deal_quantity_by_order.get(order_key) or 0.0)
+            deal_total = previous_deals + quantity
+            covered_by_order = float(self._order_cumulative_by_order.get(order_key) or 0.0)
+            if deal_total <= covered_by_order + 1e-12:
+                if deal_id:
+                    deal_ids.add(deal_id)
+                self._deal_quantity_by_order[order_key] = deal_total
+                return
+            for event in parse_futu_deal(payload):
+                event.credential_id = self.credential_id
+                event.user_id = self.user_id
+                self.on_event(event)
+            if deal_id:
+                deal_ids.add(deal_id)
+            self._deal_quantity_by_order[order_key] = deal_total
 
     def _emit_order(self, payload: Dict[str, Any]) -> None:
         # Treat order push with dealt_qty as a deal-like update for REST audit gaps.
@@ -795,7 +831,31 @@ class FutuExecutionAdapter:
         dealt = float(payload.get("dealt_qty") or payload.get("filled") or 0.0)
         if dealt <= 0:
             return
-        self._emit_deal(payload)
+        order_id = str(payload.get("order_id") or payload.get("orderId") or "")
+        if not order_id:
+            return
+        with self._fill_lock:
+            self._touch_fill_order_unlocked(order_id)
+            previous_order = float(self._order_cumulative_by_order.get(order_id) or 0.0)
+            observed_deals = float(self._deal_quantity_by_order.get(order_id) or 0.0)
+            if dealt <= max(previous_order, observed_deals) + 1e-12:
+                self._order_cumulative_by_order[order_id] = max(previous_order, dealt)
+                return
+            for event in parse_futu_deal(payload):
+                event.credential_id = self.credential_id
+                event.user_id = self.user_id
+                self.on_event(event)
+            self._order_cumulative_by_order[order_id] = max(previous_order, dealt)
+
+    def _touch_fill_order_unlocked(self, order_id: str) -> None:
+        """Bound cross-channel dedupe state for long-running adapters."""
+        self._fill_order_lru.pop(order_id, None)
+        self._fill_order_lru[order_id] = None
+        while len(self._fill_order_lru) > 4096:
+            stale_order_id, _ = self._fill_order_lru.popitem(last=False)
+            self._deal_ids_by_order.pop(stale_order_id, None)
+            self._deal_quantity_by_order.pop(stale_order_id, None)
+            self._order_cumulative_by_order.pop(stale_order_id, None)
 
     def _run(self) -> None:
         try:
@@ -813,6 +873,11 @@ class FutuExecutionAdapter:
         except Exception as exc:
             self.on_state("error", str(exc), False)
         finally:
+            if self._client:
+                try:
+                    self._client.disconnect()
+                except Exception:
+                    pass
             self.on_state("disconnected", "", False)
 
 

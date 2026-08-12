@@ -121,6 +121,24 @@ class ExecutionEventProcessor:
             return 0.0, "MIXED"
         return 0.0, ""
 
+    @staticmethod
+    def _fill_progress(
+        *,
+        previous: float,
+        durable_recorded: float,
+        event_qty: float,
+        cumulative: float,
+        is_cumulative: bool,
+    ) -> Tuple[float, float]:
+        """Return the unrecorded delta and monotonic cumulative target."""
+        durable = max(0.0, float(previous), float(durable_recorded))
+        if is_cumulative or cumulative > 0:
+            target = max(durable, max(0.0, float(cumulative)))
+            return max(0.0, target - durable), target
+        ledger_ahead = max(0.0, durable - float(previous))
+        delta = max(0.0, max(0.0, float(event_qty)) - ledger_ahead)
+        return delta, durable + delta
+
     def _process_pending_order(self, event: Dict[str, Any], binding: Dict[str, Any]) -> None:
         pending_id = int(binding.get("pending_order_id") or binding.get("owner_id") or 0)
         with get_db_connection() as db:
@@ -133,20 +151,34 @@ class ExecutionEventProcessor:
             pending = dict(pending)
             payload = self._json(pending.get("payload_json"))
             previous = float(pending.get("filled") or 0.0)
+            durable_recorded = previous
+            if str(event.get("exchange_id") or "").lower() == "futu":
+                cur.execute(
+                    """
+                    SELECT COALESCE(SUM(amount), 0) AS recorded
+                    FROM qd_strategy_trades
+                    WHERE pending_order_id = %s
+                    """,
+                    (pending_id,),
+                )
+                trade_row = cur.fetchone() or {}
+                durable_recorded = max(previous, float(trade_row.get("recorded") or 0.0))
             event_qty = max(0.0, float(event.get("quantity") or 0.0))
             cumulative = max(0.0, float(event.get("cumulative_quantity") or 0.0))
-            if bool(event.get("is_cumulative")) or cumulative > 0:
-                target = max(previous, cumulative)
-                delta = max(0.0, target - previous)
-            else:
-                delta = event_qty
-                target = previous + delta
+            delta, target = self._fill_progress(
+                previous=previous,
+                durable_recorded=durable_recorded,
+                event_qty=event_qty,
+                cumulative=cumulative,
+                is_cumulative=bool(event.get("is_cumulative")),
+            )
             price = float(event.get("price") or pending.get("avg_price") or 0.0)
             previous_avg = float(pending.get("avg_price") or 0.0)
+            durable_avg = previous_avg or price
             aggregate_avg = (
-                ((previous * previous_avg) + (delta * price)) / target
+                ((durable_recorded * durable_avg) + (delta * price)) / target
                 if target > 0 and delta > 0 and price > 0
-                else previous_avg or price
+                else durable_avg
             )
             status = str(event.get("order_status") or "")
             queue_status = "filled" if status == "filled" else "sent"
