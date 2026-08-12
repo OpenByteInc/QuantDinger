@@ -3,7 +3,7 @@ Factory for direct exchange clients.
 
 Supports:
 - Crypto exchanges: Binance, OKX, Bitget, Bybit, Gate, HTX
-- Traditional brokers: Interactive Brokers (IBKR) and Alpaca
+- Traditional brokers: Interactive Brokers (IBKR), Alpaca, and Futu
 """
 
 from __future__ import annotations
@@ -31,6 +31,10 @@ IBKRConfig = None
 # Lazy import Alpaca to avoid ImportError if alpaca-py not installed
 AlpacaClient = None
 AlpacaConfig = None
+
+# Lazy import Futu to avoid ImportError if futu-api not installed
+FutuClient = None
+FutuConfig = None
 
 
 def _get(cfg: Dict[str, Any], *keys: str) -> str:
@@ -142,6 +146,7 @@ def validate_exchange_environment(exchange_id: str, environment: str, market_sco
         "bybit": {"live", "demo"},
         "gate": {"live", "testnet"},
         "htx": {"live"},
+        "futu": {"live", "demo"},
     }
     if env not in allowed.get(ex, {"live"}):
         if ex == "htx" and env != "live":
@@ -220,6 +225,9 @@ def create_client(exchange_config: Dict[str, Any], *, market_type: str = "swap")
     mt = (market_type or exchange_config.get("market_type") or exchange_config.get("defaultType") or "swap").strip().lower()
     if mt in ("futures", "future", "perp", "perpetual"):
         mt = "swap"
+    # Futu is equities spot-only; callers often omit market_type (defaults to swap).
+    if exchange_id == "futu":
+        mt = "spot"
 
     environment = exchange_trading_environment(exchange_config, exchange_id)
     if environment not in ("live", "demo", "testnet"):
@@ -326,6 +334,10 @@ def create_client(exchange_config: Dict[str, Any], *, market_type: str = "swap")
     # Caller is responsible for validating market_category in (USStock, Crypto).
     if exchange_id == "alpaca":
         return create_alpaca_client(exchange_config)
+
+    # Futu: local OpenD gateway for HKStock / USStock spot.
+    if exchange_id == "futu":
+        return create_futu_client(exchange_config)
 
     raise LiveTradingError(f"Unsupported exchange_id: {exchange_id}")
 
@@ -448,6 +460,60 @@ def create_alpaca_client(exchange_config: Dict[str, Any]):
             "paper/live (PK*=paper, AK*=live), and network access. "
             "HTTP 400 'invalid syntax' on market-data WebSocket is usually a bad "
             "auth/subscribe JSON or symbol (use BTC/USD not BTC/USDT for crypto)."
+        )
+    return client
+
+
+def create_futu_client(exchange_config: Dict[str, Any]):
+    """
+    Create Futu client for HK / US stock trading via FutuOpenD.
+
+    exchange_config should contain:
+    - futu_host / host: OpenD host (default 127.0.0.1)
+    - futu_port / port: OpenD port (default 11111)
+    - trade_env / environment: demo | live
+    - trade_market: HK | US
+    - security_firm: FUTUSECURITIES | FUTUINC | FUTUSG | ...
+    - acc_id: optional account id
+    - unlock_password: optional (prefer GUI unlock for live)
+    """
+    global FutuClient, FutuConfig
+
+    if FutuClient is None or FutuConfig is None:
+        try:
+            from app.services.futu_trading import FutuClient as _FutuClient
+            from app.services.futu_trading.config import (
+                FutuConfig as _FutuConfig,
+                config_from_exchange_config,
+            )
+            FutuClient = _FutuClient
+            FutuConfig = _FutuConfig
+        except ImportError:
+            raise LiveTradingError("Futu trading requires futu-api. Run: pip install futu-api")
+
+    from app.services.futu_trading.config import (
+        config_from_exchange_config,
+        validate_opend_host,
+    )
+    from app.utils.local_brokers import desktop_broker_cloud_reject_message, local_desktop_brokers_allowed
+
+    if not local_desktop_brokers_allowed():
+        raise LiveTradingError(desktop_broker_cloud_reject_message("futu"))
+
+    host = str(exchange_config.get("futu_host") or exchange_config.get("host") or "127.0.0.1").strip()
+    # Basic SSRF guard: reject obviously non-local targets in production-ish setups
+    # unless explicitly allow-listed via env.
+    try:
+        validate_opend_host(host)
+    except ValueError as exc:
+        raise LiveTradingError(str(exc)) from exc
+
+    config = config_from_exchange_config(exchange_config)
+    client = FutuClient(config)
+    if not client.connect():
+        raise LiveTradingError(
+            "Failed to connect to FutuOpenD. Ensure OpenD is running and reachable "
+            f"at {config.host}:{config.port}."
         )
     return client
 

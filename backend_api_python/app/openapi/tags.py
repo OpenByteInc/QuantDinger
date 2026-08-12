@@ -23,6 +23,7 @@ AI_CHAT = "AIChat"
 QUICK_TRADE = "QuickTrade"
 IBKR = "IBKR"
 ALPACA = "Alpaca"
+FUTU = "Futu"
 
 ALL_TAGS = [
     {"name": HEALTH, "description": "Liveness and API metadata (Public)"},
@@ -48,4 +49,5 @@ ALL_TAGS = [
     {"name": QUICK_TRADE, "description": "Manual quick trade (Internal)"},
     {"name": IBKR, "description": "Interactive Brokers adapter (Internal)"},
     {"name": ALPACA, "description": "Alpaca adapter (Internal)"},
+    {"name": FUTU, "description": "Futu OpenAPI / OpenD adapter (Internal)"},
 ]

@@ -43,7 +43,7 @@ def _adapter(adapter_cls, *, market_type="swap", symbols=()):
     return adapter, states
 
 
-def test_adapter_registry_covers_six_exchanges_and_two_brokers():
+def test_adapter_registry_covers_six_exchanges_and_three_brokers():
     assert set(ADAPTERS) == {
         "binance",
         "okx",
@@ -53,6 +53,7 @@ def test_adapter_registry_covers_six_exchanges_and_two_brokers():
         "htx",
         "alpaca",
         "ibkr",
+        "futu",
     }
 
 

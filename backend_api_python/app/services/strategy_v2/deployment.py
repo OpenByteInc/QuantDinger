@@ -255,9 +255,11 @@ class StrategyV2DeploymentService:
         market = next(iter(market_set), "")
         if market == "Crypto" and exchange_id not in {"binance", "bitget", "bybit", "okx", "gate", "htx"}:
             raise StrategyV2ContractError("strategyV2.cryptoCredentialRequired")
-        if market == "USStock" and exchange_id not in {"alpaca", "ibkr"}:
+        if market == "USStock" and exchange_id not in {"alpaca", "ibkr", "futu"}:
             raise StrategyV2ContractError("strategyV2.stockCredentialRequired")
-        if market not in {"Crypto", "USStock"}:
+        if market == "HKStock" and exchange_id not in {"futu"}:
+            raise StrategyV2ContractError("strategyV2.hkStockCredentialRequired")
+        if market not in {"Crypto", "USStock", "HKStock"}:
             raise StrategyV2ContractError("strategyV2.liveMarketUnsupported")
 
     @staticmethod

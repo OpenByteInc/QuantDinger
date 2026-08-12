@@ -359,9 +359,16 @@ class TradingExecutor:
             ).strip().lower()
             if execution_mode == "live" and account_exchange:
                 for member in candidates:
-                    if member.get("market") == "Crypto":
+                    member_market = str(member.get("market") or "")
+                    if member_market == "Crypto" or (
+                        account_exchange == "futu"
+                        and member_market in {"HKStock", "USStock"}
+                    ):
                         member["exchange_id"] = account_exchange
                         member["key"] = _member_key(member)
+            strict_futu_market_data = (
+                execution_mode == "live" and account_exchange == "futu"
+            )
 
             frequency = program.manifest.primary_frequency
             history_days = live_history_days(
@@ -376,6 +383,8 @@ class TradingExecutor:
                     frequency,
                     end - timedelta(days=history_days),
                     end,
+                    exchange_config=exchange_config if strict_futu_market_data else None,
+                    strict_data_source=strict_futu_market_data,
                 )
                 if skipped:
                     details = ", ".join(
@@ -484,29 +493,46 @@ class TradingExecutor:
                 "connected": False,
             }
             if execution_mode == "live" and account_exchange:
-                from app.services.market_price_stream import PublicMarketPriceFeed
-
-                market_price_feed = PublicMarketPriceFeed(
-                    exchange_id=account_exchange,
-                    market_type=str(primary.get("market_type") or "spot"),
-                    instruments=candidates,
-                    rest_fallback=runtime_prices,
-                )
-                market_price_feed.start()
                 rest_runtime_prices = runtime_prices
+                stale_after = float(trading_config.get("price_stale_after_seconds") or 10.0)
+                if str(account_exchange or "").strip().lower() == "futu":
+                    from app.services.futu_trading.quote_feed import FutuQuoteFeed
 
-                def runtime_prices() -> dict[str, float]:
-                    snapshot = market_price_feed.snapshot(
-                        max_age_seconds=float(
-                            trading_config.get("price_stale_after_seconds") or 10.0
-                        )
+                    market_price_feed = FutuQuoteFeed(
+                        exchange_config=exchange_config if isinstance(exchange_config, dict) else {},
+                        instruments=candidates,
+                        poll_interval_sec=float(trading_config.get("futu_quote_poll_sec") or 2.0),
                     )
-                    price_feed_meta.update({
-                        "source": snapshot.source,
-                        "age_ms": snapshot.age_ms,
-                        "connected": snapshot.connected,
-                    })
-                    return snapshot.prices or rest_runtime_prices()
+                    market_price_feed.start()
+
+                    def runtime_prices() -> dict[str, float]:
+                        snapshot = market_price_feed.snapshot(max_age_seconds=stale_after)
+                        price_feed_meta.update({
+                            "source": snapshot.get("source") or "futu_quote",
+                            "age_ms": int(snapshot.get("age_ms") or 0),
+                            "connected": bool(snapshot.get("connected")),
+                        })
+                        prices = dict(snapshot.get("prices") or {})
+                        return prices or rest_runtime_prices()
+                else:
+                    from app.services.market_price_stream import PublicMarketPriceFeed
+
+                    market_price_feed = PublicMarketPriceFeed(
+                        exchange_id=account_exchange,
+                        market_type=str(primary.get("market_type") or "spot"),
+                        instruments=candidates,
+                        rest_fallback=runtime_prices,
+                    )
+                    market_price_feed.start()
+
+                    def runtime_prices() -> dict[str, float]:
+                        snapshot = market_price_feed.snapshot(max_age_seconds=stale_after)
+                        price_feed_meta.update({
+                            "source": snapshot.source,
+                            "age_ms": snapshot.age_ms,
+                            "connected": snapshot.connected,
+                        })
+                        return snapshot.prices or rest_runtime_prices()
             state_store = RuntimeStateStore(
                 strategy_id=strategy_id,
                 strategy_run_id=run_id,
@@ -1843,7 +1869,11 @@ class TradingExecutor:
         exchange_config: dict[str, Any],
         client_holder: dict[str, Any],
     ) -> dict[str, float]:
-        prices = cls._live_prices(candidates)
+        exchange_id = str(exchange_config.get("exchange_id") or "").strip().lower()
+        strict_futu = exchange_id == "futu"
+        # A Futu live strategy must never use a public-provider price for risk
+        # decisions or entry signals when its execution feed is unavailable.
+        prices = {} if strict_futu else cls._live_prices(candidates)
         try:
             from app.services.live_trading.factory import create_client
             from app.services.live_trading.symbols import to_okx_spot_inst_id, to_okx_swap_inst_id
@@ -1853,36 +1883,46 @@ class TradingExecutor:
             if client is None:
                 client = create_client(exchange_config, market_type=market_type)
                 client_holder["client"] = client
-            exchange_id = str(exchange_config.get("exchange_id") or "").strip().lower()
             for member in candidates:
-                if str(member.get("market") or "") != "Crypto":
-                    continue
+                market = str(member.get("market") or "")
                 symbol = str(member.get("symbol") or "")
                 price = 0.0
-                if hasattr(client, "get_mark_price"):
-                    price = float(client.get_mark_price(symbol=symbol) or 0.0)
-                elif hasattr(client, "get_ticker"):
-                    if exchange_id == "okx":
-                        is_spot = str(member.get("market_type") or "").lower() == "spot"
-                        inst_id = to_okx_spot_inst_id(symbol) if is_spot else to_okx_swap_inst_id(symbol)
-                        ticker = client.get_ticker(inst_id=inst_id)
-                    else:
-                        ticker = client.get_ticker(symbol=symbol)
-                    if isinstance(ticker, dict):
-                        price = float(
-                            ticker.get("last")
-                            or ticker.get("lastPrice")
-                            or ticker.get("lastPr")
-                            or ticker.get("lastPx")
-                            or ticker.get("markPrice")
-                            or ticker.get("price")
-                            or ticker.get("close")
-                            or 0.0
+                if market == "Crypto":
+                    if hasattr(client, "get_mark_price"):
+                        price = float(client.get_mark_price(symbol=symbol) or 0.0)
+                    elif hasattr(client, "get_ticker"):
+                        if exchange_id == "okx":
+                            is_spot = str(member.get("market_type") or "").lower() == "spot"
+                            inst_id = to_okx_spot_inst_id(symbol) if is_spot else to_okx_swap_inst_id(symbol)
+                            ticker = client.get_ticker(inst_id=inst_id)
+                        else:
+                            ticker = client.get_ticker(symbol=symbol)
+                        if isinstance(ticker, dict):
+                            price = float(
+                                ticker.get("last")
+                                or ticker.get("lastPrice")
+                                or ticker.get("lastPr")
+                                or ticker.get("lastPx")
+                                or ticker.get("markPrice")
+                                or ticker.get("price")
+                                or ticker.get("close")
+                                or 0.0
+                            )
+                elif exchange_id == "futu" and market in ("HKStock", "USStock") and hasattr(client, "get_quote"):
+                    quote = client.get_quote(symbol, market)
+                    if isinstance(quote, dict) and quote.get("success"):
+                        price = float(quote.get("last") or quote.get("close") or 0.0)
+                    if price <= 0:
+                        raise RuntimeError(
+                            f"FUTU_EXECUTION_QUOTE_UNAVAILABLE:{market}:{symbol}:"
+                            f"{(quote or {}).get('error') or 'empty price'}"
                         )
                 if price > 0:
                     prices[str(member.get("key") or "")] = price
         except Exception as exc:
             logger.warning("Execution-account price fetch failed: %s", exc)
+            if strict_futu:
+                raise RuntimeError(f"strategyV2.executionMarketDataUnavailable:{exc}") from exc
         return prices
 
     @staticmethod

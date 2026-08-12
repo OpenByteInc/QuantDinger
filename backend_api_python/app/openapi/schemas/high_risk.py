@@ -63,6 +63,20 @@ class CredentialCreateRequestSchema(Schema):
     ibkr_port = fields.Integer(load_default=7497, validate=validate.Range(min=1, max=65535))
     ibkr_client_id = fields.Integer(load_default=7, validate=validate.Range(min=0, max=2147483647))
     ibkr_account = fields.String(load_default="", validate=validate.Length(max=128))
+    futu_host = fields.String(load_default="127.0.0.1", validate=validate.Length(max=255))
+    futu_port = fields.Integer(load_default=11111, validate=validate.Range(min=1, max=65535))
+    host = fields.String(load_default="", validate=validate.Length(max=255))
+    port = fields.Integer(load_default=0, validate=validate.Range(min=0, max=65535))
+    trade_env = fields.String(load_default="", validate=validate.Length(max=32))
+    trade_market = fields.String(load_default="", validate=validate.Length(max=32))
+    tradeMarket = fields.String(load_default="", validate=validate.Length(max=32))
+    security_firm = fields.String(load_default="", validate=validate.Length(max=64))
+    securityFirm = fields.String(load_default="", validate=validate.Length(max=64))
+    acc_id = fields.Integer(load_default=0)
+    accId = fields.Integer(load_default=0)
+    unlock_password = fields.String(load_default="", validate=validate.Length(max=128))
+    unlockPassword = fields.String(load_default="", validate=validate.Length(max=128))
+    market_category = fields.String(load_default="", validate=validate.Length(max=32))
 
     @pre_load
     def normalize_exchange(self, data, **kwargs):
@@ -72,7 +86,7 @@ class CredentialCreateRequestSchema(Schema):
 
     @validates_schema
     def validate_exchange_secret(self, data, **kwargs):
-        if str(data.get("exchange_id") or "").lower() == "ibkr":
+        if str(data.get("exchange_id") or "").lower() in ("ibkr", "futu"):
             return
         if not (data.get("api_key") or data.get("apiKey")):
             raise ValidationError("api_key is required", field_name="api_key")

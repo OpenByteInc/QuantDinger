@@ -84,6 +84,65 @@ def test_dynamic_universe_reference_matches_canonical_universe_code():
     )
 
 
+def test_fetch_frames_forwards_futu_config_in_strict_mode():
+    captured = {}
+
+    def frame_fetcher(*_args, **kwargs):
+        captured.update(kwargs)
+        return _frame()
+
+    config = {"exchange_id": "futu", "futu_host": "10.0.0.8"}
+    service = StrategyV2BacktestService(
+        repository=_Repository(),
+        frame_fetcher=frame_fetcher,
+    )
+    frames, skipped = service.fetch_frames(
+        [{
+            "key": "HKStock:00700.HK",
+            "market": "HKStock",
+            "symbol": "00700.HK",
+            "market_type": "spot",
+            "exchange_id": "futu",
+        }],
+        "1d",
+        datetime(2026, 1, 1),
+        datetime(2026, 1, 5),
+        exchange_config=config,
+        strict_data_source=True,
+    )
+
+    assert frames
+    assert not skipped
+    assert captured["exchange_config"] is config
+    assert captured["strict_data_source"] is True
+
+
+def test_fetch_frames_fails_whole_futu_batch_in_strict_mode():
+    def failing_fetcher(*_args, **_kwargs):
+        raise RuntimeError("FUTU_OPEND_UNREACHABLE")
+
+    service = StrategyV2BacktestService(
+        repository=_Repository(),
+        frame_fetcher=failing_fetcher,
+    )
+
+    with pytest.raises(RuntimeError, match="executionMarketDataUnavailable"):
+        service.fetch_frames(
+            [{
+                "key": "HKStock:00700.HK",
+                "market": "HKStock",
+                "symbol": "00700.HK",
+                "market_type": "spot",
+                "exchange_id": "futu",
+            }],
+            "1d",
+            datetime(2026, 1, 1),
+            datetime(2026, 1, 5),
+            exchange_config={"exchange_id": "futu"},
+            strict_data_source=True,
+        )
+
+
 def test_v2_service_accepts_a_controlled_fundamental_enricher():
     code = """
 def initialize(context):

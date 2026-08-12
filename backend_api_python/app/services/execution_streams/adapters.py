@@ -22,6 +22,7 @@ from app.services.execution_streams.normalizers import (
     parse_binance,
     parse_bitget,
     parse_bybit,
+    parse_futu_deal,
     parse_gate,
     parse_htx,
     parse_ibkr_execution,
@@ -729,6 +730,92 @@ class IBKRExecutionAdapter:
         self.on_event(event)
 
 
+class FutuExecutionAdapter:
+    """Poll / push FutuOpenD deal updates through TradeDealHandler callbacks."""
+
+    def __init__(
+        self,
+        *,
+        credential_id: int,
+        user_id: int,
+        config: Dict[str, Any],
+        on_event: EventCallback,
+        on_state: StateCallback,
+        **_: Any,
+    ) -> None:
+        self.credential_id = int(credential_id or 0)
+        self.user_id = int(user_id or 1)
+        self.config = dict(config or {})
+        self.on_event = on_event
+        self.on_state = on_state
+        self._client: Any = None
+        self._thread: Optional[threading.Thread] = None
+        self._stop = threading.Event()
+
+    @property
+    def stream_key(self) -> str:
+        return f"futu:{self.credential_id}:stock"
+
+    @property
+    def connected(self) -> bool:
+        return bool(self._client and self._client.connected)
+
+    @property
+    def is_alive(self) -> bool:
+        return bool(self._thread and self._thread.is_alive())
+
+    def start(self) -> None:
+        if self.is_alive:
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._run, name=f"ExecStream-{self.stream_key}", daemon=True)
+        self._thread.start()
+
+    def stop(self, timeout: float = 5.0) -> bool:
+        self._stop.set()
+        if self._client:
+            try:
+                self._client.disconnect()
+            except Exception:
+                pass
+        if self.is_alive:
+            self._thread.join(timeout=timeout)
+        return not self.is_alive
+
+    def _emit_deal(self, payload: Dict[str, Any]) -> None:
+        for event in parse_futu_deal(payload if isinstance(payload, dict) else {}):
+            event.credential_id = self.credential_id
+            event.user_id = self.user_id
+            self.on_event(event)
+
+    def _emit_order(self, payload: Dict[str, Any]) -> None:
+        # Treat order push with dealt_qty as a deal-like update for REST audit gaps.
+        if not isinstance(payload, dict):
+            return
+        dealt = float(payload.get("dealt_qty") or payload.get("filled") or 0.0)
+        if dealt <= 0:
+            return
+        self._emit_deal(payload)
+
+    def _run(self) -> None:
+        try:
+            from app.services.live_trading.factory import create_futu_client
+
+            self._client = create_futu_client(self.config)
+            if not self._client.connected and not self._client.connect():
+                raise RuntimeError("FutuOpenD connection failed")
+            self._client.add_deal_handler(self._emit_deal)
+            self._client.add_order_handler(self._emit_order)
+            self._client.start_push()
+            self.on_state("connected", "", False)
+            while not self._stop.is_set() and self._client.connected:
+                time.sleep(0.5)
+        except Exception as exc:
+            self.on_state("error", str(exc), False)
+        finally:
+            self.on_state("disconnected", "", False)
+
+
 ADAPTERS = {
     "binance": BinanceExecutionAdapter,
     "okx": OkxExecutionAdapter,
@@ -738,4 +825,5 @@ ADAPTERS = {
     "htx": HtxExecutionAdapter,
     "alpaca": AlpacaExecutionAdapter,
     "ibkr": IBKRExecutionAdapter,
+    "futu": FutuExecutionAdapter,
 }
