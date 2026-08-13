@@ -95,6 +95,7 @@ class StrategyV2OrderGateway:
 
     def submit(self, request: LiveOrderRequest) -> int | None:
         request = self._validate(request)
+        self._check_risk_guard(request)
         service = OrderIntentService(
             strategy_id=request.strategy_id,
             strategy_run_id=request.strategy_run_id,
@@ -250,3 +251,70 @@ class StrategyV2OrderGateway:
         if request.execution_algo == "limit" and request.limit_price <= 0:
             raise ValueError("strategyV2.limitPriceRequired")
         return request
+
+    @staticmethod
+    def _check_risk_guard(request: LiveOrderRequest) -> None:
+        """Run the platform-level risk guard before persisting the order.
+
+        Fetches a best-effort account snapshot and checks drawdown, position
+        ratio, martingale lock, order size, and rate limits. If any rule
+        blocks the order, raises ValueError with the blocking reasons so the
+        caller can report back to the frontend / AI strategy review.
+        """
+        from app.services.risk_guard import RiskGuard, RiskOrder, AccountState
+
+        # Best-effort account snapshot; if unavailable, skip guard (fail-open
+        # rather than block trading on observability gaps).
+        try:
+            from app.services.live_trading.account_snapshot import (
+                fetch_account_snapshot,
+            )
+            from app.utils.auth import get_current_user_id
+
+            user_id = request.user_id or get_current_user_id()
+            snapshot = fetch_account_snapshot(
+                user_id=user_id,
+                credential_id=0,  # TODO: resolve from trading_config
+            ) or {}
+            net_value = float(
+                snapshot.get("totalWalletBalance")
+                or snapshot.get("net_value")
+                or 0
+            )
+            peak = max(net_value, float(snapshot.get("peak") or net_value))
+            positions = {
+                str(p.get("symbol")): float(p.get("notional") or p.get("positionValue") or 0)
+                for p in (snapshot.get("positions") or [])
+                if p.get("symbol")
+            }
+            acct = AccountState(
+                net_value=net_value, peak_net_value=peak, positions=positions
+            )
+        except Exception:
+            # Observability gap — don't block trading, but log it.
+            from app.utils.logger import get_logger
+
+            get_logger(__name__).debug(
+                "risk_guard: account snapshot unavailable, skipping guard"
+            )
+            return
+
+        notional = float(request.quantity) * float(request.reference_price or 0)
+        # Infer strategy type / martingale state from the LiveOrderRequest.
+        strategy_type = "martingale" if "add_" in request.action else "signal"
+        martingale_layers = 0  # TODO: wire from runtime state
+        martingale_leverage = float(request.leverage or 1.0)
+
+        order = RiskOrder(
+            symbol=request.symbol,
+            side="buy" if "long" in request.action else "sell",
+            notional=notional,
+            strategy_type=strategy_type,
+            martingale_layers=martingale_layers,
+            martingale_leverage=martingale_leverage,
+        )
+
+        guard = RiskGuard.shared()
+        allowed, reasons = guard.check(order, acct)
+        if not allowed:
+            raise ValueError("strategyV2.riskGuardBlocked: " + "; ".join(reasons))
