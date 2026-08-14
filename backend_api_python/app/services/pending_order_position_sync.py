@@ -231,7 +231,11 @@ class PendingOrderPositionSyncMixin:
 
                     # Try to create the client; skip strategies with invalid exchange config.
                     try:
-                        client = create_client(exchange_config, market_type=market_type)
+                        client = create_client(
+                            exchange_config,
+                            market_type=market_type,
+                            need_quote=str(exchange_id or "").strip().lower() != "futu",
+                        )
                     except Exception as e:
                         msg = str(e)
                         if is_fatal_exchange_error(msg):
@@ -564,6 +568,13 @@ class PendingOrderPositionSyncMixin:
                                     exc_info=True,
                                 )
                             continue
+                        finally:
+                            disconnect = getattr(client, "disconnect", None)
+                            if callable(disconnect):
+                                try:
+                                    disconnect()
+                                except Exception:
+                                    pass
                         if isinstance(positions, list):
                             for p in positions:
                                 if not isinstance(p, dict):

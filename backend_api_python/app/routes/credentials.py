@@ -258,7 +258,7 @@ def test_credential(data):
                 'acc_id': int(data.get('acc_id') or data.get('accId') or 0),
                 'unlock_password': str(data.get('unlock_password') or data.get('unlockPassword') or ''),
             }
-            client = create_client(config, market_type='spot')
+            client = create_client(config, market_type='spot', pooled=False)
             try:
                 probe = client.probe_permissions() if hasattr(client, 'probe_permissions') else {}
                 return jsonify({

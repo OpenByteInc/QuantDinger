@@ -160,11 +160,7 @@ class PendingOrderWorker(PendingOrderPositionSyncMixin):
         self._exchange_catchups: set[tuple[str, int, str]] = set()
         self._last_stream_audit: Dict[tuple[str, int, str], float] = {}
         self._stream_audit_sec = max(10.0, float(os.getenv("EXECUTION_STREAM_REST_AUDIT_SEC", "30")))
-        # futu-api keeps networking resources alive longer than an individual
-        # context.close(). Recreating contexts every one-second reconciliation
-        # tick eventually exhausts OpenD's 128-connection limit.
-        self._futu_sync_clients: Dict[str, Any] = {}
-        self._futu_sync_clients_lock = threading.Lock()
+        # Futu fill-sync reuses the process-wide OpenD session pool.
         logger.info(f"PendingOrderWorker: sync_enabled={self._position_sync_enabled}, interval={self._position_sync_interval_sec}s")
 
     def request_exchange_catchup(
@@ -202,20 +198,12 @@ class PendingOrderWorker(PendingOrderPositionSyncMixin):
             th = self._thread
         if th and th.is_alive():
             th.join(timeout=timeout_sec)
-        clients = getattr(self, "_futu_sync_clients", {})
-        lock = getattr(self, "_futu_sync_clients_lock", None)
-        if lock is not None:
-            with lock:
-                stale_clients = list(clients.values())
-                clients.clear()
-        else:
-            stale_clients = list(clients.values())
-            clients.clear()
-        for client in stale_clients:
-            try:
-                client.disconnect()
-            except Exception:
-                pass
+        try:
+            from app.services.futu_trading.session_pool import get_futu_session_pool
+
+            get_futu_session_pool().drain()
+        except Exception:
+            pass
         logger.info("PendingOrderWorker stopped")
 
     def _run_loop(self) -> None:
@@ -856,30 +844,12 @@ class PendingOrderWorker(PendingOrderPositionSyncMixin):
                 self._release_futu_sync_claim(order_id, "not_finalized")
 
     def _futu_sync_client(self, exchange_config: Dict[str, Any]) -> Any:
-        """Reuse OpenD contexts while a submitted order is being reconciled."""
-        key = json.dumps(exchange_config or {}, sort_keys=True, default=str)
-        if not hasattr(self, "_futu_sync_clients"):
-            self._futu_sync_clients = {}
-        if not hasattr(self, "_futu_sync_clients_lock"):
-            self._futu_sync_clients_lock = threading.Lock()
-        with self._futu_sync_clients_lock:
-            client = self._futu_sync_clients.get(key)
-            if client is not None and bool(getattr(client, "connected", True)):
-                return client
-            if client is not None:
-                try:
-                    client.disconnect()
-                except Exception:
-                    pass
-            client = create_client(exchange_config, market_type="spot")
-            self._futu_sync_clients[key] = client
-            return client
+        """Borrow a trade-only OpenD session from the process pool."""
+        return create_client(exchange_config, market_type="spot", need_quote=False)
 
     def _discard_futu_sync_client(self, exchange_config: Dict[str, Any], client: Any) -> None:
-        key = json.dumps(exchange_config or {}, sort_keys=True, default=str)
-        with self._futu_sync_clients_lock:
-            if self._futu_sync_clients.get(key) is client:
-                self._futu_sync_clients.pop(key, None)
+        if client is None:
+            return
         try:
             client.disconnect()
         except Exception:
@@ -1033,13 +1003,9 @@ class PendingOrderWorker(PendingOrderPositionSyncMixin):
                 exchange_response_json=raw_json,
                 final=status in final_statuses,
             )
-            if status in final_statuses:
-                self._discard_futu_sync_client(exchange_config, client)
             return True
         finally:
-            # Non-final orders intentionally retain their OpenD contexts in
-            # the worker cache; terminal orders discard them above.
-            pass
+            self._discard_futu_sync_client(exchange_config, client)
 
     def _update_futu_sent_order_snapshot(
         self,

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from app.services.exchange_execution import load_strategy_configs, resolve_exchange_config
 from app.services.execution_streams.repository import ExecutionEventRepository
@@ -16,6 +17,8 @@ from app.utils.logger import get_logger
 from app.utils.strategy_runtime_logs import append_strategy_log
 
 logger = get_logger(__name__)
+
+_FUTU_QUOTE_FEE_CCY = {"HKD", "USD", "CNH", "CNY", "USDT", "USDC"}
 
 
 class ExecutionEventProcessor:
@@ -106,11 +109,55 @@ class ExecutionEventProcessor:
                     fee_ccy=currency,
                     fill_price=price,
                 )
+            if converted is None and client is None:
+                converted = amount
             if converted is None:
                 quote_known = False
             else:
                 quote_total += float(converted)
         return fees, quote_total if quote_known else None
+
+    def _fee_client_required(self, event: Dict[str, Any], exchange_config: Dict[str, Any]) -> bool:
+        components = self.repository.fee_components(int(event.get("id") or 0))
+        if not components:
+            return False
+        if all(row.get("quote_amount") is not None for row in components):
+            return False
+        exchange_id = str(
+            (exchange_config or {}).get("exchange_id") or event.get("exchange_id") or ""
+        ).strip().lower()
+        if exchange_id == "futu":
+            pending = [row for row in components if row.get("quote_amount") is None]
+            return not all(
+                str(row.get("currency") or "").upper() in _FUTU_QUOTE_FEE_CCY
+                for row in pending
+            )
+        return True
+
+    @contextmanager
+    def _fee_client(
+        self,
+        event: Dict[str, Any],
+        exchange_config: Dict[str, Any],
+        market_type: str,
+    ) -> Iterator[Any]:
+        if not self._fee_client_required(event, exchange_config):
+            yield None
+            return
+        client = create_client(
+            exchange_config,
+            market_type=market_type,
+            need_quote=False,
+        )
+        try:
+            yield client
+        finally:
+            disconnect = getattr(client, "disconnect", None)
+            if callable(disconnect):
+                try:
+                    disconnect()
+                except Exception:
+                    pass
 
     @staticmethod
     def _fee_storage(fees: Dict[str, float]) -> Tuple[float, str]:
@@ -238,10 +285,10 @@ class ExecutionEventProcessor:
             user_id=int(sc.get("user_id") or pending.get("user_id") or 1),
         )
         market_type = str(event.get("market_type") or pending.get("market_type") or "swap")
-        client = create_client(exchange_config, market_type=market_type)
         symbol = str(event.get("symbol") or pending.get("symbol") or "")
         price = float(event.get("price") or pending.get("avg_price") or 0.0)
-        fees, commission_quote = self._fees(event, client=client, symbol=symbol, price=price)
+        with self._fee_client(event, exchange_config, market_type) as client:
+            fees, commission_quote = self._fees(event, client=client, symbol=symbol, price=price)
         commission, commission_ccy = self._fee_storage(fees)
 
         if delta > 1e-12 and price > 0:
@@ -471,13 +518,17 @@ class ExecutionEventProcessor:
             sc.get("exchange_config") or {},
             user_id=int(sc.get("user_id") or 1),
         )
-        client = create_client(exchange_config, market_type=str(event.get("market_type") or "swap"))
-        fees, commission_quote = self._fees(
+        with self._fee_client(
             event,
-            client=client,
-            symbol=str(event.get("symbol") or row.get("symbol") or ""),
-            price=price,
-        )
+            exchange_config,
+            str(event.get("market_type") or "swap"),
+        ) as client:
+            fees, commission_quote = self._fees(
+                event,
+                client=client,
+                symbol=str(event.get("symbol") or row.get("symbol") or ""),
+                price=price,
+            )
         commission, commission_ccy = self._fee_storage(fees)
         from app.services.grid.resting_orders_repo import GridRestingOrder
 
@@ -582,13 +633,13 @@ class ExecutionEventProcessor:
                 user_id=int(sc.get("user_id") or trade.get("user_id") or 1),
             )
             market_type = str(event.get("market_type") or trade.get("market_type") or "swap")
-            client = create_client(exchange_config, market_type=market_type)
-            fees, commission_quote = self._fees(
-                event,
-                client=client,
-                symbol=str(event.get("symbol") or trade.get("symbol") or ""),
-                price=float(event.get("price") or trade.get("price") or 0.0),
-            )
+            with self._fee_client(event, exchange_config, market_type) as client:
+                fees, commission_quote = self._fees(
+                    event,
+                    client=client,
+                    symbol=str(event.get("symbol") or trade.get("symbol") or ""),
+                    price=float(event.get("price") or trade.get("price") or 0.0),
+                )
             commission, commission_ccy = self._fee_storage(fees)
             existing_status = str(trade.get("fee_status") or "")
             existing_source = str(trade.get("fee_source") or "")

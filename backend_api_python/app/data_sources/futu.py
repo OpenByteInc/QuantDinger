@@ -80,18 +80,21 @@ class FutuDataSource(BaseDataSource):
         if self._client is not None and getattr(self._client, "connected", False):
             return self._client
         from app.services.futu_trading.config import config_from_exchange_config
-        from app.services.futu_trading.quote_client import FutuQuoteClient
+        from app.services.futu_trading.session_pool import get_futu_session_pool
 
         config_data = dict(self._exchange_config)
         config_data["futu_host"] = self._host
         config_data["futu_port"] = self._port
         config_data.setdefault("market_category", self.market)
+        config_data.setdefault("exchange_id", "futu")
         cfg = config_from_exchange_config(config_data)
         # Quote-only consumers never need to retain a trading password.
         cfg.unlock_password = ""
-        client = FutuQuoteClient(cfg)
-        if not client.connect():
-            raise FutuDataSourceError("FUTU_OPEND_UNREACHABLE", f"{self._host}:{self._port}")
+        config_data["unlock_password"] = ""
+        try:
+            client = get_futu_session_pool().acquire(config_data, mode="quote")
+        except Exception as exc:
+            raise FutuDataSourceError("FUTU_OPEND_UNREACHABLE", f"{self._host}:{self._port}") from exc
         self._client = client
         return client
 

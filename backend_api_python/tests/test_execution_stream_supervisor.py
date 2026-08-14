@@ -148,6 +148,56 @@ def test_reconcile_replaces_disconnected_adapter_with_unchanged_spec(monkeypatch
     assert created[0].connected
 
 
+def test_reconcile_does_not_start_second_futu_stream_when_stop_times_out(monkeypatch):
+    service = ExecutionStreamSupervisor()
+    spec = StreamSpec(
+        key="futu:9:stock",
+        credential_id=9,
+        user_id=3,
+        exchange_id="futu",
+        market_type="stock",
+        config_json="{}",
+        symbols=("AAPL",),
+    )
+
+    class OldAdapter:
+        connected = False
+        orphaned = False
+        credential_id = 9
+
+        def stop(self):
+            self.orphaned = True
+            return False
+
+        def is_alive(self):
+            return True
+
+    created = []
+
+    class NewAdapter:
+        connected = False
+
+        def __init__(self, **_kwargs):
+            created.append(self)
+
+        def start(self):
+            self.connected = True
+
+    service._adapters[spec.key] = OldAdapter()
+    service._specs[spec.key] = spec
+    monkeypatch.setattr(service, "_discover_specs", lambda: [spec])
+    monkeypatch.setattr(service, "_run_rest_catchup_limited", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(service, "_health_detail", lambda *_args, **_kwargs: "orphaned")
+    monkeypatch.setattr(service.repository, "update_health", lambda **_kwargs: None)
+    monkeypatch.setitem(supervisor_module.ADAPTERS, "futu", NewAdapter)
+
+    service._reconcile()
+
+    assert created == []
+    assert spec.key not in service._adapters
+    assert spec.key in service._orphans
+
+
 def test_active_stream_query_excludes_stopped_and_signal_strategies(monkeypatch):
     executed: list[str] = []
 

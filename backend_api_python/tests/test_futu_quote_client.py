@@ -37,9 +37,14 @@ def test_market_data_source_opens_quote_only_client(monkeypatch):
             self.connected = True
             return True
 
-        def close(self):
+        def close(self, force: bool = False):
             self.connected = False
 
+        disconnect = close
+
+    from app.services.futu_trading.session_pool import reset_futu_session_pool_for_tests
+
+    reset_futu_session_pool_for_tests()
     monkeypatch.setattr(
         "app.services.futu_trading.quote_client.FutuQuoteClient",
         FakeQuoteClient,

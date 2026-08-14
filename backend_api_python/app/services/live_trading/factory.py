@@ -214,7 +214,13 @@ def _demo_enabled(cfg: Dict[str, Any]) -> bool:
     return exchange_demo_mode_enabled(cfg)
 
 
-def create_client(exchange_config: Dict[str, Any], *, market_type: str = "swap") -> BaseRestClient:
+def create_client(
+    exchange_config: Dict[str, Any],
+    *,
+    market_type: str = "swap",
+    pooled: bool = True,
+    need_quote: bool = True,
+) -> BaseRestClient:
     if not isinstance(exchange_config, dict):
         raise LiveTradingError("Invalid exchange_config")
     exchange_id = _get(exchange_config, "exchange_id", "exchangeId").lower()
@@ -337,7 +343,7 @@ def create_client(exchange_config: Dict[str, Any], *, market_type: str = "swap")
 
     # Futu: local OpenD gateway for HKStock / USStock spot.
     if exchange_id == "futu":
-        return create_futu_client(exchange_config)
+        return create_futu_client(exchange_config, pooled=pooled, need_quote=need_quote)
 
     raise LiveTradingError(f"Unsupported exchange_id: {exchange_id}")
 
@@ -464,7 +470,12 @@ def create_alpaca_client(exchange_config: Dict[str, Any]):
     return client
 
 
-def create_futu_client(exchange_config: Dict[str, Any]):
+def create_futu_client(
+    exchange_config: Dict[str, Any],
+    *,
+    pooled: bool = True,
+    need_quote: bool = True,
+):
     """
     Create Futu client for HK / US stock trading via FutuOpenD.
 
@@ -476,6 +487,9 @@ def create_futu_client(exchange_config: Dict[str, Any]):
     - security_firm: FUTUSECURITIES | FUTUINC | FUTUSG | ...
     - acc_id: optional account id
     - unlock_password: optional (prefer GUI unlock for live)
+
+    By default the process-wide session pool reuses one OpenD session per
+    credential key. Pass ``pooled=False`` for a one-shot probe.
     """
     global FutuClient, FutuConfig
 
@@ -484,7 +498,6 @@ def create_futu_client(exchange_config: Dict[str, Any]):
             from app.services.futu_trading import FutuClient as _FutuClient
             from app.services.futu_trading.config import (
                 FutuConfig as _FutuConfig,
-                config_from_exchange_config,
             )
             FutuClient = _FutuClient
             FutuConfig = _FutuConfig
@@ -501,16 +514,26 @@ def create_futu_client(exchange_config: Dict[str, Any]):
         raise LiveTradingError(desktop_broker_cloud_reject_message("futu"))
 
     host = str(exchange_config.get("futu_host") or exchange_config.get("host") or "127.0.0.1").strip()
-    # Basic SSRF guard: reject obviously non-local targets in production-ish setups
-    # unless explicitly allow-listed via env.
     try:
         validate_opend_host(host)
     except ValueError as exc:
         raise LiveTradingError(str(exc)) from exc
 
     config = config_from_exchange_config(exchange_config)
+    if pooled:
+        from app.services.futu_trading.session_pool import get_futu_session_pool
+
+        mode = "both" if need_quote else "trade"
+        try:
+            return get_futu_session_pool().acquire(exchange_config, mode=mode)
+        except Exception as exc:
+            raise LiveTradingError(
+                "Failed to connect to FutuOpenD. Ensure OpenD is running and reachable "
+                f"at {config.host}:{config.port}."
+            ) from exc
+
     client = FutuClient(config)
-    if not client.connect():
+    if not client.connect(need_quote=need_quote):
         raise LiveTradingError(
             "Failed to connect to FutuOpenD. Ensure OpenD is running and reachable "
             f"at {config.host}:{config.port}."

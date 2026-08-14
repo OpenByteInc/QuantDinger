@@ -89,6 +89,7 @@ class FutuClient:
         self._order_handlers: List[Callable[[Dict[str, Any]], None]] = []
         self._deal_handlers: List[Callable[[Dict[str, Any]], None]] = []
         self._push_handler = None
+        self._need_quote = True
 
     # ------------------------------------------------------------------
     # Connection
@@ -96,10 +97,15 @@ class FutuClient:
 
     @property
     def connected(self) -> bool:
-        return bool(self._connected and self._quote_ctx is not None and self._trade_ctx is not None)
+        if not self._connected or self._trade_ctx is None:
+            return False
+        if self._need_quote and self._quote_ctx is None:
+            return False
+        return True
 
-    def connect(self) -> bool:
+    def connect(self, need_quote: bool = True) -> bool:
         with self._lock:
+            self._need_quote = bool(need_quote)
             if self.connected:
                 return True
             try:
@@ -121,32 +127,32 @@ class FutuClient:
                     trade_kwargs["is_encrypt"] = encrypt
 
                 logger.info(
-                    "Connecting to FutuOpenD %s:%s env=%s market=%s firm=%s",
+                    "Connecting to FutuOpenD %s:%s env=%s market=%s firm=%s need_quote=%s",
                     self.config.host,
                     self.config.port,
                     self.config.trade_env,
                     self.config.trade_market,
                     self.config.security_firm,
+                    self._need_quote,
                 )
-                self._quote_ctx = ft.OpenQuoteContext(**quote_kwargs)
+                if self._need_quote:
+                    self._quote_ctx = ft.OpenQuoteContext(**quote_kwargs)
+                    ret, data = self._quote_ctx.get_global_state()
+                    if ret != ft.RET_OK:
+                        raise RuntimeError(f"OpenD quote probe failed: {data}")
                 self._trade_ctx = ft.OpenSecTradeContext(**trade_kwargs)
-
-                # Probe quote connection
-                ret, data = self._quote_ctx.get_global_state()
-                if ret != ft.RET_OK:
-                    raise RuntimeError(f"OpenD quote probe failed: {data}")
-
                 self._refresh_accounts_unlocked()
                 if self.config.trade_env == "live" and self.config.unlock_password:
                     self._unlock_trade_unlocked()
 
                 self._connected = True
                 logger.info(
-                    "Futu connected host=%s:%s acc_id=%s accounts=%s",
+                    "Futu connected host=%s:%s acc_id=%s accounts=%s quote=%s",
                     self.config.host,
                     self.config.port,
                     self._acc_id or "auto",
                     len(self._accounts),
+                    self._quote_ctx is not None,
                 )
                 return True
             except Exception as exc:
@@ -155,7 +161,12 @@ class FutuClient:
                 self._connected = False
                 return False
 
-    def disconnect(self) -> None:
+    def disconnect(self, force: bool = False) -> None:
+        if getattr(self, "_futu_pooled", False) and not force:
+            from app.services.futu_trading.session_pool import get_futu_session_pool
+
+            get_futu_session_pool().release(self)
+            return
         with self._lock:
             self._cleanup_contexts()
             self._connected = False
@@ -175,7 +186,7 @@ class FutuClient:
 
     def _ensure_connected(self) -> None:
         if not self.connected:
-            if not self.connect():
+            if not self.connect(need_quote=self._need_quote):
                 raise ConnectionError("Cannot connect to FutuOpenD")
 
     # ------------------------------------------------------------------
@@ -288,7 +299,10 @@ class FutuClient:
                 for acc in self._accounts
             ],
         }
-        if not self.connected:
+        status["need_quote"] = bool(self._need_quote)
+        status["quote_ctx"] = self._quote_ctx is not None
+        status["trade_ctx"] = self._trade_ctx is not None
+        if not self.connected or self._quote_ctx is None:
             return status
         try:
             ft = _ensure_futu()
@@ -649,6 +663,8 @@ class FutuClient:
         try:
             with self._lock:
                 self._ensure_connected()
+                if self._quote_ctx is None:
+                    return {"success": False, "error": "quote context is not open"}
                 code = to_futu_code(symbol, market_type or infer_market_category(symbol))
                 snap = self._snapshot_unlocked(code)
                 if not snap:
@@ -684,6 +700,8 @@ class FutuClient:
             return {"last_price": safe_float(getattr(row, "last_price", 0)), "code": code}
 
     def _query_lot_size_unlocked(self, code: str) -> int:
+        if self._quote_ctx is None:
+            return 0
         try:
             ft = _ensure_futu()
             ret, data = self._quote_ctx.get_market_snapshot([code])
@@ -712,6 +730,8 @@ class FutuClient:
     ) -> List[Dict[str, Any]]:
         with self._lock:
             self._ensure_connected()
+            if self._quote_ctx is None:
+                raise RuntimeError("quote context is not open")
             ft = _ensure_futu()
             market = market_type or infer_market_category(symbol)
             code = to_futu_code(symbol, market)
@@ -823,6 +843,9 @@ class FutuClient:
         try:
             with self._lock:
                 self._ensure_connected()
+                if self._quote_ctx is None:
+                    logger.warning("Futu subscribe_quote skipped: quote context is not open")
+                    return False
                 ft = _ensure_futu()
                 codes = [to_futu_code(s, market_type or infer_market_category(s)) for s in symbols if s]
                 if not codes:

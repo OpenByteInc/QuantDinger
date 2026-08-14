@@ -245,3 +245,21 @@ def test_alpaca_listens_for_trade_updates_after_authorization():
     )
     assert ws.messages == [{"action": "listen", "data": {"streams": ["trade_updates"]}}]
     assert adapter.connected
+
+
+def test_futu_adapter_stop_timeout_marks_orphaned_and_refuses_restart():
+    events = []
+    adapter = _futu_adapter(events)
+    adapter._thread = type(
+        "AliveThread",
+        (),
+        {"is_alive": lambda self: True, "join": lambda self, timeout=None: None},
+    )()
+    adapter._client = type("Client", (), {"connected": True, "disconnect": lambda self: None})()
+
+    assert adapter.stop(timeout=0.01) is False
+    assert adapter.orphaned is True
+    previous = adapter._thread
+    adapter.start()
+    assert adapter._thread is previous
+

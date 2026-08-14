@@ -69,6 +69,36 @@ Live strategy orders still go through `pending_orders` → `trading-worker` → 
 
 When OpenD quote fails for a Futu execution account, K-line/ticker falls back to the public HK/US sources and tags `source=fallback:...` — never silently pretend Futu succeeded.
 
+## Connection budget
+
+OpenD caps TCP sessions at **128**. QuantDinger now reuses a process-wide `FutuSessionPool`:
+
+| Consumer | Contexts | Typical count per credential |
+|----------|----------|------------------------------|
+| Live orders / REST fill sync / position sync | `OpenSecTradeContext` only | 1 shared `trade` session |
+| Execution push adapter | same pooled trade session | 0 extra if `trade` already live |
+| K-line / ticker (`FutuQuoteClient`) | `OpenQuoteContext` only | 1 `quote` session |
+| Order placement with lot-size check | quote + trade (`both`) | 1 `both` session (trade callers reuse it) |
+
+Budget rule of thumb: **about 2–3 TCP connections per credential**, not one pair per worker tick.
+
+`create_futu_client(..., pooled=False)` is reserved for one-shot probes (`POST /api/credentials/test`). Worker `stop()` and process exit call `drain()` to close leftover sessions.
+
+### Docker start order
+
+1. Start **FutuOpenD** on the host, bound to `127.0.0.1:11111`.
+2. Start `scripts/opend_relay.py` so Docker containers can reach OpenD on the bridge IP (auto-detected `docker0` / `host-gateway`, default port `11112`).
+3. Start Compose (`trading-worker` / API). Point credentials at `host.docker.internal:11112` (relay) or `host.docker.internal:11111` if OpenD already listens on the Docker gateway.
+
+### When the 128 cap is hit
+
+Symptoms: `FUTU_OPEND_UNREACHABLE`, OpenD logs “too many connections”, or `ss -tn sport = :11111` / `:11112` climbing linearly.
+
+1. Restart `trading-worker` (pool `drain()` on stop) and the OpenD process.
+2. Confirm connection count is stable in the low single digits during one running strategy + REST sync.
+3. Check `qd_execution_stream_health`: `state` should be `connected` or `orphaned` (never two Futu adapters for the same key). `last_error` includes pool snapshot + OpenD target.
+4. Do not stack extra probes (`pooled=False`) in a tight loop.
+
 ## Acceptance checklist
 
 1. `POST /api/futu/probe` succeeds on simulate env.

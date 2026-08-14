@@ -56,7 +56,12 @@ class FutuQuoteClient:
                 self.close()
                 return False
 
-    def close(self) -> None:
+    def close(self, force: bool = False) -> None:
+        if getattr(self, "_futu_pooled", False) and not force:
+            from app.services.futu_trading.session_pool import get_futu_session_pool
+
+            get_futu_session_pool().release(self)
+            return
         with self._lock:
             if self._quote_ctx is not None:
                 try:

@@ -757,6 +757,8 @@ class FutuExecutionAdapter:
         self._deal_quantity_by_order: Dict[str, float] = {}
         self._order_cumulative_by_order: Dict[str, float] = {}
         self._fill_order_lru: OrderedDict[str, None] = OrderedDict()
+        self.orphaned = False
+        self._connect_backoff_sec = 1.0
 
     @property
     def stream_key(self) -> str:
@@ -771,6 +773,12 @@ class FutuExecutionAdapter:
         return bool(self._thread and self._thread.is_alive())
 
     def start(self) -> None:
+        if self.orphaned:
+            logger.warning(
+                "Refusing to start a second Futu execution stream while an orphaned thread is alive key=%s",
+                self.stream_key,
+            )
+            return
         if self.is_alive:
             return
         self._stop.clear()
@@ -779,14 +787,25 @@ class FutuExecutionAdapter:
 
     def stop(self, timeout: float = 5.0) -> bool:
         self._stop.set()
-        if self._client:
-            try:
-                self._client.disconnect()
-            except Exception:
-                pass
+        self._release_client()
         if self.is_alive:
             self._thread.join(timeout=timeout)
-        return not self.is_alive
+        if self.is_alive:
+            self.orphaned = True
+            logger.warning("Futu execution stream thread did not stop; marking orphaned key=%s", self.stream_key)
+            return False
+        self.orphaned = False
+        return True
+
+    def _release_client(self) -> None:
+        client = self._client
+        self._client = None
+        if client is None:
+            return
+        try:
+            client.disconnect()
+        except Exception:
+            pass
 
     def _emit_deal(self, payload: Dict[str, Any]) -> None:
         if not isinstance(payload, dict):
@@ -859,26 +878,29 @@ class FutuExecutionAdapter:
 
     def _run(self) -> None:
         try:
-            from app.services.live_trading.factory import create_futu_client
-
-            self._client = create_futu_client(self.config)
-            if not self._client.connected and not self._client.connect():
-                raise RuntimeError("FutuOpenD connection failed")
-            self._client.add_deal_handler(self._emit_deal)
-            self._client.add_order_handler(self._emit_order)
-            self._client.start_push()
-            self.on_state("connected", "", False)
-            while not self._stop.is_set() and self._client.connected:
-                time.sleep(0.5)
-        except Exception as exc:
-            self.on_state("error", str(exc), False)
-        finally:
-            if self._client:
+            while not self._stop.is_set():
                 try:
-                    self._client.disconnect()
-                except Exception:
-                    pass
-            self.on_state("disconnected", "", False)
+                    from app.services.live_trading.factory import create_futu_client
+
+                    self._client = create_futu_client(self.config, need_quote=False)
+                    if not self._client.connected and not self._client.connect(need_quote=False):
+                        raise RuntimeError("FutuOpenD connection failed")
+                    self._client.add_deal_handler(self._emit_deal)
+                    self._client.add_order_handler(self._emit_order)
+                    self._client.start_push()
+                    self.on_state("connected", "", False)
+                    self._connect_backoff_sec = 1.0
+                    while not self._stop.is_set() and self._client and self._client.connected:
+                        time.sleep(0.5)
+                except Exception as exc:
+                    self.on_state("error", str(exc), False)
+                    if self._stop.wait(self._connect_backoff_sec):
+                        break
+                    self._connect_backoff_sec = min(30.0, self._connect_backoff_sec * 2)
+                finally:
+                    self._release_client()
+        finally:
+            self.on_state("orphaned" if self.orphaned else "disconnected", "", False)
 
 
 ADAPTERS = {

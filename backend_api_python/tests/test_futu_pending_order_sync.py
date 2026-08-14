@@ -68,7 +68,7 @@ def test_failed_status_query_requeues_without_overwriting_fill(monkeypatch):
 
     worker._release_futu_sync_claim.assert_called_once_with(17, "not_finalized")
     worker._update_futu_sent_order_snapshot.assert_not_called()
-    assert not client.disconnected
+    assert client.disconnected
 
 
 def test_invalid_claimed_order_is_requeued_immediately():
@@ -112,7 +112,7 @@ def test_successful_regressive_snapshot_preserves_recorded_fill(monkeypatch):
     assert update["filled"] == 5
     assert update["avg_price"] == 100
     assert update["status"] == "sent"
-    assert not client.disconnected
+    assert client.disconnected
 
 
 def test_terminal_snapshot_discards_cached_client(monkeypatch):
@@ -138,7 +138,6 @@ def test_terminal_snapshot_discards_cached_client(monkeypatch):
     worker._sync_one_futu_sent_order(row)
 
     assert client.disconnected
-    assert worker._futu_sync_clients == {}
 
 
 def test_retry_uses_durable_trade_ledger_to_avoid_duplicate_fill(monkeypatch):

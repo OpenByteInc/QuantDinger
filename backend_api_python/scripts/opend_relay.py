@@ -6,10 +6,47 @@ import os
 import select
 import socket
 import socketserver
+import subprocess
+from typing import Iterable
+
+
+def _ipv4_for_iface(name: str) -> str:
+    try:
+        out = subprocess.check_output(
+            ["ip", "-4", "-o", "addr", "show", "dev", name],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        return ""
+    for part in out.split():
+        if "/" in part and part[0].isdigit():
+            return part.split("/", 1)[0]
+    return ""
+
+
+def _resolve_ipv4(name: str) -> str:
+    try:
+        return socket.getaddrinfo(name, None, socket.AF_INET)[0][4][0]
+    except Exception:
+        return ""
+
+
+def detect_relay_bind_host(candidates: Iterable[str] | None = None) -> str:
+    """Pick a Docker-bridge address; do not hardcode 172.17.0.1 unless last resort."""
+    explicit = str(os.getenv("OPEND_RELAY_BIND_HOST") or "").strip()
+    if explicit:
+        return explicit
+    names = list(candidates) if candidates is not None else ("docker0", "host-gateway")
+    for name in names:
+        address = _ipv4_for_iface(name) or _resolve_ipv4(name)
+        if address:
+            return address
+    return "172.17.0.1"
 
 
 LISTEN = (
-    os.getenv("OPEND_RELAY_BIND_HOST", "172.17.0.1"),
+    detect_relay_bind_host(),
     int(os.getenv("OPEND_RELAY_PORT", "11112")),
 )
 UPSTREAM = (

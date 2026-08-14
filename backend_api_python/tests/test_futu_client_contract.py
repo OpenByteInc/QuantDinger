@@ -238,3 +238,28 @@ def test_parse_futu_order_snapshot_uses_cumulative_fill_and_average_price():
     assert first.cumulative_quantity == 20
     assert first.is_cumulative
     assert first.event_key() != second.event_key()
+
+
+@patch("app.services.futu_trading.client._ensure_futu")
+def test_connect_trade_only_skips_quote_context(ensure):
+    ft = _FakeFT()
+    quote_ctx = MagicMock()
+    trade_ctx = MagicMock()
+    trade_ctx.get_acc_list.return_value = (
+        _FakeFT.RET_OK,
+        pd.DataFrame([{"acc_id": 7, "trd_env": "SIMULATE", "acc_type": "STOCK"}]),
+    )
+    ft.OpenQuoteContext = MagicMock(return_value=quote_ctx)
+    ft.OpenSecTradeContext = MagicMock(return_value=trade_ctx)
+    ensure.return_value = ft
+
+    client = FutuClient(FutuConfig(host="127.0.0.1", port=11111, trade_env="demo"))
+    assert client.connect(need_quote=False)
+    ft.OpenQuoteContext.assert_not_called()
+    ft.OpenSecTradeContext.assert_called_once()
+    assert client.connected
+    assert client._quote_ctx is None
+    status = client.get_connection_status()
+    assert status["quote_ctx"] is False
+    assert status["trade_ctx"] is True
+
