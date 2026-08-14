@@ -4,7 +4,7 @@ Werkzeug>=3.1.8
 flask-cors==6.0.5
 finnhub-python>=2.4.29
 yfinance>=1.5.2
-ccxt>=4.5.69
+ccxt>=4.5.73
 pandas>=3.0.5
 # Strategy API V2 technical indicator runtime. The 0.6.x wheels bundle the C library.
 TA-Lib==0.7.1
