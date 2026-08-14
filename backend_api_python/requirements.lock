@@ -1,7 +1,7 @@
 # Generated from requirements.txt for the verified Python 3.12 Linux production image.
 # Regenerate and validate this file whenever direct production requirements change.
 aiohappyeyeballs==2.7.1
-aiohttp==3.14.1
+aiohttp==3.14.3
 aiohttp-fast-zlib==0.3.0
 aiosignal==1.4.0
 akracer==0.0.14
@@ -17,7 +17,7 @@ beautifulsoup4==4.15.0
 billiard==4.2.4
 blinker==1.9.0
 build==1.5.0
-ccxt==4.5.70
+ccxt==4.5.73
 celery==5.6.3
 certifi==2026.6.17
 cffi==2.0.0
@@ -27,7 +27,7 @@ click-didyoumean==0.3.1
 click-plugins==1.1.1.2
 click-repl==0.3.0
 coincurve==21.0.0
-cryptography==49.0.0
+cryptography==50.0.0
 curl-cffi==0.15.0
 decorator==5.3.1
 distro==1.9.0
@@ -92,7 +92,7 @@ pygments==2.20.0
 pyjwt==2.13.0
 pyluach==2.3.0
 pyotp==2.10.0
-pypdf==6.14.2
+pypdf==6.15.0
 pyproject-hooks==1.2.0
 pysocks==1.7.1
 python-dateutil==2.9.0.post0
