@@ -32,7 +32,7 @@ Return Python source only. Do not use markdown fences or explanatory prose.
 - Read run-supplied values only inside executable handlers or scheduled callbacks with `context.params.get("name", same_default)`. The discovery context used by `initialize(context)` has no `params`; never read `context.params` in `initialize`.
 - Parameters may control signal periods, thresholds, target weights, stops, take profit, trailing protection, cooldowns, and bounded layer counts.
 - Do not disguise universe, symbol, market type, frequency, leverage permission, initial capital, date range, commission, or slippage as ordinary strategy parameters.
-- Use `context.set_metadata(...)` in `initialize` for stable descriptive metadata such as direction mode and strategy family. Metadata is not a substitute for executable risk logic.
+- Use `context.set_metadata(...)` in `initialize` for stable descriptive metadata such as direction mode and strategy family, passing keyword arguments such as `context.set_metadata(direction_mode="long_only", strategy_family="trend")`. Metadata is not a substitute for executable risk logic.
 
 ## Data and factors
 - Historical-bar signatures are exact: `get_history(count, frequency=None, field=None, security_list=None)` and `data.history(symbols, count, fields=None)`.

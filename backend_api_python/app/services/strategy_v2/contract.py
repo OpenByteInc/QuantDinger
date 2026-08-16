@@ -6,7 +6,7 @@ import ast
 import hashlib
 from dataclasses import dataclass
 from types import SimpleNamespace
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Mapping
 
 from app.utils.safe_exec import build_safe_builtins, safe_exec_with_validation
 from app.services.factors import FactorError, get_factor
@@ -150,7 +150,15 @@ class DiscoveryContext:
         self.leverage_allowed = value > 1.0
         self.max_leverage = value
 
-    def set_metadata(self, **values: Any) -> None:
+    def set_metadata(self, *args: Any, **values: Any) -> None:
+        if len(args) == 1 and isinstance(args[0], Mapping):
+            self.metadata.update(args[0])
+        elif len(args) == 2:
+            self.metadata[str(args[0])] = args[1]
+        elif args:
+            raise TypeError(
+                "set_metadata expects keyword arguments, a single key/value pair, or a mapping"
+            )
         self.metadata.update(values)
 
 
