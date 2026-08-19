@@ -271,6 +271,13 @@ PostgreSQL migration guidance, see
 [Installation troubleshooting](docs/deployment/INSTALL_TROUBLESHOOTING.md) and the
 [cloud deployment guide](docs/deployment/CLOUD_DEPLOYMENT_EN.md).
 
+### Optional Qveris data source
+
+QuantDinger can use Qveris as an opt-in unified market-data layer while keeping
+the existing market providers as automatic fallbacks. See the
+[Qveris data-source guide](docs/integrations/QVERIS_DATA_SOURCE.md) for setup,
+supported markets, safety behavior, and verification.
+
 ## Production deployment
 
 Validate secrets before starting a production stack:
