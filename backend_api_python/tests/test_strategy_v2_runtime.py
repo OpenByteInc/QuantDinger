@@ -888,6 +888,82 @@ def handle_data(context, data):
     assert trade["profit"] == pytest.approx(trade["gross_profit"] - trade["commission"])
 
 
+def test_grid_exit_uses_matched_cell_entry_without_hiding_account_realized_pnl():
+    symbol = "Crypto:XAUT/USDT@swap"
+    index = pd.date_range("2026-01-01", periods=4, freq="min")
+    frame = pd.DataFrame({
+        "open": [80.0, 90.0, 110.0, 105.0],
+        "high": [80.0, 90.0, 110.0, 105.0],
+        "low": [80.0, 90.0, 110.0, 105.0],
+        "close": [80.0, 90.0, 110.0, 105.0],
+        "volume": [100_000.0] * 4,
+    }, index=index)
+    code = """
+def initialize(context):
+    g.symbol = "Crypto:XAUT/USDT@swap"
+    g.low_sent = False
+    g.high_sent = False
+    g.exit_sent = False
+    context.set_universe([g.symbol])
+    context.subscribe(frequency="1m")
+    context.set_metadata(direction_mode="neutral")
+
+def handle_data(context, data):
+    if not g.low_sent:
+        order(
+            g.symbol, -1, position_side="short", order_type="limit",
+            limit_price=90, reason="short_entry",
+            client_order_id="grid-0-short-entry-1",
+        )
+        g.low_sent = True
+    elif get_order_status("grid-0-short-entry-1")["status"] == "filled" and not g.high_sent:
+        order(
+            g.symbol, -1, position_side="short", order_type="limit",
+            limit_price=110, reason="short_entry",
+            client_order_id="grid-1-short-entry-1",
+        )
+        g.high_sent = True
+    elif get_order_status("grid-1-short-entry-1")["status"] == "filled" and not g.exit_sent:
+        order(
+            g.symbol, 1, position_side="short", order_type="limit",
+            limit_price=105, reason="short_exit",
+            client_order_id="grid-1-short-exit-1",
+        )
+        g.exit_sent = True
+"""
+
+    result = StrategyV2BacktestRunner(
+        code=code,
+        frames={symbol: frame},
+        initial_capital=1000,
+        commission=0.001,
+        slippage=0,
+    ).run()
+
+    trade = result["closedTrades"][0]
+    assert trade["profit_basis"] == "grid_cell"
+    assert trade["entry_price"] == pytest.approx(110)
+    assert trade["matched_entry_price"] == pytest.approx(110)
+    assert trade["exit_price"] == pytest.approx(105)
+    assert trade["gross_profit"] == pytest.approx(5)
+    assert trade["entry_commission"] == pytest.approx(0.11)
+    assert trade["exit_commission"] == pytest.approx(0.105)
+    assert trade["profit"] == pytest.approx(4.785)
+    assert trade["grid_matched_profit"] == pytest.approx(4.785)
+    assert trade["account_avg_entry_price"] == pytest.approx(100)
+    assert trade["account_realized_profit"] == pytest.approx(-5.205)
+    assert result["winRate"] == pytest.approx(100)
+    assert result["gridMatchedProfit"] == pytest.approx(4.785)
+    assert result["accountRealizedProfit"] == pytest.approx(-5.205)
+    assert result["tradeProfitBasis"] == "grid_cell_when_available"
+    assert result["attribution"]["symbols"][0]["realizedProfit"] == pytest.approx(-5.205)
+    assert [row["client_order_id"] for row in result["executions"]] == [
+        "grid-0-short-entry-1",
+        "grid-1-short-entry-1",
+        "grid-1-short-exit-1",
+    ]
+
+
 def test_live_session_snapshot_round_trips_strategy_timestamps_and_order_statuses():
     frame = _frame([100, 101])
     code = """

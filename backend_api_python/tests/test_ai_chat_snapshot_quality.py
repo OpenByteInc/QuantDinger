@@ -117,10 +117,59 @@ def test_agent_intent_preserves_strategy_instrument_context():
     )
 
     for plan in (fallback, normalized):
-        assert plan["entities"]["timeframe"] == "4H"
+        assert plan["entities"]["timeframe"] == "4h"
+        assert plan["entities"]["timeframes"] == ["4h"]
         assert plan["entities"]["exchange_id"] == "okx"
         assert plan["entities"]["market_type"] == "swap"
         assert plan["entities"]["instrument_id"] == "SOL-USDT-SWAP"
+
+
+def test_agent_intent_preserves_every_requested_strategy_timeframe():
+    message = "Create a BTC strategy using 1d, 4h and 15m signals"
+    plan = _normalize_agent_intent(
+        {
+            "intent": "strategy_build",
+            "target_type": "script",
+            "workflow": "script_strategy",
+            "should_execute": True,
+            "entities": {"symbol": "BTC/USDT", "timeframes": ["1d", "4h", "15m"]},
+        },
+        message,
+        False,
+        {"market": "Crypto", "symbol": "BTC/USDT"},
+        "en-US",
+    )
+
+    assert plan["entities"]["timeframes"] == ["1d", "4h", "15m"]
+    assert plan["entities"]["timeframe"] == "15m"
+
+
+def test_explicit_single_timeframe_does_not_inherit_selected_chart_timeframe():
+    message = "Create a BTC strategy using a 1m golden cross"
+    context = {
+        "market": "Crypto",
+        "symbol": "BTC/USDT",
+        "timeframe": "4h",
+        "timeframes": ["4h"],
+    }
+    fallback = _fallback_agent_intent(message, False, context, "en-US")
+    normalized = _normalize_agent_intent(
+        {
+            "intent": "strategy_build",
+            "target_type": "script",
+            "workflow": "script_strategy",
+            "should_execute": True,
+            "entities": {"symbol": "BTC/USDT", "timeframe": "1m"},
+        },
+        message,
+        False,
+        context,
+        "en-US",
+    )
+
+    for plan in (fallback, normalized):
+        assert plan["entities"]["timeframes"] == ["1m"]
+        assert plan["entities"]["timeframe"] == "1m"
 
 
 def test_stream_recovery_replaces_partial_provider_output(monkeypatch):

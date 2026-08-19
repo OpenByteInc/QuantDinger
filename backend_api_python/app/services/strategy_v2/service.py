@@ -79,7 +79,7 @@ class StrategyV2BacktestService:
             raise StrategyV2ContractError(
                 f"strategyV2.factorResearchUniverseTooSmall:{minimum_symbols}"
             )
-        frequency = manifest.primary_frequency
+        frequency = manifest.driving_frequency
         warmup_bars = max(40, manifest.warmup_bars)
         fetch_start = start_date - timedelta(days=backtest_warmup_calendar_days(frequency, warmup_bars))
         _enforce_backtest_range(
@@ -154,24 +154,34 @@ class StrategyV2BacktestService:
         if not candidates:
             raise StrategyV2ContractError("strategyV2.universeHasNoData")
 
-        frequency = manifest.primary_frequency
-        fetch_start = start_date - timedelta(
-            days=backtest_warmup_calendar_days(frequency, manifest.warmup_bars)
+        frequency = manifest.driving_frequency
+        fetch_starts = {
+            item: start_date
+            - timedelta(days=backtest_warmup_calendar_days(item, manifest.warmup_bars))
+            for item in manifest.frequencies
+        }
+        for item in manifest.frequencies:
+            _enforce_backtest_range(
+                candidates=candidates,
+                timeframe=item,
+                start_date=start_date,
+                end_date=end_date,
+                warmup_bars=manifest.warmup_bars,
+                fetch_start=fetch_starts[item],
+            )
+        frequency_frames, skipped = self.fetch_frequency_frames(
+            candidates,
+            manifest.frequencies,
+            fetch_starts,
+            end_date,
         )
-        _enforce_backtest_range(
-            candidates=candidates,
-            timeframe=frequency,
-            start_date=start_date,
-            end_date=end_date,
-            warmup_bars=manifest.warmup_bars,
-            fetch_start=fetch_start,
-        )
-        frames, skipped = self.fetch_frames(candidates, frequency, fetch_start, end_date)
+        frames = frequency_frames.get(frequency, {})
         if not frames:
             raise StrategyV2ContractError("strategyV2.noMarketData")
         if manifest.fundamental_dependencies:
             enricher = self.fundamental_enricher or get_fundamental_data_service().enrich_panel
             frames = enricher(frames, candidates)
+            frequency_frames[frequency] = frames
             self.validate_fundamental_dependencies(frames, manifest)
 
         def resolve_universe(reference: str, timestamp: pd.Timestamp) -> list[str]:
@@ -184,6 +194,7 @@ class StrategyV2BacktestService:
         runner = StrategyV2BacktestRunner(
             code=code,
             frames=frames,
+            frequency_frames=frequency_frames,
             initial_capital=initial_capital,
             params=params,
             leverage_enabled=leverage_enabled,
@@ -204,7 +215,7 @@ class StrategyV2BacktestService:
                         benchmark_spec.market,
                         benchmark_spec.symbol,
                         frequency,
-                        fetch_start,
+                        fetch_starts[frequency],
                         end_date,
                         market_type=benchmark_spec.market_type,
                         exchange_id=benchmark_spec.exchange_id,
@@ -220,20 +231,30 @@ class StrategyV2BacktestService:
         )
         result.update(benchmark)
         result["excessReturn"] = float(result.get("totalReturn") or 0.0) - float(result.get("benchmarkTotalReturn") or 0.0)
+        timeframe_provenance = {
+            item: [
+                _frame_provenance(
+                    key,
+                    frame,
+                    snapshot_store=(
+                        self.snapshot_store
+                        if self.data_kind == "market" and persist
+                        else None
+                    ),
+                )
+                for key, frame in item_frames.items()
+            ]
+            for item, item_frames in frequency_frames.items()
+        }
         result["dataProvenance"] = {
             "kind": self.data_kind,
             "source": self.data_source,
             "requestedStart": start_date.isoformat(),
             "requestedEnd": end_date.isoformat(),
             "frequency": frequency,
-            "symbols": [
-                _frame_provenance(
-                    key,
-                    frame,
-                    snapshot_store=self.snapshot_store if self.data_kind == "market" and persist else None,
-                )
-                for key, frame in frames.items()
-            ],
+            "frequencies": list(manifest.frequencies),
+            "symbols": timeframe_provenance.get(frequency, []),
+            "timeframes": timeframe_provenance,
             "benchmark": _frame_provenance(
                 benchmark_spec.key,
                 benchmark_frame,
@@ -273,6 +294,9 @@ class StrategyV2BacktestService:
             "commission": float(commission),
             "slippage": float(slippage),
             "fundingMode": "not_modeled",
+            "drivingFrequency": frequency,
+            "frequencies": list(manifest.frequencies),
+            "higherTimeframePolicy": "completed_before_driving_bar_close",
         }
 
         run_id = None
@@ -376,6 +400,87 @@ class StrategyV2BacktestService:
                         ) from exc
                     skipped.append({"symbol": "", "reason": str(exc)[:240]})
         return dict(sorted(frames.items())), skipped
+
+    def fetch_frequency_frames(
+        self,
+        candidates: list[dict[str, Any]],
+        frequencies: tuple[str, ...],
+        start_dates: dict[str, datetime],
+        end_date: datetime,
+        *,
+        exchange_config: Optional[dict[str, Any]] = None,
+        strict_data_source: bool = False,
+    ) -> tuple[dict[str, dict[str, pd.DataFrame]], list[dict[str, str]]]:
+        """Load every declared timeframe and retain only complete symbol bundles."""
+        bundles: dict[str, dict[str, pd.DataFrame]] = {
+            frequency: {} for frequency in frequencies
+        }
+        skipped: list[dict[str, str]] = []
+
+        def fetch(member: dict[str, Any], frequency: str):
+            kwargs: dict[str, Any] = {
+                "market_type": member.get("market_type") or "",
+                "exchange_id": member.get("exchange_id") or "",
+            }
+            if exchange_config is not None:
+                kwargs["exchange_config"] = exchange_config
+            if strict_data_source:
+                kwargs["strict_data_source"] = True
+            frame = self.frame_fetcher(
+                member["market"],
+                member["symbol"],
+                frequency,
+                start_dates[frequency],
+                end_date,
+                **kwargs,
+            )
+            return member, frequency, frame
+
+        requests = [
+            (member, frequency)
+            for frequency in frequencies
+            for member in candidates
+        ]
+        workers = min(8, max(1, len(requests)))
+        with ThreadPoolExecutor(
+            max_workers=workers,
+            thread_name_prefix="strategy-v2-timeframes",
+        ) as executor:
+            futures = {
+                executor.submit(fetch, member, frequency): (member, frequency)
+                for member, frequency in requests
+            }
+            for future in as_completed(futures):
+                member, frequency = futures[future]
+                try:
+                    _, _, frame = future.result()
+                    if frame is None or frame.empty:
+                        skipped.append({
+                            "symbol": member.get("key") or "",
+                            "frequency": frequency,
+                            "reason": "strategyV2.noMarketData",
+                        })
+                        continue
+                    bundles[frequency][member["key"]] = frame
+                except Exception as exc:
+                    if strict_data_source:
+                        raise RuntimeError(
+                            f"strategyV2.executionMarketDataUnavailable:{exc}"
+                        ) from exc
+                    skipped.append({
+                        "symbol": member.get("key") or "",
+                        "frequency": frequency,
+                        "reason": str(exc)[:240],
+                    })
+
+        complete_symbols = set.intersection(
+            *(set(frames) for frames in bundles.values())
+        ) if bundles else set()
+        for frequency, frames in bundles.items():
+            bundles[frequency] = {
+                key: frame for key, frame in frames.items() if key in complete_symbols
+            }
+        return bundles, skipped
 
     @staticmethod
     def validate_fundamental_dependencies(frames: dict[str, pd.DataFrame], manifest: StrategyManifest) -> None:

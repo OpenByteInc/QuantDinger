@@ -17,12 +17,13 @@ import hashlib
 import hmac
 import logging
 import time
-from decimal import Decimal, ROUND_DOWN, ROUND_UP
+from decimal import Decimal, ROUND_UP
 from typing import Any, Dict, Optional, Tuple, Union
 from urllib.parse import urlencode
 
 from app.services.live_trading.base import BaseRestClient, LiveOrderResult, LiveTradingError
 from app.services.live_trading.symbols import to_gate_currency_pair
+from app.utils.numeric_precision import floor_decimal_to_step
 
 logger = logging.getLogger(__name__)
 
@@ -341,10 +342,7 @@ class GateUsdtFuturesClient(_GateBase):
 
     @staticmethod
     def _floor(value: Decimal) -> Decimal:
-        try:
-            return value.to_integral_value(rounding=ROUND_DOWN)
-        except Exception:
-            return Decimal("0")
+        return floor_decimal_to_step(value, Decimal("1"))
 
     def ping(self) -> bool:
         # Gate futures REST no longer serves /api/v4/futures/usdt/time (returns 400 on fx-api / api hosts).
@@ -449,7 +447,7 @@ class GateUsdtFuturesClient(_GateBase):
 
         if dp > 0:
             step = Decimal(10) ** (-dp)
-            q = contracts.quantize(step, rounding=ROUND_DOWN)
+            q = floor_decimal_to_step(contracts, step)
             if q < order_min and contracts > 0:
                 return ("0", {"X-Gate-Size-Decimal": "1"})
             signed_q = q * sign

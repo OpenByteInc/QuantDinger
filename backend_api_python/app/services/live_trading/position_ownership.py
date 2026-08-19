@@ -20,6 +20,7 @@ from typing import Any, Dict, Iterable, List, Tuple
 
 from app.services.live_trading.records import normalize_strategy_symbol
 from app.utils.db import get_db_connection
+from app.utils.numeric_precision import format_decimal
 
 
 STRICT_MODE = "strict"
@@ -425,8 +426,10 @@ def build_ownership_rows(
 def ownership_log_message(snapshot: OwnershipSnapshot) -> str:
     return (
         f"Position ownership drift blocked new entries: {snapshot.symbol} {snapshot.side}; "
-        f"account={snapshot.account_qty:.12f}, strategy={snapshot.strategy_qty:.12f}, "
-        f"protected={snapshot.protected_qty:.12f}, unknown={snapshot.unknown_qty:.12f}, "
+        f"account={format_decimal(snapshot.account_qty)}, "
+        f"strategy={format_decimal(snapshot.strategy_qty)}, "
+        f"protected={format_decimal(snapshot.protected_qty)}, "
+        f"unknown={format_decimal(snapshot.unknown_qty)}, "
         f"mode={snapshot.coexistence_mode}, reason={snapshot.reason}. "
         "Reduce-only exits remain enabled."
     )

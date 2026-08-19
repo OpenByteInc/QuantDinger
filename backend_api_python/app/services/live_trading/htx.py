@@ -15,13 +15,14 @@ import datetime
 import logging
 import os
 import time
-from decimal import Decimal, ROUND_DOWN
+from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlencode, urlparse
 
 from app.services.live_trading.base import BaseRestClient, LiveOrderResult, LiveTradingError
 from app.services.live_trading import htx_v5
 from app.services.live_trading.symbols import to_htx_contract_code, to_htx_spot_symbol
+from app.utils.numeric_precision import floor_decimal_to_step
 
 logger = logging.getLogger(__name__)
 
@@ -115,10 +116,7 @@ class HtxClient(BaseRestClient):
 
     @staticmethod
     def _floor_to_int(value: Decimal) -> int:
-        try:
-            return int(value.to_integral_value(rounding=ROUND_DOWN))
-        except Exception:
-            return 0
+        return int(floor_decimal_to_step(value, Decimal("1")))
 
     def _sign_params(self, *, method: str, base_url: str, path: str, params: Dict[str, Any]) -> Dict[str, Any]:
         signed = dict(params or {})

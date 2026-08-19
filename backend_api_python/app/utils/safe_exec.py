@@ -4,9 +4,9 @@ import sys
 import os
 import threading
 import time
-import traceback
 import builtins as _builtins_mod
 import types
+import re
 from typing import Dict, Any, Optional, Tuple, Set
 from contextlib import contextmanager
 
@@ -14,6 +14,26 @@ from app.utils.logger import get_logger
 from app.utils.thread_capacity import format_thread_capacity
 
 logger = get_logger(__name__)
+
+
+_SENSITIVE_ENV_NAME = re.compile(
+    r"(?:SECRET|PASSWORD|PASSWD|TOKEN|API_?KEY|PRIVATE_?KEY|"
+    r"CREDENTIAL|DATABASE_URL|DB_URL|DSN|SMTP|OAUTH|STRIPE|WEBHOOK)",
+    re.IGNORECASE,
+)
+
+
+def _redact_sensitive_text(value: object) -> str:
+    """Remove configured secret values from sandbox-facing error text."""
+    text = str(value or "")[:4000]
+    for name, secret in os.environ.items():
+        if not _SENSITIVE_ENV_NAME.search(str(name)):
+            continue
+        secret_text = str(secret or "")
+        # Avoid replacing short/common values such as ``true`` or ``UTC``.
+        if len(secret_text) >= 8 and secret_text in text:
+            text = text.replace(secret_text, "[REDACTED]")
+    return text
 
 
 class TimeoutError(Exception):
@@ -33,9 +53,11 @@ _BUILTINS_WHITELIST: Set[str] = {
     # Iteration
     'len', 'enumerate', 'zip', 'map', 'filter', 'sorted', 'reversed',
     'iter', 'next', 'all', 'any',
-    # String / repr
-    'repr', 'ascii', 'chr', 'ord', 'format', 'bin', 'hex', 'oct',
-    'hash', 'id',
+    # String / repr. ``chr`` and ``format`` are intentionally absent: pairing
+    # runtime-built strings with Python's format-field attribute traversal can
+    # turn a rich object such as a pandas DataFrame into a reflection gadget.
+    'repr', 'ascii', 'ord', 'bin', 'hex', 'oct',
+    'hash',
     # Type checking (safe, no mutation)
     'isinstance', 'issubclass', 'hasattr', 'callable',
     # Conversion
@@ -48,9 +70,6 @@ _BUILTINS_WHITELIST: Set[str] = {
     # Constants
     'True', 'False', 'None',
     'Ellipsis', 'NotImplemented',
-    # Functional
-    'staticmethod', 'classmethod', 'property', 'super',
-    'object',
 }
 
 # Modules allowed in user code via `import xxx`
@@ -79,6 +98,10 @@ _OPERATOR_ACCESSOR_NAMES: Set[str] = {'attrgetter', 'itemgetter', 'methodcaller'
 # processes; reject them on ANY receiver (df.to_csv, np.array().tofile,
 # pd.read_csv, etc.) because numpy and pandas are intentionally whitelisted.
 _DANGEROUS_METHOD_NAMES: Set[str] = {
+    # ``str.format`` / ``format_map`` resolve dotted fields with implicit
+    # getattr calls.  That bypasses source-level dunder checks when the format
+    # string is assembled at runtime (for example with chr(95)).
+    'format', 'format_map',
     # pandas read_*: arbitrary file read or SSRF via URL / pickle deser RCE.
     'read_csv', 'read_table', 'read_fwf', 'read_excel', 'read_xml',
     'read_html', 'read_json', 'read_pickle', 'read_parquet', 'read_orc',
@@ -383,15 +406,18 @@ def timeout_context(seconds: int):
             raise TimeoutError(f"Code execution timed out after {seconds} seconds")
         try:
             old_handler = signal.signal(signal.SIGALRM, timeout_handler)
-            signal.alarm(seconds)
+        except ValueError:
+            # ``signal.signal`` itself is unavailable in some embedded
+            # runtimes.  Do not catch ValueError raised by the user program.
+            pass  # fall through to watchdog strategy
+        else:
+            signal.alarm(max(1, int(seconds)))
             try:
                 yield
             finally:
                 signal.alarm(0)
                 signal.signal(signal.SIGALRM, old_handler)
             return
-        except ValueError:
-            pass  # fall through to timer strategy
 
     # Strategy 2: one process-wide watchdog + async exception (cross-platform).
     # A Timer per strategy cycle eventually exhausts the container PID quota
@@ -473,8 +499,14 @@ def safe_exec_code(
         logger.error(f"Code execution timed out (timeout={timeout}s)")
         return {'success': False, 'error': str(e), 'result': None}
     except Exception as e:
-        error_msg = f"Code execution error: {str(e)}\n{traceback.format_exc()}"
-        logger.error(f"Code execution error: {e}")
+        # Do not reflect a full traceback or configured secret values through
+        # validation endpoints.  The exception class plus a redacted message
+        # is sufficient for users to debug indicator/strategy code.
+        error_msg = (
+            f"Code execution error: {type(e).__name__}: "
+            f"{_redact_sensitive_text(str(e))}"
+        )
+        logger.error("Code execution error: %s", _redact_sensitive_text(e))
         return {'success': False, 'error': error_msg, 'result': None}
 
 
@@ -531,123 +563,251 @@ def safe_exec_with_validation(
     )
 
 
-# Subprocess isolation (medium-term)
+# Subprocess isolation
+
+_SANDBOX_TRANSPORT_TYPE = "__quantdinger_sandbox_type__"
+
+
+def _sandbox_transport_encode(value: Any, *, depth: int = 0) -> Any:
+    """Encode trusted parent input without using pickle across the boundary."""
+    import math
+    from datetime import date, datetime
+
+    import numpy as np
+    import pandas as pd
+
+    if depth > 40:
+        raise ValueError("sandbox input nesting is too deep")
+    if value is None or value is pd.NA or value is pd.NaT:
+        return None
+    if isinstance(value, (bool, int, str)):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, np.generic):
+        return _sandbox_transport_encode(value.item(), depth=depth + 1)
+    if isinstance(value, (datetime, date, pd.Timestamp)):
+        return {
+            _SANDBOX_TRANSPORT_TYPE: "datetime",
+            "value": value.isoformat(),
+        }
+    if isinstance(value, pd.DataFrame):
+        return {
+            _SANDBOX_TRANSPORT_TYPE: "dataframe",
+            "columns": [str(item) for item in value.columns],
+            "index": [
+                _sandbox_transport_encode(item, depth=depth + 1)
+                for item in value.index
+            ],
+            "data": [
+                [
+                    _sandbox_transport_encode(item, depth=depth + 1)
+                    for item in row
+                ]
+                for row in value.itertuples(index=False, name=None)
+            ],
+        }
+    if isinstance(value, pd.Series):
+        return {
+            _SANDBOX_TRANSPORT_TYPE: "series",
+            "name": None if value.name is None else str(value.name),
+            "index": [
+                _sandbox_transport_encode(item, depth=depth + 1)
+                for item in value.index
+            ],
+            "data": [
+                _sandbox_transport_encode(item, depth=depth + 1)
+                for item in value.tolist()
+            ],
+        }
+    if isinstance(value, np.ndarray):
+        return {
+            _SANDBOX_TRANSPORT_TYPE: "ndarray",
+            "data": _sandbox_transport_encode(value.tolist(), depth=depth + 1),
+        }
+    if isinstance(value, dict):
+        return {
+            str(key): _sandbox_transport_encode(item, depth=depth + 1)
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [
+            _sandbox_transport_encode(item, depth=depth + 1)
+            for item in value
+        ]
+    raise TypeError(f"sandbox input type is not supported: {type(value).__name__}")
+
+
+def _sandbox_transport_decode(value: Any) -> Any:
+    """Decode JSON-only child output; no attacker-controlled pickle is loaded."""
+    import numpy as np
+    import pandas as pd
+
+    if isinstance(value, list):
+        return [_sandbox_transport_decode(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    kind = value.get(_SANDBOX_TRANSPORT_TYPE)
+    if kind == "datetime":
+        return pd.Timestamp(value.get("value"))
+    if kind == "dataframe":
+        return pd.DataFrame(
+            data=[
+                [_sandbox_transport_decode(item) for item in row]
+                for row in value.get("data", [])
+            ],
+            columns=[str(item) for item in value.get("columns", [])],
+            index=[
+                _sandbox_transport_decode(item)
+                for item in value.get("index", [])
+            ],
+        )
+    if kind == "series":
+        return pd.Series(
+            [_sandbox_transport_decode(item) for item in value.get("data", [])],
+            index=[
+                _sandbox_transport_decode(item)
+                for item in value.get("index", [])
+            ],
+            name=value.get("name"),
+        )
+    if kind == "ndarray":
+        return np.asarray(_sandbox_transport_decode(value.get("data", [])))
+    return {
+        str(key): _sandbox_transport_decode(item)
+        for key, item in value.items()
+    }
+
 
 def safe_exec_isolated(
     code: str,
     input_data: Optional[Dict[str, Any]] = None,
     timeout: int = 60,
-    max_memory_mb: int = 500,
+    max_memory_mb: int = 1024,
 ) -> Dict[str, Any]:
-    """
-    Execute user code in an isolated subprocess.
+    """Execute serializable user code in a clean-environment subprocess.
 
-    Data is serialized via pickle through pipes. The subprocess has its own
-    memory space; a crash or infinite loop only kills the child.
+    The worker is started with ``python -I``, receives no parent environment
+    variables, and communicates using JSON only.  This prevents both process
+    secret inheritance and attacker-controlled pickle deserialization.
 
     Args:
         code: Python code to execute
-        input_data: dict of variable names to inject (must be picklable)
+        input_data: dict of JSON-compatible values, DataFrames, Series, or
+            ndarrays to inject
         timeout: max seconds
         max_memory_mb: memory limit (Linux only, via RLIMIT_AS)
 
     Returns:
-        dict with 'success', 'error', 'result' (the child's exec_env after run)
+        dict with ``success``, ``error`` and a result containing ``output`` and
+        the possibly mutated ``df``.
     """
-    import multiprocessing
-    import pickle
+    import json
+    from pathlib import Path
+    import subprocess
+    import tempfile
 
     is_safe, err = validate_code_safety(code)
     if not is_safe:
         return {'success': False, 'error': f"Unsafe code rejected: {err}", 'result': None}
 
-    def _worker(code, input_data, max_memory_mb, result_pipe):
-        try:
-            if sys.platform != 'win32':
-                try:
-                    import resource
-                    mem = max_memory_mb * 1024 * 1024
-                    resource.setrlimit(resource.RLIMIT_AS, (mem, mem))
-                except Exception:
-                    pass
+    try:
+        payload = json.dumps({
+            "code": code,
+            "input": _sandbox_transport_encode(input_data or {}),
+            "timeout": int(timeout),
+            "max_memory_mb": int(max_memory_mb),
+        }, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        return {
+            'success': False,
+            'error': f"Sandbox input serialization failed: {exc}",
+            'result': None,
+        }
 
-            import numpy as np
-            import pandas as pd
-
-            exec_env = {
-                '__builtins__': build_safe_builtins(),
-                'np': np,
-                'pd': pd,
-            }
-            if input_data:
-                exec_env.update(input_data)
-
-            # Input data is caller-controlled and must not replace the
-            # sandbox builtins or smuggle raw module objects into the child.
-            exec_env['__builtins__'] = build_safe_builtins()
-            _sanitize_exec_namespace(exec_env)
-
-            pre_import = "import numpy as np\nimport pandas as pd\n"
-            exec(pre_import, exec_env)
-            exec(code, exec_env)
-
-            # Extract only picklable, non-module results
-            output = {}
-            for k, v in exec_env.items():
-                if k.startswith('_') or k in ('np', 'pd', '__builtins__'):
-                    continue
-                try:
-                    pickle.dumps(v)
-                    output[k] = v
-                except Exception:
-                    pass
-
-            result_pipe.send({'success': True, 'error': None, 'result': output})
-        except Exception as e:
-            result_pipe.send({
-                'success': False,
-                'error': f"{type(e).__name__}: {e}",
-                'result': None,
-            })
-        finally:
-            result_pipe.close()
-
-    parent_conn, child_conn = multiprocessing.Pipe(duplex=False)
-
-    proc = multiprocessing.Process(
-        target=_worker,
-        args=(code, input_data, max_memory_mb, child_conn),
-        daemon=True,
-    )
-    proc.start()
-    child_conn.close()
-
-    proc.join(timeout=timeout)
-
-    if proc.is_alive():
+    worker = Path(__file__).with_name("safe_exec_worker.py")
+    clean_env = {
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+        "TZ": "UTC",
+        "PYTHONNOUSERSITE": "1",
+        "QD_SANDBOX_WORKER": "1",
+        "OPENBLAS_NUM_THREADS": "1",
+        "OMP_NUM_THREADS": "1",
+        "MKL_NUM_THREADS": "1",
+    }
+    try:
+        with tempfile.TemporaryDirectory(prefix="quantdinger-sandbox-") as temp_dir:
+            proc = subprocess.Popen(
+                [sys.executable, "-I", str(worker)],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                cwd=temp_dir,
+                env=clean_env,
+                close_fds=True,
+                start_new_session=True,
+            )
+            stdout, stderr = proc.communicate(payload, timeout=max(1, timeout + 2))
+    except subprocess.TimeoutExpired:
         proc.kill()
-        proc.join(timeout=5)
+        proc.communicate()
         return {
             'success': False,
             'error': f"Code execution timed out after {timeout} seconds; subprocess terminated",
             'result': None,
         }
-
-    if proc.exitcode != 0 and not parent_conn.poll():
+    except (OSError, ValueError) as exc:
         return {
             'success': False,
-            'error': f"Subprocess exited abnormally (exit code: {proc.exitcode})",
+            'error': f"Failed to start sandbox worker: {exc}",
             'result': None,
         }
 
+    if len(stdout) > 32 * 1024 * 1024:
+        return {
+            'success': False,
+            'error': "Sandbox result exceeded the 32MB output limit",
+            'result': None,
+        }
     try:
-        if parent_conn.poll(timeout=1):
-            return parent_conn.recv()
-        return {'success': False, 'error': "Subprocess returned no result", 'result': None}
-    except Exception as e:
-        return {'success': False, 'error': f"Failed to read subprocess result: {e}", 'result': None}
-    finally:
-        parent_conn.close()
+        response = json.loads(stdout.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        detail = _redact_sensitive_text(stderr.decode("utf-8", errors="replace"))
+        return {
+            'success': False,
+            'error': f"Sandbox worker returned an invalid response: {exc}; {detail[:500]}",
+            'result': None,
+        }
+    if isinstance(response.get("result"), dict):
+        response["result"] = _sandbox_transport_decode(response["result"])
+    response["error"] = (
+        _redact_sensitive_text(response.get("error"))
+        if response.get("error")
+        else None
+    )
+    return response
+
+
+def safe_exec_indicator_isolated(
+    code: str,
+    df: Any,
+    params: Optional[Dict[str, Any]] = None,
+    *,
+    timeout: int = 20,
+    max_memory_mb: int = 1024,
+) -> Dict[str, Any]:
+    """Run an indicator in the JSON-only, clean-environment worker."""
+    return safe_exec_isolated(
+        code=code,
+        input_data={
+            "df": df.copy(),
+            "params": dict(params or {}),
+            "output": None,
+        },
+        timeout=timeout,
+        max_memory_mb=max_memory_mb,
+    )
 
 
 # Static validation
@@ -825,6 +985,10 @@ def validate_code_safety(code: str) -> Tuple[bool, Optional[str]]:
         'getattr', 'setattr', 'delattr',
         'globals', 'vars', 'dir', 'breakpoint',
         'open', 'input', 'exit', 'quit',
+        # Runtime string construction plus format-field traversal was the
+        # primitive used by the August 2026 sandbox escape.  Keep both names
+        # rejected even if a caller accidentally injects broader builtins.
+        'chr', 'format',
     }
 
     dangerous_dunder_attrs = {

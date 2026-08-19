@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from .frequencies import driving_frequency, unique_frequencies
+
 
 @dataclass(frozen=True)
 class InstrumentSpec:
@@ -112,12 +114,22 @@ class StrategyManifest:
             return self.subscriptions[0].frequency
         return "1d"
 
+    @property
+    def frequencies(self) -> tuple[str, ...]:
+        return unique_frequencies(item.frequency for item in self.subscriptions)
+
+    @property
+    def driving_frequency(self) -> str:
+        return driving_frequency(self.frequencies)
+
     def metadata(self) -> dict[str, Any]:
         return {
             "apiVersion": self.api_version,
             "codeHash": self.code_hash,
             "strategyType": self.strategy_type,
             "primaryFrequency": self.primary_frequency,
+            "drivingFrequency": self.driving_frequency,
+            "frequencies": list(self.frequencies),
             "markets": list(self.markets),
             "universe": self.universe.metadata(),
             "subscriptions": [item.metadata() for item in self.subscriptions],

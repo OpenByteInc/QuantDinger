@@ -934,6 +934,13 @@ def _strategy_v2_admin_metadata(
         market_types = [str(fallback_market_type).strip().lower()]
 
     primary_frequency = str(manifest.get("primaryFrequency") or fallback_frequency or "").strip()
+    driving_frequency = str(
+        manifest.get("drivingFrequency") or primary_frequency
+    ).strip()
+    frequencies = list(
+        manifest.get("frequencies")
+        or ([driving_frequency] if driving_frequency else [])
+    )
     schedules = [item for item in (manifest.get("schedules") or []) if isinstance(item, dict)]
     normalized_source_id = int(source_id or config.get("script_source_id") or 0)
     contract_ready = bool(
@@ -958,6 +965,8 @@ def _strategy_v2_admin_metadata(
         "markets": markets,
         "market_types": market_types,
         "primary_frequency": primary_frequency,
+        "driving_frequency": driving_frequency,
+        "frequencies": frequencies,
         "schedule_count": len(schedules),
         "warmup_bars": int(manifest.get("warmupBars") or 0),
         "leverage_allowed": bool(manifest.get("leverageAllowed")),

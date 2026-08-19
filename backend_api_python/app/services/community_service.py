@@ -63,6 +63,10 @@ def _strategy_contract_payload(
         'api_version': int(manifest.get('apiVersion') or 2),
         'strategy_type': str(manifest.get('strategyType') or 'cta'),
         'primary_frequency': str(manifest.get('primaryFrequency') or ''),
+        'driving_frequency': str(
+            manifest.get('drivingFrequency') or manifest.get('primaryFrequency') or ''
+        ),
+        'frequencies': list(manifest.get('frequencies') or []),
         'markets': list(manifest.get('markets') or []),
         'universe_kind': str(universe.get('kind') or 'static'),
         'universe_reference': str(universe.get('reference') or ''),

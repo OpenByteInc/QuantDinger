@@ -6,7 +6,7 @@ import ast
 import hashlib
 from dataclasses import dataclass
 from types import SimpleNamespace
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Mapping
 
 from app.utils.safe_exec import build_safe_builtins, safe_exec_with_validation
 from app.services.factors import FactorError, get_factor
@@ -23,6 +23,7 @@ from .instruments import (
     normalize_pool_reference,
     parse_instrument,
 )
+from .frequencies import FREQUENCY_SECONDS, unique_frequencies
 from .models import (
     InstrumentSpec,
     ScheduleSpec,
@@ -150,7 +151,15 @@ class DiscoveryContext:
         self.leverage_allowed = value > 1.0
         self.max_leverage = value
 
-    def set_metadata(self, **values: Any) -> None:
+    def set_metadata(self, *args: Any, **values: Any) -> None:
+        if len(args) == 1 and isinstance(args[0], Mapping):
+            self.metadata.update(args[0])
+        elif len(args) == 2:
+            self.metadata[str(args[0])] = args[1]
+        elif args:
+            raise TypeError(
+                "set_metadata expects keyword arguments, a single key/value pair, or a mapping"
+            )
         self.metadata.update(values)
 
 
@@ -227,6 +236,25 @@ def compile_strategy_v2(code: str) -> CompiledStrategyV2:
         raise StrategyV2ContractError("strategyV2.universeRequired")
     if not context.subscriptions:
         context.subscribe(frequency=context.metadata.get("frequency") or "1d")
+    frequencies = unique_frequencies(item.frequency for item in context.subscriptions)
+    unsupported = [
+        item
+        for item in frequencies
+        if item not in FREQUENCY_SECONDS
+    ]
+    if unsupported:
+        raise StrategyV2ContractError(
+            f"strategyV2.frequencyUnsupported:{','.join(unsupported)}"
+        )
+    if len(frequencies) > 8:
+        raise StrategyV2ContractError("strategyV2.tooManyFrequencies:8")
+    undeclared_frequencies = sorted(
+        _literal_requested_frequencies(raw) - set(frequencies)
+    )
+    if undeclared_frequencies:
+        raise StrategyV2ContractError(
+            f"strategyV2.frequencyNotSubscribed:{undeclared_frequencies[0]}"
+        )
 
     handlers = tuple(name for name in V2_HANDLER_NAMES if callable(namespace.get(name)))
     if not any(name in handlers for name in ("handle_data", "on_rebalance")) and not context.schedules:
@@ -652,6 +680,34 @@ def _call_keywords(node: ast.Call) -> dict[str, ast.AST]:
     return {item.arg: item.value for item in node.keywords if item.arg}
 
 
+def _literal_requested_frequencies(code: str) -> set[str]:
+    """Return statically declared timeframe reads that verification can prove."""
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return set()
+    requested: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        call_name, call_owner = _api_call_identity(node)
+        keywords = _call_keywords(node)
+        value: ast.AST | None = None
+        if call_name in {"get_history", "history"} and not call_owner:
+            value = node.args[1] if len(node.args) > 1 else keywords.get("frequency")
+        elif call_owner == "data" and call_name in {"history", "current"}:
+            value = keywords.get("frequency")
+        elif not call_owner and call_name in {
+            "factor",
+            "get_factors",
+            "indicator",
+        }:
+            value = keywords.get("frequency")
+        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+            requested.add(normalize_frequency(value.value))
+    return requested
+
+
 def _validate_order_call(
     node: ast.Call,
     call_name: str,
@@ -729,7 +785,7 @@ def _validate_data_history_call(
     static_values: dict[str, tuple[str, int | None]],
 ) -> None:
     keywords = _call_keywords(node)
-    unsupported = set(keywords) - {"symbols", "count", "fields"}
+    unsupported = set(keywords) - {"symbols", "count", "fields", "frequency"}
     if unsupported:
         name = sorted(unsupported)[0]
         raise StrategyV2ContractError(

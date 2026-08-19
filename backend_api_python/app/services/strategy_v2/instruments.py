@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 
+from .frequencies import normalize_frequency
 from .models import InstrumentSpec
 
 
@@ -21,25 +22,6 @@ _CRYPTO_MARKET_TYPES = {"spot", "swap"}
 
 class InstrumentParseError(ValueError):
     pass
-
-
-def normalize_frequency(value: object, default: str = "1d") -> str:
-    raw = str(value or default).strip().lower().replace("分钟", "m").replace("小时", "h")
-    aliases = {
-        "daily": "1d",
-        "day": "1d",
-        "d": "1d",
-        "1day": "1d",
-        "weekly": "1w",
-        "week": "1w",
-        "w": "1w",
-        "monthly": "1mo",
-        "month": "1mo",
-        "m1": "1m",
-        "h1": "1h",
-        "d1": "1d",
-    }
-    return aliases.get(raw, raw or default)
 
 
 def parse_instrument(value: object, *, default_market: str = "") -> InstrumentSpec:

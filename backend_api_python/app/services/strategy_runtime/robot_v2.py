@@ -6,23 +6,53 @@ import ast
 import re
 from typing import Any
 
+from app.utils.numeric_precision import clean_generated_number
+
 
 MAX_GRID_CELLS = 200
 
 
+def _clean_number(value: Any) -> float:
+    return clean_generated_number(value, decimal_places=12)
+
+
+def _clean_numbers(values: list[float]) -> list[float]:
+    return [_clean_number(value) for value in values]
+
+
+def _clean_weights(values: list[float]) -> list[float]:
+    """Bound source precision without changing the aggregate allocation."""
+    raw = [max(0.0, float(value or 0.0)) for value in values]
+    cleaned = _clean_numbers(raw)
+    target = _clean_number(sum(raw))
+    delta = _clean_number(target - sum(cleaned))
+    if delta:
+        index = next(
+            (position for position in range(len(cleaned) - 1, -1, -1) if raw[position] > 0),
+            -1,
+        )
+        if index >= 0:
+            cleaned[index] = _clean_number(cleaned[index] + delta)
+    return cleaned
+
+
 def _equity_risk_constants(config: dict[str, Any]) -> str:
     """Emit the common, strategy-wide equity risk configuration."""
-    take_profit = max(0.0, float(config.get("equity_take_profit_pct") or 0.0))
-    stop_loss = max(0.0, float(config.get("equity_stop_loss_pct") or 0.0))
+    take_profit = _clean_number(
+        max(0.0, float(config.get("equity_take_profit_pct") or 0.0))
+    )
+    stop_loss = _clean_number(
+        max(0.0, float(config.get("equity_stop_loss_pct") or 0.0))
+    )
     trailing_enabled = bool(config.get("equity_trailing_enabled"))
-    trailing_activation = max(
+    trailing_activation = _clean_number(max(
         0.0,
         float(config.get("equity_trailing_activation_pct") or 0.0),
-    )
-    trailing_callback = max(
+    ))
+    trailing_callback = _clean_number(max(
         0.0,
         float(config.get("equity_trailing_callback_pct") or 0.0),
-    )
+    ))
     return (
         f"EQUITY_TAKE_PROFIT = {take_profit!r}\n"
         f"EQUITY_STOP_LOSS = {stop_loss!r}\n"
@@ -62,9 +92,9 @@ def _grid_points(start: float, end: float, count: int, mode: str) -> list[float]
         return []
     if str(mode or "").strip().lower() == "geometric":
         ratio = (high / low) ** (1.0 / cells)
-        return [round(low * (ratio**index), 12) for index in range(cells + 1)]
+        return [_clean_number(low * (ratio**index)) for index in range(cells + 1)]
     step = (high - low) / cells
-    return [round(low + (step * index), 12) for index in range(cells + 1)]
+    return [_clean_number(low + (step * index)) for index in range(cells + 1)]
 
 
 def _build_grid_v2_source(
@@ -142,6 +172,10 @@ def _build_grid_v2_source(
     if dynamic_anchor and reference > 0:
         lower_prices = [price / reference for price in lower_prices]
         upper_prices = [price / reference for price in upper_prices]
+    lower_prices = _clean_numbers(lower_prices)
+    upper_prices = _clean_numbers(upper_prices)
+    budget_pcts = _clean_weights(budget_pcts)
+    initial_pct = _clean_number(initial_pct)
 
     leverage_line = "    context.allow_leverage(max_leverage=100)\n" if instrument.endswith("@swap") else ""
     direction_mode = (
@@ -420,16 +454,16 @@ def _build_neutral_grid_v2_source(
         if dynamic_anchor and reference_price > 0:
             prices = [price / reference_price for price in prices]
         amounts = [max(0.0, float((item or {}).get("amount_quote") or 0.0)) for item in rows]
-        return prices, amounts
+        return _clean_numbers(prices), _clean_numbers(amounts)
 
     long_prices, long_amounts = leg_values("long")
     short_prices, short_amounts = leg_values("short")
     total_amount = sum(long_amounts) + sum(short_amounts)
     divisor = total_amount if total_amount > 0 else 1.0
-    long_weights = [amount / divisor for amount in long_amounts]
-    short_weights = [amount / divisor for amount in short_amounts]
-    take_profit = float(config.get("take_profit_pct") or 0.0)
-    hard_stop = float(config.get("hard_stop_pct") or 0.0)
+    long_weights = _clean_weights([amount / divisor for amount in long_amounts])
+    short_weights = _clean_weights([amount / divisor for amount in short_amounts])
+    take_profit = _clean_number(config.get("take_profit_pct") or 0.0)
+    hard_stop = _clean_number(config.get("hard_stop_pct") or 0.0)
     constants = (
         f"INSTRUMENT = {instrument!r}\n"
         f"TIMEFRAME = {timeframe!r}\n"
@@ -559,13 +593,21 @@ def migrate_legacy_robot_v2_source(code: str, kind: str) -> str:
     except (TypeError, ValueError, SyntaxError):
         return source
     total = sum(amounts)
-    weights = [amount / total for amount in amounts] if total > 0 else [0.0 for _ in amounts]
+    weights = _clean_weights(
+        [amount / total for amount in amounts]
+        if total > 0
+        else [0.0 for _ in amounts]
+    )
     initial_match = re.search(r"(?m)^INITIAL_POSITION_PCT = (.+)$", source)
     try:
-        initial_pct = float(ast.literal_eval(initial_match.group(1))) if initial_match else 0.0
+        initial_pct = _clean_number(
+            float(ast.literal_eval(initial_match.group(1))) if initial_match else 0.0
+        )
     except (TypeError, ValueError, SyntaxError):
         initial_pct = 0.0
-    level_fraction = max(0.0, 1.0 - initial_pct) if str(kind or "") == "grid" else 1.0
+    level_fraction = _clean_number(
+        max(0.0, 1.0 - initial_pct) if str(kind or "") == "grid" else 1.0
+    )
     source = source.replace(amount_match.group(0), f"AMOUNT_WEIGHTS = {weights!r}", 1)
     if initial_match:
         source = source.replace(
@@ -595,26 +637,28 @@ def _build_dca_v2_source(
         int(config.get("dca_interval_minutes") or 1),
     )
     max_orders = max(1, int(config.get("dca_max_orders") or 1))
-    total_budget_pct = min(
+    total_budget_pct = _clean_number(min(
         1.0,
         max(0.0, float(config.get("dca_total_budget_pct") or 0.0)),
-    )
-    order_pct = min(
+    ))
+    order_pct = _clean_number(min(
         total_budget_pct,
         max(0.0, float(config.get("dca_order_pct") or 0.0)),
-    )
+    ))
     dynamic_anchor = bool(config.get("dynamic_anchor"))
-    reference_price = float(config.get("entry_price") or 0.0)
+    reference_price = _clean_number(config.get("entry_price") or 0.0)
     price_filter_enabled = bool(config.get("dca_price_filter_enabled"))
-    max_adverse_price_pct = max(
+    max_adverse_price_pct = _clean_number(max(
         0.0,
         float(config.get("dca_max_adverse_price_pct") or 0.0),
-    )
+    ))
     trailing_enabled = bool(config.get("trailing_take_profit_enabled"))
-    trailing_activation = float(config.get("trailing_activation_pct") or 0.0)
-    trailing_callback = float(config.get("trailing_callback_pct") or 0.0)
-    take_profit = 0.0 if trailing_enabled else float(config.get("take_profit_pct") or 0.0)
-    hard_stop = float(config.get("hard_stop_pct") or 0.0)
+    trailing_activation = _clean_number(config.get("trailing_activation_pct") or 0.0)
+    trailing_callback = _clean_number(config.get("trailing_callback_pct") or 0.0)
+    take_profit = _clean_number(
+        0.0 if trailing_enabled else float(config.get("take_profit_pct") or 0.0)
+    )
+    hard_stop = _clean_number(config.get("hard_stop_pct") or 0.0)
     constants = (
         f"INSTRUMENT = {instrument!r}\n"
         f"TIMEFRAME = {timeframe!r}\n"
@@ -860,6 +904,7 @@ def build_robot_v2_source(
         if dynamic_anchor and reference_price > 0
         else prices
     )
+    price_levels = _clean_numbers(price_levels)
     direction = -1.0 if side == "short" else 1.0
     if kind == "grid" and dynamic_anchor:
         actionable = [
@@ -871,7 +916,7 @@ def build_robot_v2_source(
             price_levels = [item[0] for item in actionable]
             amounts = [item[1] for item in actionable]
     total_amount = sum(max(0.0, amount) for amount in amounts)
-    amount_weights = (
+    amount_weights = _clean_weights(
         [max(0.0, amount) / total_amount for amount in amounts]
         if total_amount > 0
         else [0.0 for _ in amounts]
@@ -879,12 +924,16 @@ def build_robot_v2_source(
     trailing_enabled = kind in {"dca", "martingale", "layered_martingale"} and bool(
         config.get("trailing_take_profit_enabled")
     )
-    trailing_activation = float(config.get("trailing_activation_pct") or 0.0)
-    trailing_callback = float(config.get("trailing_callback_pct") or 0.0)
-    take_profit = 0.0 if trailing_enabled else float(config.get("take_profit_pct") or 0.0)
-    hard_stop = float(config.get("hard_stop_pct") or 0.0)
-    initial_position_pct = float(config.get("initial_position_pct") or 0.0)
-    level_capital_fraction = max(0.0, 1.0 - initial_position_pct) if kind == "grid" else 1.0
+    trailing_activation = _clean_number(config.get("trailing_activation_pct") or 0.0)
+    trailing_callback = _clean_number(config.get("trailing_callback_pct") or 0.0)
+    take_profit = _clean_number(
+        0.0 if trailing_enabled else float(config.get("take_profit_pct") or 0.0)
+    )
+    hard_stop = _clean_number(config.get("hard_stop_pct") or 0.0)
+    initial_position_pct = _clean_number(config.get("initial_position_pct") or 0.0)
+    level_capital_fraction = _clean_number(
+        max(0.0, 1.0 - initial_position_pct) if kind == "grid" else 1.0
+    )
     restart_after_stop = bool(config.get("restart_after_stop"))
     leverage_line = "    context.allow_leverage(max_leverage=100)\n" if market_type == "swap" else ""
     constants = (

@@ -21,6 +21,7 @@ from app.services.factors import (
 )
 from .contract import CompiledStrategyV2, StrategyV2ContractError, compile_strategy_v2
 from .data import MultiAssetDataPortal
+from .frequencies import normalize_frequency
 from .protection import ProtectionDecision, ProtectionEngine, ProtectionSpec, ProtectionState
 
 
@@ -63,6 +64,28 @@ def _position_key(symbol: object, position_side: object = "") -> str:
     base = str(symbol or "")
     side = _normalize_position_side(position_side)
     return f"{base}::{side}" if side else base
+
+
+def _grid_order_identity(client_order_id: object) -> tuple[int, str, str, int] | None:
+    """Return the stable grid-cell identity encoded by the V2 robot template."""
+    parts = str(client_order_id or "").strip().split("-")
+    if len(parts) != 5 or parts[0] != "grid":
+        return None
+    try:
+        cell_index = int(parts[1])
+        cycle = int(parts[4])
+    except (TypeError, ValueError):
+        return None
+    position_side = _normalize_position_side(parts[2])
+    phase = str(parts[3] or "").strip().lower()
+    if (
+        cell_index < 0
+        or cycle < 1
+        or not position_side
+        or phase not in {"entry", "exit"}
+    ):
+        return None
+    return cell_index, position_side, phase, cycle
 
 
 def _snapshot_state_value(value: Any) -> Any:
@@ -117,11 +140,25 @@ class StrategyDataView:
     def __init__(self, portal: MultiAssetDataPortal):
         self.portal = portal
 
-    def history(self, symbols: object, count: int, fields: object = None, **_: Any):
-        return self.portal.history(symbols, count=count, fields=fields)
+    def history(
+        self,
+        symbols: object,
+        count: int,
+        fields: object = None,
+        *,
+        frequency: object = None,
+        **_: Any,
+    ):
+        return self.portal.history(symbols, count=count, fields=fields, frequency=frequency)
 
-    def current(self, symbol: object, field: str = "close") -> float:
-        return self.portal.current(symbol, field)
+    def current(
+        self,
+        symbol: object,
+        field: str = "close",
+        *,
+        frequency: object = None,
+    ) -> float:
+        return self.portal.current(symbol, field, frequency=frequency)
 
     def __getitem__(self, symbol: object) -> pd.DataFrame:
         return self.portal.visible_frame(symbol)
@@ -301,9 +338,14 @@ class StrategyRuntimeContext:
         security_list: object = None,
         **_: Any,
     ):
-        del frequency
-        symbols = security_list or list(self.portal.frames.keys())
-        return self.portal.history(symbols, count=int(count), fields=field)
+        frames = self.portal.frames_for_frequency(frequency)
+        symbols = security_list or list(frames.keys())
+        return self.portal.history(
+            symbols,
+            count=int(count),
+            fields=field,
+            frequency=frequency,
+        )
 
     def get_index_stocks(self, reference: object, **_: Any) -> list[str]:
         return self.portal.universe(str(reference or ""))
@@ -319,14 +361,24 @@ class StrategyRuntimeContext:
 
     def indicator(self, name: object, symbol: object = None, **params: Any):
         target = symbol or self._default_symbol()
-        frame = self.portal.visible_frame(target)
+        frequency = normalize_frequency(
+            params.pop("frequency", None),
+            self.portal.driving_frequency,
+        )
+        frame = self.portal.visible_frame(target, frequency=frequency)
         library_id = str(name or "").strip()
         if is_talib_available():
             try:
                 return compute_talib_indicator(library_id, frame, params)
             except Exception:
                 pass
-        return self._compute_builtin_indicator(library_id, target, frame, params)
+        return self._compute_builtin_indicator(
+            library_id,
+            target,
+            frame,
+            params,
+            frequency=frequency,
+        )
 
     def _compute_builtin_indicator(
         self,
@@ -334,11 +386,14 @@ class StrategyRuntimeContext:
         target: object,
         frame: pd.DataFrame,
         params: Mapping[str, Any],
+        *,
+        frequency: str,
     ) -> pd.Series | pd.DataFrame:
         factor_id, normalized, outputs = _builtin_indicator_contract(library_id, params)
-        resolved_target = self.portal.resolve_key(target)
+        resolved_target = self.portal.resolve_key(target, frequency=frequency)
         cache_key = (
             resolved_target,
+            frequency,
             factor_id,
             tuple(sorted((str(key), repr(value)) for key, value in normalized.items())),
             tuple(outputs),
@@ -388,7 +443,11 @@ class StrategyRuntimeContext:
 
     def factor(self, name: object, symbol: object = None, **params: Any) -> float:
         target = symbol or self._default_symbol()
-        frame = self.portal.visible_frame(target)
+        frequency = normalize_frequency(
+            params.pop("frequency", None),
+            self.portal.driving_frequency,
+        )
+        frame = self.portal.visible_frame(target, frequency=frequency)
         factor_id = str(name or "").strip()
         try:
             get_factor(factor_id.lower())
@@ -597,6 +656,7 @@ class MultiAssetSimulationBroker:
         self.executions: list[dict[str, Any]] = []
         self.closed_trades: list[dict[str, Any]] = []
         self._entries: dict[str, dict[str, Any]] = {}
+        self._grid_entries: dict[str, dict[str, Any]] = {}
         self._protections: dict[str, ProtectionState] = {}
         self.protection_events: list[dict[str, Any]] = []
         self.order_ledger: list[dict[str, Any]] = []
@@ -814,6 +874,7 @@ class MultiAssetSimulationBroker:
                 "commission": fee,
                 "balance": self.portfolio.total_value,
                 "reason": order.reason,
+                "client_order_id": str(order.client_order_id or ""),
                 "signal_time": _backtest_time_iso(order.signal_time if order.signal_time is not None else timestamp),
                 "fill_reference": fill_reference,
                 "reference_price": open_price,
@@ -1279,14 +1340,19 @@ class MultiAssetSimulationBroker:
             entry_quantity = max(float(entry.get("quantity") or 0.0), closing_quantity)
             entry_fee = float(entry.get("commission") or 0.0) * closing_quantity / entry_quantity
             direction = 1.0 if old_amount > 0 else -1.0
-            gross_profit = (float(execution["price"]) - float(entry.get("price") or old_cost)) * closing_quantity * direction
+            gross_profit = (
+                float(execution["price"]) - float(entry.get("price") or old_cost)
+            ) * closing_quantity * direction
             profit = gross_profit - entry_fee - close_fee
-            self.closed_trades.append({
+            account_entry_price = float(entry.get("price") or old_cost)
+            account_entry_time = str(entry.get("time") or execution["time"])
+            grid_match = self._consume_grid_entry(execution, closing_quantity, close_fee)
+            trade = {
                 "symbol": symbol,
                 "side": str(entry.get("side") or ("long" if old_amount > 0 else "short")),
-                "entry_time": str(entry.get("time") or execution["time"]),
+                "entry_time": account_entry_time,
                 "exit_time": str(execution["time"]),
-                "entry_price": float(entry.get("price") or old_cost),
+                "entry_price": account_entry_price,
                 "exit_price": float(execution["price"]),
                 "quantity": closing_quantity,
                 "amount": closing_quantity,
@@ -1297,7 +1363,27 @@ class MultiAssetSimulationBroker:
                 "commission": entry_fee + close_fee,
                 "balance": float(execution.get("balance") or 0.0),
                 "close_reason": str(execution.get("reason") or "strategy"),
-            })
+                "profit_basis": "account_average",
+            }
+            if grid_match is not None:
+                trade.update({
+                    "entry_time": grid_match["entry_time"],
+                    "entry_price": grid_match["entry_price"],
+                    "gross_profit": grid_match["gross_profit"],
+                    "entry_commission": grid_match["entry_commission"],
+                    "commission": grid_match["commission"],
+                    "profit": grid_match["profit"],
+                    "matched_entry_price": grid_match["entry_price"],
+                    "grid_matched_profit": grid_match["profit"],
+                    "grid_cell_index": grid_match["cell_index"],
+                    "grid_cycle": grid_match["cycle"],
+                    "profit_basis": "grid_cell",
+                    "account_entry_time": account_entry_time,
+                    "account_avg_entry_price": account_entry_price,
+                    "account_gross_profit": gross_profit,
+                    "account_realized_profit": profit,
+                })
+            self.closed_trades.append(trade)
             remaining = max(0.0, entry_quantity - closing_quantity)
             if remaining > 1e-12 and old_amount * target_amount >= 0:
                 entry["quantity"] = remaining
@@ -1326,6 +1412,90 @@ class MultiAssetSimulationBroker:
                     "commission": open_fee,
                     "side": opening_side,
                 }
+            self._record_grid_entry(execution, opening_quantity, open_fee)
+
+    @staticmethod
+    def _grid_entry_key(
+        position_key: str,
+        identity: tuple[int, str, str, int],
+    ) -> str:
+        cell_index, position_side, _, cycle = identity
+        return f"{position_key}|{cell_index}|{position_side}|{cycle}"
+
+    def _record_grid_entry(
+        self,
+        execution: Mapping[str, Any],
+        quantity: float,
+        commission: float,
+    ) -> None:
+        identity = _grid_order_identity(execution.get("client_order_id"))
+        if identity is None or identity[2] != "entry" or quantity <= 1e-12:
+            return
+        position_key = str(execution.get("position_key") or execution.get("symbol") or "")
+        key = self._grid_entry_key(position_key, identity)
+        current = self._grid_entries.get(key)
+        if current is None:
+            self._grid_entries[key] = {
+                "cell_index": identity[0],
+                "position_side": identity[1],
+                "cycle": identity[3],
+                "entry_time": str(execution.get("time") or ""),
+                "entry_price": float(execution.get("price") or 0.0),
+                "quantity": float(quantity),
+                "commission": float(commission),
+            }
+            return
+        previous_quantity = float(current.get("quantity") or 0.0)
+        combined_quantity = previous_quantity + float(quantity)
+        if combined_quantity <= 1e-12:
+            return
+        current["entry_price"] = (
+            float(current.get("entry_price") or 0.0) * previous_quantity
+            + float(execution.get("price") or 0.0) * float(quantity)
+        ) / combined_quantity
+        current["quantity"] = combined_quantity
+        current["commission"] = float(current.get("commission") or 0.0) + float(commission)
+
+    def _consume_grid_entry(
+        self,
+        execution: Mapping[str, Any],
+        closing_quantity: float,
+        close_commission: float,
+    ) -> dict[str, Any] | None:
+        identity = _grid_order_identity(execution.get("client_order_id"))
+        if identity is None or identity[2] != "exit" or closing_quantity <= 1e-12:
+            return None
+        position_key = str(execution.get("position_key") or execution.get("symbol") or "")
+        key = self._grid_entry_key(position_key, identity)
+        entry = self._grid_entries.get(key)
+        available = float((entry or {}).get("quantity") or 0.0)
+        if entry is None or available + 1e-10 < closing_quantity:
+            return None
+
+        entry_commission_total = float(entry.get("commission") or 0.0)
+        entry_commission = entry_commission_total * closing_quantity / max(available, 1e-12)
+        remaining = max(0.0, available - closing_quantity)
+        if remaining <= 1e-12:
+            self._grid_entries.pop(key, None)
+        else:
+            entry["quantity"] = remaining
+            entry["commission"] = max(0.0, entry_commission_total - entry_commission)
+
+        entry_price = float(entry.get("entry_price") or 0.0)
+        exit_price = float(execution.get("price") or 0.0)
+        direction = 1.0 if identity[1] == "long" else -1.0
+        gross_profit = (exit_price - entry_price) * closing_quantity * direction
+        commission = entry_commission + float(close_commission)
+        return {
+            "cell_index": identity[0],
+            "cycle": identity[3],
+            "entry_time": str(entry.get("entry_time") or execution.get("time") or ""),
+            "entry_price": entry_price,
+            "entry_commission": entry_commission,
+            "commission": commission,
+            "gross_profit": gross_profit,
+            "profit": gross_profit - commission,
+        }
 
 
 class StrategyV2BacktestRunner:
@@ -1336,6 +1506,7 @@ class StrategyV2BacktestRunner:
         *,
         code: str,
         frames: Mapping[str, pd.DataFrame],
+        frequency_frames: Mapping[str, Mapping[str, pd.DataFrame]] | None = None,
         initial_capital: float,
         params: Mapping[str, Any] | None = None,
         leverage_enabled: bool = False,
@@ -1350,7 +1521,12 @@ class StrategyV2BacktestRunner:
             raise StrategyV2ContractError("strategyV2.leverageNotAllowed")
         if requested_leverage > self.program.manifest.max_leverage:
             raise StrategyV2ContractError("strategyV2.leverageExceedsStrategyLimit")
-        self.portal = MultiAssetDataPortal(frames, universe_resolver=universe_resolver)
+        self.portal = MultiAssetDataPortal(
+            frames,
+            frequency_frames=frequency_frames,
+            driving_frequency=self.program.manifest.driving_frequency,
+            universe_resolver=universe_resolver,
+        )
         self.broker = MultiAssetSimulationBroker(
             initial_capital=initial_capital,
             leverage=requested_leverage,
@@ -1405,7 +1581,7 @@ class StrategyV2BacktestRunner:
                     schedule,
                     timestamp,
                     previous,
-                    self.program.manifest.primary_frequency,
+                    self.program.manifest.driving_frequency,
                 ):
                     self._invoke(schedule.callback, self.context, self.context.data)
                     pending_orders = self._remove_cancelled_orders(pending_orders)
@@ -1591,12 +1767,25 @@ class StrategyV2BacktestRunner:
         closed_trades = list(self.broker.closed_trades)
         executions = list(self.broker.executions)
         profits = [float(item.get("profit") or 0.0) for item in closed_trades]
+        account_realized_profits = [
+            float(
+                item.get("account_realized_profit")
+                if item.get("account_realized_profit") is not None
+                else item.get("profit") or 0.0
+            )
+            for item in closed_trades
+        ]
+        grid_matched_profits = [
+            float(item.get("grid_matched_profit") or 0.0)
+            for item in closed_trades
+            if item.get("profit_basis") == "grid_cell"
+        ]
         wins = [value for value in profits if value > 0]
         losses = [value for value in profits if value < 0]
         returns = pd.Series(values, dtype="float64").pct_change().dropna() if values else pd.Series(dtype="float64")
         volatility = float(returns.std(ddof=0)) if not returns.empty else 0.0
         periods_per_year = _periods_per_year(
-            self.program.manifest.primary_frequency,
+            self.program.manifest.driving_frequency,
             self.program.manifest.markets,
         )
         sharpe_ratio = float(returns.mean() / volatility * math.sqrt(periods_per_year)) if volatility > 0 else 0.0
@@ -1677,6 +1866,14 @@ class StrategyV2BacktestRunner:
             "worstTrade": min(profits) if profits else 0.0,
             "avgTrade": average_profit,
             "averageProfit": average_profit,
+            "accountRealizedProfit": sum(account_realized_profits),
+            "gridMatchedProfit": sum(grid_matched_profits),
+            "gridMatchedTradeCount": len(grid_matched_profits),
+            "tradeProfitBasis": (
+                "grid_cell_when_available"
+                if grid_matched_profits
+                else "account_average"
+            ),
             "totalProfit": final - initial,
             "sharpeRatio": sharpe_ratio,
             "annualizedReturn": annualized_return,
@@ -1713,7 +1910,14 @@ class StrategyV2BacktestRunner:
             commission_by_symbol[symbol] = commission_by_symbol.get(symbol, 0.0) + float(execution.get("commission") or 0.0)
         for trade in self.broker.closed_trades:
             symbol = str(trade.get("symbol") or "")
-            realized_by_symbol[symbol] = realized_by_symbol.get(symbol, 0.0) + float(trade.get("profit") or 0.0)
+            account_profit = (
+                trade.get("account_realized_profit")
+                if trade.get("account_realized_profit") is not None
+                else trade.get("profit")
+            )
+            realized_by_symbol[symbol] = (
+                realized_by_symbol.get(symbol, 0.0) + float(account_profit or 0.0)
+            )
         rows = []
         for symbol in sorted(set(commission_by_symbol) | set(realized_by_symbol) | set(self.broker.portfolio.positions)):
             position = self.broker.portfolio.positions.get(symbol)
@@ -1830,6 +2034,7 @@ class StrategyV2LiveSession:
         *,
         code: str,
         frames: Mapping[str, pd.DataFrame],
+        frequency_frames: Mapping[str, Mapping[str, pd.DataFrame]] | None = None,
         initial_capital: float,
         params: Mapping[str, Any] | None = None,
         universe_resolver=None,
@@ -1837,7 +2042,12 @@ class StrategyV2LiveSession:
     ) -> None:
         self.program = compile_strategy_v2(code)
         self._universe_resolver = universe_resolver
-        self.portal = MultiAssetDataPortal(frames, universe_resolver=universe_resolver)
+        self.portal = MultiAssetDataPortal(
+            frames,
+            frequency_frames=frequency_frames,
+            driving_frequency=self.program.manifest.driving_frequency,
+            universe_resolver=universe_resolver,
+        )
         self.portfolio = PortfolioState(initial_capital, initial_capital, total_value=initial_capital)
         self.context = StrategyRuntimeContext(portal=self.portal, portfolio=self.portfolio, params=params)
         self.persist_strategy_state = (
@@ -1857,9 +2067,15 @@ class StrategyV2LiveSession:
         self,
         frames: Mapping[str, pd.DataFrame],
         *,
+        frequency_frames: Mapping[str, Mapping[str, pd.DataFrame]] | None = None,
         schedule_time: Any = None,
     ) -> tuple[list[OrderIntent], list[str], pd.Timestamp]:
-        portal = MultiAssetDataPortal(frames, universe_resolver=self._universe_resolver)
+        portal = MultiAssetDataPortal(
+            frames,
+            frequency_frames=frequency_frames,
+            driving_frequency=self.program.manifest.driving_frequency,
+            universe_resolver=self._universe_resolver,
+        )
         if portal.timestamps.empty:
             raise StrategyV2ContractError("strategyV2.noMarketData")
         timestamp = pd.Timestamp(portal.timestamps[-1])

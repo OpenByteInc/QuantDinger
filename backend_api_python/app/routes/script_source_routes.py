@@ -163,12 +163,12 @@ def compile_script_source_v2():
         manifest = compiled_manifest.metadata()
         range_policy = backtest_range_policy_metadata(
             markets=compiled_manifest.markets,
-            timeframe=compiled_manifest.primary_frequency,
+            timeframe=compiled_manifest.driving_frequency,
             warmup_bars=compiled_manifest.warmup_bars,
         )
         factor_range_policy = backtest_range_policy_metadata(
             markets=compiled_manifest.markets,
-            timeframe=compiled_manifest.primary_frequency,
+            timeframe=compiled_manifest.driving_frequency,
             warmup_bars=max(40, compiled_manifest.warmup_bars),
         )
         range_policy.update({

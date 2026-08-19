@@ -4,7 +4,10 @@ Werkzeug>=3.1.8
 flask-cors==6.0.5
 finnhub-python>=2.4.29
 yfinance>=1.5.2
-ccxt>=4.5.69
+ccxt>=4.5.73
+# GHSA-cq5v-8q36-5273 (C parser OOB read), GHSA-mfx4-hv73-q22v and
+# GHSA-mq44-7p77-q5h7 (WebSocket parsing); 3.14.3+
+aiohttp>=3.14.3,<3.15
 pandas>=3.0.5
 # Strategy API V2 technical indicator runtime. The 0.6.x wheels bundle the C library.
 TA-Lib==0.7.1
@@ -12,7 +15,7 @@ exchange-calendars>=4.13.2,<5
 requests>=2.34.2
 websocket-client>=1.9.0,<2
 litellm>=1.93.0,<1.94
-# ccxt 4.5.69/4.5.70 pins certifi==2026.6.17. Keep the direct floor
+# ccxt 4.5.73 pins certifi==2026.6.17. Keep the direct floor
 # aligned with the exchange client until ccxt relaxes its constraint.
 certifi>=2026.6.17
 PySocks>=1.7.1
@@ -20,7 +23,9 @@ akshare>=1.18.80
 # GHSA-752w-5fwx-jx9f (crit header); 2.12.0+
 PyJWT>=2.13.0,<3
 python-dotenv>=1.2.2
-cryptography>=49.0.0
+# GHSA-g6cj-pr64-35w5 (PKCS#7 Bleichenbacher oracle); 50.0.0+
+# ccxt 4.5.73 currently constrains cryptography to the 50.x release line.
+cryptography>=50.0.0,<51
 # TOTP MFA and QR code generation
 pyotp>=2.10.0
 qrcode[pil]>=8.2
@@ -41,7 +46,8 @@ flask-smorest>=0.47.0,<0.48
 marshmallow>=4.3.0,<5
 PyYAML>=6.0.3
 # Server-side PDF export for AI analysis reports
-pypdf>=6.14.2,<7
+# GHSA-fp3f-mc75-235c / GHSA-fwg2-594c-jp42 (unbounded PDF resource use); 6.15.0+
+pypdf>=6.15.0,<7
 reportlab>=5.0.0
 # Password hashing
 bcrypt>=5.0.0

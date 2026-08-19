@@ -41,12 +41,11 @@ from app.services.live_trading.executors import (
     MarketOrderExecutor,
     RestingLimitExecutor,
 )
-from app.services.live_trading.leg_context import (
-    credential_id_from_exchange_config,
-)
+from app.services.live_trading.leg_context import credential_id_from_exchange_config
 from app.services.live_trading.position_query import resolve_reduce_only_quantity
 from app.services.live_trading.position_ownership import supports_position_coexistence
 from app.utils.pnl import calc_notional_value
+from app.utils.numeric_precision import format_decimal
 from app.services.live_trading.base import LiveTradingError, is_file_descriptor_exhausted
 from app.services.pending_orders.fill_records import (
     persist_strategy_fill, proportional_spot_position_fill_quantity,
@@ -1874,13 +1873,13 @@ class PendingOrderWorker(PendingOrderPositionSyncMixin):
             (
                 f"actual notional is about {actual_notional:.4f} USDT"
                 if actual_notional > 0
-                else f"actual order quantity is {qty:.12f}"
+                else f"actual order quantity is {format_decimal(qty)}"
             ),
         ]
         if min_notional > 0:
             parts.append(f"minimum notional is about {min_notional:.4f} USDT at the current price")
         elif min_qty > 0:
-            parts.append(f"exchange minimum quantity is about {min_qty:.12f}")
+            parts.append(f"exchange minimum quantity is about {format_decimal(min_qty)}")
         if capital is not None or entry_pct is not None or leverage is not None:
             parts.append(
                 "sizing="
@@ -1889,7 +1888,15 @@ class PendingOrderWorker(PendingOrderPositionSyncMixin):
                 f"leverage={self._as_float(leverage, 1.0):.4f}x, "
                 f"source={source}"
             )
-        parts.append("Increase capital, entry percentage, or leverage, or choose a symbol that meets the minimum order size.")
+        parts.append(
+            (
+                "The remaining strategy position is below the exchange lot/minimum size; "
+                "reconcile the residual position instead of increasing capital or leverage."
+                if str(signal_type or "").startswith(("close_", "reduce_"))
+                else "Increase capital, entry percentage, or leverage, or choose a symbol "
+                "that meets the minimum order size."
+            )
+        )
         return "; ".join(parts)
 
     def _log_live_order_sizing(
@@ -1925,9 +1932,9 @@ class PendingOrderWorker(PendingOrderPositionSyncMixin):
                     f"capital={self._as_float(sizing.get('initial_capital'), 0.0):.4f}, "
                     f"entry_pct={self._as_float(sizing.get('entry_pct'), 0.0):.4f}%, "
                     f"leverage={self._as_float(sizing.get('leverage') or leverage, 1.0):.4f}x, "
-                    f"price={float(ref_price or 0.0):.8f}, "
-                    f"final_qty={float(amount or 0.0):.12f}, "
-                    f"min_qty={float(min_qty or 0.0):.12f}, "
+                    f"price={format_decimal(ref_price, decimal_places=8)}, "
+                    f"final_qty={format_decimal(amount)}, "
+                    f"min_qty={format_decimal(min_qty)}, "
                     f"min_notional={float(min_notional or 0.0):.4f}, "
                     f"source={sizing.get('source') or 'unknown'}"
                 ),

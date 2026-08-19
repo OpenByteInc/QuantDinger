@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlencode
 
 from app.services.live_trading.base import BaseRestClient, LiveOrderResult, LiveTradingError
+from app.utils.numeric_precision import floor_decimal_to_step, format_decimal
 
 logger = logging.getLogger(__name__)
 from app.services.live_trading.symbols import to_bitget_um_symbol
@@ -192,21 +193,7 @@ class BitgetMixClient(BaseRestClient):
 
     @staticmethod
     def _floor_to_step(value: Decimal, step: Decimal) -> Decimal:
-        if step is None:
-            return value
-        if value <= 0:
-            return Decimal("0")
-        try:
-            st = Decimal(step)
-        except Exception:
-            st = Decimal("0")
-        if st <= 0:
-            return value
-        try:
-            n = (value / st).to_integral_value(rounding=ROUND_DOWN)
-            return n * st
-        except Exception:
-            return Decimal("0")
+        return floor_decimal_to_step(value, step)
 
     @staticmethod
     def _normalize_margin_mode(margin_mode: str) -> str:
@@ -848,7 +835,9 @@ class BitgetMixClient(BaseRestClient):
         req = float(size or 0.0)
         sz_dec, sz_precision = self._normalize_size(symbol=symbol, product_type=product_type, base_size=req)
         if float(sz_dec or 0) <= 0:
-            raise LiveTradingError(f"Invalid size (below step/min): requested={req}")
+            raise LiveTradingError(
+                f"Invalid size (below step/min): requested={format_decimal(req)}"
+            )
 
         body: Dict[str, Any] = {
             "symbol": sym,
@@ -910,10 +899,14 @@ class BitgetMixClient(BaseRestClient):
             raise LiveTradingError("Invalid size/price")
         sz_dec, sz_precision = self._normalize_size(symbol=symbol, product_type=product_type, base_size=req)
         if float(sz_dec or 0) <= 0:
-            raise LiveTradingError(f"Invalid size (below step/min): requested={req}")
+            raise LiveTradingError(
+                f"Invalid size (below step/min): requested={format_decimal(req)}"
+            )
         px_dec, px_precision = self._normalize_price(symbol=symbol, product_type=product_type, price=px)
         if float(px_dec or 0) <= 0:
-            raise LiveTradingError(f"Invalid price (below step/min): requested={px}")
+            raise LiveTradingError(
+                f"Invalid price (below step/min): requested={format_decimal(px)}"
+            )
 
         body: Dict[str, Any] = {
             "symbol": sym,

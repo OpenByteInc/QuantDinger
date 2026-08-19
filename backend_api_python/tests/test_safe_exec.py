@@ -4,9 +4,12 @@ import builtins
 import math
 import threading
 
+import pandas as pd
+
 from app.utils.safe_exec import (
     build_safe_builtins,
     safe_exec_code,
+    safe_exec_indicator_isolated,
     safe_exec_with_validation,
     timeout_context,
     validate_code_safety,
@@ -38,6 +41,13 @@ df = df.copy()
 output = {'plots': [], 'signals': []}
 """
 
+_RUNTIME_FORMAT_ESCAPE = """
+u = chr(95) + chr(95)
+spec = (chr(123) + "0.DataFrame." + u + "init" + u + "." + u + "globals" + u
+        + "[sys].modules[os].environ[SANDBOX_TEST_SECRET]" + chr(125))
+output = spec.format(pd)
+"""
+
 
 def test_subclass_escape_rejected_by_validator():
     ok, err = validate_code_safety(_SUBCLASS_ESCAPE)
@@ -60,6 +70,78 @@ def test_legit_indicator_passes_validator():
     ok, err = validate_code_safety(_LEGIT_INDICATOR)
     assert ok is True
     assert err is None
+
+
+def test_runtime_built_format_field_escape_is_rejected():
+    ok, err = validate_code_safety(_RUNTIME_FORMAT_ESCAPE)
+    assert ok is False
+    assert err
+
+    env = {"output": None}
+    result = safe_exec_with_validation(
+        _RUNTIME_FORMAT_ESCAPE,
+        env,
+        env,
+        timeout=5,
+    )
+    assert result["success"] is False
+    assert env["output"] is None
+
+
+def test_format_attribute_alias_is_rejected():
+    ok, err = validate_code_safety(
+        "resolver = '{0.value}'.format\noutput = resolver(item)"
+    )
+    assert ok is False
+    assert err
+
+
+def test_removed_reflection_builders_are_not_in_safe_builtins():
+    safe = build_safe_builtins()
+    assert "chr" not in safe
+    assert "format" not in safe
+
+
+def test_sandbox_error_redacts_configured_secret(monkeypatch):
+    marker = "qd-sensitive-marker-8f92a7"
+    monkeypatch.setenv("SANDBOX_TEST_SECRET", marker)
+    env = {"output": None}
+    result = safe_exec_with_validation(
+        f"raise ValueError({marker!r})",
+        env,
+        env,
+        timeout=5,
+        pre_import="",
+    )
+    assert result["success"] is False
+    assert marker not in result["error"]
+    assert "[REDACTED]" in result["error"]
+
+
+def test_indicator_worker_returns_json_only_output_and_dataframe():
+    df = pd.DataFrame({
+        "open": [1.0, 2.0],
+        "high": [2.0, 3.0],
+        "low": [0.5, 1.5],
+        "close": [1.5, 2.5],
+        "volume": [10.0, 20.0],
+    }, index=pd.date_range("2026-08-16", periods=2, freq="min", tz="UTC"))
+    result = safe_exec_indicator_isolated(
+        """
+df = df.copy()
+df['average'] = (high + low) / 2
+output = {'plots': [{'name': f\"avg-{len(df)}\", 'data': df['average'].tolist()}], 'signals': []}
+""",
+        df,
+        {},
+        timeout=10,
+    )
+    assert result["success"] is True, result["error"]
+    payload = result["result"]
+    assert payload["output"]["plots"][0]["data"] == [1.25, 2.25]
+    assert payload["df"]["average"].tolist() == [1.25, 2.25]
+    assert isinstance(payload["df"].index, pd.DatetimeIndex)
+    assert str(payload["df"].index.tz) == "UTC"
 
 def test_operator_import_rejected():
     ok, _ = validate_code_safety("import operator\noutput = {}")

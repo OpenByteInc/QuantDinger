@@ -405,6 +405,23 @@ def handle_data(context, data):
     assert manifest.metadata()["directionMode"] == "both"
 
 
+def test_set_metadata_accepts_positional_key_value_pair():
+    code = """
+def initialize(context):
+    context.set_universe(["Crypto:BTC/USDT@okx:swap"])
+    context.subscribe(frequency="1h")
+    context.set_metadata("direction_mode", "long_only")
+    context.set_metadata({"strategy_family": "trend"})
+
+def handle_data(context, data):
+    pass
+"""
+    manifest = compile_strategy_v2(code).manifest
+
+    assert manifest.direction_mode == "long_only"
+    assert manifest.metadata()["directionMode"] == "long_only"
+
+
 @pytest.mark.parametrize(
     "strategy_body,expected",
     [

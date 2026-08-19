@@ -6,7 +6,7 @@ import pandas as pd
 
 from app.services.indicator_code_quality import analyze_indicator_code_quality
 from app.services.indicator_params import IndicatorParamsParser
-from app.utils.safe_exec import build_safe_builtins, safe_exec_with_validation
+from app.utils.safe_exec import safe_exec_indicator_isolated
 
 
 def generate_mock_df(length: int = 200) -> pd.DataFrame:
@@ -55,22 +55,10 @@ def validate_indicator_code(code: str, user_params: Dict[str, Any] | None = None
     hints = analyze_indicator_code_quality(raw)
     df = generate_mock_df()
     merged_params = merge_indicator_params(raw, user_params)
-    exec_env = {
-        "df": df.copy(),
-        "pd": pd,
-        "np": np,
-        "params": merged_params,
-        "output": None,
-    }
-    # OHLCV series are available as convenience globals in addition to df columns.
-    for col in ("open", "high", "low", "close", "volume"):
-        exec_env[col] = exec_env["df"][col]
-    exec_env["__builtins__"] = build_safe_builtins()
-
-    exec_result = safe_exec_with_validation(
+    exec_result = safe_exec_indicator_isolated(
         code=raw,
-        exec_globals=exec_env,
-        exec_locals=exec_env,
+        df=df,
+        params=merged_params,
         timeout=20,
     )
     if not exec_result.get("success"):
@@ -86,7 +74,7 @@ def validate_indicator_code(code: str, user_params: Dict[str, Any] | None = None
             "hints": hints,
         }
 
-    output = exec_env.get("output")
+    output = (exec_result.get("result") or {}).get("output")
     if output is None:
         return {
             "success": False,

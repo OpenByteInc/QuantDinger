@@ -16,6 +16,7 @@ from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urlencode
 
 from app.services.live_trading.base import BaseRestClient, LiveOrderResult, LiveTradingError
+from app.utils.numeric_precision import floor_decimal_to_step, format_decimal
 
 logger = logging.getLogger(__name__)
 from app.services.live_trading.symbols import to_binance_futures_symbol
@@ -150,21 +151,7 @@ class BinanceFuturesClient(BaseRestClient):
 
     @staticmethod
     def _floor_to_step(value: Decimal, step: Decimal) -> Decimal:
-        if step is None:
-            return value
-        if value <= 0:
-            return Decimal("0")
-        try:
-            st = Decimal(step)
-        except Exception:
-            st = Decimal("0")
-        if st <= 0:
-            return value
-        try:
-            n = (value / st).to_integral_value(rounding=ROUND_DOWN)
-            return n * st
-        except Exception:
-            return Decimal("0")
+        return floor_decimal_to_step(value, step)
 
     def _sign(self, query_string: str) -> str:
         sig = hmac.new(self.secret_key.encode("utf-8"), query_string.encode("utf-8"), hashlib.sha256).hexdigest()
@@ -354,7 +341,7 @@ class BinanceFuturesClient(BaseRestClient):
             return value
         try:
             q = Decimal("1").scaleb(-p)  # 1e-precision
-            return value.quantize(q, rounding=ROUND_DOWN)
+            return floor_decimal_to_step(value, q)
         except Exception:
             return value
 
@@ -769,7 +756,9 @@ class BinanceFuturesClient(BaseRestClient):
         q_req = float(quantity or 0.0)
         q_dec, qty_precision = self._normalize_quantity(symbol=symbol, quantity=q_req, for_market=True)
         if float(q_dec or 0) <= 0:
-            raise LiveTradingError(f"Invalid quantity (below step/minQty): requested={q_req}")
+            raise LiveTradingError(
+                f"Invalid quantity (below step/minQty): requested={format_decimal(q_req)}"
+            )
 
         # Best-effort MIN_NOTIONAL validation (common reason for "open still fails" with small qty).
         # Use markPrice as an approximation for MARKET order notional.
@@ -932,10 +921,14 @@ class BinanceFuturesClient(BaseRestClient):
             raise LiveTradingError("Invalid quantity/price")
         q_dec, qty_precision = self._normalize_quantity(symbol=symbol, quantity=q_req, for_market=False)
         if float(q_dec or 0) <= 0:
-            raise LiveTradingError(f"Invalid quantity (below step/minQty): requested={q_req}")
+            raise LiveTradingError(
+                f"Invalid quantity (below step/minQty): requested={format_decimal(q_req)}"
+            )
         px_dec = self._normalize_price(symbol=symbol, price=px)
         if float(px_dec or 0) <= 0:
-            raise LiveTradingError(f"Invalid price (bad tick/minPrice): requested={px}")
+            raise LiveTradingError(
+                f"Invalid price (bad tick/minPrice): requested={format_decimal(px)}"
+            )
 
         params: Dict[str, Any] = {
             "symbol": sym,

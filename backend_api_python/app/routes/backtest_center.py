@@ -256,7 +256,11 @@ def run_factor_research():
             source_id=source_id,
             source_name=source_name,
             market=",".join(manifest.get("markets") or []),
-            timeframe=str(manifest.get("primaryFrequency") or ""),
+            timeframe=str(
+                manifest.get("drivingFrequency")
+                or manifest.get("primaryFrequency")
+                or ""
+            ),
             start_date=start_raw,
             end_date=end_raw,
             factor_id=factor_id,

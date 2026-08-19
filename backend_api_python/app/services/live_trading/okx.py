@@ -17,6 +17,7 @@ from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urlencode
 
 from app.services.live_trading.base import BaseRestClient, LiveOrderResult, LiveTradingError
+from app.utils.numeric_precision import floor_decimal_to_step, format_decimal
 
 logger = logging.getLogger(__name__)
 from app.services.live_trading.symbols import to_okx_swap_inst_id, to_okx_spot_inst_id
@@ -170,21 +171,7 @@ class OkxClient(BaseRestClient):
 
     @staticmethod
     def _floor_to_step(value: Decimal, step: Decimal) -> Decimal:
-        if step is None:
-            return value
-        try:
-            st = Decimal(step)
-        except Exception:
-            st = Decimal("0")
-        if st <= 0:
-            return value
-        if value <= 0:
-            return Decimal("0")
-        try:
-            n = (value / st).to_integral_value(rounding=ROUND_DOWN)
-            return n * st
-        except Exception:
-            return Decimal("0")
+        return floor_decimal_to_step(value, step)
 
     def _public_request(self, method: str, path: str, *, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         code, data, text = self._request(method, path, params=params, json_body=None, headers=None, data=None)
@@ -630,7 +617,10 @@ class OkxClient(BaseRestClient):
         sz_raw = float(size or 0.0)
         sz_dec, sz_precision = self._normalize_order_size(inst_id=inst_id, market_type=mt, size=sz_raw)
         if float(sz_dec or 0) <= 0:
-            raise LiveTradingError(f"Invalid size (below lot/min size): requested={sz_raw}")
+            raise LiveTradingError(
+                "Invalid size (below lot/min size): "
+                f"requested={format_decimal(sz_raw)}"
+            )
 
         if mt == "spot":
             body: Dict[str, Any] = {
@@ -707,7 +697,10 @@ class OkxClient(BaseRestClient):
             inst_id = to_okx_spot_inst_id(symbol)
             sz_dec, sz_precision = self._normalize_order_size(inst_id=inst_id, market_type=mt, size=sz_raw)
             if float(sz_dec or 0) <= 0:
-                raise LiveTradingError(f"Invalid size (below lot/min size): requested={sz_raw}")
+                raise LiveTradingError(
+                    "Invalid size (below lot/min size): "
+                    f"requested={format_decimal(sz_raw)}"
+                )
             body: Dict[str, Any] = {
                 "instId": inst_id,
                 "tdMode": "cash",
@@ -721,7 +714,10 @@ class OkxClient(BaseRestClient):
             ps = self._resolve_pos_side(requested_pos_side=pos_side, market_type=mt)
             sz_dec, sz_precision = self._normalize_order_size(inst_id=inst_id, market_type=mt, size=sz_raw)
             if float(sz_dec or 0) <= 0:
-                raise LiveTradingError(f"Invalid size (below lot/min size): requested={sz_raw}")
+                raise LiveTradingError(
+                    "Invalid size (below lot/min size): "
+                    f"requested={format_decimal(sz_raw)}"
+                )
             td = (td_mode or "cross").lower()
             if td not in ("cross", "isolated"):
                 td = "cross"

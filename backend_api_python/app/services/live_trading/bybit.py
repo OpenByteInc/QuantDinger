@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import urlencode
 
 from app.services.live_trading.base import BaseRestClient, LiveOrderResult, LiveTradingError
+from app.utils.numeric_precision import floor_decimal_to_step, format_decimal
 
 logger = logging.getLogger(__name__)
 from app.services.live_trading.symbols import to_bybit_symbol
@@ -157,21 +158,7 @@ class BybitClient(BaseRestClient):
 
     @staticmethod
     def _floor_to_step(value: Decimal, step: Decimal) -> Decimal:
-        if step is None:
-            return value
-        if value <= 0:
-            return Decimal("0")
-        try:
-            st = Decimal(step)
-        except Exception:
-            st = Decimal("0")
-        if st <= 0:
-            return value
-        try:
-            n = (value / st).to_integral_value(rounding=ROUND_DOWN)
-            return n * st
-        except Exception:
-            return Decimal("0")
+        return floor_decimal_to_step(value, step)
 
     def _sign(self, prehash: str) -> str:
         return hmac.new(self.secret_key.encode("utf-8"), prehash.encode("utf-8"), hashlib.sha256).hexdigest()
@@ -681,7 +668,9 @@ class BybitClient(BaseRestClient):
         q_req = float(qty or 0.0)
         q_dec, qty_precision = self._normalize_qty(symbol=symbol, qty=q_req)
         if float(q_dec or 0) <= 0:
-            raise LiveTradingError(f"Invalid qty (below step/min): requested={q_req}")
+            raise LiveTradingError(
+                f"Invalid qty (below step/min): requested={format_decimal(q_req)}"
+            )
         body: Dict[str, Any] = {
             "category": self.category,
             "symbol": sym,
@@ -725,9 +714,13 @@ class BybitClient(BaseRestClient):
         q_dec, qty_precision = self._normalize_qty(symbol=symbol, qty=q_req)
         px_dec, price_precision = self._normalize_price(symbol=symbol, price=px_req)
         if float(q_dec or 0) <= 0:
-            raise LiveTradingError(f"Invalid qty (below step/min): requested={q_req}")
+            raise LiveTradingError(
+                f"Invalid qty (below step/min): requested={format_decimal(q_req)}"
+            )
         if float(px_dec or 0) <= 0:
-            raise LiveTradingError(f"Invalid price (below tick/min): requested={px_req}")
+            raise LiveTradingError(
+                f"Invalid price (below tick/min): requested={format_decimal(px_req)}"
+            )
         body: Dict[str, Any] = {
             "category": self.category,
             "symbol": sym,

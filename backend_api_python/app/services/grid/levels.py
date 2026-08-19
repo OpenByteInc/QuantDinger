@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List
 
+from app.utils.numeric_precision import clean_generated_number
+
 
 @dataclass
 class GridCellSpec:
@@ -26,9 +28,13 @@ def generate_levels(lower: float, upper: float, grid_count: int, mode: str) -> L
         return []
     if str(mode or "").lower() == "geometric" and lo > 0 and hi > lo:
         ratio = (hi / lo) ** (1.0 / (n - 1))
-        return [lo * (ratio ** i) for i in range(n)]
+        levels = [clean_generated_number(lo * (ratio ** i)) for i in range(n)]
+        levels[0], levels[-1] = clean_generated_number(lo), clean_generated_number(hi)
+        return levels
     step = (hi - lo) / float(n - 1)
-    return [lo + step * i for i in range(n)]
+    levels = [clean_generated_number(lo + step * i) for i in range(n)]
+    levels[0], levels[-1] = clean_generated_number(lo), clean_generated_number(hi)
+    return levels
 
 
 def generate_cells(levels: List[float]) -> List[GridCellSpec]:

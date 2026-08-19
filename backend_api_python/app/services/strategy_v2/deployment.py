@@ -156,7 +156,7 @@ class StrategyV2DeploymentService:
                 execution_mode,
                 json.dumps(notification_config, ensure_ascii=False),
                 symbol,
-                manifest.primary_frequency,
+                manifest.driving_frequency,
                 initial_capital,
                 int(leverage),
                 manifest_market_type,

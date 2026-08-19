@@ -297,23 +297,29 @@ def validate_entry(
         start_date=START_DATE,
         end_date=END_DATE,
     )
-    frames, skipped = service.fetch_frames(
+    frequency_frames, skipped = service.fetch_frequency_frames(
         candidates,
-        program.manifest.primary_frequency,
-        START_DATE,
+        program.manifest.frequencies,
+        {frequency: START_DATE for frequency in program.manifest.frequencies},
         END_DATE,
     )
+    frames = frequency_frames[program.manifest.driving_frequency]
     if program.manifest.fundamental_dependencies:
         frames = identity_fundamental_enricher(frames, candidates)
+        frequency_frames[program.manifest.driving_frequency] = frames
     universe_keys = list(frames)
     session = StrategyV2LiveSession(
         code=entry["code"],
         frames=frames,
+        frequency_frames=frequency_frames,
         initial_capital=10_000,
         params=entry["params"],
         universe_resolver=lambda _reference, _timestamp: universe_keys,
     )
-    intents, logs, timestamp = session.process(frames)
+    intents, logs, timestamp = session.process(
+        frames,
+        frequency_frames=frequency_frames,
+    )
     return {
         "catalogKey": entry["catalog_key"],
         "catalogGroup": entry["catalog_group"],
@@ -324,7 +330,8 @@ def validate_entry(
             "status": "passed",
             "apiVersion": program.manifest.api_version,
             "strategyType": program.manifest.strategy_type,
-            "frequency": program.manifest.primary_frequency,
+            "frequency": program.manifest.driving_frequency,
+            "frequencies": list(program.manifest.frequencies),
         },
         "semanticSimulation": {
             "status": "passed" if result.get("totalExecutions", 0) > 0 and (result.get("audit") or {}).get("passed") else "failed",

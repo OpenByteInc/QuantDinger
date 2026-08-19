@@ -26,7 +26,7 @@ from app.services.user_preferences import get_notification_settings
 from app.utils.db import get_db_connection
 from app.utils.logger import get_logger
 from app.utils.notification_display import with_display
-from app.utils.safe_exec import build_safe_builtins, safe_exec_with_validation
+from app.utils.safe_exec import safe_exec_indicator_isolated
 
 
 logger = get_logger(__name__)
@@ -669,32 +669,16 @@ class IndicatorSignalAlertService:
         return df
 
     def _execute_indicator(self, code: str, df: pd.DataFrame, params: Dict[str, Any]) -> Dict[str, Any]:
-        exec_env = {
-            "__builtins__": build_safe_builtins(),
-            "df": df.copy(),
-            "pd": pd,
-            "np": np,
-            "math": math,
-            "params": params or {},
-            "output": None,
-        }
-        # Use one namespace, matching the chart/validation execution path.
-        # Indicator helpers such as `def safe_div(...)` must be visible to
-        # later code and nested functions during scheduled alert checks.
-        for col in ("open", "high", "low", "close", "volume"):
-            if col in exec_env["df"].columns:
-                exec_env[col] = exec_env["df"][col]
-
-        result = safe_exec_with_validation(
+        result = safe_exec_indicator_isolated(
             code=code,
-            exec_globals=exec_env,
-            exec_locals=exec_env,
+            df=df,
+            params=params,
             timeout=20,
         )
         if not result.get("success"):
             raise RuntimeError(result.get("error") or "Indicator execution failed")
 
-        output = exec_env.get("output")
+        output = (result.get("result") or {}).get("output")
         if not isinstance(output, dict):
             raise ValueError("Indicator output must be a dict")
         return output

@@ -22,6 +22,7 @@ from urllib.parse import urlencode
 
 from app.services.live_trading.base import BaseRestClient, LiveOrderResult, LiveTradingError
 from app.services.live_trading.symbols import to_bitget_um_symbol
+from app.utils.numeric_precision import floor_decimal_to_step, format_decimal
 
 logger = logging.getLogger(__name__)
 
@@ -183,21 +184,7 @@ class BitgetSpotClient(BaseRestClient):
 
     @staticmethod
     def _floor_to_step(value: Decimal, step: Decimal) -> Decimal:
-        if step is None:
-            return value
-        if value <= 0:
-            return Decimal("0")
-        try:
-            st = Decimal(step)
-        except Exception:
-            st = Decimal("0")
-        if st <= 0:
-            return value
-        try:
-            n = (value / st).to_integral_value(rounding=ROUND_DOWN)
-            return n * st
-        except Exception:
-            return Decimal("0")
+        return floor_decimal_to_step(value, step)
 
     def _sign(self, ts_ms: str, method: str, path: str, body: str) -> str:
         prehash = f"{ts_ms}{method.upper()}{path}{body}"
@@ -448,10 +435,14 @@ class BitgetSpotClient(BaseRestClient):
             raise LiveTradingError("Invalid size/price")
         sz_dec, sz_precision = self._normalize_base_size(symbol=symbol, base_size=req)
         if float(sz_dec or 0) <= 0:
-            raise LiveTradingError(f"Invalid size (below step/min): requested={req}")
+            raise LiveTradingError(
+                f"Invalid size (below step/min): requested={format_decimal(req)}"
+            )
         px_dec, px_precision = self._normalize_limit_price(symbol=symbol, price=px)
         if float(px_dec or 0) <= 0:
-            raise LiveTradingError(f"Invalid price (below tick/min): requested={px}")
+            raise LiveTradingError(
+                f"Invalid price (below tick/min): requested={format_decimal(px)}"
+            )
 
         body: Dict[str, Any] = {
             "side": sd,
@@ -484,13 +475,16 @@ class BitgetSpotClient(BaseRestClient):
         if sd == "sell":
             sz_dec, sz_precision = self._normalize_base_size(symbol=symbol, base_size=req)
             if float(sz_dec or 0) <= 0:
-                raise LiveTradingError(f"Invalid size (below step/min): requested={req}")
+                raise LiveTradingError(
+                    f"Invalid size (below step/min): requested={format_decimal(req)}"
+                )
             sz_str = self._dec_str(sz_dec, strict_precision=sz_precision)
         else:
             sz_dec, sz_precision = self._normalize_quote_size(symbol=symbol, quote_size=req)
             if float(sz_dec or 0) <= 0:
                 raise LiveTradingError(
-                    f"Invalid quote size (below minTradeUSDT/precision): requested={req}"
+                    "Invalid quote size (below minTradeUSDT/precision): "
+                    f"requested={format_decimal(req)}"
                 )
             sz_str = self._dec_str(sz_dec, strict_precision=sz_precision)
 
@@ -693,4 +687,3 @@ class BitgetSpotClient(BaseRestClient):
         if isinstance(data, dict):
             return data
         return {}
-

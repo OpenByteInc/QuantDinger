@@ -77,6 +77,59 @@ AGENT_RESPONSE_LANGUAGES = {
     "zh-tw": "Traditional Chinese",
 }
 
+_AGENT_STRATEGY_TIMEFRAME_SECONDS = {
+    "1m": 60,
+    "3m": 180,
+    "5m": 300,
+    "15m": 900,
+    "30m": 1800,
+    "1h": 3600,
+    "4h": 14400,
+    "1d": 86400,
+    "1w": 604800,
+}
+
+
+def _strategy_timeframes_from_text(value: Any) -> list[str]:
+    """Extract canonical Strategy V2 timeframes without losing a multi-TF request."""
+    text = str(value or "").strip().lower()
+    replacements = {
+        "周线": " 1w ",
+        "日线": " 1d ",
+        "天线": " 1d ",
+        "小时": "h",
+        "分钟": "m",
+        "weekly": " 1w ",
+        "daily": " 1d ",
+    }
+    for source, target in replacements.items():
+        text = text.replace(source, target)
+    matches = re.findall(
+        r"(?<![a-z0-9])(1m|3m|5m|15m|30m|1h|4h|1d|1w)(?![a-z0-9])",
+        text,
+    )
+    return list(dict.fromkeys(matches))
+
+
+def _normalize_strategy_timeframes(
+    values: Any,
+    *,
+    message: str = "",
+    fallback: Any = "",
+) -> list[str]:
+    candidates: list[str] = []
+    if isinstance(values, (list, tuple)):
+        for value in values:
+            candidates.extend(_strategy_timeframes_from_text(value))
+    else:
+        candidates.extend(_strategy_timeframes_from_text(values))
+    candidates.extend(_strategy_timeframes_from_text(message))
+    if not candidates:
+        candidates.extend(_strategy_timeframes_from_text(fallback))
+    return list(dict.fromkeys(
+        item for item in candidates if item in _AGENT_STRATEGY_TIMEFRAME_SECONDS
+    ))
+
 
 def _now_utc() -> datetime:
     return store_now_utc()
@@ -204,6 +257,17 @@ def _fallback_agent_intent(
     if should_execute and not selected_symbol:
         required_missing.append("symbol")
 
+    explicit_timeframes = _strategy_timeframes_from_text(message)
+    requested_timeframes = _normalize_strategy_timeframes(
+        explicit_timeframes or (context or {}).get("timeframes"),
+        fallback=(context or {}).get("timeframe"),
+    )
+    driving_timeframe = min(
+        requested_timeframes,
+        key=lambda item: _AGENT_STRATEGY_TIMEFRAME_SECONDS[item],
+        default=str((context or {}).get("timeframe") or ""),
+    )
+
     return {
         "intent": base_intent,
         "confidence": 45,
@@ -215,7 +279,8 @@ def _fallback_agent_intent(
         "entities": {
             "symbol": selected_symbol,
             "market": (context or {}).get("market") or (context or {}).get("resolved_market") or "",
-            "timeframe": (context or {}).get("timeframe") or "",
+            "timeframe": driving_timeframe,
+            "timeframes": requested_timeframes,
             "exchange_id": (context or {}).get("exchange_id") or (context or {}).get("exchangeId") or "",
             "market_type": (context or {}).get("market_type") or (context or {}).get("marketType") or "",
             "instrument_id": (context or {}).get("instrument_id") or (context or {}).get("instrumentId") or "",
@@ -255,10 +320,21 @@ def _normalize_agent_intent(raw: dict, message: str, has_image: bool, context: d
     entities = raw.get("entities") if isinstance(raw.get("entities"), dict) else {}
     selected_symbol = context.get("resolved_symbol") or context.get("mentioned_symbol") or context.get("symbol") or context.get("selected_symbol") or ""
     selected_market = context.get("resolved_market") or context.get("mentioned_market") or context.get("market") or context.get("selected_market") or ""
+    requested_timeframes = _normalize_strategy_timeframes(
+        entities.get("timeframes"),
+        message=message if intent in {"strategy_build", "strategy_optimize", "backtest"} else "",
+        fallback=entities.get("timeframe") or context.get("timeframe") or context.get("timeframes"),
+    )
+    driving_timeframe = min(
+        requested_timeframes,
+        key=lambda item: _AGENT_STRATEGY_TIMEFRAME_SECONDS[item],
+        default=str(entities.get("timeframe") or context.get("timeframe") or "").strip(),
+    )
     entities = {
         "symbol": str(entities.get("symbol") or selected_symbol or "").strip(),
         "market": str(entities.get("market") or selected_market or "").strip(),
-        "timeframe": str(entities.get("timeframe") or context.get("timeframe") or "").strip(),
+        "timeframe": driving_timeframe,
+        "timeframes": requested_timeframes,
         "exchange_id": str(entities.get("exchange_id") or context.get("exchange_id") or context.get("exchangeId") or "").strip(),
         "market_type": str(entities.get("market_type") or context.get("market_type") or context.get("marketType") or "").strip(),
         "instrument_id": str(entities.get("instrument_id") or context.get("instrument_id") or context.get("instrumentId") or "").strip(),
@@ -314,7 +390,7 @@ def _classify_agent_intent(message: str, attachments: list[dict], context: dict,
         "workflow such as indicator creation, strategy creation, backtest, or scheduled analysis. "
         "For creation, use indicator_ide only for chart-only indicators and visual overlays. "
         "Use script_strategy for executable Strategy API V2 sources, backtestable strategies, live strategies, robots, or template-style requests. "
-        "Preserve selected timeframe, exchange_id, market_type, and instrument_id in entities. A missing timeframe is not blocking for strategy creation because the source generator chooses a conservative source-owned default. "
+        "Preserve selected timeframe, exchange_id, market_type, and instrument_id in entities. Single-timeframe is the default: never add a selected chart timeframe or an invented confirmation timeframe when the user names only one. When the user explicitly requests multiple strategy timeframes, preserve all of them in the ordered timeframes array and put the fastest one in timeframe. Never collapse a multi-timeframe request to one period. A missing timeframe is not blocking for strategy creation because the source generator chooses one conservative source-owned default. "
         "If the user asks to create/build/write/generate a runnable strategy and enough target context "
         "is available, set should_execute=true. If required data is missing, list it in required_missing. "
         "Support every configured UI language and mixed multilingual prompts."
@@ -331,6 +407,7 @@ def _classify_agent_intent(message: str, attachments: list[dict], context: dict,
             "symbol": "",
             "market": "",
             "timeframe": "",
+            "timeframes": [],
             "exchange_id": "",
             "market_type": "",
             "instrument_id": "",

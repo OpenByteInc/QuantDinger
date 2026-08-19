@@ -13,6 +13,7 @@ from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urlencode
 
 from app.services.live_trading.base import BaseRestClient, LiveOrderResult, LiveTradingError
+from app.utils.numeric_precision import floor_decimal_to_step, format_decimal
 
 logger = logging.getLogger(__name__)
 from app.services.live_trading.symbols import to_binance_futures_symbol
@@ -183,21 +184,7 @@ class BinanceSpotClient(BaseRestClient):
 
     @staticmethod
     def _floor_to_step(value: Decimal, step: Decimal) -> Decimal:
-        if step is None:
-            return value
-        if value <= 0:
-            return Decimal("0")
-        try:
-            st = Decimal(step)
-        except Exception:
-            st = Decimal("0")
-        if st <= 0:
-            return value
-        try:
-            n = (value / st).to_integral_value(rounding=ROUND_DOWN)
-            return n * st
-        except Exception:
-            return Decimal("0")
+        return floor_decimal_to_step(value, step)
 
     def _sign(self, query_string: str) -> str:
         return hmac.new(self.secret_key.encode("utf-8"), query_string.encode("utf-8"), hashlib.sha256).hexdigest()
@@ -367,7 +354,7 @@ class BinanceSpotClient(BaseRestClient):
             return value
         try:
             q = Decimal("1").scaleb(-p)
-            return value.quantize(q, rounding=ROUND_DOWN)
+            return floor_decimal_to_step(value, q)
         except Exception:
             return value
 
@@ -510,10 +497,14 @@ class BinanceSpotClient(BaseRestClient):
             raise LiveTradingError("Invalid quantity/price")
         q_dec, qty_precision = self._normalize_quantity(symbol=symbol, quantity=q_req, for_market=False)
         if float(q_dec or 0) <= 0:
-            raise LiveTradingError(f"Invalid quantity (below step/minQty): requested={q_req}")
+            raise LiveTradingError(
+                f"Invalid quantity (below step/minQty): requested={format_decimal(q_req)}"
+            )
         px_dec = self._normalize_price(symbol=symbol, price=px)
         if float(px_dec or 0) <= 0:
-            raise LiveTradingError(f"Invalid price (bad tick/minPrice): requested={px}")
+            raise LiveTradingError(
+                f"Invalid price (bad tick/minPrice): requested={format_decimal(px)}"
+            )
 
         params: Dict[str, Any] = {
             "symbol": sym,
@@ -578,7 +569,8 @@ class BinanceSpotClient(BaseRestClient):
             )
             if float(q_dec or 0) <= 0:
                 raise LiveTradingError(
-                    f"Invalid quoteOrderQty (below MIN_NOTIONAL or precision): requested={q_req}"
+                    "Invalid quoteOrderQty (below MIN_NOTIONAL or precision): "
+                    f"requested={format_decimal(q_req)}"
                 )
             params["quoteOrderQty"] = self._dec_str(q_dec, strict_precision=quote_precision)
             debug_extra = (
@@ -591,7 +583,9 @@ class BinanceSpotClient(BaseRestClient):
                 symbol=symbol, quantity=q_req, for_market=True
             )
             if float(q_dec or 0) <= 0:
-                raise LiveTradingError(f"Invalid quantity (below step/minQty): requested={q_req}")
+                raise LiveTradingError(
+                    f"Invalid quantity (below step/minQty): requested={format_decimal(q_req)}"
+                )
             params["quantity"] = self._dec_str(q_dec, strict_precision=qty_precision)
             debug_extra = (
                 f"mode=quantity qty_req={q_req} "
