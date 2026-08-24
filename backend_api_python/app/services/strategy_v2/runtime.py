@@ -791,6 +791,14 @@ class MultiAssetSimulationBroker:
             liquidity_cap = None if forced_liquidation else self._liquidity_cap(bar, lot_size)
             if liquidity_cap is not None and abs(delta) > liquidity_cap:
                 delta = math.copysign(liquidity_cap, delta)
+            # Validate MIN_NOTIONAL: if the order notional is below the exchange minimum, reject
+            min_notional = self._min_notional(bar)
+            if min_notional > 0 and fill_price > 0 and abs(delta * fill_price) < min_notional:
+                batch_event_indexes.append(self._append_order_event(self._order_event(
+                    order_id, order, timestamp, "rejected", "min_notional",
+                    requested_quantity=abs(requested_delta),
+                )))
+                continue
             if forced_liquidation:
                 feasible_delta, constraint_reason = delta, ""
             else:
@@ -829,6 +837,9 @@ class MultiAssetSimulationBroker:
             current.avg_cost = _next_average_cost(old_amount, current.avg_cost, delta, fill_price)
             current.last_price = fill_price
             self.portfolio.available_cash = projected_cash
+            # Force sub-lot residuals to zero: if position amount is below lot_size, treat as fully closed
+            if abs(current.amount) <= lot_size - 1e-12:
+                current.amount = 0.0
             if abs(current.amount) <= 1e-12:
                 self.portfolio.positions.pop(position_key, None)
                 self._protections.pop(position_key, None)
@@ -1061,13 +1072,19 @@ class MultiAssetSimulationBroker:
         explicit = float((bar or {}).get("lot_size") or 0.0)
         if explicit > 0:
             return explicit
+        # Fallback for backward compatibility: Crypto perpetuals on Binance use integer coin lots
+        # (stepSize = "1" meaning 1 coin), not 1e-8.
         return 1e-8 if str(symbol).startswith("Crypto:") else 1.0
+
+    @staticmethod
+    def _min_notional(bar: Mapping[str, Any] | None) -> float:
+        return float((bar or {}).get("min_notional") or 0.0)
 
     @staticmethod
     def _round_to_lot(value: float, lot_size: float) -> float:
         if lot_size <= 0:
             return value
-        units = math.floor(abs(value) / lot_size + 1e-8)
+        units = math.floor(abs(value) / lot_size + 1e-12)
         return math.copysign(units * lot_size, value) if units else 0.0
 
     @staticmethod

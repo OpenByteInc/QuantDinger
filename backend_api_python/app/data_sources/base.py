@@ -71,7 +71,9 @@ class BaseDataSource(ABC):
         high: float,
         low: float,
         close: float,
-        volume: float
+        volume: float,
+        lot_size: float = 0.0,
+        min_notional: float = 0.0
     ) -> Dict[str, Any]:
         """Normalize one K-line row."""
         return {
@@ -80,7 +82,9 @@ class BaseDataSource(ABC):
             'high': round(float(high), 4),
             'low': round(float(low), 4),
             'close': round(float(close), 4),
-            'volume': round(float(volume), 2)
+            'volume': round(float(volume), 2),
+            'lot_size': lot_size,
+            'min_notional': min_notional
         }
     
     def calculate_time_range(

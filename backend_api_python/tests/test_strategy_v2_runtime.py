@@ -1067,6 +1067,219 @@ def handle_data(context, data):
     assert restored.program.state.counter == 0
 
 
+def test_crypto_integer_lot_size_no_dust_on_close():
+    """
+    Test that when using real exchange lot_size (fractional for BTC, integer for low-priced perps),
+    closing a position does not leave sub-lot dust that blocks re-entry.
+    
+    This reproduces the issue from #219 where 1e-8 hardcoded lot_size caused
+    dust to remain after partial fills due to liquidity caps.
+    """
+    # Simulate a crypto perp with realistic BTC lot_size (0.001 BTC)
+    # Price: ~50,000 USDT, volume allows only 0.1 BTC per bar due to 10% liquidity cap
+    prices = [50000, 51000, 52000, 53000, 54000]
+    index = pd.date_range("2026-01-01", periods=len(prices), freq="1min")
+    frame = pd.DataFrame({
+        "open": prices,
+        "high": [p * 1.001 for p in prices],
+        "low": [p * 0.999 for p in prices],
+        "close": prices,
+        "volume": [0.1] * len(prices),  # Low volume so liquidity cap = 0.1 BTC
+        "lot_size": [0.001] * len(prices),  # BTC perp lot size (0.001 BTC)
+        "min_notional": [5.0] * len(prices),  # Min 5 USDT notional
+    }, index=index)
+    
+    code = """
+def initialize(context):
+    g.symbol = "Crypto:BTC/USDT@swap"
+    g.step = 0
+    context.set_universe([g.symbol])
+    context.subscribe(frequency="1m")
+
+def handle_data(context, data):
+    if g.step == 0:
+        order_target_value(g.symbol, 5000, reason="entry")  # ~0.1 BTC
+    elif g.step == 1:
+        order_target_value(g.symbol, 0, reason="exit")  # Full close
+    g.step += 1
+"""
+    result = StrategyV2BacktestRunner(
+        code=code,
+        frames={"Crypto:BTC/USDT@swap": frame},
+        initial_capital=10_000,
+        commission=0.0005,
+        slippage=0.0005,
+    ).run()
+    
+    # Should have 2 executions (entry + exit)
+    assert result["totalExecutions"] == 2
+    assert result["totalTrades"] == 1
+    
+    # Position should be fully closed (no dust remaining)
+    trade = result["closedTrades"][0]
+    assert trade["profit"] != 0  # Trade actually happened
+    
+    # No rejected orders due to minimum_trade_unit dust
+    rejected_reasons = [item["statusReason"] for item in result["orderLedger"] if item["status"] == "rejected"]
+    assert "minimum_trade_unit" not in rejected_reasons, f"Dust caused minimum_trade_unit rejection: {rejected_reasons}"
+    
+    # Position should be cleanly closed
+    assert len(result["executions"]) == 2
+    assert result["executions"][0]["side"] == "buy"
+    assert result["executions"][1]["side"] == "sell"
+
+
+def test_crypto_min_notional_rejection():
+    """
+    Test that orders below MIN_NOTIONAL are rejected.
+    """
+    prices = [100, 100, 100]
+    index = pd.date_range("2026-01-01", periods=len(prices), freq="1min")
+    frame = pd.DataFrame({
+        "open": prices,
+        "high": prices,
+        "low": prices,
+        "close": prices,
+        "volume": [10000] * len(prices),
+        "lot_size": [0.01] * len(prices),  # Realistic lot size
+        "min_notional": [100.0] * len(prices),  # Min 100 USDT notional
+    }, index=index)
+    
+    code = """
+def initialize(context):
+    g.symbol = "Crypto:BTC/USDT@swap"
+    g.sent = False
+    context.set_universe([g.symbol])
+    context.subscribe(frequency="1m")
+
+def handle_data(context, data):
+    if not g.sent:
+        order_target_value(g.symbol, 50, reason="entry")  # Below min notional of 100
+        g.sent = True
+"""
+    result = StrategyV2BacktestRunner(
+        code=code,
+        frames={"Crypto:BTC/USDT@swap": frame},
+        initial_capital=10_000,
+        commission=0.0005,
+        slippage=0.0005,
+    ).run()
+    
+    # Order should be rejected due to min_notional
+    rejected_reasons = [item["statusReason"] for item in result["orderLedger"] if item["status"] == "rejected"]
+    assert "min_notional" in rejected_reasons, f"Expected min_notional rejection, got: {rejected_reasons}"
+
+
+def test_crypto_position_dust_forced_to_zero():
+    """
+    Test that sub-lot position residuals are forced to zero.
+    """
+    prices = [100, 100, 100]
+    index = pd.date_range("2026-01-01", periods=len(prices), freq="1min")
+    frame = pd.DataFrame({
+        "open": prices,
+        "high": prices,
+        "low": prices,
+        "close": prices,
+        "volume": [10000] * len(prices),
+        "lot_size": [0.01] * len(prices),  # Lot size = 0.01 units
+        "min_notional": [1.0] * len(prices),
+    }, index=index)
+    
+    code = """
+def initialize(context):
+    g.symbol = "Crypto:BTC/USDT@swap"
+    g.step = 0
+    context.set_universe([g.symbol])
+    context.subscribe(frequency="1m")
+
+def handle_data(context, data):
+    if g.step == 0:
+        order(g.symbol, 0.25, reason="entry")  # 0.25 units, will be rounded to 0.20 (20 lots)
+    elif g.step == 1:
+        order(g.symbol, -0.25, reason="exit")  # Try to close 0.25, but only 0.20 exist
+    g.step += 1
+"""
+    result = StrategyV2BacktestRunner(
+        code=code,
+        frames={"Crypto:BTC/USDT@swap": frame},
+        initial_capital=10_000,
+        commission=0.0005,
+        slippage=0.0005,
+    ).run()
+    
+    # Should have 2 executions
+    assert result["totalExecutions"] == 2
+    assert result["totalTrades"] == 1
+    
+    # Position should be fully closed (no 0.05-unit dust remaining)
+    trade = result["closedTrades"][0]
+    assert abs(trade.get("exit_price", 0) - 100) < 1  # Exit at expected price
+    
+    # No minimum_trade_unit rejection
+    rejected_reasons = [item["statusReason"] for item in result["orderLedger"] if item["status"] == "rejected"]
+    assert "minimum_trade_unit" not in rejected_reasons
+
+
+def test_backtest_results_independent_of_initial_capital():
+    """
+    Test that backtest execution results are independent of initial capital
+    (the core issue from #219: larger positions hit liquidity cap more often,
+    leaving more dust with hardcoded 1e-8 lot_size).
+    """
+    prices = [50000, 51000, 52000, 53000]
+    index = pd.date_range("2026-01-01", periods=len(prices), freq="1min")
+    frame = pd.DataFrame({
+        "open": prices,
+        "high": [p * 1.001 for p in prices],
+        "low": [p * 0.999 for p in prices],
+        "close": prices,
+        "volume": [0.2] * len(prices),  # Very low volume -> tight liquidity cap (0.02 BTC per bar)
+        "lot_size": [0.001] * len(prices),  # BTC perp lot size (0.001 BTC)
+        "min_notional": [5.0] * len(prices),
+    }, index=index)
+    
+    code = """
+def initialize(context):
+    g.symbol = "Crypto:BTC/USDT@swap"
+    g.step = 0
+    context.set_universe([g.symbol])
+    context.subscribe(frequency="1m")
+
+def handle_data(context, data):
+    if g.step == 0:
+        order_target_value(g.symbol, 100000, reason="entry")  # 2 BTC
+    elif g.step == 1:
+        order_target_value(g.symbol, 0, reason="exit")  # Full close
+    g.step += 1
+"""
+    # Run with different initial capitals
+    result_small = StrategyV2BacktestRunner(
+        code=code,
+        frames={"Crypto:BTC/USDT@swap": frame},
+        initial_capital=50_000,  # Can only afford ~1 BTC
+        commission=0.0005,
+        slippage=0.0005,
+    ).run()
+    
+    result_large = StrategyV2BacktestRunner(
+        code=code,
+        frames={"Crypto:BTC/USDT@swap": frame},
+        initial_capital=500_000,  # Can afford 10 BTC
+        commission=0.0005,
+        slippage=0.0005,
+    ).run()
+    
+    # Both should complete the trade (no dust blocking)
+    assert result_small["totalTrades"] == 1, f"Small capital: {result_small['totalTrades']} trades"
+    assert result_large["totalTrades"] == 1, f"Large capital: {result_large['totalTrades']} trades"
+    
+    # Both should have no minimum_trade_unit rejections
+    for result in [result_small, result_large]:
+        rejected = [item["statusReason"] for item in result["orderLedger"] if item["status"] == "rejected"]
+        assert "minimum_trade_unit" not in rejected, f"Dust rejection: {rejected}"
+
+
 def test_strategy_can_cancel_a_resting_limit_before_a_later_bar_crosses_it():
     index = pd.date_range("2026-01-01", periods=4, freq="1min")
     frame = pd.DataFrame({

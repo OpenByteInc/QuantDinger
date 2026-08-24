@@ -379,6 +379,48 @@ class CryptoDataSource(BaseDataSource):
         
         return None
     
+    def _get_lot_size_and_min_notional(self, symbol: str) -> tuple[float, float]:
+        """
+        Get lot_size (stepSize) and min_notional for a symbol from exchange markets.
+        
+        Args:
+            symbol: Normalized symbol (e.g., 'BTC/USDT')
+        
+        Returns:
+            Tuple of (lot_size, min_notional) in base currency units.
+            Returns (0.0, 0.0) if not available.
+        """
+        if not self._ensure_markets_loaded():
+            return 0.0, 0.0
+        
+        markets = self._markets_cache or {}
+        if not markets or symbol not in markets:
+            return 0.0, 0.0
+        
+        market = markets[symbol]
+        lot_size = 0.0
+        min_notional = 0.0
+        
+        # Get lot_size from precision.amount or limits.amount.min
+        precision = market.get('precision', {})
+        if isinstance(precision, dict) and precision.get('amount') is not None:
+            lot_size = float(precision['amount'])
+        
+        # Fallback to limits.amount.min
+        if lot_size <= 0:
+            limits = market.get('limits', {})
+            amount_limits = limits.get('amount', {}) if isinstance(limits, dict) else {}
+            if isinstance(amount_limits, dict) and amount_limits.get('min') is not None:
+                lot_size = float(amount_limits['min'])
+        
+        # Get min_notional from limits.cost.min
+        limits = market.get('limits', {})
+        cost_limits = limits.get('cost', {}) if isinstance(limits, dict) else {}
+        if isinstance(cost_limits, dict) and cost_limits.get('min') is not None:
+            min_notional = float(cost_limits['min'])
+        
+        return lot_size, min_notional
+
     def _normalize_symbol_for_exchange(self, symbol: str) -> str:
         """
         根据交易所特性规范化符号
@@ -595,13 +637,21 @@ class CryptoDataSource(BaseDataSource):
             for candle in ohlcv:
                 if len(candle) < 6:
                     continue
+                # Get lot_size and min_notional from exchange market data
+                lot_size = 0.0
+                min_notional = 0.0
+                if self._ensure_markets_loaded() and symbol_pair in (self._markets_cache or {}):
+                    lot_size, min_notional = self._get_lot_size_and_min_notional(symbol_pair)
+                
                 klines.append(self.format_kline(
                     timestamp=int(candle[0] / 1000),  # 毫秒转秒
                     open_price=candle[1],
                     high=candle[2],
                     low=candle[3],
                     close=candle[4],
-                    volume=candle[5]
+                    volume=candle[5],
+                    lot_size=lot_size,
+                    min_notional=min_notional
                 ))
             
             klines = self.filter_and_limit(
