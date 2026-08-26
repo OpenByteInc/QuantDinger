@@ -35,7 +35,7 @@ def test_fxmacrodata_daily_kline_fetch(monkeypatch):
         {"time": 1704240000, "open": 1.092, "high": 1.092, "low": 1.092, "close": 1.092, "volume": 0.0},
     ]
     assert captured == {
-        "url": "https://fxmacrodata.com/api/v1/forex/eur/usd",
+        "url": "https://api.fxmacrodata.com/v1/forex/eur/usd",
         "params": {
             "start_date": "2024-01-22",
             "end_date": "2024-02-01",
