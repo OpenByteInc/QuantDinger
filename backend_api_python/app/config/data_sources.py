@@ -286,7 +286,7 @@ class TiingoConfig(metaclass=MetaTiingoConfig):
 class MetaFXMacroDataConfig(type):
     @property
     def BASE_URL(cls):
-        return _config_str('fxmacrodata', 'base_url', 'FXMACRODATA_BASE_URL', 'https://fxmacrodata.com/api/v1').rstrip('/')
+        return _config_str('fxmacrodata', 'base_url', 'FXMACRODATA_BASE_URL', 'https://api.fxmacrodata.com/v1').rstrip('/')
 
     @property
     def API_KEY(cls):
