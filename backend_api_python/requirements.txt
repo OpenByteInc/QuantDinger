@@ -53,6 +53,7 @@ reportlab>=5.0.0
 bcrypt>=5.0.0
 # Interactive Brokers trading (optional, for US stock trading via TWS/IB Gateway)
 ib_insync>=0.9.86
+futu-api>=6.0.0
 # Enhanced search services (optional, for better news search)
 # Tavily - AI-optimized search API (free 1000 requests/month)
 # tavily-python>=0.3.0

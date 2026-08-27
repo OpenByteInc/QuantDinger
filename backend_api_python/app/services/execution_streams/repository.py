@@ -294,7 +294,11 @@ class ExecutionEventRepository:
         self.register_binding(
             credential_id=int(data.get("credential_id") or credential_id),
             exchange_id=exchange_id,
-            market_type=str(data.get("market_type") or market_type),
+            # A broker push uses its canonical stock market (for example
+            # ``hkstock``), while legacy pending rows may store execution
+            # product type ``spot``. Register with the event market first so
+            # the recursive lookup below can actually match the new binding.
+            market_type=str(market_type or data.get("market_type")),
             owner_type=str(data.get("owner_type")),
             owner_id=int(data.get("owner_id") or 0),
             user_id=int(data.get("user_id") or 1),

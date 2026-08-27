@@ -357,6 +357,87 @@ def parse_alpaca(payload: Dict[str, Any]) -> List[ExecutionEvent]:
     ]
 
 
+def parse_futu_deal(payload: Dict[str, Any]) -> List[ExecutionEvent]:
+    """Normalize a Futu trade-deal push / order row into ExecutionEvent list."""
+    if not isinstance(payload, dict):
+        return []
+    code = str(payload.get("code") or payload.get("symbol") or "")
+    try:
+        from app.services.futu_trading.symbols import from_futu_code
+
+        display, market = from_futu_code(code)
+    except Exception:
+        display, market = code, "HKStock"
+    order_id = str(payload.get("order_id") or payload.get("orderId") or "")
+    deal_id = str(payload.get("deal_id") or payload.get("exchange_fill_id") or payload.get("exec_id") or "")
+    is_order_snapshot = not bool(deal_id)
+    if is_order_snapshot:
+        # Order pushes expose cumulative dealt_qty and an aggregate fill price.
+        # Their ``price`` field is the order's limit price, not execution price.
+        qty = 0.0
+        cumulative_qty = as_float(payload.get("dealt_qty") or payload.get("filled"))
+        price = as_float(
+            payload.get("dealt_avg_price")
+            or payload.get("avg_price")
+            or payload.get("price")
+        )
+    else:
+        # TradeDealHandler rows carry a stable deal_id and per-deal qty/price.
+        qty = as_float(payload.get("qty") or payload.get("quantity"))
+        cumulative_qty = as_float(payload.get("dealt_qty"))
+        price = as_float(
+            payload.get("price")
+            or payload.get("dealt_avg_price")
+            or payload.get("avg_price")
+        )
+    remark = str(payload.get("remark") or payload.get("client_order_id") or "")
+    side = str(payload.get("trd_side") or payload.get("side") or "").lower()
+    if "." in side:
+        side = side.split(".")[-1]
+    if side in ("buy", "buy_back"):
+        side = "buy"
+    elif side in ("sell", "sell_short"):
+        side = "sell"
+    status = normalize_status(payload.get("order_status") or payload.get("status") or "partial")
+    if status == "partial" and as_float(payload.get("dealt_qty")) > 0:
+        # keep partial; filled_all maps via normalize_status
+        pass
+    market_type = "hkstock" if market == "HKStock" else "usstock"
+    occurred = payload.get("create_time") or payload.get("updated_time") or payload.get("time")
+    try:
+        if isinstance(occurred, str) and occurred:
+            from app.services.futu_trading.timezones import market_timezone
+
+            occurred_at = (
+                datetime.strptime(occurred[:19], "%Y-%m-%d %H:%M:%S")
+                .replace(tzinfo=market_timezone(market))
+                .astimezone(timezone.utc)
+            )
+        else:
+            occurred_at = datetime.now(timezone.utc)
+    except Exception:
+        occurred_at = datetime.now(timezone.utc)
+    return [
+        ExecutionEvent(
+            exchange_id="futu",
+            market_type=market_type,
+            symbol=display or code,
+            exchange_order_id=order_id,
+            client_order_id=remark,
+            exchange_fill_id=deal_id,
+            side=side,
+            order_status=status if status in ("filled", "partial", "cancelled", "open") else "partial",
+            price=price,
+            quantity=abs(qty),
+            cumulative_quantity=abs(cumulative_qty),
+            is_cumulative=is_order_snapshot,
+            fee_status="pending",
+            occurred_at=occurred_at,
+            raw=payload,
+        )
+    ]
+
+
 def parse_ibkr_execution(execution: Any, contract: Any = None) -> ExecutionEvent:
     symbol = str(getattr(contract, "symbol", "") or getattr(execution, "symbol", ""))
     occurred = getattr(execution, "time", None)

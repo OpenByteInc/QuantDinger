@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 from app.services.execution_streams import supervisor as supervisor_module
-from app.services.execution_streams.supervisor import ExecutionStreamSupervisor
+from app.services.execution_streams.supervisor import ExecutionStreamSupervisor, StreamSpec
 
 
 def test_stream_discovery_only_loads_credentials_used_by_active_work(monkeypatch):
@@ -72,6 +72,130 @@ def test_stream_discovery_applies_adapter_cap_and_uses_rest_for_overflow(monkeyp
 
     assert len(specs) == 1
     assert specs[0].key == "binance:7:spot"
+
+
+def test_stream_discovery_registers_futu_with_canonical_stock_key(monkeypatch):
+    service = ExecutionStreamSupervisor()
+    monkeypatch.setattr(service, "_symbols_by_credential", lambda: {9: {"AAPL"}})
+    monkeypatch.setattr(
+        service,
+        "_credential_rows",
+        lambda _ids: [{
+            "id": 9,
+            "user_id": 3,
+            "exchange_id": "futu",
+            "encrypted_config": "encrypted",
+        }],
+    )
+    monkeypatch.setattr(
+        supervisor_module,
+        "decrypt_credential_blob",
+        lambda _value: json.dumps({"trade_market": "US"}),
+    )
+
+    specs = service._discover_specs()
+
+    assert [spec.key for spec in specs] == ["futu:9:stock"]
+    assert specs[0].market_type == "stock"
+    assert service._stream_key_for_event(
+        type("Event", (), {
+            "exchange_id": "futu",
+            "credential_id": 9,
+            "market_type": "USStock",
+        })()
+    ) == "futu:9:stock"
+
+
+def test_reconcile_replaces_disconnected_adapter_with_unchanged_spec(monkeypatch):
+    service = ExecutionStreamSupervisor()
+    spec = StreamSpec(
+        key="futu:9:stock",
+        credential_id=9,
+        user_id=3,
+        exchange_id="futu",
+        market_type="stock",
+        config_json="{}",
+        symbols=("AAPL",),
+    )
+
+    class OldAdapter:
+        connected = False
+
+        def stop(self):
+            return True
+
+    created = []
+
+    class NewAdapter:
+        connected = False
+
+        def __init__(self, **_kwargs):
+            created.append(self)
+
+        def start(self):
+            self.connected = True
+
+    service._adapters[spec.key] = OldAdapter()
+    service._specs[spec.key] = spec
+    monkeypatch.setattr(service, "_discover_specs", lambda: [spec])
+    monkeypatch.setattr(service, "_run_rest_catchup_limited", lambda *_args, **_kwargs: None)
+    monkeypatch.setitem(supervisor_module.ADAPTERS, "futu", NewAdapter)
+
+    service._reconcile()
+
+    assert created
+    assert service._adapters[spec.key] is created[0]
+    assert created[0].connected
+
+
+def test_reconcile_does_not_start_second_futu_stream_when_stop_times_out(monkeypatch):
+    service = ExecutionStreamSupervisor()
+    spec = StreamSpec(
+        key="futu:9:stock",
+        credential_id=9,
+        user_id=3,
+        exchange_id="futu",
+        market_type="stock",
+        config_json="{}",
+        symbols=("AAPL",),
+    )
+
+    class OldAdapter:
+        connected = False
+        orphaned = False
+        credential_id = 9
+
+        def stop(self):
+            self.orphaned = True
+            return False
+
+        def is_alive(self):
+            return True
+
+    created = []
+
+    class NewAdapter:
+        connected = False
+
+        def __init__(self, **_kwargs):
+            created.append(self)
+
+        def start(self):
+            self.connected = True
+
+    service._adapters[spec.key] = OldAdapter()
+    service._specs[spec.key] = spec
+    monkeypatch.setattr(service, "_discover_specs", lambda: [spec])
+    monkeypatch.setattr(service, "_run_rest_catchup_limited", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(service, "_health_detail", lambda *_args, **_kwargs: "orphaned")
+    monkeypatch.setattr(service.repository, "update_health", lambda **_kwargs: None)
+    monkeypatch.setitem(supervisor_module.ADAPTERS, "futu", NewAdapter)
+
+    service._reconcile()
+
+    assert created == []
+    assert spec.key not in service._adapters
+    assert spec.key in service._orphans
 
 
 def test_active_stream_query_excludes_stopped_and_signal_strategies(monkeypatch):

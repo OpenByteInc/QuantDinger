@@ -46,6 +46,7 @@ logger = get_logger(__name__)
 
 IBKRClient = None
 AlpacaClient = None
+FutuClient = None
 _POSITION_SYNC_FD_BACKOFF_UNTIL = 0.0
 
 
@@ -202,6 +203,14 @@ class PendingOrderPositionSyncMixin:
                     except ImportError:
                         pass
 
+                global FutuClient
+                if FutuClient is None:
+                    try:
+                        from app.services.futu_trading import FutuClient as _FutuClient
+                        FutuClient = _FutuClient
+                    except ImportError:
+                        pass
+
                 cache_key = position_sync_cache_key(sync_user_id, exchange_id, market_type, exchange_config)
                 cached_snap = get_position_sync_snapshot(cache_key)
                 exch_size: Dict[str, Dict[str, float]] = {}
@@ -222,7 +231,11 @@ class PendingOrderPositionSyncMixin:
 
                     # Try to create the client; skip strategies with invalid exchange config.
                     try:
-                        client = create_client(exchange_config, market_type=market_type)
+                        client = create_client(
+                            exchange_config,
+                            market_type=market_type,
+                            need_quote=str(exchange_id or "").strip().lower() != "futu",
+                        )
                     except Exception as e:
                         msg = str(e)
                         if is_fatal_exchange_error(msg):
@@ -532,6 +545,57 @@ class PendingOrderPositionSyncMixin:
                                 if avg > 0:
                                     exch_entry_price.setdefault(sym, {"long": 0.0, "short": 0.0})[side_str] = avg
                         # Continue to reconciliation logic below
+
+                    elif FutuClient is not None and isinstance(client, FutuClient):
+                        try:
+                            positions = client.get_positions() or []
+                        except Exception as e:
+                            msg = str(e)
+                            if is_file_descriptor_exhausted(e):
+                                set_exchange_sync_backoff(cache_key, seconds=_position_sync_fd_backoff_sec())
+                                _activate_position_sync_fd_backoff(msg)
+                                return
+                            if is_fatal_exchange_error(msg):
+                                logger.error(
+                                    "[PositionSync] Strategy %s Futu fatal error; auto-stopping. error=%s",
+                                    sid,
+                                    msg,
+                                )
+                                auto_stop_live_strategy(int(sid), msg, source="position_sync_futu")
+                            else:
+                                logger.error(
+                                    f"[PositionSync] Strategy {sid} Futu get_positions failed: {e}",
+                                    exc_info=True,
+                                )
+                            continue
+                        finally:
+                            disconnect = getattr(client, "disconnect", None)
+                            if callable(disconnect):
+                                try:
+                                    disconnect()
+                                except Exception:
+                                    pass
+                        if isinstance(positions, list):
+                            for p in positions:
+                                if not isinstance(p, dict):
+                                    continue
+                                sym = str(p.get("symbol") or p.get("futu_code") or "").strip()
+                                try:
+                                    qty = float(p.get("quantity") or p.get("qty") or 0.0)
+                                except Exception:
+                                    qty = 0.0
+                                try:
+                                    avg = float(p.get("avgCost") or p.get("avg_cost") or 0.0)
+                                except Exception:
+                                    avg = 0.0
+                                if not sym or abs(qty) <= 0:
+                                    continue
+                                side_str = str(p.get("side") or "").strip().lower()
+                                if side_str not in ("long", "short"):
+                                    side_str = "long" if qty > 0 else "short"
+                                exch_size.setdefault(sym, {"long": 0.0, "short": 0.0})[side_str] = abs(qty)
+                                if avg > 0:
+                                    exch_entry_price.setdefault(sym, {"long": 0.0, "short": 0.0})[side_str] = avg
 
                     elif market_type == "spot":
                         from app.services.live_trading.spot_wallet_snapshot import list_spot_wallet_positions

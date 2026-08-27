@@ -36,6 +36,8 @@ def _build_broker_markets() -> Dict[str, Dict[str, Set[str]]]:
         # US stocks via Interactive Brokers (TWS/Gateway, local desktop only)
         "ibkr": {"USStock": {"spot"}},
         "alpaca": {"USStock": {"spot"}},
+        # Futu OpenD: HK + US equities (spot, long-only)
+        "futu": {"HKStock": {"spot"}, "USStock": {"spot"}},
     }
     for ex, capability in CRYPTO_VENUE_CAPABILITIES.items():
         matrix[ex] = {"Crypto": set(capability.market_types)}
@@ -52,7 +54,7 @@ BROKER_MARKETS: Dict[str, Dict[str, Set[str]]] = _build_broker_markets()
 # margin accounts, but neither _execute_ibkr_order nor _execute_alpaca_order
 # in pending_order_worker.py implement the short path (they reject any
 # signal containing 'short').
-LONG_ONLY_BROKERS: Set[str] = {"ibkr", "alpaca"}
+LONG_ONLY_BROKERS: Set[str] = {"ibkr", "alpaca", "futu"}
 
 
 # Map bot strategy type -> markets where that bot makes sense and can
@@ -65,15 +67,15 @@ LONG_ONLY_BROKERS: Set[str] = {"ibkr", "alpaca"}
 BOT_TYPE_MARKETS: Dict[str, Set[str]] = {
     "grid":       {"Crypto"},
     "martingale": {"Crypto"},
-    "dca":        {"Crypto", "USStock"},
-    "trend":      {"Crypto", "USStock"},
+    "dca":        {"Crypto", "USStock", "HKStock"},
+    "trend":      {"Crypto", "USStock", "HKStock"},
 }
 
 
 # Markets we recognize as legal canonical values. Anything outside this set
-# is considered analysis/backtest-only (e.g. CNStock, HKStock, MOEX, Futures
+# is considered analysis/backtest-only (e.g. CNStock, MOEX, Futures
 # generic) and may not be used for live strategies.
-LIVE_MARKET_CATEGORIES: Set[str] = {"Crypto", "USStock"}
+LIVE_MARKET_CATEGORIES: Set[str] = {"Crypto", "USStock", "HKStock"}
 
 
 # ---------------------------------------------------------------------------
@@ -174,7 +176,7 @@ def validate_strategy_config(
             raise ValueError(
                 f"market_category='{mc}' is not supported for live trading. "
                 f"Supported: {sorted(LIVE_MARKET_CATEGORIES)}. "
-                "(CNStock / HKStock / MOEX / Futures are analysis-only.)"
+                "(CNStock / MOEX / Futures are analysis-only.)"
             )
         if require_exchange:
             raise ValueError(
@@ -199,7 +201,7 @@ def validate_strategy_config(
         raise ValueError(
             f"market_category='{mc}' is not supported for live trading. "
             f"Supported: {sorted(LIVE_MARKET_CATEGORIES)}. "
-            "(CNStock / HKStock / MOEX / Futures are analysis-only.)"
+            "(CNStock / MOEX / Futures are analysis-only.)"
         )
 
     if mc and mc not in BROKER_MARKETS[ex]:
@@ -227,7 +229,7 @@ def validate_strategy_config(
             f"long-only (got trade_direction='{td}'). For short selling "
             f"please use a perpetual-swap crypto exchange "
             f"(Binance/OKX/Bybit/Bitget) for crypto. "
-            f"Stock short selling on IBKR/Alpaca is not yet implemented."
+            f"Stock short selling on IBKR/Alpaca/Futu is not yet implemented."
         )
 
     # Rule 6: crypto short requires swap.

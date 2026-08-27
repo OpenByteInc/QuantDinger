@@ -10,6 +10,7 @@ import json
 import ssl
 import threading
 import time
+from collections import OrderedDict
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Iterable, List, Optional
 from urllib.parse import urlencode, urlparse
@@ -22,6 +23,7 @@ from app.services.execution_streams.normalizers import (
     parse_binance,
     parse_bitget,
     parse_bybit,
+    parse_futu_deal,
     parse_gate,
     parse_htx,
     parse_ibkr_execution,
@@ -729,6 +731,178 @@ class IBKRExecutionAdapter:
         self.on_event(event)
 
 
+class FutuExecutionAdapter:
+    """Poll / push FutuOpenD deal updates through TradeDealHandler callbacks."""
+
+    def __init__(
+        self,
+        *,
+        credential_id: int,
+        user_id: int,
+        config: Dict[str, Any],
+        on_event: EventCallback,
+        on_state: StateCallback,
+        **_: Any,
+    ) -> None:
+        self.credential_id = int(credential_id or 0)
+        self.user_id = int(user_id or 1)
+        self.config = dict(config or {})
+        self.on_event = on_event
+        self.on_state = on_state
+        self._client: Any = None
+        self._thread: Optional[threading.Thread] = None
+        self._stop = threading.Event()
+        self._fill_lock = threading.Lock()
+        self._deal_ids_by_order: Dict[str, set[str]] = {}
+        self._deal_quantity_by_order: Dict[str, float] = {}
+        self._order_cumulative_by_order: Dict[str, float] = {}
+        self._fill_order_lru: OrderedDict[str, None] = OrderedDict()
+        self.orphaned = False
+        self._connect_backoff_sec = 1.0
+
+    @property
+    def stream_key(self) -> str:
+        return f"futu:{self.credential_id}:stock"
+
+    @property
+    def connected(self) -> bool:
+        return bool(self._client and self._client.connected)
+
+    @property
+    def is_alive(self) -> bool:
+        return bool(self._thread and self._thread.is_alive())
+
+    def start(self) -> None:
+        if self.orphaned:
+            logger.warning(
+                "Refusing to start a second Futu execution stream while an orphaned thread is alive key=%s",
+                self.stream_key,
+            )
+            return
+        if self.is_alive:
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._run, name=f"ExecStream-{self.stream_key}", daemon=True)
+        self._thread.start()
+
+    def stop(self, timeout: float = 5.0) -> bool:
+        self._stop.set()
+        self._release_client()
+        if self.is_alive:
+            self._thread.join(timeout=timeout)
+        if self.is_alive:
+            self.orphaned = True
+            logger.warning("Futu execution stream thread did not stop; marking orphaned key=%s", self.stream_key)
+            return False
+        self.orphaned = False
+        return True
+
+    def _release_client(self) -> None:
+        client = self._client
+        self._client = None
+        if client is None:
+            return
+        try:
+            client.disconnect()
+        except Exception:
+            pass
+
+    def _emit_deal(self, payload: Dict[str, Any]) -> None:
+        if not isinstance(payload, dict):
+            return
+        order_id = str(payload.get("order_id") or payload.get("orderId") or "")
+        deal_id = str(
+            payload.get("deal_id")
+            or payload.get("exchange_fill_id")
+            or payload.get("exec_id")
+            or ""
+        )
+        order_key = order_id or f"deal:{deal_id}"
+        try:
+            quantity = abs(float(payload.get("qty") or payload.get("quantity") or 0.0))
+        except (TypeError, ValueError):
+            quantity = 0.0
+        with self._fill_lock:
+            self._touch_fill_order_unlocked(order_key)
+            deal_ids = self._deal_ids_by_order.setdefault(order_key, set())
+            if deal_id and deal_id in deal_ids:
+                return
+            previous_deals = float(self._deal_quantity_by_order.get(order_key) or 0.0)
+            deal_total = previous_deals + quantity
+            covered_by_order = float(self._order_cumulative_by_order.get(order_key) or 0.0)
+            if deal_total <= covered_by_order + 1e-12:
+                if deal_id:
+                    deal_ids.add(deal_id)
+                self._deal_quantity_by_order[order_key] = deal_total
+                return
+            for event in parse_futu_deal(payload):
+                event.credential_id = self.credential_id
+                event.user_id = self.user_id
+                self.on_event(event)
+            if deal_id:
+                deal_ids.add(deal_id)
+            self._deal_quantity_by_order[order_key] = deal_total
+
+    def _emit_order(self, payload: Dict[str, Any]) -> None:
+        # Treat order push with dealt_qty as a deal-like update for REST audit gaps.
+        if not isinstance(payload, dict):
+            return
+        dealt = float(payload.get("dealt_qty") or payload.get("filled") or 0.0)
+        if dealt <= 0:
+            return
+        order_id = str(payload.get("order_id") or payload.get("orderId") or "")
+        if not order_id:
+            return
+        with self._fill_lock:
+            self._touch_fill_order_unlocked(order_id)
+            previous_order = float(self._order_cumulative_by_order.get(order_id) or 0.0)
+            observed_deals = float(self._deal_quantity_by_order.get(order_id) or 0.0)
+            if dealt <= max(previous_order, observed_deals) + 1e-12:
+                self._order_cumulative_by_order[order_id] = max(previous_order, dealt)
+                return
+            for event in parse_futu_deal(payload):
+                event.credential_id = self.credential_id
+                event.user_id = self.user_id
+                self.on_event(event)
+            self._order_cumulative_by_order[order_id] = max(previous_order, dealt)
+
+    def _touch_fill_order_unlocked(self, order_id: str) -> None:
+        """Bound cross-channel dedupe state for long-running adapters."""
+        self._fill_order_lru.pop(order_id, None)
+        self._fill_order_lru[order_id] = None
+        while len(self._fill_order_lru) > 4096:
+            stale_order_id, _ = self._fill_order_lru.popitem(last=False)
+            self._deal_ids_by_order.pop(stale_order_id, None)
+            self._deal_quantity_by_order.pop(stale_order_id, None)
+            self._order_cumulative_by_order.pop(stale_order_id, None)
+
+    def _run(self) -> None:
+        try:
+            while not self._stop.is_set():
+                try:
+                    from app.services.live_trading.factory import create_futu_client
+
+                    self._client = create_futu_client(self.config, need_quote=False)
+                    if not self._client.connected and not self._client.connect(need_quote=False):
+                        raise RuntimeError("FutuOpenD connection failed")
+                    self._client.add_deal_handler(self._emit_deal)
+                    self._client.add_order_handler(self._emit_order)
+                    self._client.start_push()
+                    self.on_state("connected", "", False)
+                    self._connect_backoff_sec = 1.0
+                    while not self._stop.is_set() and self._client and self._client.connected:
+                        time.sleep(0.5)
+                except Exception as exc:
+                    self.on_state("error", str(exc), False)
+                    if self._stop.wait(self._connect_backoff_sec):
+                        break
+                    self._connect_backoff_sec = min(30.0, self._connect_backoff_sec * 2)
+                finally:
+                    self._release_client()
+        finally:
+            self.on_state("orphaned" if self.orphaned else "disconnected", "", False)
+
+
 ADAPTERS = {
     "binance": BinanceExecutionAdapter,
     "okx": OkxExecutionAdapter,
@@ -738,4 +912,5 @@ ADAPTERS = {
     "htx": HtxExecutionAdapter,
     "alpaca": AlpacaExecutionAdapter,
     "ibkr": IBKRExecutionAdapter,
+    "futu": FutuExecutionAdapter,
 }

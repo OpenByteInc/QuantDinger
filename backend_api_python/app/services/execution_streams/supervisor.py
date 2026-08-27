@@ -48,6 +48,8 @@ class ExecutionStreamSupervisor:
         self._thread: Optional[threading.Thread] = None
         self._processor_thread: Optional[threading.Thread] = None
         self._last_catchup: Dict[str, float] = {}
+        self._last_replace: Dict[str, float] = {}
+        self._orphans: Dict[str, Any] = {}
         self._refresh_sec = max(10.0, float(os.getenv("EXECUTION_STREAM_REFRESH_SEC", "30")))
         self._max_adapters = max(
             1,
@@ -120,6 +122,7 @@ class ExecutionStreamSupervisor:
             f"{exchange}:{int(credential_id or 0)}:{market}",
             f"{exchange}:{int(credential_id or 0)}:all",
             f"{exchange}:{int(credential_id or 0)}:usstock",
+            f"{exchange}:{int(credential_id or 0)}:stock",
         ]
         with self._lock:
             return any(bool(self._adapters.get(key) and self._adapters[key].connected) for key in keys)
@@ -151,8 +154,21 @@ class ExecutionStreamSupervisor:
             if adapter:
                 if not adapter.stop():
                     logger.warning(
-                        "Execution stream did not stop; retaining handle stream=%s",
+                        "Execution stream did not stop; dropping handle without starting a replacement stream=%s",
                         key,
+                    )
+                    with self._lock:
+                        self._adapters.pop(key, None)
+                        self._specs.pop(key, None)
+                        self._orphans[key] = adapter
+                    self.repository.update_health(
+                        stream_key=key,
+                        credential_id=int(getattr(adapter, "credential_id", 0)),
+                        exchange_id=str(getattr(adapter, "exchange_id", key.split(":", 1)[0])),
+                        market_type=str(getattr(adapter, "market_type", "")),
+                        state="orphaned",
+                        error=self._health_detail(adapter, "stop timeout"),
+                        rest_fallback=True,
                     )
                     continue
                 with self._lock:
@@ -169,21 +185,61 @@ class ExecutionStreamSupervisor:
             with self._lock:
                 existing_spec = self._specs.get(key)
                 existing = self._adapters.get(key)
-            if existing and existing_spec == spec:
-                if not existing.connected:
+                orphan = self._orphans.get(key)
+            if orphan is not None:
+                alive = bool(getattr(orphan, "is_alive", lambda: False)())
+                if alive or bool(getattr(orphan, "orphaned", False) and alive):
+                    logger.warning(
+                        "Execution stream orphaned thread still alive; not starting a second stream=%s",
+                        key,
+                    )
+                    self.repository.update_health(
+                        stream_key=key,
+                        credential_id=spec.credential_id,
+                        exchange_id=spec.exchange_id,
+                        market_type=spec.market_type,
+                        state="orphaned",
+                        error=self._health_detail(orphan, "orphaned thread alive"),
+                        rest_fallback=True,
+                    )
                     self._run_rest_catchup_limited(spec)
-                continue
+                    continue
+                with self._lock:
+                    self._orphans.pop(key, None)
+            if existing and existing_spec == spec:
+                if existing.connected:
+                    continue
+                self._run_rest_catchup_limited(spec)
             if existing:
+                if spec.exchange_id == "futu" and key in self._last_replace:
+                    last = float(self._last_replace.get(key, 0.0) or 0.0)
+                    if time.monotonic() - last < self._refresh_sec:
+                        self._run_rest_catchup_limited(spec)
+                        continue
                 if not existing.stop():
                     logger.warning(
-                        "Execution stream replacement deferred because old thread is alive stream=%s",
+                        "Execution stream replacement dropped old handle without starting a second stream=%s",
                         key,
+                    )
+                    with self._lock:
+                        self._adapters.pop(key, None)
+                        self._specs.pop(key, None)
+                        self._orphans[key] = existing
+                    self.repository.update_health(
+                        stream_key=key,
+                        credential_id=spec.credential_id,
+                        exchange_id=spec.exchange_id,
+                        market_type=spec.market_type,
+                        state="orphaned",
+                        error=self._health_detail(existing, "stop timeout"),
+                        rest_fallback=True,
                     )
                     self._run_rest_catchup_limited(spec)
                     continue
                 with self._lock:
                     self._adapters.pop(key, None)
                     self._specs.pop(key, None)
+                self._last_replace[key] = time.monotonic()
             adapter_cls = ADAPTERS.get(spec.exchange_id)
             if adapter_cls is None:
                 continue
@@ -243,24 +299,48 @@ class ExecutionStreamSupervisor:
             market = "all"
         elif event.exchange_id in {"alpaca", "ibkr"}:
             market = "usstock"
+        elif event.exchange_id == "futu":
+            market = "stock"
         else:
             market = event.market_type
         return f"{event.exchange_id}:{event.credential_id}:{market}"
 
+    @staticmethod
+    def _health_detail(adapter: Any, error: str = "") -> str:
+        pool_snap: Dict[str, Any] = {}
+        try:
+            from app.services.futu_trading.session_pool import get_futu_session_pool
+
+            pool_snap = get_futu_session_pool().snapshot()
+        except Exception:
+            pool_snap = {}
+        payload = {
+            "error": str(error or ""),
+            "connected": bool(getattr(adapter, "connected", False)),
+            "orphaned": bool(getattr(adapter, "orphaned", False)),
+            "opend": f"{(getattr(adapter, 'config', {}) or {}).get('futu_host') or (getattr(adapter, 'config', {}) or {}).get('host') or ''}:{(getattr(adapter, 'config', {}) or {}).get('futu_port') or (getattr(adapter, 'config', {}) or {}).get('port') or ''}",
+            "pool": pool_snap,
+        }
+        return json.dumps(payload, ensure_ascii=False)[:2000]
+
     def _on_state(self, spec: StreamSpec, state: str, error: str, reconnect: bool) -> None:
+        detail = error
+        if spec.exchange_id == "futu" and state in {"error", "orphaned", "disconnected"}:
+            adapter = self._adapters.get(spec.key) or self._orphans.get(spec.key)
+            detail = self._health_detail(adapter, error)
         self.repository.update_health(
             stream_key=spec.key,
             credential_id=spec.credential_id,
             exchange_id=spec.exchange_id,
             market_type=spec.market_type,
             state=state,
-            error=error,
+            error=detail,
             reconnect=reconnect,
             rest_fallback=state != "connected",
         )
         if state == "connected":
             self._run_rest_catchup_limited(spec, force=True)
-        elif state in {"error", "disconnected"}:
+        elif state in {"error", "disconnected", "orphaned"}:
             self._run_rest_catchup_limited(spec)
 
     def _run_rest_catchup_limited(self, spec: StreamSpec, *, force: bool = False) -> None:
@@ -293,7 +373,7 @@ class ExecutionStreamSupervisor:
         crypto = supported_crypto_exchange_ids()
         for row in credentials:
             exchange = str(row.get("exchange_id") or "").strip().lower()
-            if exchange not in crypto | {"alpaca", "ibkr"}:
+            if exchange not in crypto | {"alpaca", "ibkr", "futu"}:
                 continue
             try:
                 plain = decrypt_credential_blob(row.get("encrypted_config"))
@@ -314,6 +394,8 @@ class ExecutionStreamSupervisor:
             scope = str(config.get("market_scope") or config.get("marketScope") or "both").lower()
             if exchange in {"alpaca", "ibkr"}:
                 markets = ["usstock"]
+            elif exchange == "futu":
+                markets = ["stock"]
             elif exchange in {"okx", "bybit"}:
                 markets = ["all"]
             elif scope == "spot":
@@ -364,7 +446,7 @@ class ExecutionStreamSupervisor:
                 """,
                 (
                     active_ids,
-                    sorted(supported_crypto_exchange_ids() | {"alpaca", "ibkr"}),
+                    sorted(supported_crypto_exchange_ids() | {"alpaca", "ibkr", "futu"}),
                 ),
             )
             rows = [dict(row) for row in (cur.fetchall() or [])]

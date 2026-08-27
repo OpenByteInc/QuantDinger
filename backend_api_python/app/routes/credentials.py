@@ -38,7 +38,7 @@ credentials_blp = Blueprint('credentials', __name__)
 @login_required
 def desktop_brokers_policy():
     """
-    Whether IBKR (local TWS or IB Gateway) may be configured on this deployment.
+    Whether IBKR / Futu (local TWS, IB Gateway, or FutuOpenD) may be configured.
     Frontend uses this to disable options and show guidance before save/test.
     """
     from app.utils.local_brokers import desktop_broker_cloud_reject_message, local_desktop_brokers_allowed
@@ -50,6 +50,7 @@ def desktop_brokers_policy():
             'msg': 'success',
             'data': {
                 'allow_local_desktop_brokers': allowed,
+                'local_desktop_brokers': ['ibkr', 'futu'],
                 'disabled_message': None if allowed else desktop_broker_cloud_reject_message(),
             },
         }
@@ -89,7 +90,7 @@ def list_credentials():
         items = []
         for row in rows:
             item = dict(row or {})
-            if str(item.get('exchange_id') or '').strip().lower() not in {*CRYPTO_EXCHANGES, 'ibkr', 'alpaca'}:
+            if str(item.get('exchange_id') or '').strip().lower() not in {*CRYPTO_EXCHANGES, 'ibkr', 'alpaca', 'futu'}:
                 continue
             item['enable_demo_trading'] = False
             item['environment'] = 'live'
@@ -233,6 +234,50 @@ def test_credential(data):
             if hasattr(client, 'connect') and not client.connect():
                 raise ValueError('CREDENTIAL_CONNECTION_FAILED')
             return jsonify({'code': 1, 'msg': 'CREDENTIAL_CONNECTION_OK', 'data': None})
+        if exchange_id == 'futu':
+            from app.utils.local_brokers import desktop_broker_cloud_reject_message, local_desktop_brokers_allowed
+            from app.services.futu_trading.config import normalize_trade_env, normalize_trade_market
+
+            if not local_desktop_brokers_allowed():
+                raise ValueError(desktop_broker_cloud_reject_message('futu'))
+            trade_env = normalize_trade_env(
+                data.get('trade_env') or data.get('environment') or 'demo',
+                default='demo',
+            )
+            config = {
+                'exchange_id': exchange_id,
+                'futu_host': str(data.get('futu_host') or data.get('host') or '127.0.0.1').strip(),
+                'futu_port': int(data.get('futu_port') or data.get('port') or 11111),
+                'trade_env': trade_env,
+                'environment': trade_env,
+                'trade_market': normalize_trade_market(
+                    data.get('trade_market') or data.get('tradeMarket'),
+                    market_category=str(data.get('market_category') or ''),
+                ),
+                'security_firm': str(data.get('security_firm') or data.get('securityFirm') or 'FUTUSECURITIES').strip(),
+                'acc_id': int(data.get('acc_id') or data.get('accId') or 0),
+                'unlock_password': str(data.get('unlock_password') or data.get('unlockPassword') or ''),
+            }
+            client = create_client(config, market_type='spot', pooled=False)
+            try:
+                probe = client.probe_permissions() if hasattr(client, 'probe_permissions') else {}
+                return jsonify({
+                    'code': 1,
+                    'msg': 'CREDENTIAL_CONNECTION_OK',
+                    'data': {
+                        'environment': trade_env,
+                        'market_scope': 'spot',
+                        'probe': probe,
+                        'status': client.get_connection_status() if hasattr(client, 'get_connection_status') else {},
+                    },
+                })
+            finally:
+                disconnect = getattr(client, 'disconnect', None)
+                if callable(disconnect):
+                    try:
+                        disconnect()
+                    except Exception:
+                        pass
         return jsonify({'code': 0, 'msg': 'UNSUPPORTED_EXCHANGE', 'data': None}), 400
     except Exception as exc:
         return jsonify({'code': 0, 'msg': str(exc) or 'CREDENTIAL_CONNECTION_FAILED', 'data': None}), 400
@@ -245,7 +290,7 @@ def test_credential(data):
 def create_credential(data):
     """Create a new credential for the current user.
 
-    Supports crypto exchanges, IBKR (US stocks), and Alpaca.
+    Supports crypto exchanges, IBKR (US stocks), Alpaca, and Futu (HK/US).
     """
     try:
         user_id = g.user_id
@@ -255,11 +300,15 @@ def create_credential(data):
         if not exchange_id:
             return jsonify({'code': 0, 'msg': 'Missing exchange_id', 'data': None}), 400
 
-        if exchange_id == 'ibkr':
+        if exchange_id in ('ibkr', 'futu'):
             from app.utils.local_brokers import desktop_broker_cloud_reject_message, local_desktop_brokers_allowed
 
             if not local_desktop_brokers_allowed():
-                return jsonify({'code': 0, 'msg': desktop_broker_cloud_reject_message(), 'data': None}), 403
+                return jsonify({
+                    'code': 0,
+                    'msg': desktop_broker_cloud_reject_message(exchange_id),
+                    'data': None,
+                }), 403
 
         config = {'exchange_id': exchange_id}
         hint = ''
@@ -301,6 +350,30 @@ def create_credential(data):
                 'ibkr_account': (data.get('ibkr_account') or '').strip()
             })
             hint = f"{config['ibkr_host']}:{config['ibkr_port']}"
+        elif exchange_id == 'futu':
+            from app.services.futu_trading.config import normalize_trade_env, normalize_trade_market
+
+            trade_env = normalize_trade_env(
+                data.get('trade_env') or data.get('environment') or 'demo',
+                default='demo',
+            )
+            trade_market = normalize_trade_market(
+                data.get('trade_market') or data.get('tradeMarket'),
+                market_category=str(data.get('market_category') or data.get('marketCategory') or ''),
+            )
+            config.update({
+                'futu_host': (data.get('futu_host') or data.get('host') or '127.0.0.1').strip(),
+                'futu_port': int(data.get('futu_port') or data.get('port') or 11111),
+                'trade_env': trade_env,
+                'environment': trade_env,
+                'trade_market': trade_market,
+                'security_firm': (data.get('security_firm') or data.get('securityFirm') or 'FUTUSECURITIES').strip(),
+                'acc_id': int(data.get('acc_id') or data.get('accId') or 0),
+                # Prefer GUI unlock; store only when explicitly provided for headless OpenD.
+                'unlock_password': str(data.get('unlock_password') or data.get('unlockPassword') or ''),
+                'market_category': 'USStock' if trade_market == 'US' else 'HKStock',
+            })
+            hint = f"{config['futu_host']}:{config['futu_port']} ({trade_env}/{trade_market})"
         elif exchange_id in CRYPTO_EXCHANGES:
             # Crypto exchanges
             try:

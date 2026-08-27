@@ -256,6 +256,8 @@ services:
       # Takes precedence over mounted .env (run.py load_dotenv override=False).
       # Include :8000 when using Vite dev server alongside this stack.
       - FRONTEND_URL=${FRONTEND_URL:-http://localhost:8888,http://localhost:8889,http://localhost:8000}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - quantdinger-network
     healthcheck:
@@ -318,6 +320,8 @@ services:
       <<: *worker-environment
       QD_PROCESS_ROLE: trading
       STRATEGY_COMMANDS_ENABLED: "false"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - quantdinger-network
     healthcheck:
@@ -326,6 +330,32 @@ services:
       timeout: 5s
       retries: 3
       start_period: 30s
+
+  # Linux/WSL-only loopback relay for FutuOpenD. OpenD stays bound to
+  # 127.0.0.1, while Docker clients use host.docker.internal:11112.
+  # Start with: docker compose --profile local-brokers up -d opend-relay
+  opend-relay:
+    <<: *backend-runtime
+    profiles: ["local-brokers"]
+    build: *backend-build
+    image: ${BACKEND_LOCAL_IMAGE:-quantdinger-backend:local}
+    container_name: quantdinger-opend-relay
+    restart: unless-stopped
+    network_mode: host
+    user: "10001:10001"
+    entrypoint: ["python"]
+    command: ["/app/scripts/opend_relay.py"]
+    environment:
+      OPEND_RELAY_BIND_HOST: ${OPEND_RELAY_BIND_HOST:-172.17.0.1}
+      OPEND_RELAY_PORT: ${OPEND_RELAY_PORT:-11112}
+      OPEND_HOST: ${OPEND_HOST:-127.0.0.1}
+      OPEND_PORT: ${OPEND_PORT:-11111}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,socket; socket.create_connection((os.getenv('OPEND_RELAY_BIND_HOST','172.17.0.1'),int(os.getenv('OPEND_RELAY_PORT','11112'))),2).close()"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
 
   scheduler-worker:
     <<: *backend-runtime

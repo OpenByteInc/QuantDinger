@@ -85,9 +85,12 @@ Use this flow for external AI agents, MCP clients, and automation:
 5. Add explicit notes for market type support:
    - spot
    - swap/perpetual
-   - US stock
+   - US stock / HK stock
    - paper/live
 6. If an adapter supports live orders, document idempotency and retry behavior.
+7. For local-gateway brokers (IBKR TWS, FutuOpenD), also update
+   `app/utils/local_brokers.py`, `broker_market_policy.py`, and the
+   deployment notes under `docs/architecture/FUTU_OPEND.md` (or IBKR README).
 
 ## Add a Strategy Runtime Feature
 

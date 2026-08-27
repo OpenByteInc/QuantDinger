@@ -63,6 +63,20 @@ class CredentialCreateRequestSchema(Schema):
     ibkr_port = fields.Integer(load_default=7497, validate=validate.Range(min=1, max=65535))
     ibkr_client_id = fields.Integer(load_default=7, validate=validate.Range(min=0, max=2147483647))
     ibkr_account = fields.String(load_default="", validate=validate.Length(max=128))
+    futu_host = fields.String(load_default="127.0.0.1", validate=validate.Length(max=255))
+    futu_port = fields.Integer(load_default=11111, validate=validate.Range(min=1, max=65535))
+    host = fields.String(load_default="", validate=validate.Length(max=255))
+    port = fields.Integer(load_default=0, validate=validate.Range(min=0, max=65535))
+    trade_env = fields.String(load_default="", validate=validate.Length(max=32))
+    trade_market = fields.String(load_default="", validate=validate.Length(max=32))
+    tradeMarket = fields.String(load_default="", validate=validate.Length(max=32))
+    security_firm = fields.String(load_default="", validate=validate.Length(max=64))
+    securityFirm = fields.String(load_default="", validate=validate.Length(max=64))
+    acc_id = fields.Integer(load_default=0)
+    accId = fields.Integer(load_default=0)
+    unlock_password = fields.String(load_default="", validate=validate.Length(max=128))
+    unlockPassword = fields.String(load_default="", validate=validate.Length(max=128))
+    market_category = fields.String(load_default="", validate=validate.Length(max=32))
 
     @pre_load
     def normalize_exchange(self, data, **kwargs):
@@ -72,7 +86,34 @@ class CredentialCreateRequestSchema(Schema):
 
     @validates_schema
     def validate_exchange_secret(self, data, **kwargs):
-        if str(data.get("exchange_id") or "").lower() == "ibkr":
+        exchange_id = str(data.get("exchange_id") or "").lower()
+        if exchange_id == "futu":
+            trade_market = str(data.get("trade_market") or data.get("tradeMarket") or "").strip()
+            market_category = str(data.get("market_category") or "").strip()
+            if not trade_market and not market_category:
+                raise ValidationError(
+                    "trade_market or market_category is required for Futu",
+                    field_name="trade_market",
+                )
+            from app.services.futu_trading.config import normalize_trade_market
+
+            normalized_trade_market = normalize_trade_market(
+                trade_market,
+                market_category=market_category,
+            )
+            expected = {"HKStock": "HK", "USStock": "US"}.get(market_category)
+            if normalized_trade_market not in {"HK", "US"} or (market_category and not expected):
+                raise ValidationError(
+                    "Futu market must be HK/HKStock or US/USStock",
+                    field_name="trade_market",
+                )
+            if expected and normalized_trade_market != expected:
+                raise ValidationError(
+                    "trade_market does not match market_category",
+                    field_name="trade_market",
+                )
+            return
+        if exchange_id == "ibkr":
             return
         if not (data.get("api_key") or data.get("apiKey")):
             raise ValidationError("api_key is required", field_name="api_key")

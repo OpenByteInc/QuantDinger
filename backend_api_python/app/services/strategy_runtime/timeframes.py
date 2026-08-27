@@ -27,6 +27,8 @@ def load_live_frequency_frames(
     candidates: list[dict[str, object]],
     manifest: StrategyManifest,
     end_date: datetime,
+    exchange_config: dict[str, object] | None = None,
+    strict_data_source: bool = False,
     warn: Callable[[str], None] | None = None,
 ) -> dict[str, dict[str, pd.DataFrame]]:
     """Load a complete live frame bundle for all declared strategy timeframes."""
@@ -40,6 +42,8 @@ def load_live_frequency_frames(
         manifest.frequencies,
         start_dates,
         end_date,
+        exchange_config=exchange_config,
+        strict_data_source=strict_data_source,
     )
     if skipped and warn:
         details = ", ".join(

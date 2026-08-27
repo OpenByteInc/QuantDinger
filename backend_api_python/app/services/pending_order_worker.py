@@ -128,9 +128,13 @@ IBKRClient = None
 # Lazy import Alpaca to avoid ImportError if alpaca-py not installed
 AlpacaClient = None
 
+# Lazy import Futu to avoid ImportError if futu-api not installed
+FutuClient = None
+
 logger = get_logger(__name__)
 
 ALPACA_FILL_DELTA_EPSILON = 1e-8
+FUTU_FILL_DELTA_EPSILON = 1e-8
 
 
 class PendingOrderWorker(PendingOrderPositionSyncMixin):
@@ -155,6 +159,7 @@ class PendingOrderWorker(PendingOrderPositionSyncMixin):
         self._exchange_catchups: set[tuple[str, int, str]] = set()
         self._last_stream_audit: Dict[tuple[str, int, str], float] = {}
         self._stream_audit_sec = max(10.0, float(os.getenv("EXECUTION_STREAM_REST_AUDIT_SEC", "30")))
+        # Futu fill-sync reuses the process-wide OpenD session pool.
         logger.info(f"PendingOrderWorker: sync_enabled={self._position_sync_enabled}, interval={self._position_sync_interval_sec}s")
 
     def request_exchange_catchup(
@@ -192,6 +197,12 @@ class PendingOrderWorker(PendingOrderPositionSyncMixin):
             th = self._thread
         if th and th.is_alive():
             th.join(timeout=timeout_sec)
+        try:
+            from app.services.futu_trading.session_pool import get_futu_session_pool
+
+            get_futu_session_pool().drain()
+        except Exception:
+            pass
         logger.info("PendingOrderWorker stopped")
 
     def _run_loop(self) -> None:
@@ -206,6 +217,7 @@ class PendingOrderWorker(PendingOrderPositionSyncMixin):
         # logger.info(f"[PendingOrderWorker] _tick start. last_sync={self._last_position_sync_ts}")
         self._sync_quick_trade_orders()
         self._sync_alpaca_sent_orders()
+        self._sync_futu_sent_orders()
         self._sync_live_sent_orders()
         orders = self._fetch_pending_orders(limit=self.batch_size)
         # logger.info(f"[PendingOrderWorker] orders fetched: {len(orders)}")
@@ -696,6 +708,369 @@ class PendingOrderWorker(PendingOrderPositionSyncMixin):
             db.commit()
             cur.close()
 
+    def _sync_futu_sent_orders(self, limit: int = 50) -> None:
+        rows = self._fetch_futu_sent_orders(limit=limit)
+        for row in rows:
+            try:
+                self._sync_one_futu_sent_order(row)
+            except Exception as e:
+                self._release_futu_sync_claim(
+                    int(row.get("id") or 0),
+                    f"unexpected_error:{type(e).__name__}",
+                )
+                logger.warning(
+                    "Futu fill sync failed: pending_id=%s err=%s",
+                    row.get("id"),
+                    e,
+                )
+
+    def _fetch_futu_sent_orders(self, limit: int = 50) -> List[Dict[str, Any]]:
+        try:
+            try:
+                stale_sec = int(self._stale_processing_sec or 0)
+            except Exception:
+                stale_sec = 0
+            if stale_sec > 0:
+                with get_db_connection() as db:
+                    cur = db.cursor()
+                    cur.execute(
+                        """
+                        UPDATE pending_orders
+                        SET status = 'sent',
+                            dispatch_note = 'futu_fill_sync:requeued_stale_sync',
+                            updated_at = NOW()
+                        WHERE status = 'syncing'
+                          AND LOWER(COALESCE(exchange_id, '')) = 'futu'
+                          AND updated_at < NOW() - (%s * INTERVAL '1 second')
+                        """,
+                        (stale_sec,),
+                    )
+                    db.commit()
+                    cur.close()
+            with get_db_connection() as db:
+                cur = db.cursor()
+                cur.execute(
+                    """
+                    SELECT *
+                    FROM pending_orders
+                    WHERE status = 'sent'
+                      AND LOWER(COALESCE(exchange_id, '')) = 'futu'
+                      AND COALESCE(exchange_order_id, '') <> ''
+                    ORDER BY sent_at ASC NULLS FIRST, id ASC
+                    LIMIT %s
+                    """,
+                    (int(limit),),
+                )
+                rows = cur.fetchall() or []
+                cur.close()
+            return rows
+        except Exception as e:
+            logger.warning("fetch_futu_sent_orders failed: %s", e)
+            return []
+
+    def _claim_futu_sent_order(self, order_id: int) -> Optional[Dict[str, Any]]:
+        if int(order_id or 0) <= 0:
+            return None
+        try:
+            with get_db_connection() as db:
+                cur = db.cursor()
+                cur.execute(
+                    """
+                    UPDATE pending_orders
+                    SET status = 'syncing',
+                        dispatch_note = 'futu_fill_sync:syncing',
+                        updated_at = NOW()
+                    WHERE id = %s
+                      AND status = 'sent'
+                      AND LOWER(COALESCE(exchange_id, '')) = 'futu'
+                      AND COALESCE(exchange_order_id, '') <> ''
+                    RETURNING *
+                    """,
+                    (int(order_id),),
+                )
+                row = cur.fetchone()
+                db.commit()
+                cur.close()
+            return row if isinstance(row, dict) else None
+        except Exception as e:
+            logger.warning("claim_futu_sent_order failed: pending_id=%s err=%s", order_id, e)
+            return None
+
+    def _release_futu_sync_claim(self, order_id: int, reason: str) -> None:
+        """Return a non-finalized Futu sync claim to the retryable sent state."""
+        if int(order_id or 0) <= 0:
+            return
+        try:
+            with get_db_connection() as db:
+                cur = db.cursor()
+                cur.execute(
+                    """
+                    UPDATE pending_orders
+                    SET status = 'sent',
+                        dispatch_note = %s,
+                        updated_at = NOW()
+                    WHERE id = %s
+                      AND status = 'syncing'
+                      AND LOWER(COALESCE(exchange_id, '')) = 'futu'
+                    """,
+                    (
+                        f"futu_fill_sync:retry:{str(reason or 'unknown')[:160]}",
+                        int(order_id),
+                    ),
+                )
+                db.commit()
+                cur.close()
+        except Exception as e:
+            logger.warning(
+                "release_futu_sync_claim failed: pending_id=%s err=%s",
+                order_id,
+                e,
+            )
+
+    def _sync_one_futu_sent_order(self, row: Dict[str, Any]) -> None:
+        order_id = int(row.get("id") or 0)
+        if order_id <= 0:
+            return
+        claimed = self._claim_futu_sent_order(order_id)
+        if not claimed:
+            return
+        row = claimed
+        finalized = False
+        try:
+            finalized = self._sync_claimed_futu_order(row)
+        finally:
+            if not finalized:
+                self._release_futu_sync_claim(order_id, "not_finalized")
+
+    def _futu_sync_client(self, exchange_config: Dict[str, Any]) -> Any:
+        """Borrow a trade-only OpenD session from the process pool."""
+        return create_client(exchange_config, market_type="spot", need_quote=False)
+
+    def _discard_futu_sync_client(self, exchange_config: Dict[str, Any], client: Any) -> None:
+        if client is None:
+            return
+        try:
+            client.disconnect()
+        except Exception:
+            pass
+
+    def _sync_claimed_futu_order(self, row: Dict[str, Any]) -> bool:
+        """Sync one already-claimed row; return True once its DB state is finalized."""
+        order_id = int(row.get("id") or 0)
+        exchange_order_id = str(row.get("exchange_order_id") or "").strip()
+        if not exchange_order_id:
+            return False
+
+        payload = {}
+        payload_json = row.get("payload_json") or ""
+        if isinstance(payload_json, str) and payload_json.strip():
+            try:
+                payload = json.loads(payload_json) or {}
+            except Exception:
+                payload = {}
+
+        strategy_id = int(payload.get("strategy_id") or row.get("strategy_id") or 0)
+        if strategy_id <= 0:
+            return False
+
+        sc = load_strategy_configs(strategy_id)
+        exchange_config = resolve_exchange_config(sc.get("exchange_config") or {}, user_id=int(sc.get("user_id") or 1))
+        if str(exchange_config.get("exchange_id") or "").strip().lower() != "futu":
+            return False
+
+        client = None
+        try:
+            client = self._futu_sync_client(exchange_config)
+        except Exception as e:
+            logger.warning("Futu fill sync create_client failed: pending_id=%s err=%s", order_id, e)
+            return False
+
+        try:
+            global FutuClient
+            if FutuClient is None:
+                try:
+                    from app.services.futu_trading import FutuClient as _FutuClient
+                    FutuClient = _FutuClient
+                except Exception:
+                    FutuClient = None
+            if FutuClient is None or not isinstance(client, FutuClient):
+                return False
+
+            result = client.get_order_status(exchange_order_id)
+            if not result.success:
+                logger.warning(
+                    "Futu order status unavailable: pending_id=%s order_id=%s err=%s",
+                    order_id,
+                    exchange_order_id,
+                    result.message,
+                )
+                return False
+
+            status = str(result.status or "").strip().lower()
+            cumulative_filled = float(result.filled or 0.0)
+            cumulative_avg = float(result.avg_price or 0.0)
+            previous_filled = float(row.get("filled") or 0.0)
+            previous_avg = float(row.get("avg_price") or 0.0)
+            if cumulative_filled + FUTU_FILL_DELTA_EPSILON < previous_filled:
+                logger.warning(
+                    "Ignoring regressive Futu fill snapshot: pending_id=%s previous=%s current=%s",
+                    order_id,
+                    previous_filled,
+                    cumulative_filled,
+                )
+                cumulative_filled = previous_filled
+                cumulative_avg = previous_avg
+
+            raw_json = json.dumps(result.raw or {}, ensure_ascii=False)
+            cumulative_commission, commission_ccy = _commission_snapshot(result.raw)
+            commission_delta = max(0.0, cumulative_commission - _previous_commission(row))
+
+            # Derive the recordable delta from the durable trade ledger, not
+            # only pending_orders.filled. If trade persistence succeeded but
+            # the pending-order snapshot failed, a retry must not book it twice.
+            delta = self._unrecorded_pending_fill(
+                order_id,
+                cumulative_filled,
+                fail_closed=True,
+                include_stream_events=True,
+            )
+            if delta > FUTU_FILL_DELTA_EPSILON and cumulative_avg > 0:
+                delta_avg = cumulative_avg
+                if previous_filled > 0 and previous_avg > 0:
+                    delta_notional = cumulative_filled * cumulative_avg - previous_filled * previous_avg
+                    if delta_notional > 0:
+                        delta_avg = delta_notional / delta
+
+                signal_type = payload.get("signal_type") or row.get("signal_type")
+                symbol = payload.get("symbol") or row.get("symbol")
+                market_category = str(
+                    sc.get("market_category")
+                    or (sc.get("trading_config") or {}).get("market_category")
+                    or "HKStock"
+                )
+                market_type_for_client = "HKStock" if market_category == "HKStock" else "USStock"
+                from app.services.live_trading.fee_quote import fee_to_quote
+                commission_quote = fee_to_quote(
+                    client,
+                    symbol=str(symbol or ""),
+                    fee=commission_delta,
+                    fee_ccy=commission_ccy,
+                    fill_price=delta_avg,
+                )
+                profit, _matched_entry = persist_strategy_fill(
+                    strategy_id=strategy_id,
+                    symbol=str(symbol or ""),
+                    signal_type=str(signal_type or ""),
+                    filled=float(delta),
+                    avg_price=float(delta_avg),
+                    exchange_config=exchange_config,
+                    market_type=market_type_for_client,
+                    order_id=order_id,
+                    fill_source="worker_futu_fill_sync",
+                    commission=commission_delta,
+                    commission_ccy=commission_ccy,
+                    commission_quote=commission_quote,
+                    close_reason=trade_close_reason_from_payload(payload, str(signal_type or "")),
+                    strategy_run_id=int(payload.get("strategy_run_id") or row.get("strategy_run_id") or 0),
+                    order_intent_id=int(payload.get("order_intent_id") or row.get("order_intent_id") or 0),
+                    exchange_id="futu",
+                    exchange_order_id=str(exchange_order_id or ""),
+                    raw_fill=result.raw or {},
+                )
+                _pstr = f", profit={profit:.4f}" if profit is not None else ""
+                append_strategy_log(
+                    strategy_id,
+                    "trade",
+                    f"Futu fill synced: {signal_type} {symbol} filled={delta:.6f} @ {delta_avg:.6f}{_pstr}",
+                )
+
+            final_statuses = {"filled", "canceled", "cancelled", "rejected", "expired"}
+            new_status = "sent"
+            if status == "filled":
+                new_status = "filled"
+            elif status in ("canceled", "cancelled"):
+                new_status = "cancelled"
+            elif status in ("rejected", "expired"):
+                new_status = "failed"
+
+            self._update_futu_sent_order_snapshot(
+                order_id=order_id,
+                status=new_status,
+                exchange_status=status,
+                filled=cumulative_filled,
+                avg_price=cumulative_avg,
+                exchange_response_json=raw_json,
+                final=status in final_statuses,
+            )
+            return True
+        finally:
+            self._discard_futu_sync_client(exchange_config, client)
+
+    def _update_futu_sent_order_snapshot(
+        self,
+        *,
+        order_id: int,
+        status: str,
+        exchange_status: str,
+        filled: float,
+        avg_price: float,
+        exchange_response_json: str,
+        final: bool,
+    ) -> None:
+        with get_db_connection() as db:
+            cur = db.cursor()
+            cur.execute(
+                """
+                UPDATE pending_orders
+                SET status = %s,
+                    last_error = CASE WHEN %s = 'failed' THEN %s ELSE '' END,
+                    dispatch_note = %s,
+                    filled = %s,
+                    avg_price = %s,
+                    exchange_response_json = %s,
+                    executed_at = CASE WHEN %s THEN NOW() ELSE executed_at END,
+                    updated_at = NOW()
+                WHERE id = %s
+                """,
+                (
+                    str(status or "sent"),
+                    str(status or "sent"),
+                    str(exchange_status or ""),
+                    f"futu_fill_sync:{exchange_status or 'unknown'}",
+                    float(filled or 0.0),
+                    float(avg_price or 0.0),
+                    str(exchange_response_json or ""),
+                    bool(final and float(filled or 0.0) > 0),
+                    int(order_id),
+                ),
+            )
+            cur.execute(
+                """
+                UPDATE strategy_order_intents soi
+                SET status = CASE
+                        WHEN %s = 'filled' THEN 'filled'
+                        WHEN %s = 'failed' THEN 'rejected'
+                        WHEN %s = 'cancelled' THEN 'cancelled'
+                        WHEN %s > 0 THEN 'partially_filled'
+                        ELSE 'submitted'
+                    END,
+                    exchange_order_id = COALESCE(NULLIF(po.exchange_order_id, ''), soi.exchange_order_id),
+                    updated_at = NOW()
+                FROM pending_orders po
+                WHERE po.id = %s
+                  AND po.order_intent_id = soi.id
+                """,
+                (
+                    str(status or "sent"),
+                    str(status or "sent"),
+                    str(status or "sent"),
+                    float(filled or 0.0),
+                    int(order_id),
+                ),
+            )
+            db.commit()
+            cur.close()
+
     def _sync_live_sent_orders(self, limit: int = 50) -> None:
         """Reconcile submitted crypto orders, including durable resting limits."""
         rows = self._fetch_live_sent_orders(limit=limit)
@@ -754,7 +1129,7 @@ class PendingOrderWorker(PendingOrderPositionSyncMixin):
                             dispatch_note = 'live_fill_sync:requeued_stale_sync',
                             updated_at = NOW()
                         WHERE status = 'syncing'
-                          AND LOWER(COALESCE(exchange_id, '')) <> 'alpaca'
+                          AND LOWER(COALESCE(exchange_id, '')) NOT IN ('alpaca', 'futu')
                           AND updated_at < NOW() - (%s * INTERVAL '1 second')
                         """,
                         (stale_sec,),
@@ -783,7 +1158,7 @@ class PendingOrderWorker(PendingOrderPositionSyncMixin):
                                 )
                             )
                           )
-                      AND LOWER(COALESCE(exchange_id, '')) <> 'alpaca'
+                      AND LOWER(COALESCE(exchange_id, '')) NOT IN ('alpaca', 'futu')
                       AND COALESCE(exchange_id, '') <> ''
                       AND COALESCE(exchange_order_id, '') <> ''
                     ORDER BY sent_at ASC NULLS FIRST, id ASC
@@ -829,7 +1204,7 @@ class PendingOrderWorker(PendingOrderPositionSyncMixin):
                             )
                         )
                       )
-                  AND LOWER(COALESCE(exchange_id, '')) <> 'alpaca'
+                  AND LOWER(COALESCE(exchange_id, '')) NOT IN ('alpaca', 'futu')
                   AND COALESCE(exchange_order_id, '') <> ''
                 RETURNING *
                 """,
@@ -1696,6 +2071,34 @@ class PendingOrderWorker(PendingOrderPositionSyncMixin):
                 _notify_live_best_effort=_notify_live_best_effort,
                 _console_print=_console_print,
             )
+            return
+
+        global FutuClient
+        if FutuClient is None:
+            try:
+                from app.services.futu_trading import FutuClient as _FutuClient
+                FutuClient = _FutuClient
+            except ImportError:
+                pass
+
+        if FutuClient is not None and isinstance(client, FutuClient):
+            try:
+                self._execute_futu_order(
+                    order_id=order_id,
+                    order_row=order_row,
+                    payload=payload,
+                    client=client,
+                    strategy_id=strategy_id,
+                    exchange_config=exchange_config,
+                    market_category=market_category,
+                    _notify_live_best_effort=_notify_live_best_effort,
+                    _console_print=_console_print,
+                )
+            finally:
+                try:
+                    client.disconnect()
+                except Exception:
+                    pass
             return
 
         client_oid = make_client_order_id(exchange_id=exchange_id, strategy_id=strategy_id, order_id=order_id)
@@ -2744,6 +3147,205 @@ class PendingOrderWorker(PendingOrderPositionSyncMixin):
             _notify_live_best_effort(status="failed", error=str(e))
             append_strategy_log(strategy_id, "error", f"Alpaca order exception ({symbol} {signal_type}): {e}")
 
+    def _execute_futu_order(
+        self,
+        *,
+        order_id: int,
+        order_row: Dict[str, Any],
+        payload: Dict[str, Any],
+        client,  # FutuClient instance
+        strategy_id: int,
+        exchange_config: Dict[str, Any],
+        market_category: str,
+        _notify_live_best_effort,
+        _console_print,
+    ) -> None:
+        """Execute order via FutuOpenD for HKStock / USStock (long-only)."""
+        signal_type = payload.get("signal_type") or order_row.get("signal_type")
+        symbol = payload.get("symbol") or order_row.get("symbol")
+        amount = float(payload.get("amount") or order_row.get("amount") or 0.0)
+        ref_price = float(payload.get("ref_price") or payload.get("price") or order_row.get("price") or 0.0)
+
+        sig = str(signal_type or "").strip().lower()
+        if "short" in sig:
+            self._mark_failed(order_id=order_id, error="futu_short_not_supported")
+            _console_print(
+                f"[worker] Futu order rejected: strategy_id={strategy_id} pending_id={order_id} short not supported"
+            )
+            _notify_live_best_effort(status="failed", error="futu_short_not_supported")
+            return
+
+        if sig in ("open_long", "add_long"):
+            action = "buy"
+        elif sig in ("close_long", "reduce_long", "close_long_stop", "close_long_profit", "close_long_trailing"):
+            action = "sell"
+        else:
+            self._mark_failed(order_id=order_id, error=f"futu_unsupported_signal:{signal_type}")
+            _console_print(
+                f"[worker] Futu order rejected: strategy_id={strategy_id} pending_id={order_id} unsupported signal {signal_type}"
+            )
+            _notify_live_best_effort(status="failed", error=f"futu_unsupported_signal:{signal_type}")
+            return
+
+        mc = (market_category or "").strip()
+        if not mc:
+            mc = str(
+                payload.get("market_category")
+                or exchange_config.get("market_category")
+                or "HKStock"
+            ).strip()
+        market_type_for_client = "HKStock" if mc == "HKStock" else "USStock"
+        client_remark = make_client_order_id(exchange_id="futu", strategy_id=strategy_id, order_id=order_id)
+
+        try:
+            order_type, limit_price = _broker_order_type(payload, ref_price)
+            # Idempotency: if a prior attempt already placed this remark, reuse it.
+            existing = None
+            find_fn = getattr(client, "find_order_by_remark", None)
+            if callable(find_fn):
+                existing = find_fn(client_remark)
+            if existing and existing.success and existing.order_id:
+                result = existing
+            elif order_type == "limit":
+                result = client.place_limit_order(
+                    symbol=symbol,
+                    side=action,
+                    quantity=amount,
+                    price=limit_price,
+                    market_type=market_type_for_client,
+                    remark=client_remark,
+                )
+            else:
+                result = client.place_market_order(
+                    symbol=symbol,
+                    side=action,
+                    quantity=amount,
+                    market_type=market_type_for_client,
+                    remark=client_remark,
+                )
+
+            if not result.success:
+                # Timeout / ambiguous failure: query by remark before failing hard.
+                if callable(find_fn) and ("timeout" in str(result.message or "").lower() or "connect" in str(result.message or "").lower()):
+                    recovered = find_fn(client_remark)
+                    if recovered and recovered.success and recovered.order_id:
+                        result = recovered
+                    else:
+                        self._mark_failed(order_id=order_id, error=f"futu_order_failed:{result.message}")
+                        _console_print(
+                            f"[worker] Futu order failed: strategy_id={strategy_id} pending_id={order_id} err={result.message}"
+                        )
+                        _notify_live_best_effort(status="failed", error=f"futu_order_failed:{result.message}")
+                        append_strategy_log(
+                            strategy_id, "error",
+                            f"Futu order failed ({symbol} {signal_type}): {result.message}",
+                        )
+                        return
+                else:
+                    self._mark_failed(order_id=order_id, error=f"futu_order_failed:{result.message}")
+                    _console_print(
+                        f"[worker] Futu order failed: strategy_id={strategy_id} pending_id={order_id} err={result.message}"
+                    )
+                    _notify_live_best_effort(status="failed", error=f"futu_order_failed:{result.message}")
+                    append_strategy_log(
+                        strategy_id, "error",
+                        f"Futu order failed ({symbol} {signal_type}): {result.message}",
+                    )
+                    return
+
+            filled = float(result.filled or 0.0)
+            avg_price = float(result.avg_price or 0.0)
+            exchange_order_id = str(result.order_id or "")
+            commission, commission_ccy = _commission_snapshot(result.raw)
+            from app.services.live_trading.fee_quote import fee_to_quote
+            commission_quote = fee_to_quote(
+                client,
+                symbol=str(symbol),
+                fee=commission,
+                fee_ccy=commission_ccy,
+                fill_price=avg_price,
+            )
+
+            if avg_price <= 0 and ref_price > 0 and filled > 0:
+                avg_price = ref_price
+
+            executed_at = int(time.time())
+            self._mark_sent(
+                order_id=order_id,
+                note="futu_order_sent",
+                exchange_id="futu",
+                exchange_order_id=exchange_order_id,
+                exchange_response_json=json.dumps(result.raw or {}, ensure_ascii=False),
+                filled=filled,
+                avg_price=avg_price,
+                executed_at=executed_at if filled > 0 else None,
+                final_filled=is_final_fill(amount, filled, avg_price, result.status),
+                client_order_id=client_remark,
+            )
+            _console_print(
+                f"[worker] Futu order sent: strategy_id={strategy_id} pending_id={order_id} "
+                f"order_id={exchange_order_id} filled={filled} avg={avg_price}"
+            )
+
+            try:
+                recordable_filled = self._unrecorded_pending_fill(
+                    order_id,
+                    filled,
+                    include_stream_events=True,
+                )
+                if recordable_filled > 0 and avg_price > 0:
+                    profit, matched_entry = persist_strategy_fill(
+                        strategy_id=int(strategy_id),
+                        symbol=str(symbol),
+                        signal_type=str(signal_type),
+                        filled=float(recordable_filled),
+                        avg_price=float(avg_price),
+                        exchange_config=exchange_config,
+                        market_type=str(market_type_for_client or "HKStock"),
+                        order_id=int(order_id),
+                        fill_source="worker_futu",
+                        commission=commission,
+                        commission_ccy=commission_ccy,
+                        commission_quote=commission_quote,
+                        close_reason=trade_close_reason_from_payload(payload, str(signal_type)),
+                        strategy_run_id=int(payload.get("strategy_run_id") or order_row.get("strategy_run_id") or 0),
+                        order_intent_id=int(payload.get("order_intent_id") or order_row.get("order_intent_id") or 0),
+                        exchange_id="futu",
+                        exchange_order_id=str(exchange_order_id or ""),
+                        fee_status="actual" if abs(float(commission or 0.0)) > 1e-18 else "pending",
+                        fee_source="rest" if abs(float(commission or 0.0)) > 1e-18 else "",
+                        raw_fill=result.raw or {},
+                    )
+                    _pstr = f", profit={profit:.4f}" if profit is not None else ""
+                    append_strategy_log(
+                        strategy_id, "trade",
+                        f"Trade executed: {signal_type} {symbol} filled={filled:.6f} @ {avg_price:.6f}{_pstr} (exchange=futu)",
+                    )
+                else:
+                    append_strategy_log(
+                        strategy_id, "info",
+                        f"Futu order submitted: {signal_type} {symbol} status={result.status or 'submitted'}, awaiting fill",
+                    )
+            except Exception as e:
+                logger.warning(f"Futu record_trade/update_position failed: pending_id={order_id}, err={e}")
+
+            _notify_live_best_effort(
+                status="sent",
+                exchange_id="futu",
+                exchange_order_id=exchange_order_id,
+                price_hint=avg_price,
+                amount_hint=filled,
+            )
+
+        except Exception as e:
+            logger.error(f"Futu order execution failed: pending_id={order_id}, strategy_id={strategy_id}, err={e}")
+            self._mark_failed(order_id=order_id, error=f"futu_exception:{e}")
+            _console_print(f"[worker] Futu order exception: strategy_id={strategy_id} pending_id={order_id} err={e}")
+            _notify_live_best_effort(status="failed", error=str(e))
+            append_strategy_log(strategy_id, "error", f"Futu order exception ({symbol} {signal_type}): {e}")
+            if is_fatal_exchange_error(str(e)):
+                auto_stop_live_strategy(int(strategy_id), str(e), source="futu_order")
+
     def _mark_sent(
         self,
         order_id: int,
@@ -2823,7 +3425,13 @@ class PendingOrderWorker(PendingOrderPositionSyncMixin):
         )
 
     @staticmethod
-    def _unrecorded_pending_fill(order_id: int, cumulative_filled: float) -> float:
+    def _unrecorded_pending_fill(
+        order_id: int,
+        cumulative_filled: float,
+        *,
+        fail_closed: bool = False,
+        include_stream_events: bool = False,
+    ) -> float:
         """Prevent the immediate REST result racing the private stream event."""
         if int(order_id or 0) <= 0:
             return max(0.0, float(cumulative_filled or 0.0))
@@ -2839,9 +3447,45 @@ class PendingOrderWorker(PendingOrderPositionSyncMixin):
                     (int(order_id),),
                 )
                 row = cur.fetchone() or {}
+                stream_observed = 0.0
+                if include_stream_events:
+                    cur.execute(
+                        """
+                        SELECT
+                            COALESCE(MAX(
+                                CASE WHEN event.is_cumulative
+                                     THEN event.cumulative_quantity ELSE 0 END
+                            ), 0) AS cumulative,
+                            COALESCE(SUM(
+                                CASE WHEN event.is_cumulative
+                                     THEN 0 ELSE event.quantity END
+                            ), 0) AS incremental
+                        FROM qd_live_order_bindings binding
+                        JOIN qd_execution_events event
+                          ON event.credential_id = binding.credential_id
+                         AND event.exchange_id = binding.exchange_id
+                         AND (
+                              (binding.exchange_order_id <> ''
+                               AND event.exchange_order_id = binding.exchange_order_id)
+                           OR (binding.client_order_id <> ''
+                               AND event.client_order_id = binding.client_order_id)
+                         )
+                        WHERE binding.pending_order_id = %s
+                          AND binding.exchange_id = 'futu'
+                        """,
+                        (int(order_id),),
+                    )
+                    event_row = cur.fetchone() or {}
+                    stream_observed = max(
+                        float(event_row.get("cumulative") or 0.0),
+                        float(event_row.get("incremental") or 0.0),
+                    )
                 cur.close()
-            return max(0.0, float(cumulative_filled or 0.0) - float(row.get("recorded") or 0.0))
+            already_recorded = max(float(row.get("recorded") or 0.0), stream_observed)
+            return max(0.0, float(cumulative_filled or 0.0) - already_recorded)
         except Exception:
+            if fail_closed:
+                raise
             return max(0.0, float(cumulative_filled or 0.0))
 
     def _register_pending_order_binding(
