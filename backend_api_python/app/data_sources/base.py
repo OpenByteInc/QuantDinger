@@ -75,16 +75,16 @@ class BaseDataSource(ABC):
         lot_size: float = 0.0,
         min_notional: float = 0.0
     ) -> Dict[str, Any]:
-        """Normalize one K-line row."""
+        """Normalize one K-line row while preserving provider price precision; volume keeps two decimals."""
         return {
             'time': timestamp,
-            'open': round(float(open_price), 4),
-            'high': round(float(high), 4),
-            'low': round(float(low), 4),
-            'close': round(float(close), 4),
+            'open': float(open_price),
+            'high': float(high),
+            'low': float(low),
+            'close': float(close),
             'volume': round(float(volume), 2),
             'lot_size': lot_size,
-            'min_notional': min_notional
+            'min_notional': min_notional,
         }
     
     def calculate_time_range(
@@ -177,4 +177,3 @@ class BaseDataSource(ABC):
                 )
         else:
             logger.warning(f"{self.name}: no data for {symbol}")
-
