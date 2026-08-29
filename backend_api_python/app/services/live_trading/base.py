@@ -86,6 +86,35 @@ def _get_requests_verify() -> Union[bool, str]:
     return _requests_verify_value
 
 
+# Cached proxy setting for all live-trading REST calls.
+_proxies_value: Optional[Dict[str, str]] = None
+_proxies_resolved = False
+
+
+def _get_proxies() -> Optional[Dict[str, str]]:
+    """
+    Resolve the proxy for live-trading REST calls.
+
+    ``PROXY_URL`` is documented (see ``env.example``) to cover "market data,
+    exchange and broker API traffic": CCXT already honors it for market data,
+    but plain ``requests`` does not understand that variable, so without this
+    bridge live-trading REST calls bypass the configured proxy entirely.
+
+    - ``PROXY_URL`` set (http(s):// or socks5(h)://, PySocks is in requirements):
+      returned explicitly and takes precedence over environment proxies.
+    - ``PROXY_URL`` unset: returns ``None`` — nothing is forced and standard
+      ``HTTPS_PROXY`` / ``HTTP_PROXY`` / ``ALL_PROXY`` environment variables
+      still apply through ``requests`` trust_env (with ``NO_PROXY`` bypasses).
+    """
+    global _proxies_value, _proxies_resolved
+    if not _proxies_resolved:
+        proxy_url = (os.environ.get("PROXY_URL") or "").strip()
+        if proxy_url:
+            _proxies_value = {"http": proxy_url, "https": proxy_url}
+        _proxies_resolved = True
+    return _proxies_value
+
+
 @dataclass
 class LiveOrderResult:
     exchange_id: str
@@ -143,6 +172,7 @@ class BaseRestClient:
                     headers=request_headers or None,
                     timeout=self.timeout_sec,
                     verify=_get_requests_verify(),
+                    proxies=_get_proxies(),
             ) as resp:
                 text = resp.text or ""
                 parsed: Dict[str, Any] = {}
