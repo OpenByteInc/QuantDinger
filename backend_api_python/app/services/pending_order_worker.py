@@ -2094,7 +2094,6 @@ class PendingOrderWorker(PendingOrderPositionSyncMixin):
             adapter = LiveOrderPhaseAdapter(
                 client=client,
                 exchange_id=exchange_id,
-                market_type=market_type,
                 payload=payload,
                 exchange_config=exchange_config,
                 order_mode=order_mode,
