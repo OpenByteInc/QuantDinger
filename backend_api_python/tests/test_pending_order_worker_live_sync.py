@@ -2,13 +2,18 @@ from __future__ import annotations
 
 import ast
 import inspect
+import json
 import textwrap
 
 import pytest
 
 from app.services import pending_order_worker as worker_module
 from app.services.live_trading.adapters import LiveOrderPhaseAdapter
-from app.services.pending_orders.sent_order_recovery import is_final_fill, normalize_live_order_status
+from app.services.pending_orders.sent_order_recovery import (
+    is_final_fill,
+    normalize_live_order_status,
+    tracked_fill_baseline,
+)
 
 
 def test_live_order_adapter_call_uses_only_supported_constructor_keywords():
@@ -333,3 +338,70 @@ def test_live_sent_sync_reconciles_ibkr_submitted_order(monkeypatch):
 )
 def test_live_order_status_normalization(raw, expected):
     assert normalize_live_order_status(raw) == expected
+
+
+def test_tracked_fill_baseline_takes_the_largest_known_source():
+    """A stale live_fill_sync marker (written before the fill landed) must
+    not blank the baseline: the executor fill in the row and the persisted
+    ledger both know about the fill, so the largest source wins."""
+    row = {
+        "exchange_response_json": json.dumps(
+            {"live_fill_sync": {"tracked_filled": 0.0, "tracked_avg_price": 0.0}}
+        )
+    }
+    filled, avg = tracked_fill_baseline(
+        row,
+        exchange_order_id="o1",
+        previous_filled=0.1,
+        previous_avg=685.48,
+        persisted_filled=0.1,
+        persisted_avg=685.48,
+    )
+    assert filled == pytest.approx(0.1)
+    assert avg == pytest.approx(685.48)
+
+
+def test_tracked_fill_baseline_ledger_beats_partial_stale_marker():
+    row = {
+        "exchange_response_json": json.dumps(
+            {"live_fill_sync": {"tracked_filled": 0.05, "tracked_avg_price": 100.0}}
+        )
+    }
+    filled, avg = tracked_fill_baseline(
+        row,
+        exchange_order_id="o1",
+        previous_filled=0.0,
+        previous_avg=0.0,
+        persisted_filled=0.1,
+        persisted_avg=101.0,
+    )
+    assert filled == pytest.approx(0.1)
+    assert avg == pytest.approx(101.0)
+
+
+def test_live_sent_sync_ignores_stale_zero_fill_sync_marker(monkeypatch):
+    """Regression for a live double-booked fill: the row carried a
+    live_fill_sync marker with tracked_filled=0 from a pre-fill sync, the
+    executor then recorded the real 0.1 fill, and the next reconciliation
+    re-booked the full 0.1 (position 0.1 -> 0.2 in the ledger while the
+    exchange held 0.1). The ledger baseline must clamp the delta to zero."""
+    row = _row(filled=0.1, avg_price=685.48)
+    row["exchange_response_json"] = json.dumps(
+        {"live_fill_sync": {"tracked_filled": 0.0, "tracked_avg_price": 0.0}}
+    )
+    worker, snapshots, persisted = _worker(
+        monkeypatch,
+        row,
+        exchange_fill=(0.1, 685.48, "filled"),
+    )
+    monkeypatch.setattr(
+        worker_module,
+        "persisted_order_fill_baseline",
+        lambda **kwargs: (0.1, 685.48),
+    )
+
+    worker._sync_one_live_sent_order(row)
+
+    assert persisted == []
+    assert snapshots[0]["status"] == "filled"
+    assert snapshots[0]["filled"] == pytest.approx(0.1)

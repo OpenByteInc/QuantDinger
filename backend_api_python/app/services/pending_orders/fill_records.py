@@ -66,6 +66,61 @@ def proportional_spot_position_fill_quantity(
     )
 
 
+def persisted_order_fill_baseline(
+    *,
+    exchange_order_id: str,
+    order_intent_id: int = 0,
+    exchange_id: str = "",
+) -> Tuple[float, float]:
+    """Sum the fills already persisted in the ledger for one exchange order.
+
+    Returns ``(filled_qty, avg_price)`` with a notional-weighted avg (0.0
+    when nothing is recorded). Serves as the authoritative duplicate-fill
+    guard: the live fill sync must never re-book quantity the ledger
+    already holds for the same exchange order, even when the pending-order
+    row lost its fill baseline (restart, stale snapshot marker).
+    """
+    exchange_order_id = str(exchange_order_id or "").strip()
+    intent_id = int(order_intent_id or 0)
+    venue = str(exchange_id or "").strip().lower()
+    if not exchange_order_id and intent_id <= 0:
+        return 0.0, 0.0
+    try:
+        with get_db_connection() as db:
+            cur = db.cursor()
+            if exchange_order_id:
+                cur.execute(
+                    """
+                    SELECT COALESCE(SUM(quantity), 0) AS filled,
+                           COALESCE(SUM(notional), 0) AS notional
+                    FROM strategy_order_fills
+                    WHERE exchange_order_id = %s
+                      AND (%s = '' OR exchange_id = %s)
+                    """,
+                    (exchange_order_id, venue, venue),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT COALESCE(SUM(quantity), 0) AS filled,
+                           COALESCE(SUM(notional), 0) AS notional
+                    FROM strategy_order_fills
+                    WHERE order_intent_id = %s
+                    """,
+                    (intent_id,),
+                )
+            baseline_row = cur.fetchone() or {}
+            cur.close()
+    except Exception:
+        logger.debug("persisted fill baseline unavailable", exc_info=True)
+        return 0.0, 0.0
+    filled = max(0.0, float(baseline_row.get("filled") or 0.0))
+    notional = max(0.0, float(baseline_row.get("notional") or 0.0))
+    if filled <= 0.0:
+        return 0.0, 0.0
+    return filled, (notional / filled if notional > 0.0 else 0.0)
+
+
 def persist_strategy_fill(
     *,
     strategy_id: int,

@@ -50,7 +50,7 @@ from app.utils.numeric_precision import format_decimal
 from app.services.live_trading.base import LiveTradingError, is_file_descriptor_exhausted
 from app.services.pending_orders.fill_records import (
     persist_strategy_fill, proportional_spot_position_fill_quantity,
-    trade_close_reason_from_payload,
+    persisted_order_fill_baseline, trade_close_reason_from_payload,
 )
 from app.services.pending_orders.fee_reconciliation import (
     backfill_zero_commission_trades,
@@ -923,11 +923,18 @@ class PendingOrderWorker(PendingOrderPositionSyncMixin):
         exchange_status = str(exchange_status or "unknown").strip().lower()
         previous_filled = max(0.0, float(row.get("filled") or 0.0))
         previous_avg = max(0.0, float(row.get("avg_price") or 0.0))
+        persisted_filled, persisted_avg = persisted_order_fill_baseline(
+            exchange_order_id=exchange_order_id,
+            order_intent_id=int(payload.get("order_intent_id") or row.get("order_intent_id") or 0),
+            exchange_id=exchange_id,
+        )
         tracked_previous_filled, tracked_previous_avg = tracked_fill_baseline(
             row,
             exchange_order_id=exchange_order_id,
             previous_filled=previous_filled,
             previous_avg=previous_avg,
+            persisted_filled=persisted_filled,
+            persisted_avg=persisted_avg,
         )
         delta = cumulative_filled - tracked_previous_filled
         aggregate_filled = previous_filled
