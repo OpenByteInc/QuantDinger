@@ -11,6 +11,9 @@ from app.services.exchange_execution import (
     resolve_exchange_config,
     safe_exchange_config_for_log,
 )
+from app.services.ibkr_trading.account import (
+    position_entry_price as ibkr_position_entry_price,
+)
 from app.services.live_trading.account_positions import (
     account_legs_from_exchange_maps,
     sync_account_positions,
@@ -478,15 +481,16 @@ class PendingOrderPositionSyncMixin:
                             for p in positions:
                                 if not isinstance(p, dict):
                                     continue
+                                # Reconciliation keys off the strategy's own
+                                # symbol, so this must stay symbol/ib_symbol.
                                 sym = str(p.get("symbol") or p.get("ib_symbol") or "").strip()
                                 try:
                                     qty = float(p.get("quantity") or 0.0)
                                 except Exception:
                                     qty = 0.0
-                                try:
-                                    avg = float(p.get("avgCost") or 0.0)
-                                except Exception:
-                                    avg = 0.0
+                                # avgCost is per contract; reading a futures
+                                # entry through it inflates it by the multiplier.
+                                avg = ibkr_position_entry_price(p)
                                 if not sym or abs(qty) <= 0:
                                     continue
                                 side = "long" if qty > 0 else "short"

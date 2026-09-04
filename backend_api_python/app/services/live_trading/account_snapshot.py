@@ -5,16 +5,24 @@ Used by broker-accounts UI (not strategy L3 ledger).
 
 from __future__ import annotations
 
+import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.services.exchange_execution import resolve_exchange_config
+from app.services.ibkr_trading.account import (
+    position_entry_price as ibkr_position_entry_price,
+)
 from app.services.live_trading.factory import create_client
 from app.services.live_trading.records import normalize_strategy_symbol
 from app.services.live_trading.spot_wallet_snapshot import list_spot_wallet_positions
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+# TWS/IB Gateway allows one session per client id; two snapshots running at the
+# same time would answer each other with "Error 326: client id already in use".
+_IBKR_SNAPSHOT_LOCK = threading.Lock()
 
 
 def _user_facing_exchange_error(exc: Exception, *, context: str) -> str:
@@ -620,6 +628,69 @@ def _fetch_binance_snapshot(
     return swap_pos, spot_pos, orders
 
 
+def _fetch_ibkr_snapshot(
+    exchange_config: Dict[str, Any],
+    errors: List[str],
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Read IBKR positions and open orders over a single short-lived session.
+
+    IBKR allows one session per client id, so the crypto path (which opens a
+    swap and a spot client with the same credentials) would answer itself with
+    "Error 326: client id already in use" and leak the losing session. The lock
+    keeps concurrent snapshot requests from doing the same to each other.
+    """
+    positions_out: List[Dict[str, Any]] = []
+    orders_out: List[Dict[str, Any]] = []
+    with _IBKR_SNAPSHOT_LOCK:
+        client = None
+        try:
+            client = create_client(exchange_config, market_type="spot")
+            for p in client.get_positions() or []:
+                try:
+                    qty = float(p.get("quantity") or 0.0)
+                except (TypeError, ValueError):
+                    qty = 0.0
+                if abs(qty) <= 0:
+                    continue
+                positions_out.append({
+                    # localSymbol distinguishes futures expiries (MGCV6 vs MGCZ6).
+                    "symbol": str(
+                        p.get("localSymbol") or p.get("symbol") or p.get("ib_symbol") or ""
+                    ).strip(),
+                    "side": "long" if qty > 0 else "short",
+                    "size": abs(qty),
+                    "entry_price": ibkr_position_entry_price(p),
+                    "market_type": "spot",
+                    "inst_id": str(p.get("ib_symbol") or "").strip(),
+                })
+            for o in client.get_open_orders() or []:
+                # A stop order keeps its trigger in stopPrice, not limitPrice.
+                price = o.get("price")
+                if price in (None, ""):
+                    price = o.get("limitPrice")
+                try:
+                    price_f = float(price) if price not in (None, "") else None
+                except (TypeError, ValueError):
+                    price_f = None
+                orders_out.append({
+                    "symbol": str(o.get("localSymbol") or o.get("symbol") or "").strip(),
+                    "side": str(o.get("action") or "").strip().lower(),
+                    "price": price_f,
+                    "size": float(o.get("quantity") or 0.0),
+                    "status": str(o.get("status") or "").strip(),
+                    "exchange_order_id": str(o.get("orderId") or "").strip(),
+                })
+        except Exception as e:
+            _append_snapshot_error(errors, e, context="IBKR 账户连接")
+        finally:
+            if client is not None:
+                try:
+                    client.disconnect()
+                except Exception:
+                    pass
+    return positions_out, orders_out
+
+
 def fetch_account_snapshot(*, user_id: int, credential_id: int) -> Dict[str, Any]:
     """Live fetch swap/spot legs + open orders for one credential."""
     cred = int(credential_id or 0)
@@ -678,6 +749,10 @@ def fetch_account_snapshot(*, user_id: int, credential_id: int) -> Dict[str, Any
     ):
         sp, st, od = _fetch_multi_crypto_snapshot(exchange_config, exchange_id, errors)
         swap_all.extend(sp)
+        spot_all.extend(st)
+        orders_all.extend(od)
+    elif exchange_id == "ibkr":
+        st, od = _fetch_ibkr_snapshot(exchange_config, errors)
         spot_all.extend(st)
         orders_all.extend(od)
     else:
