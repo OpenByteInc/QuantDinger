@@ -52,6 +52,24 @@ def _ensure_ib_insync():
     return ib_insync
 
 
+def _contract_multiplier(contract) -> float:
+    """Contract multiplier, defaulting to 1 for stocks and malformed values."""
+    try:
+        multiplier = float(getattr(contract, "multiplier", None) or 1)
+    except (TypeError, ValueError):
+        return 1.0
+    return multiplier if multiplier > 0 else 1.0
+
+
+def _positive_or_none(value) -> Optional[float]:
+    """IB reports an unset price as 0.0; treat that as absent."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
 @dataclass
 class IBKRConfig:
     """IBKR connection configuration."""
@@ -576,16 +594,26 @@ class IBKRClient:
             for pos in positions:
                 contract = pos.contract
                 exchange = contract.exchange or contract.primaryExchange or "SMART"
-                
+                multiplier = _contract_multiplier(contract)
+                avg_cost = float(pos.avgCost)
+
                 result.append({
                     "symbol": format_display_symbol(contract.symbol, exchange),
                     "ib_symbol": contract.symbol,
+                    # Futures share a symbol across expiries; localSymbol (MGCV6)
+                    # is what identifies the contract actually held.
+                    "localSymbol": contract.localSymbol or "",
+                    "lastTradeDate": contract.lastTradeDateOrContractMonth or "",
                     "secType": contract.secType,
                     "exchange": exchange,
                     "currency": contract.currency,
+                    "multiplier": multiplier,
                     "quantity": float(pos.position),
-                    "avgCost": float(pos.avgCost),
-                    "marketValue": float(pos.position) * float(pos.avgCost),
+                    # IB reports avgCost per contract, i.e. already multiplied.
+                    "avgCost": avg_cost,
+                    # Per unit, so it is comparable to quotes and stop prices.
+                    "avgPrice": avg_cost / multiplier,
+                    "marketValue": float(pos.position) * avg_cost,
                 })
             
             return result
@@ -612,15 +640,25 @@ class IBKRClient:
                 order = trade.order
                 contract = trade.contract
                 status = trade.orderStatus
-                
+                limit_price = _positive_or_none(getattr(order, "lmtPrice", None))
+                # Stop and stop-limit orders carry their trigger in auxPrice;
+                # lmtPrice is 0 for a plain STP, which reads as "no price".
+                stop_price = _positive_or_none(getattr(order, "auxPrice", None))
+
                 result.append({
+                    # ``id`` is what order tables key rows and cancel actions on.
+                    "id": order.orderId,
                     "orderId": order.orderId,
                     "permId": getattr(order, "permId", 0),
                     "symbol": contract.symbol,
+                    "localSymbol": contract.localSymbol or "",
                     "action": order.action,
                     "quantity": float(order.totalQuantity),
                     "orderType": order.orderType,
                     "limitPrice": getattr(order, 'lmtPrice', None),
+                    "stopPrice": stop_price,
+                    # The price that actually governs this order.
+                    "price": limit_price if limit_price is not None else stop_price,
                     "status": status.status,
                     "filled": float(status.filled or 0),
                     "remaining": float(status.remaining or 0),
