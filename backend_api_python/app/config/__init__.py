@@ -7,6 +7,7 @@ from app.config.data_sources import (
     FinnhubConfig,
     TradingEconomicsConfig,
     TiingoConfig,
+    FXMacroDataConfig,
     YFinanceConfig,
     CCXTConfig,
     AkshareConfig
@@ -24,6 +25,7 @@ __all__ = [
     'FinnhubConfig',
     'TradingEconomicsConfig',
     'TiingoConfig',
+    'FXMacroDataConfig',
     'YFinanceConfig',
     'CCXTConfig',
     'AkshareConfig',
