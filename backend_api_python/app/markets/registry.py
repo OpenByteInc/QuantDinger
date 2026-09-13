@@ -107,10 +107,17 @@ MARKET_MODULES: Dict[str, MarketModule] = {
         features=["research", "backtest", "paper"],
         data_requirements=[
             DataRequirement(
+                key="ricequant",
+                label="Ricequant RQData",
+                setting_keys=["RQDATAC_LICENSE"],
+                recommended=True,
+                purpose="A-share quotes and K-lines",
+            ),
+            DataRequirement(
                 key="akshare",
                 label="AkShare fallback",
                 built_in=True,
-                purpose="quotes and OHLCV",
+                purpose="quotes and OHLCV fallback",
             ),
             DataRequirement(
                 key="twelve_data",
@@ -130,6 +137,13 @@ MARKET_MODULES: Dict[str, MarketModule] = {
         base_currency="HKD",
         features=["research", "backtest", "paper"],
         data_requirements=[
+            DataRequirement(
+                key="ricequant",
+                label="Ricequant RQData",
+                setting_keys=["RQDATAC_LICENSE"],
+                recommended=True,
+                purpose="Hong Kong quotes and K-lines",
+            ),
             DataRequirement(
                 key="yfinance",
                 label="Yahoo Finance fallback",
@@ -190,7 +204,14 @@ MARKET_MODULES: Dict[str, MarketModule] = {
                 key="twelve_data",
                 label="Twelve Data",
                 setting_keys=["TWELVE_DATA_API_KEY"],
-                purpose="futures quotes and K-lines",
+                purpose="US/global futures quotes and K-lines",
+            ),
+            DataRequirement(
+                key="ricequant",
+                label="Ricequant RQData",
+                setting_keys=["RQDATAC_LICENSE"],
+                recommended=True,
+                purpose="Chinese domestic futures quotes and K-lines",
             ),
         ],
         supports={"spot": False, "swap": False, "short": True, "session": "exchange-hours"},
