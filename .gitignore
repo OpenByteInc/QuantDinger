@@ -92,6 +92,14 @@ backend_api_python/data/quantdinger.db
 backend_api_python/data/memory/
 
 # ========================
+# Local market-data archive (DATE/)
+# ========================
+/DATE/**
+!/DATE/.gitkeep
+
+.cursor/skills/**/cache/
+
+# ========================
 # Docker
 # ========================
 docker-compose.override.yml

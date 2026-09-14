@@ -269,11 +269,23 @@ class DataSourceFactory:
         """Fetch K-lines and retain a structured provider failure when rows are empty."""
         m = cls.normalize_market(market or "")
         try:
+            local_rows = cls._read_date_archive(
+                market=m,
+                symbol=symbol,
+                timeframe=timeframe,
+                limit=limit,
+                before_time=before_time,
+                after_time=after_time,
+            )
+            if local_rows:
+                return local_rows, None
+
             assert_fd_available(f"market-data kline {m}:{symbol}")
             source = cls._resolve_source(m, exchange_id=exchange_id, market_type=market_type)
             klines = source.get_kline(symbol, timeframe, limit, before_time, after_time)
 
             klines.sort(key=lambda x: x['time'])
+            cls._write_date_archive(m, symbol, timeframe, klines)
             failure = None
             if not klines:
                 get_last_failure = getattr(source, "get_last_failure", None)
@@ -323,7 +335,62 @@ class DataSourceFactory:
                 symbol=symbol,
                 timeframe=timeframe,
             )
-    
+
+    @classmethod
+    def _read_date_archive(
+        cls,
+        *,
+        market: str,
+        symbol: str,
+        timeframe: str,
+        limit: int,
+        before_time: Optional[int],
+        after_time: Optional[int],
+    ) -> Optional[List[Dict[str, Any]]]:
+        try:
+            from app.data_sources import local_archive as archive
+
+            if not archive.should_read(market, symbol):
+                return None
+            stored = archive.read_klines(market, symbol, timeframe)
+            if not archive.local_covers(
+                stored,
+                limit=limit,
+                before_time=before_time,
+                after_time=after_time,
+                timeframe=timeframe,
+            ):
+                return None
+            rows = archive.filter_klines(
+                stored,
+                limit=limit,
+                before_time=before_time,
+                after_time=after_time,
+                truncate=(after_time is None),
+            )
+            return rows or None
+        except Exception as exc:
+            logger.debug("DATE archive read skipped for %s:%s: %s", market, symbol, exc)
+            return None
+
+    @classmethod
+    def _write_date_archive(
+        cls,
+        market: str,
+        symbol: str,
+        timeframe: str,
+        klines: List[Dict[str, Any]],
+    ) -> None:
+        if not klines:
+            return
+        try:
+            from app.data_sources import local_archive as archive
+
+            if archive.should_write(market, symbol):
+                archive.merge_write(market, symbol, timeframe, klines)
+        except Exception as exc:
+            logger.debug("DATE archive write skipped for %s:%s: %s", market, symbol, exc)
+
     @classmethod
     def _resolve_source(
         cls,

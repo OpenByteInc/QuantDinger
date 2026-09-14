@@ -136,6 +136,7 @@ services:
     volumes:
       - backend_logs:/app/logs
       - backend_data:/app/data
+      - ./DATE:/app/DATE
       - ./backend.env:/app/.env
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-quantdinger}:${POSTGRES_PASSWORD:-quantdinger123}@postgres:5432/${POSTGRES_DB:-quantdinger}
@@ -170,6 +171,7 @@ services:
     volumes:
       - backend_logs:/app/logs
       - backend_data:/app/data
+      - ./DATE:/app/DATE
       # Backend runtime config. Must exist as a *file* on the host - if missing,
       # docker silently creates a directory at the mount target and shadows
       # /app/.env. The entrypoint will auto-generate SECRET_KEY on first start
@@ -188,6 +190,12 @@ services:
       - REDIS_PASSWORD=${REDIS_PASSWORD:-}
       - REDIS_CACHE_NAMESPACE=${REDIS_CACHE_NAMESPACE:-quantdinger:cache:v1}
       - CACHE_ENABLED=true
+      - QUANTDINGER_DATE_DIR=${QUANTDINGER_DATE_DIR:-/app/DATE}
+      - QUANTDINGER_DATE_READ=${QUANTDINGER_DATE_READ:-true}
+      - QUANTDINGER_DATE_WRITE=${QUANTDINGER_DATE_WRITE:-true}
+      - CN_STOCK_PROVIDER=${CN_STOCK_PROVIDER:-rqdata}
+      - HK_STOCK_PROVIDER=${HK_STOCK_PROVIDER:-rqdata}
+      - FUTURES_CN_PROVIDER=${FUTURES_CN_PROVIDER:-rqdata}
       - QD_PROCESS_ROLE=api
       - LOG_FORMAT=${LOG_FORMAT:-json}
       - PROMETHEUS_MULTIPROC_DIR=/tmp/quantdinger-prometheus
@@ -238,6 +246,7 @@ services:
     volumes:
       - backend_logs:/app/logs
       - backend_data:/app/data
+      - ./DATE:/app/DATE
       - ./backend.env:/app/.env
     environment:
       - QD_PROCESS_ROLE=trading
@@ -249,6 +258,12 @@ services:
       - REDIS_PASSWORD=${REDIS_PASSWORD:-}
       - REDIS_CACHE_NAMESPACE=${REDIS_CACHE_NAMESPACE:-quantdinger:cache:v1}
       - CACHE_ENABLED=true
+      - QUANTDINGER_DATE_DIR=${QUANTDINGER_DATE_DIR:-/app/DATE}
+      - QUANTDINGER_DATE_READ=${QUANTDINGER_DATE_READ:-true}
+      - QUANTDINGER_DATE_WRITE=${QUANTDINGER_DATE_WRITE:-true}
+      - CN_STOCK_PROVIDER=${CN_STOCK_PROVIDER:-rqdata}
+      - HK_STOCK_PROVIDER=${HK_STOCK_PROVIDER:-rqdata}
+      - FUTURES_CN_PROVIDER=${FUTURES_CN_PROVIDER:-rqdata}
       - DB_POOL_MIN=${TRADING_DB_POOL_MIN:-4}
       - DB_POOL_MAX=${TRADING_DB_POOL_MAX:-32}
       - SKIP_AUTO_MIGRATE=true
@@ -279,6 +294,7 @@ services:
     volumes:
       - backend_logs:/app/logs
       - backend_data:/app/data
+      - ./DATE:/app/DATE
       - ./backend.env:/app/.env
     environment:
       - QD_PROCESS_ROLE=scheduler
@@ -289,6 +305,12 @@ services:
       - REDIS_PASSWORD=${REDIS_PASSWORD:-}
       - REDIS_CACHE_NAMESPACE=${REDIS_CACHE_NAMESPACE:-quantdinger:cache:v1}
       - CACHE_ENABLED=true
+      - QUANTDINGER_DATE_DIR=${QUANTDINGER_DATE_DIR:-/app/DATE}
+      - QUANTDINGER_DATE_READ=${QUANTDINGER_DATE_READ:-true}
+      - QUANTDINGER_DATE_WRITE=${QUANTDINGER_DATE_WRITE:-true}
+      - CN_STOCK_PROVIDER=${CN_STOCK_PROVIDER:-rqdata}
+      - HK_STOCK_PROVIDER=${HK_STOCK_PROVIDER:-rqdata}
+      - FUTURES_CN_PROVIDER=${FUTURES_CN_PROVIDER:-rqdata}
       - DB_POOL_MIN=${WORKER_DB_POOL_MIN:-2}
       - DB_POOL_MAX=${WORKER_DB_POOL_MAX:-12}
       - SKIP_AUTO_MIGRATE=true
@@ -318,6 +340,7 @@ services:
     volumes:
       - backend_logs:/app/logs
       - backend_data:/app/data
+      - ./DATE:/app/DATE
       - ./backend.env:/app/.env
     environment:
       - QD_PROCESS_ROLE=celery
@@ -362,6 +385,7 @@ services:
     volumes:
       - backend_logs:/app/logs
       - backend_data:/app/data
+      - ./DATE:/app/DATE
       - ./backend.env:/app/.env
     environment:
       - QD_PROCESS_ROLE=celery
