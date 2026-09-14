@@ -1,9 +1,9 @@
 """
 外汇数据源
-三级降级: Twelve Data → Tiingo → yfinance
+四级降级: FXMacroData(日线参考汇率) → Twelve Data → Tiingo → yfinance
 """
 from typing import Dict, List, Any, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import os
 import time
 import requests
@@ -12,7 +12,7 @@ import yfinance as yf
 
 from app.data_sources.base import BaseDataSource, TIMEFRAME_SECONDS
 from app.utils.logger import get_logger
-from app.config import TiingoConfig, APIKeys
+from app.config import TiingoConfig, FXMacroDataConfig, APIKeys
 
 logger = get_logger(__name__)
 
@@ -321,10 +321,11 @@ class ForexDataSource(BaseDataSource):
     ) -> List[Dict[str, Any]]:
         """
         获取外汇K线数据
-        Priority: Twelve Data → Tiingo → yfinance
+        Priority: FXMacroData (daily reference rates) → Twelve Data → Tiingo → yfinance
         """
         symbol = normalize_forex_pair_symbol(symbol)
         for fetcher in (
+            self._get_kline_fxmacrodata,
             self._get_kline_twelvedata,
             self._get_kline_tiingo,
             self._get_kline_yfinance,
@@ -342,6 +343,65 @@ class ForexDataSource(BaseDataSource):
             except Exception as e:
                 logger.debug("Forex kline fetcher %s failed for %s: %s", fetcher.__name__, symbol, e)
         return []
+
+    def _get_kline_fxmacrodata(
+        self, symbol: str, timeframe: str, limit: int, before_time: Optional[int] = None
+    ) -> List[Dict[str, Any]]:
+        """Fetch daily FX reference-rate bars from FXMacroData."""
+        if timeframe != '1D':
+            return []
+        normalized = normalize_forex_pair_symbol(symbol)
+        if len(normalized) != 6 or not normalized.isalpha():
+            return []
+
+        if before_time:
+            end_dt = datetime.fromtimestamp(int(before_time), tz=timezone.utc)
+        else:
+            end_dt = datetime.now(tz=timezone.utc)
+        start_dt = end_dt - timedelta(days=max(int(limit), 1) * 2)
+
+        params: Dict[str, Any] = {
+            "start_date": start_dt.strftime("%Y-%m-%d"),
+            "end_date": end_dt.strftime("%Y-%m-%d"),
+        }
+        if FXMacroDataConfig.API_KEY:
+            params["api_key"] = FXMacroDataConfig.API_KEY
+
+        url = f"{FXMacroDataConfig.BASE_URL}/forex/{normalized[:3].lower()}/{normalized[3:].lower()}"
+        try:
+            response = requests.get(url, params=params, timeout=FXMacroDataConfig.TIMEOUT)
+            response.raise_for_status()
+            data = response.json()
+        except requests.exceptions.RequestException as e:
+            logger.debug("FXMacroData forex kline request failed %s: %s", symbol, e)
+            return []
+
+        rows = data.get("data") if isinstance(data, dict) else None
+        if not isinstance(rows, list):
+            logger.debug("FXMacroData forex kline response missing data list for %s", symbol)
+            return []
+
+        klines = []
+        for row in rows:
+            try:
+                dt = datetime.fromisoformat(str(row["date"])).replace(tzinfo=timezone.utc)
+                price = float(row["val"])
+                klines.append({
+                    "time": int(dt.timestamp()),
+                    "open": price,
+                    "high": price,
+                    "low": price,
+                    "close": price,
+                    "volume": 0.0,
+                })
+            except Exception:
+                continue
+
+        klines.sort(key=lambda x: x["time"])
+        if len(klines) > limit:
+            klines = klines[-limit:]
+        logger.debug("FXMacroData forex kline %s %s: %d bars", symbol, timeframe, len(klines))
+        return klines
 
     def _get_kline_twelvedata(
         self, symbol: str, timeframe: str, limit: int, before_time: Optional[int] = None
