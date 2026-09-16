@@ -245,13 +245,27 @@ def get_spot_base_holding(
         if isinstance(client, HtxClient) and getattr(client, "market_type", "") == "spot":
             balance = client.get_balance()
             items = (((balance.get("data") or {}).get("list")) if isinstance(balance, dict) else None) or []
+            # HTX splits one currency over several rows: ``trade`` is the
+            # sellable part, ``frozen`` is locked by resting orders and still
+            # owned.  Order is not guaranteed, so accumulate instead of
+            # returning on the first row that matches the base asset.
+            tradable = 0.0
+            frozen = 0.0
+            avail = 0.0
+            matched = False
             for item in items:
                 if not isinstance(item, dict):
                     continue
-                if str(item.get("currency") or "").upper() == base_u:
-                    total = _pick_free_from_row(item, "balance")
-                    avail = _pick_free_from_row(item, "available", "balance")
-                    return _spot_holding(total, avail)
+                if str(item.get("currency") or "").upper() != base_u:
+                    continue
+                matched = True
+                if str(item.get("type") or "").strip().lower() == "frozen":
+                    frozen += _pick_free_from_row(item, "balance")
+                else:
+                    tradable += _pick_free_from_row(item, "balance")
+                    avail += _pick_free_from_row(item, "available", "balance")
+            if matched:
+                return _spot_holding(tradable + frozen, avail)
     except Exception as e:
         if strict:
             raise
