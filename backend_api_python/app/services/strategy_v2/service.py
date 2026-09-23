@@ -13,6 +13,7 @@ from typing import Any, Callable
 import pandas as pd
 
 from app.data_sources.errors import MarketDataUnavailableError
+from app.services.backtest.metrics import calculate_information_ratio
 from app.services.backtest_limits import (
     BacktestRangeLimitError,
     backtest_warmup_calendar_days,
@@ -276,6 +277,13 @@ class StrategyV2BacktestService:
         )
         result.update(benchmark)
         result["excessReturn"] = float(result.get("totalReturn") or 0.0) - float(result.get("benchmarkTotalReturn") or 0.0)
+        result["benchmarkRelativeMetrics"] = calculate_information_ratio(
+            result.get("equityCurve") or [],
+            result.get("benchmarkCurve") or [],
+            benchmark=benchmark_spec.key if benchmark_spec is not None else None,
+            frequency=manifest.driving_frequency,
+            annualization_factor=float(result.get("periodsPerYear") or 1.0),
+        )
         timeframe_provenance = {
             item: [
                 _frame_provenance(

@@ -23,6 +23,38 @@ Review in this order:
 5. **Benchmark:** compare both absolute return and relative performance.
 6. **Robustness:** vary ranges, parameters, and regimes instead of keeping only the best run.
 
+### Benchmark-relative metrics
+
+When benchmark data is available, Strategy API V2 includes
+`benchmarkRelativeMetrics`. The calculation first aligns portfolio and
+benchmark observations to identical return intervals, then reports arithmetic
+annualized portfolio, benchmark, and active returns. Annualized tracking error
+uses the sample standard deviation of periodic active returns; the Information
+Ratio is annualized active return divided by annualized tracking error. The
+annualization factor is the same one used by the Strategy V2 backtest: 252
+trading days for non-crypto markets and 365.25 days for crypto, with intraday
+frequencies expanded using the corresponding session length; weekly data uses
+52 periods per year.
+
+Check `status` before reading the ratio. `insufficient_history` means fewer than
+two aligned return observations were available. An interval is retained only
+when both curves have valid positive levels at its exact start and end times,
+so a missing endpoint discards that interval rather than stretching it across
+multiple periods. `zero_tracking_error` leaves
+the ratio and classification unset rather than emitting infinity. Missing or
+non-finite observations are excluded, and negative ratios are preserved.
+
+The default interpretation bands (`weak`, `acceptable`, `good`, and
+`exceptional`) are operational labels, not a universal market standard. The
+calculation accepts alternative bands when a research mandate requires them.
+
+Benchmark choice remains part of the research hypothesis. CDI can be suitable
+for Brazilian cash-like and low-duration fixed-income strategies, but it is not
+an automatic default for inflation-linked, longer-duration, or credit-risk
+mandates. Use an appropriate aligned benchmark series such as an IRF-M, IMA-B,
+or credit index where the mandate calls for it; do not substitute a static
+annual CDI rate for periodic benchmark observations.
+
 ## Common misreadings
 
 - Zero executions may mean missing data, insufficient warmup, or unreachable conditions.
