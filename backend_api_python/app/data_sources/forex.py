@@ -369,18 +369,34 @@ class ForexDataSource(BaseDataSource):
             headers["X-API-Key"] = FXMacroDataConfig.API_KEY
 
         url = f"{FXMacroDataConfig.BASE_URL}/forex/{normalized[:3].lower()}/{normalized[3:].lower()}"
-        try:
-            response = requests.get(url, params=params, headers=headers, timeout=FXMacroDataConfig.TIMEOUT)
-            response.raise_for_status()
-            data = response.json()
-        except requests.exceptions.RequestException as e:
-            logger.debug("FXMacroData forex kline request failed %s: %s", symbol, e)
-            return []
+        # The API returns at most 100 rows per request, newest first; page
+        # with offset until enough bars are collected or has_more is false.
+        rows: List[Dict[str, Any]] = []
+        offset = 0
+        for _ in range(100):
+            page_params = dict(params, limit=100, offset=offset)
+            try:
+                response = requests.get(url, params=page_params, headers=headers, timeout=FXMacroDataConfig.TIMEOUT)
+                response.raise_for_status()
+                data = response.json()
+            except requests.exceptions.RequestException as e:
+                logger.debug("FXMacroData forex kline request failed %s: %s", symbol, e)
+                return []
 
-        rows = data.get("data") if isinstance(data, dict) else None
-        if not isinstance(rows, list):
-            logger.debug("FXMacroData forex kline response missing data list for %s", symbol)
-            return []
+            page = data.get("data") if isinstance(data, dict) else None
+            if not isinstance(page, list):
+                logger.debug("FXMacroData forex kline response missing data list for %s", symbol)
+                return []
+            rows.extend(page)
+            pagination = data.get("pagination") or {}
+            if not page or len(rows) >= limit or not pagination.get("has_more"):
+                break
+            next_offset = pagination.get("next_offset")
+            if next_offset is None:
+                next_offset = offset + len(page)
+            if next_offset <= offset:
+                break
+            offset = next_offset
 
         klines = []
         for row in rows:

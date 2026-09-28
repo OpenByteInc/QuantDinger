@@ -40,10 +40,46 @@ def test_fxmacrodata_daily_kline_fetch(monkeypatch):
         "params": {
             "start_date": "2024-01-22",
             "end_date": "2024-02-01",
+            "limit": 100,
+            "offset": 0,
         },
         "headers": {"X-API-Key": "test-key"},
         "timeout": 12,
     }
+
+
+def test_fxmacrodata_daily_kline_follows_pagination(monkeypatch):
+    pages = {
+        0: {
+            "data": [{"date": "2024-01-03", "val": 1.3}, {"date": "2024-01-02", "val": 1.2}],
+            "pagination": {"has_more": True, "next_offset": 2},
+        },
+        2: {
+            "data": [{"date": "2024-01-01", "val": 1.1}],
+            "pagination": {"has_more": False, "next_offset": None},
+        },
+    }
+    offsets = []
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self.payload
+
+    def fake_get(url, params, headers, timeout):
+        offsets.append(params["offset"])
+        return FakeResponse(pages[params["offset"]])
+
+    monkeypatch.setattr("app.data_sources.forex.requests.get", fake_get)
+    rows = ForexDataSource()._get_kline_fxmacrodata("EURUSD", "1D", 5, before_time=1704326400)
+
+    assert offsets == [0, 2]
+    assert [row["close"] for row in rows] == [1.1, 1.2, 1.3]
 
 
 def test_fxmacrodata_skips_intraday_timeframes():
