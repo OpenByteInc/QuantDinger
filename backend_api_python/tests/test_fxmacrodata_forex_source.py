@@ -18,9 +18,10 @@ def test_fxmacrodata_daily_kline_fetch(monkeypatch):
                 ]
             }
 
-    def fake_get(url, params, timeout):
+    def fake_get(url, params, headers, timeout):
         captured["url"] = url
         captured["params"] = params
+        captured["headers"] = headers
         captured["timeout"] = timeout
         return FakeResponse()
 
@@ -39,8 +40,8 @@ def test_fxmacrodata_daily_kline_fetch(monkeypatch):
         "params": {
             "start_date": "2024-01-22",
             "end_date": "2024-02-01",
-            "api_key": "test-key",
         },
+        "headers": {"X-API-Key": "test-key"},
         "timeout": 12,
     }
 

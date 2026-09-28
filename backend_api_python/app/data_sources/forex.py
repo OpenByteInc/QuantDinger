@@ -364,12 +364,13 @@ class ForexDataSource(BaseDataSource):
             "start_date": start_dt.strftime("%Y-%m-%d"),
             "end_date": end_dt.strftime("%Y-%m-%d"),
         }
+        headers: Dict[str, str] = {}
         if FXMacroDataConfig.API_KEY:
-            params["api_key"] = FXMacroDataConfig.API_KEY
+            headers["X-API-Key"] = FXMacroDataConfig.API_KEY
 
         url = f"{FXMacroDataConfig.BASE_URL}/forex/{normalized[:3].lower()}/{normalized[3:].lower()}"
         try:
-            response = requests.get(url, params=params, timeout=FXMacroDataConfig.TIMEOUT)
+            response = requests.get(url, params=params, headers=headers, timeout=FXMacroDataConfig.TIMEOUT)
             response.raise_for_status()
             data = response.json()
         except requests.exceptions.RequestException as e:
