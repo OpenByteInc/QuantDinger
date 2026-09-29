@@ -57,16 +57,16 @@ Do not treat the marketing-heavy root `README.md` as the only onboarding doc; us
 
 - Never commit real **secrets**, production **`.env`**, API keys, or DB passwords. Use `env.example` patterns and placeholders in examples.
 - Do not add **live trading** or **order placement** automation that bypasses human review unless explicitly requested and scoped.
-- Prefer **linking** to `docs/STRATEGY_DEV_GUIDE*.md` over duplicating long strategy guide text inside agent-only docs.
+- Prefer **linking** to `docs/trading/STRATEGY_DEV_GUIDE*.md` over duplicating long strategy guide text inside agent-only docs.
 
 ## Repository Anchors
 
 | Area | Path |
 |------|------|
 | Backend | `backend_api_python/` |
-| Frontend (prebuilt UI) | `frontend/` |
+| Frontend (prebuilt UI) | `frontend` service in `docker-compose.yml` (prebuilt image from GHCR; not in this repo) |
 | Compose stack | `docker-compose.yml`, `scripts/` |
-| Strategy guides | `docs/STRATEGY_DEV_GUIDE.md` (and localized variants) |
+| Strategy guides | `docs/trading/STRATEGY_DEV_GUIDE.md` |
 
 ## Verification
 
