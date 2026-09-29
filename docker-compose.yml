@@ -39,6 +39,8 @@ x-backend-build: &backend-build
 
 x-backend-runtime: &backend-runtime
   init: true
+  env_file:
+    - ./backend.env
   security_opt:
     - no-new-privileges:true
   pids_limit: ${BACKEND_PIDS_LIMIT:-512}
@@ -75,6 +77,12 @@ x-worker-environment: &worker-environment
   ALLOW_LOCAL_DESKTOP_BROKERS: ${ALLOW_LOCAL_DESKTOP_BROKERS:-true}
   MARKET_CATALOG_AUTO_SYNC: ${MARKET_CATALOG_AUTO_SYNC:-true}
   MARKET_CATALOG_SYNC_INTERVAL_SEC: ${MARKET_CATALOG_SYNC_INTERVAL_SEC:-86400}
+  QUANTDINGER_DATE_DIR: ${QUANTDINGER_DATE_DIR:-/app/DATE}
+  QUANTDINGER_DATE_READ: ${QUANTDINGER_DATE_READ:-true}
+  QUANTDINGER_DATE_WRITE: ${QUANTDINGER_DATE_WRITE:-true}
+  CN_STOCK_PROVIDER: ${CN_STOCK_PROVIDER:-rqdata}
+  HK_STOCK_PROVIDER: ${HK_STOCK_PROVIDER:-rqdata}
+  FUTURES_CN_PROVIDER: ${FUTURES_CN_PROVIDER:-rqdata}
 
 services:
   # ========================
@@ -207,6 +215,7 @@ services:
     volumes:
       - backend_logs:/app/logs
       - backend_data:/app/data
+      - ./DATE:/app/DATE
       # Mount .env for runtime config and admin-panel updates
       - ./backend_api_python/.env:/app/.env
     environment:
@@ -221,6 +230,12 @@ services:
       - REDIS_PASSWORD=${REDIS_PASSWORD:-}
       - REDIS_CACHE_NAMESPACE=${REDIS_CACHE_NAMESPACE:-quantdinger:cache:v1}
       - CACHE_ENABLED=true
+      - QUANTDINGER_DATE_DIR=${QUANTDINGER_DATE_DIR:-/app/DATE}
+      - QUANTDINGER_DATE_READ=${QUANTDINGER_DATE_READ:-true}
+      - QUANTDINGER_DATE_WRITE=${QUANTDINGER_DATE_WRITE:-true}
+      - CN_STOCK_PROVIDER=${CN_STOCK_PROVIDER:-rqdata}
+      - HK_STOCK_PROVIDER=${HK_STOCK_PROVIDER:-rqdata}
+      - FUTURES_CN_PROVIDER=${FUTURES_CN_PROVIDER:-rqdata}
       - QD_PROCESS_ROLE=api
       - LOG_FORMAT=${LOG_FORMAT:-json}
       - PROMETHEUS_MULTIPROC_DIR=/tmp/quantdinger-prometheus
@@ -314,6 +329,7 @@ services:
     volumes:
       - backend_logs:/app/logs
       - backend_data:/app/data
+      - ./DATE:/app/DATE
       - ./backend_api_python/.env:/app/.env
     environment:
       <<: *worker-environment
@@ -347,6 +363,7 @@ services:
     volumes:
       - backend_logs:/app/logs
       - backend_data:/app/data
+      - ./DATE:/app/DATE
       - ./backend_api_python/.env:/app/.env
     environment:
       <<: *worker-environment
@@ -379,6 +396,7 @@ services:
     volumes:
       - backend_logs:/app/logs
       - backend_data:/app/data
+      - ./DATE:/app/DATE
       - ./backend_api_python/.env:/app/.env
     environment:
       <<: *worker-environment
@@ -409,6 +427,7 @@ services:
     volumes:
       - backend_logs:/app/logs
       - backend_data:/app/data
+      - ./DATE:/app/DATE
       - ./backend_api_python/.env:/app/.env
     environment:
       <<: *worker-environment

@@ -1,18 +1,19 @@
 """
 期货数据源
 支持：
-1. 加密货币期货（Binance Futures via CCXT）
-2. 传统期货（三级降级: Twelve Data → yfinance → Tiingo(贵金属)）
+1. 国内期货（RQData 优先，AkShare/新浪回退；副本见 futures_akshare.py）
+2. 传统外盘期货（Twelve Data → yfinance → Tiingo(贵金属)）
+3. 加密货币期货（Binance Futures via CCXT）
 """
 from typing import Dict, List, Any, Optional
 from datetime import datetime, timedelta
 import os
-import time
 import ccxt
 import requests
 import yfinance as yf
 
 from app.data_sources.base import BaseDataSource, TIMEFRAME_SECONDS
+from app.data_sources.cn_futures_symbols import is_cn_futures_symbol
 from app.utils.logger import get_logger
 from app.config import CCXTConfig, TiingoConfig, APIKeys
 
@@ -110,10 +111,12 @@ class FuturesDataSource(BaseDataSource):
     def get_ticker(self, symbol: str) -> Dict[str, Any]:
         """
         Get latest ticker for futures symbol.
-        Traditional futures: Twelve Data → yfinance fallback.
+        Chinese futures: RQData → AkShare. Traditional: Twelve Data → yfinance.
         Crypto futures: CCXT.
         """
         sym = (symbol or "").strip()
+        if is_cn_futures_symbol(sym):
+            return self._get_cn_futures_ticker(sym)
         is_traditional = sym in self.YF_SYMBOLS or sym.endswith("=F") or sym in _TD_FUTURES_SYMBOLS
         if is_traditional:
             for fetcher in (self._get_ticker_twelvedata, self._get_ticker_yfinance, self._get_ticker_tiingo):
@@ -134,6 +137,23 @@ class FuturesDataSource(BaseDataSource):
             elif sym.endswith("USD") and len(sym) > 3:
                 sym = f"{sym[:-3]}/USD"
         return self.exchange.fetch_ticker(sym)
+
+    def _get_cn_futures_ticker(self, symbol: str) -> Dict[str, Any]:
+        """Chinese futures quote: RQData first, AkShare/Sina fallback."""
+        from app.data_sources.futures_akshare import get_cn_futures_ticker_akshare
+        from app.data_sources.rqdata_futures import (
+            cn_futures_source_mode,
+            get_cn_futures_ticker_rqdata,
+        )
+
+        mode = cn_futures_source_mode()
+        if mode != "akshare":
+            quote = get_cn_futures_ticker_rqdata(symbol)
+            if quote and float(quote.get("last") or 0) > 0:
+                return quote
+            if mode == "rqdata-only":
+                return quote or {"symbol": symbol, "last": 0.0}
+        return get_cn_futures_ticker_akshare(symbol)
 
     def _get_ticker_twelvedata(self, symbol: str) -> Optional[Dict[str, Any]]:
         """Fetch traditional futures quote from Twelve Data."""
@@ -171,8 +191,6 @@ class FuturesDataSource(BaseDataSource):
                 yf_symbol = yf_symbol + "=F"
             t = yf.Ticker(yf_symbol)
             last = None
-            source = "yfinance"
-            timestamp = None
             try:
                 last = getattr(t, "fast_info", {}).get("last_price")
             except Exception:
@@ -181,9 +199,7 @@ class FuturesDataSource(BaseDataSource):
                 hist = t.history(period="2d", interval="1d")
                 if hist is not None and not hist.empty:
                     last = float(hist["Close"].iloc[-1])
-                    source = "kline_1d"
-                    timestamp = int(hist.index[-1].timestamp())
-            return {"symbol": yf_symbol, "last": float(last or 0.0), "source": source, "timestamp": timestamp}
+            return {"symbol": yf_symbol, "last": float(last or 0.0)}
         except Exception:
             return {"symbol": symbol, "last": 0.0}
 
@@ -239,12 +255,34 @@ class FuturesDataSource(BaseDataSource):
             after_time: 预留与基类一致（当前期货链路未使用）
         """
         _ = after_time
+        if is_cn_futures_symbol(symbol):
+            return self._get_cn_futures_kline(symbol, timeframe, limit, before_time)
         base_symbol = symbol.replace("=F", "").upper()
         if base_symbol in _TD_FUTURES_SYMBOLS or symbol.endswith('=F'):
             return self._get_traditional_futures(symbol, timeframe, limit, before_time)
         else:
             return self._get_crypto_futures(symbol, timeframe, limit, before_time)
     
+    def _get_cn_futures_kline(
+        self, symbol: str, timeframe: str, limit: int, before_time: Optional[int] = None
+    ) -> List[Dict[str, Any]]:
+        """Chinese futures K-lines: RQData first, AkShare/Sina fallback."""
+        from app.data_sources.futures_akshare import get_cn_futures_kline_akshare
+        from app.data_sources.rqdata_futures import (
+            cn_futures_source_mode,
+            get_cn_futures_kline_rqdata,
+        )
+
+        mode = cn_futures_source_mode()
+        if mode != "akshare":
+            bars = get_cn_futures_kline_rqdata(symbol, timeframe, limit, before_time)
+            if bars:
+                return bars
+            if mode == "rqdata-only":
+                return []
+            logger.info("RQData returned no bars for %s %s; falling back to AkShare", symbol, timeframe)
+        return get_cn_futures_kline_akshare(symbol, timeframe, limit, before_time)
+
     def _get_traditional_futures(
         self,
         symbol: str,

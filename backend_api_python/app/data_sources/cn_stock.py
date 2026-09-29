@@ -1,12 +1,7 @@
 """
-中国A股数据源 — 多层 fallback
+中国A股数据源 — Ricequant RQData 优先，其它源回退
 
-有 TWELVE_DATA_API_KEY:
-  所有周期 → Twelve Data（主） → 腾讯日/周线 → yfinance → AkShare
-
-无 API Key:
-  分钟/小时 → yfinance → AkShare
-  日/周线 → 腾讯 fqkline → yfinance → AkShare
+RQData → Twelve Data → 腾讯日/周线 → yfinance → AkShare
 """
 
 from __future__ import annotations
@@ -28,11 +23,18 @@ logger = get_logger(__name__)
 
 
 class CNStockDataSource(BaseDataSource):
-    """A股数据源（TwelveData + Tencent + yfinance + AkShare）"""
+    """A股数据源（RQData + TwelveData + Tencent + yfinance + AkShare）"""
 
-    name = "CNStock/multi-source"
+    name = "CNStock/rqdata"
 
     def get_ticker(self, symbol: str) -> Dict[str, Any]:
+        from app.data_sources.rqdata_equity import cn_stock_source_mode, get_cn_stock_ticker_rqdata
+
+        mode = cn_stock_source_mode()
+        if mode != "legacy":
+            quote = get_cn_stock_ticker_rqdata(symbol)
+            if quote.get("last"):
+                return quote
         code = normalize_cn_code(symbol)
         parts = fetch_quote(code)
         if not parts:
@@ -62,7 +64,21 @@ class CNStockDataSource(BaseDataSource):
         tf = normalize_chart_timeframe(timeframe)
         lim = max(int(limit or 300), 1)
 
-        # Tier 1: Twelve Data (paid, most reliable)
+        from app.data_sources.rqdata_equity import cn_stock_source_mode, get_cn_stock_kline_rqdata
+
+        mode = cn_stock_source_mode()
+        if mode != "legacy":
+            rows = get_cn_stock_kline_rqdata(symbol, tf, lim, before_time)
+            if rows:
+                return self.filter_and_limit(
+                    rows,
+                    limit=lim,
+                    before_time=before_time,
+                    after_time=after_time,
+                    truncate=(after_time is None),
+                )
+
+        # Tier 2: Twelve Data
         rows = fetch_twelvedata_klines(
             is_hk=False, tencent_code=code, timeframe=tf, limit=lim, before_time=before_time
         )
