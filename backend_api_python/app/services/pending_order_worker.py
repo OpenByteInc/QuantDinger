@@ -1953,9 +1953,6 @@ class PendingOrderWorker(
             except Exception:
                 pass
 
-        # Account configuration is required before opening exposure, but must
-        # not block reduce-only closes. OKX may reject leverage changes while
-        # native algo/protection orders exist (59669); those are retried below.
         if requires_derivatives_account_configuration(
             market_type=market_type,
             reduce_only=reduce_only,
@@ -1978,77 +1975,16 @@ class PendingOrderWorker(
                     margin_mode=margin_mode,
                 )
             except Exception as e:
-                err_str = str(e)
-
-                # 59669 / leverage-blocking-algo-orders is a *recoverable* error.
-                # The account_configuration layer already cancels algo orders and
-                # retries internally. If it still fails, schedule a delayed retry
-                # instead of permanently marking the order as failed. This gives
-                # OKX time to settle while the user does not need to restart the
-                # strategy manually.
-                is_recoverable_leverage_error = (
-                    "59669" in err_str
-                    or "Cancel cross-margin trailing" in err_str
-                    or "algo orders" in err_str.lower()
+                from app.services.pending_orders.leverage_retry import (
+                    handle_derivatives_configuration_error as _hl,
                 )
-
-                if is_recoverable_leverage_error:
-                    MAX_LEVERAGE_RETRIES = 3
-                    attempt_count = int(payload.get("leverage_retry_attempt") or 0) + 1
-
-                    if attempt_count <= MAX_LEVERAGE_RETRIES:
-                        retry_delay_sec = attempt_count * 30  # 30s → 60s → 90s
-                        phases["leverage_retry_attempt"] = attempt_count
-                        phases["leverage_retry_pending"] = True
-
-                        logger.warning(
-                            f"Leverage setup temporarily blocked by OKX algo orders "
-                            f"(attempt {attempt_count}/{MAX_LEVERAGE_RETRIES}, "
-                            f"pending_id={order_id}, strategy_id={strategy_id}). "
-                            f"Scheduling retry in {retry_delay_sec}s..."
-                        )
-                        append_strategy_log(
-                            strategy_id,
-                            "warning",
-                            f"Leverage setup temporarily blocked — "
-                            f"retrying in {retry_delay_sec}s "
-                            f"(attempt {attempt_count}/{MAX_LEVERAGE_RETRIES})"
-                        )
-
-                        self._schedule_leverage_retry(
-                            order_id=order_id,
-                            payload=payload,
-                            attempt_count=attempt_count,
-                            max_retries=MAX_LEVERAGE_RETRIES,
-                            retry_delay_sec=retry_delay_sec,
-                            err_str=err_str,
-                        )
-                        return
-
-                    # Exhausted retries — hard fail
-                    err = f"derivatives_account_configuration_failed[max_retries_exceeded]:{e}"
-                    logger.error(
-                        f"Leverage setup permanently failed after {MAX_LEVERAGE_RETRIES} retries: "
-                        f"pending_id={order_id}, strategy_id={strategy_id}, err={e}"
-                    )
-                    self._mark_failed(order_id=order_id, error=err)
-                    append_strategy_log(
-                        strategy_id,
-                        "error",
-                        f"Leverage or margin-mode setup failed for {symbol} "
-                        f"after {MAX_LEVERAGE_RETRIES} retries. "
-                        "Restart the strategy to try again."
-                    )
+                if _hl(
+                    error=e, order_id=order_id, strategy_id=strategy_id, symbol=str(symbol),
+                    payload=payload, phases=phases, safe_cfg=safe_cfg, mark_failed=self._mark_failed,
+                    append_log=append_strategy_log, console_print=_console_print,
+                    notify=lambda **kw: _notify_live_best_effort(amount_hint=amount, price_hint=ref_price, **kw),
+                ):
                     return
-
-                # Non-recoverable error — fail immediately
-                err = f"derivatives_account_configuration_failed:{e}"
-                logger.warning(f"live leverage set failed: pending_id={order_id}, strategy_id={strategy_id}, cfg={safe_cfg}, err={e}")
-                self._mark_failed(order_id=order_id, error=err)
-                _console_print(f"[worker] order rejected: strategy_id={strategy_id} pending_id={order_id} {err}")
-                _notify_live_best_effort(status="failed", error=err, amount_hint=amount, price_hint=ref_price)
-                append_strategy_log(strategy_id, "error", f"Leverage or margin-mode setup failed for {symbol}: {e}")
-                return
 
         fills = FillAccumulator()
 
@@ -3062,74 +2998,6 @@ class PendingOrderWorker(
             )
         except Exception:
             logger.debug("pending order binding registration failed id=%s", order_id, exc_info=True)
-
-    def _schedule_leverage_retry(
-        self,
-        *,
-        order_id: int,
-        payload: Dict[str, Any],
-        attempt_count: int,
-        max_retries: int,
-        retry_delay_sec: int,
-        err_str: str,
-    ) -> None:
-        """Requeue a live order blocked by recoverable OKX leverage errors."""
-        merged_payload = dict(payload or {})
-        merged_payload["leverage_retry_attempt"] = int(attempt_count)
-        merged_payload["leverage_retry_not_before"] = time.time() + float(retry_delay_sec)
-        note = f"leverage_retry:{attempt_count}/{max_retries} in {retry_delay_sec}s"
-        last_error = f"[auto-retry-{attempt_count}]{err_str}"[:2000]
-        try:
-            with get_db_connection() as db:
-                cur = db.cursor()
-                cur.execute(
-                    """
-                    UPDATE pending_orders
-                    SET status = 'pending',
-                        attempts = GREATEST(0, COALESCE(attempts, 0) - 1),
-                        last_error = %s,
-                        dispatch_note = %s,
-                        payload_json = %s,
-                        updated_at = NOW()
-                    WHERE id = %s
-                    """,
-                    (
-                        last_error,
-                        note[:200],
-                        json.dumps(merged_payload, ensure_ascii=False),
-                        int(order_id),
-                    ),
-                )
-                db.commit()
-                cur.close()
-        except Exception as db_err:
-            logger.warning(
-                "Failed to schedule leverage retry pending_id=%s: %s",
-                order_id,
-                db_err,
-            )
-            try:
-                with get_db_connection() as db:
-                    cur = db.cursor()
-                    cur.execute(
-                        """
-                        UPDATE pending_orders
-                        SET status = 'pending',
-                            attempts = GREATEST(0, COALESCE(attempts, 0) - 1),
-                            last_error = %s,
-                            updated_at = NOW()
-                        WHERE id = %s AND status = 'processing'
-                        """,
-                        (last_error, int(order_id)),
-                    )
-                    db.commit()
-                    cur.close()
-            except Exception:
-                logger.warning(
-                    "Failed fallback requeue for leverage retry pending_id=%s",
-                    order_id,
-                    exc_info=True,
-                )
 
     def _mark_failed(self, order_id: int, error: str) -> None:
         from app.services.live_trading.partner_attribution import redact_partner_attribution
