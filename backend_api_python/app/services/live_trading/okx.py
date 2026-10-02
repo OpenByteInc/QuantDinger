@@ -13,7 +13,7 @@ import hmac
 import logging
 import time
 from decimal import Decimal, ROUND_DOWN
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 from urllib.parse import urlencode
 
 from app.services.live_trading.base import BaseRestClient, LiveOrderResult, LiveTradingError
@@ -290,7 +290,7 @@ class OkxClient(BaseRestClient):
         method: str,
         path: str,
         *,
-        json_body: Optional[Dict[str, Any]] = None,
+        json_body: Optional[Union[Dict[str, Any], List[Any]]] = None,
         params: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
@@ -477,6 +477,88 @@ class OkxClient(BaseRestClient):
             params["instId"] = str(inst_id).strip()
         return self._signed_request("GET", "/api/v5/account/positions", params=params)
 
+    def _read_effective_leverage(
+        self, *, inst_id: str, mgn_mode: str = "cross", pos_side: str = ""
+    ) -> Optional[int]:
+        """Best-effort read of current leverage from an open position row."""
+        iid = str(inst_id or "").strip()
+        if not iid:
+            return None
+        try:
+            resp = self.get_positions(inst_id=iid, inst_type="SWAP")
+        except Exception:
+            return None
+        rows = (resp.get("data") or []) if isinstance(resp, dict) else []
+        mm = str(mgn_mode or "cross").strip().lower()
+        ps = str(pos_side or "").strip().lower()
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("instId") or "") != iid:
+                continue
+            if str(row.get("mgnMode") or "").strip().lower() != mm:
+                continue
+            row_ps = str(row.get("posSide") or "").strip().lower()
+            if ps and row_ps and row_ps not in (ps, "net"):
+                continue
+            try:
+                lev = int(float(row.get("lever") or 0))
+            except (TypeError, ValueError):
+                continue
+            if lev > 0:
+                return lev
+        return None
+
+    def get_leverage_info(
+        self, *, inst_id: str, mgn_mode: str = "cross"
+    ) -> Dict[str, Any]:
+        """Read configured leverage for an instrument (works without open position)."""
+        params: Dict[str, Any] = {
+            "instId": str(inst_id or "").strip(),
+            "mgnMode": str(mgn_mode or "cross").strip().lower(),
+        }
+        return self._signed_request("GET", "/api/v5/account/leverage-info", params=params)
+
+    def _read_configured_leverage(
+        self, *, inst_id: str, mgn_mode: str = "cross", pos_side: str = ""
+    ) -> Optional[int]:
+        """Read leverage from open position or account leverage-info."""
+        current = self._read_effective_leverage(
+            inst_id=inst_id, mgn_mode=mgn_mode, pos_side=pos_side
+        )
+        if current is not None:
+            return current
+        iid = str(inst_id or "").strip()
+        if not iid:
+            return None
+        mm = str(mgn_mode or "cross").strip().lower()
+        ps = str(pos_side or "").strip().lower()
+        try:
+            resp = self.get_leverage_info(inst_id=iid, mgn_mode=mm)
+        except Exception:
+            return None
+        rows = (resp.get("data") or []) if isinstance(resp, dict) else []
+        fallback: Optional[int] = None
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("instId") or "") != iid:
+                continue
+            try:
+                lev = int(float(row.get("lever") or 0))
+            except (TypeError, ValueError):
+                continue
+            if lev <= 0:
+                continue
+            row_ps = str(row.get("posSide") or "").strip().lower()
+            if ps and row_ps and row_ps not in (ps, "net", ""):
+                continue
+            if ps and row_ps == ps:
+                return lev
+            if fallback is None:
+                fallback = lev
+        return fallback
+
     def set_leverage(self, *, inst_id: str, lever: float, mgn_mode: str = "cross", pos_side: str = "") -> bool:
         """
         Set leverage for an instrument (best-effort).
@@ -487,6 +569,11 @@ class OkxClient(BaseRestClient):
           - lever
           - mgnMode: cross / isolated
           - posSide: net / long / short (required depending on posMode)
+
+        On OKX error 59669 (algo orders blocking leverage change), automatically
+        cancels all outstanding algo orders and retries up to 3 times with
+        increasing backoff. After each cancellation, verifies that no algo orders
+        remain before retrying.
         """
         iid = str(inst_id or "").strip()
         if not iid:
@@ -503,8 +590,6 @@ class OkxClient(BaseRestClient):
             mm = "cross"
 
         ps = str(pos_side or "").strip().lower()
-        # In net_mode, OKX requires posSide=net. In long_short_mode, requires long/short.
-        # Caller should pass already resolved posSide; but keep a safe fallback.
         if ps not in ("net", "long", "short"):
             try:
                 cfg = self.get_account_config() or {}
@@ -521,12 +606,92 @@ class OkxClient(BaseRestClient):
             if ok and (now - float(ts or 0.0)) <= float(self._lev_cache_ttl_sec or 60.0):
                 return True
 
+        current_lev = self._read_configured_leverage(inst_id=iid, mgn_mode=mm, pos_side=ps)
+        if current_lev == lv:
+            logger.debug(
+                "OKX leverage already %sx on %s (%s/%s); skipping set-leverage.",
+                lv,
+                iid,
+                mm,
+                ps or "net",
+            )
+            self._lev_cache[cache_key] = (now, True)
+            return True
+
         body: Dict[str, Any] = {"instId": iid, "lever": str(lv), "mgnMode": mm}
         if ps:
             body["posSide"] = ps
-        response = self._signed_request(
-            "POST", "/api/v5/account/set-leverage", json_body=body
-        )
+
+        MAX_RETRIES = 3
+        for attempt in range(MAX_RETRIES + 1):
+            try:
+                response = self._signed_request(
+                    "POST", "/api/v5/account/set-leverage", json_body=body
+                )
+                break
+            except LiveTradingError as e:
+                error_text = str(e)
+                if "59669" in error_text or "Cancel cross-margin trailing" in error_text:
+                    if attempt >= MAX_RETRIES:
+                        if self._read_configured_leverage(
+                            inst_id=iid, mgn_mode=mm, pos_side=ps
+                        ) == lv:
+                            logger.info(
+                                "OKX 59669 on %s but configured leverage is already %sx; continuing.",
+                                iid,
+                                lv,
+                            )
+                            self._lev_cache[cache_key] = (now, True)
+                            response = {"data": [{"lever": str(lv)}]}
+                            break
+
+                        error_detail = (
+                            f"OKX error 59669 persists after {MAX_RETRIES + 1} attempts "
+                            f"(incl. retries) to cancel algo orders for {iid}. "
+                            "Please manually check and cancel any trailing stop, trigger, "
+                            "iceberg, TWAP, or chase orders on OKX for this instrument, "
+                            "then restart the strategy."
+                        )
+                        logger.error(error_detail)
+                        raise LiveTradingError(error_detail) from e
+
+                    backoff = 1.0 + attempt
+                    logger.warning(
+                        f"OKX error 59669 (attempt {attempt + 1}/{MAX_RETRIES + 1}): "
+                        f"algo orders blocking leverage change on {iid}. "
+                        f"Cancelling all algo orders and retrying in {backoff}s..."
+                    )
+
+                    # Cancel algo orders on this specific instrument first
+                    cancelled = self.cancel_all_algo_orders(inst_id=iid, inst_type="SWAP")
+                    logger.info(f"Cancelled {cancelled} algo order(s) for {iid}.")
+
+                    # Also try cancelling ALL algo orders across all instruments,
+                    # since OKX may block leverage changes for any instrument
+                    if cancelled == 0 or attempt >= 1:
+                        all_cancelled = self.cancel_all_algo_orders(inst_type="SWAP")
+                        logger.info(
+                            f"Cancelled {all_cancelled} algo order(s) across all instruments."
+                        )
+                        cancelled = max(cancelled, all_cancelled)
+
+                    if cancelled == 0:
+                        logger.warning(
+                            f"No algo orders found to cancel for {iid}, "
+                            "but OKX still reports 59669. This may indicate "
+                            "stale algo orders or a different instrument blocking "
+                            "the leverage change."
+                        )
+
+                    time.sleep(backoff)
+                else:
+                    raise
+        else:
+            # This shouldn't happen in practice, but guard against it
+            raise LiveTradingError(
+                f"OKX set_leverage failed after {MAX_RETRIES + 1} attempts on {iid}"
+            )
+
         rows = (response.get("data") or []) if isinstance(response, dict) else []
         first = rows[0] if isinstance(rows, list) and rows and isinstance(rows[0], dict) else {}
         effective_raw = first.get("lever") if isinstance(first, dict) else None
@@ -541,6 +706,7 @@ class OkxClient(BaseRestClient):
                 raise LiveTradingError(
                     f"OKX applied {effective}x instead of requested {lv}x leverage"
                 )
+
         self._lev_cache[cache_key] = (now, True)
         return True
 
@@ -759,6 +925,151 @@ class OkxClient(BaseRestClient):
         else:
             raise LiveTradingError("OKX cancel_order requires ord_id or cl_ord_id")
         return self._signed_request("POST", "/api/v5/trade/cancel-order", json_body=body)
+
+    def get_algo_orders(self, *, ord_type: str = "", inst_type: str = "SWAP", inst_id: str = "") -> Dict[str, Any]:
+        """
+        Get outstanding algo orders (trigger, trailing stop, iceberg, TWAP, chase).
+
+        Endpoint: GET /api/v5/trade/orders-algo-pending
+        Args:
+            ord_type: Filter by order type (conditional, oco, trigger, move_order_stop,
+                      iceberg, twap, chase). Empty to return all types.
+            inst_type: SWAP / SPOT / FUTURES / OPTION (default: SWAP)
+            inst_id: Optional instrument ID filter (e.g. BTC-USDT-SWAP)
+        """
+        params: Dict[str, Any] = {"ordType": ord_type, "instType": inst_type}
+        if inst_id:
+            params["instId"] = str(inst_id).strip()
+        resp = self._signed_request("GET", "/api/v5/trade/orders-algo-pending", params=params)
+        return resp if isinstance(resp, dict) else {"raw": resp}
+
+    def cancel_algo_order(self, *, algo_id: str, inst_id: str, ord_type: str = "") -> Dict[str, Any]:
+        """
+        Cancel an algo order (trigger, trailing stop, iceberg, TWAP, chase).
+
+        OKX requires the body to be a JSON array. Trailing/iceberg/TWAP orders
+        use /trade/cancel-advance-algos; other algo types use /trade/cancel-algos.
+        """
+        payload = [{"algoId": str(algo_id), "instId": str(inst_id)}]
+        return self._cancel_algo_payload(payload, ord_type=ord_type)
+
+    def _cancel_algo_payload(
+        self,
+        payload: Sequence[Dict[str, str]],
+        *,
+        ord_type: str = "",
+    ) -> Dict[str, Any]:
+        items = [
+            {"algoId": str(item.get("algoId") or ""), "instId": str(item.get("instId") or "")}
+            for item in payload
+            if str(item.get("algoId") or "") and str(item.get("instId") or "")
+        ]
+        if not items:
+            raise LiveTradingError("OKX cancel algo payload is empty")
+
+        advanced_types = {"move_order_stop", "iceberg", "twap", "smart_iceberg"}
+        otype = str(ord_type or "").strip().lower()
+        endpoints: List[str] = []
+        if otype in advanced_types:
+            endpoints = ["/api/v5/trade/cancel-advance-algos", "/api/v5/trade/cancel-algos"]
+        elif otype:
+            endpoints = ["/api/v5/trade/cancel-algos", "/api/v5/trade/cancel-advance-algos"]
+        else:
+            endpoints = ["/api/v5/trade/cancel-algos", "/api/v5/trade/cancel-advance-algos"]
+
+        last_error: Optional[Exception] = None
+        for path in endpoints:
+            try:
+                return self._signed_request("POST", path, json_body=list(items))
+            except Exception as exc:
+                last_error = exc
+                logger.debug("OKX %s failed for ordType=%s: %s", path, otype or "*", exc)
+        assert last_error is not None
+        raise last_error
+
+    def cancel_all_algo_orders(self, *, inst_id: str = "", inst_type: str = "SWAP") -> int:
+        """
+        Cancel all outstanding algo orders, optionally filtered by instrument.
+
+        Args:
+            inst_id: Instrument ID filter (e.g. BTC-USDT-SWAP). Empty to cancel all.
+            inst_type: SWAP / SPOT / FUTURES / OPTION (default: SWAP)
+
+        Returns:
+            Number of algo orders successfully cancelled.
+        """
+        # Algo order types that block leverage adjustment per OKX error 59669
+        algo_types = ["conditional", "oco", "trigger", "move_order_stop", "iceberg", "twap", "chase"]
+
+        cancelled_count = 0
+        all_algo_ids: list[Dict[str, str]] = []
+
+        # Fetch all pending algo orders across all types
+        for algo_type in algo_types:
+            try:
+                resp = self.get_algo_orders(ord_type=algo_type, inst_type=inst_type, inst_id=inst_id)
+                data = (resp.get("data") or []) if isinstance(resp, dict) else []
+                for item in data:
+                    if isinstance(item, dict):
+                        all_algo_ids.append({
+                            "algoId": str(item.get("algoId") or ""),
+                            "instId": str(item.get("instId") or ""),
+                            "ordType": algo_type,
+                        })
+            except Exception as e:
+                logger.warning(f"Failed to fetch {algo_type} algo orders: {e}")
+
+        if not all_algo_ids:
+            logger.info("No outstanding algo orders found.")
+            return 0
+
+        logger.info(f"Found {len(all_algo_ids)} outstanding algo order(s). Cancelling...")
+
+        # Cancel in batches of 10 (OKX max). Group by ordType so the correct
+        # cancel endpoint can be selected for trailing/iceberg/TWAP orders.
+        by_type: Dict[str, List[Dict[str, str]]] = {}
+        for algo_info in all_algo_ids:
+            if not algo_info.get("algoId") or not algo_info.get("instId"):
+                logger.warning(f"Skipping algo order with missing algoId/instId: {algo_info}")
+                continue
+            by_type.setdefault(algo_info["ordType"], []).append(
+                {"algoId": algo_info["algoId"], "instId": algo_info["instId"]}
+            )
+
+        for otype, items in by_type.items():
+            for idx in range(0, len(items), 10):
+                batch = items[idx : idx + 10]
+                try:
+                    resp = self._cancel_algo_payload(batch, ord_type=otype)
+                    data = (resp.get("data") or []) if isinstance(resp, dict) else []
+                    batch_ok = 0
+                    for row in data:
+                        if not isinstance(row, dict):
+                            continue
+                        scode = str(row.get("sCode") or "")
+                        if scode in ("0", ""):
+                            batch_ok += 1
+                        else:
+                            logger.warning(
+                                "OKX refused algo cancel algoId=%s sCode=%s sMsg=%s",
+                                row.get("algoId"),
+                                scode,
+                                row.get("sMsg"),
+                            )
+                    if not data and str(resp.get("code") or "") == "0":
+                        batch_ok = len(batch)
+                    cancelled_count += batch_ok
+                    logger.info(
+                        "Cancelled %s/%s %s algo order(s) in batch",
+                        batch_ok,
+                        len(batch),
+                        otype,
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to cancel {otype} algo batch ({len(batch)}): {e}")
+
+        logger.info(f"Successfully cancelled {cancelled_count}/{len(all_algo_ids)} algo order(s).")
+        return cancelled_count
 
     def get_order(self, *, inst_id: str, ord_id: str = "", cl_ord_id: str = "") -> Dict[str, Any]:
         params: Dict[str, Any] = {"instId": str(inst_id)}

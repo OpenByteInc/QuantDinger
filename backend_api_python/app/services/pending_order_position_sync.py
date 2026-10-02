@@ -23,7 +23,12 @@ from app.services.live_trading.factory import create_client
 from app.services.live_trading.gate import GateStockClient, GateUsdtFuturesClient
 from app.services.live_trading.leg_context import credential_id_from_exchange_config
 from app.services.live_trading.okx import OkxClient
-from app.services.live_trading.records import normalize_strategy_symbol, strategy_allowed_symbols
+from app.services.live_trading.records import (
+    _delete_position,
+    lookup_exchange_side_qty,
+    normalize_strategy_symbol,
+    strategy_allowed_symbols,
+)
 from app.services.pending_orders.position_sync_cache import (
     exchange_sync_backoff_sec,
     get_position_sync_snapshot,
@@ -47,6 +52,214 @@ logger = get_logger(__name__)
 IBKRClient = None
 AlpacaClient = None
 _POSITION_SYNC_FD_BACKOFF_UNTIL = 0.0
+
+
+def _local_strategy_position_legs(
+    strategy_id: int,
+    allowed_symbols: set[str],
+) -> List[tuple[str, str]]:
+    allowed = {
+        normalize_strategy_symbol(str(symbol or "")).upper()
+        for symbol in allowed_symbols
+        if normalize_strategy_symbol(str(symbol or ""))
+    }
+    if not allowed:
+        return []
+
+    with get_db_connection() as db:
+        cur = db.cursor()
+        cur.execute(
+            """
+            SELECT symbol, side
+            FROM qd_strategy_positions
+            WHERE strategy_id = %s
+              AND COALESCE(size, 0) > 0
+              AND side IN ('long', 'short')
+            """,
+            (int(strategy_id),),
+        )
+        rows = cur.fetchall() or []
+        cur.close()
+
+    output: List[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for row in rows:
+        symbol = normalize_strategy_symbol(str(row.get("symbol") or ""))
+        side = str(row.get("side") or "").strip().lower()
+        if not symbol or side not in ("long", "short"):
+            continue
+        if symbol.upper() not in allowed:
+            continue
+        key = (symbol, side)
+        if key in seen:
+            continue
+        seen.add(key)
+        output.append(key)
+    return output
+
+
+def _purge_flat_grace_sec() -> float:
+    """Guard window after an open/add fill during which a flat exchange snapshot must not purge L3."""
+    try:
+        return max(0.0, float(os.getenv("POSITION_SYNC_PURGE_GRACE_SEC", "120")))
+    except Exception:
+        return 120.0
+
+
+def _recent_open_fill_symbols(strategy_id: int, grace_sec: float) -> set[tuple[str, str]]:
+    """Return (symbol, side) legs that had an open/add fill within the grace window."""
+    if grace_sec <= 0:
+        return set()
+    sid = int(strategy_id or 0)
+    if sid <= 0:
+        return set()
+    out: set[tuple[str, str]] = set()
+    try:
+        with get_db_connection() as db:
+            cur = db.cursor()
+            cur.execute(
+                """
+                SELECT symbol, type
+                FROM qd_strategy_trades
+                WHERE strategy_id = %s
+                  AND type IN ('open_long', 'open_short', 'add_long', 'add_short')
+                  AND created_at >= NOW() - (%s * INTERVAL '1 second')
+                """,
+                (sid, grace_sec),
+            )
+            rows = cur.fetchall() or []
+            cur.close()
+    except Exception as exc:
+        logger.warning("[PositionSync] recent open fill lookup failed sid=%s: %s", sid, exc)
+        return out
+    for row in rows:
+        symbol = normalize_strategy_symbol(str(row.get("symbol") or ""))
+        if not symbol:
+            continue
+        t = str(row.get("type") or "").strip().lower()
+        side = "short" if "short" in t else "long" if "long" in t else ""
+        if side:
+            out.add((symbol.upper(), side))
+    return out
+
+
+def _purge_flat_strategy_positions_from_exchange(
+    *,
+    strategy_id: int,
+    strategy_config: Dict[str, Any],
+    exch_size: Dict[str, Dict[str, float]],
+    client: Any = None,
+    eps: float = 1e-12,
+) -> int:
+    """
+    Remove local L3 strategy legs only when a fresh exchange snapshot confirms
+    that the corresponding exchange leg is flat.
+
+    Before deleting a flat local leg, write a ``close_*`` trade when the strategy
+    trade ledger still shows residual open size (native protection closes are
+    otherwise invisible to the UI).
+
+    A short grace window protects against a transient flat snapshot racing a
+    just-executed open/add fill.
+    """
+    try:
+        enabled = str(os.getenv("POSITION_SYNC_PURGE_FLAT_LEDGER", "true")).strip().lower()
+    except Exception:
+        enabled = "true"
+    if enabled in {"0", "false", "no", "off"}:
+        return 0
+
+    sid = int(strategy_id or 0)
+    if sid <= 0:
+        return 0
+    allowed = strategy_allowed_symbols(strategy_config or {})
+    if not allowed:
+        return 0
+
+    grace_sec = _purge_flat_grace_sec()
+    recent_open = _recent_open_fill_symbols(sid, grace_sec)
+
+    deleted = 0
+    for symbol, side in _local_strategy_position_legs(sid, allowed):
+        if lookup_exchange_side_qty(exch_size or {}, symbol, side) > eps:
+            continue
+        if (symbol.upper(), side) in recent_open:
+            logger.info(
+                "[PositionSync] Strategy %s keeps leg %s %s: open fill within grace window (%.0fs)",
+                sid,
+                symbol,
+                side,
+                grace_sec,
+            )
+            continue
+        try:
+            from app.services.live_trading.external_flat_close import reconcile_external_flat_closes
+
+            trade_id = reconcile_external_flat_closes(
+                strategy_id=sid,
+                symbol=symbol,
+                side=side,
+                client=client,
+                clear_local_position=True,
+            )
+            if trade_id:
+                logger.warning(
+                    "[PositionSync] Strategy %s recorded external flat close trade_id=%s for %s %s",
+                    sid,
+                    trade_id,
+                    symbol,
+                    side,
+                )
+        except Exception as reconcile_err:
+            logger.warning(
+                "[PositionSync] Strategy %s failed external flat close reconcile for %s %s: %s",
+                sid,
+                symbol,
+                side,
+                reconcile_err,
+            )
+        _delete_position(sid, symbol, side)
+        deleted += 1
+
+    # Heal cases where L3 was already purged but trade ledger still shows open qty.
+    try:
+        from app.services.live_trading.external_flat_close import (
+            reconcile_external_flat_closes,
+            trade_side_net_qty,
+        )
+
+        for symbol in allowed:
+            sym = normalize_strategy_symbol(str(symbol or ""))
+            if not sym:
+                continue
+            for side in ("long", "short"):
+                if lookup_exchange_side_qty(exch_size or {}, sym, side) > eps:
+                    continue
+                if trade_side_net_qty(sid, sym, side) <= eps:
+                    continue
+                trade_id = reconcile_external_flat_closes(
+                    strategy_id=sid,
+                    symbol=sym,
+                    side=side,
+                    client=client,
+                    clear_local_position=False,
+                )
+                if trade_id:
+                    logger.warning(
+                        "[PositionSync] Strategy %s backfilled missing close trade_id=%s for %s %s",
+                        sid,
+                        trade_id,
+                        sym,
+                        side,
+                    )
+    except Exception as heal_err:
+        logger.warning(
+            "[PositionSync] Strategy %s missing-close heal failed: %s",
+            sid,
+            heal_err,
+        )
+    return deleted
+
 
 
 def _position_sync_fd_backoff_sec() -> float:
@@ -229,6 +442,7 @@ class PendingOrderPositionSyncMixin:
                 exch_size: Dict[str, Dict[str, float]] = {}
                 exch_entry_price: Dict[str, Dict[str, float]] = {}
                 exch_inst_id: Dict[str, Dict[str, str]] = {}
+                client = None
 
                 if cached_snap is not None:
                     exch_size, exch_entry_price, exch_inst_id = cached_snap
@@ -630,6 +844,37 @@ class PendingOrderPositionSyncMixin:
                 except Exception as l1_err:
                     logger.warning("[PositionSync] L1 account sync failed key=%s: %s", cache_key, l1_err)
 
+                if client is None:
+                    try:
+                        client = create_client(exchange_config, market_type=market_type)
+                    except Exception as client_err:
+                        logger.debug(
+                            "[PositionSync] Strategy %s could not create client for flat-close reconcile: %s",
+                            sid,
+                            client_err,
+                        )
+                        client = None
+
+                try:
+                    purged = _purge_flat_strategy_positions_from_exchange(
+                        strategy_id=int(sid),
+                        strategy_config=sc,
+                        exch_size=exch_size,
+                        client=client,
+                    )
+                    if purged:
+                        logger.warning(
+                            "[PositionSync] Strategy %s purged %s local leg(s) that are flat on exchange.",
+                            sid,
+                            purged,
+                        )
+                except Exception as purge_err:
+                    logger.warning(
+                        "[PositionSync] Strategy %s failed to purge flat local legs: %s",
+                        sid,
+                        purge_err,
+                    )
+
                 # [DEBUG] Log all normalized exchange keys for inspection
                 logger.debug(f"[PositionSync] Strategy {sid} Exchange Keys: {list(exch_size.keys())}")
 
@@ -646,10 +891,10 @@ class PendingOrderPositionSyncMixin:
                 else:
                     logger.debug(f"[PositionSync] Strategy {sid} ({safe_cfg.get('exchange_id', 'unknown')}) has NO positions on exchange.")
 
-                # Keep exchange truth in L1 only. Strategy positions (L3) must be
-                # produced by that strategy's own fills, otherwise two live
-                # strategies sharing ETH/USDT would both inherit the same
-                # exchange account position.
+                # Keep non-flat exchange truth in L1 only. Strategy positions
+                # (L3) must be produced by that strategy's own fills; the only
+                # L3 mutation here is removing legs that the fresh exchange
+                # snapshot confirms are flat.
             except Exception as e:
                 msg = str(e)
                 if is_file_descriptor_exhausted(e):
