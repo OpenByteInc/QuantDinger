@@ -55,6 +55,26 @@ def test_bybit_unchanged_margin_mode_is_success():
     assert client.set_margin_mode("cross") is True
 
 
+def test_reduce_only_swap_close_skips_account_configuration():
+    from app.services.live_trading.account_configuration import (
+        requires_derivatives_account_configuration,
+    )
+
+    assert requires_derivatives_account_configuration(
+        market_type="swap", reduce_only=True
+    ) is False
+
+
+def test_swap_open_still_requires_account_configuration():
+    from app.services.live_trading.account_configuration import (
+        requires_derivatives_account_configuration,
+    )
+
+    assert requires_derivatives_account_configuration(
+        market_type="swap", reduce_only=False
+    ) is True
+
+
 def test_binance_rejects_leverage_above_api_limit_instead_of_clamping():
     client = BinanceFuturesClient.__new__(BinanceFuturesClient)
     client._signed_request = lambda *_args, **_kwargs: pytest.fail("request must not be sent")

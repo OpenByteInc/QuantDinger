@@ -40,6 +40,12 @@ SERVER_STOP_LOSS = "server_stop_loss"
 SERVER_TAKE_PROFIT = "server_take_profit"
 SERVER_TRAILING_STOP = "server_trailing_stop"
 
+# Exchange-side closes discovered by position sync (native TP/SL, liq, etc.)
+EXCHANGE_NATIVE_CLOSE = "exchange_native_close"
+EXCHANGE_FLAT_RECONCILE = "exchange_flat_reconcile"
+EXCHANGE_LIQUIDATION = "exchange_liquidation"
+EXCHANGE_ADL = "exchange_adl"
+
 # Indicator / generic script signal close (non-grid)
 INDICATOR_SIGNAL = "indicator_signal"
 
@@ -71,6 +77,10 @@ _LABELS_ZH: Dict[str, str] = {
     SERVER_STOP_LOSS: "止损平仓",
     SERVER_TAKE_PROFIT: "止盈平仓",
     SERVER_TRAILING_STOP: "追踪止损平仓",
+    EXCHANGE_NATIVE_CLOSE: "交易所原生平仓",
+    EXCHANGE_FLAT_RECONCILE: "交易所空仓对账平仓",
+    EXCHANGE_LIQUIDATION: "交易所强平",
+    EXCHANGE_ADL: "交易所ADL减仓",
     INDICATOR_SIGNAL: "信号触发平仓",
     LEGACY_SIGNAL_TRIGGER: "信号触发平仓",
 }
@@ -100,6 +110,10 @@ _LABELS_EN: Dict[str, str] = {
     SERVER_STOP_LOSS: "Stop-loss close",
     SERVER_TAKE_PROFIT: "Take-profit close",
     SERVER_TRAILING_STOP: "Trailing stop close",
+    EXCHANGE_NATIVE_CLOSE: "Exchange native close",
+    EXCHANGE_FLAT_RECONCILE: "Exchange flat reconcile close",
+    EXCHANGE_LIQUIDATION: "Exchange liquidation",
+    EXCHANGE_ADL: "Exchange ADL close",
     INDICATOR_SIGNAL: "Signal close",
     LEGACY_SIGNAL_TRIGGER: "Signal close",
 }

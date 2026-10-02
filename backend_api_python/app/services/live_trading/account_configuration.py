@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict
 
 from app.services.live_trading.base import LiveTradingError
+
+logger = logging.getLogger(__name__)
 
 
 def requires_derivatives_account_configuration(*, market_type: str, reduce_only: bool) -> bool:
@@ -136,15 +139,31 @@ def configure_derivatives_account(
             details["account_mode"] = account_level
         if account_level == "1":
             raise LiveTradingError("OKX_SWAP_ACCOUNT_MODE_REQUIRED")
+
+        inst_id = to_okx_swap_inst_id(symbol)
+
+        # Proactively cancel algo orders that would block leverage changes.
+        # This prevents the common 59669 error on strategy restart where stale
+        # algo orders from a previous run remain on the exchange.
+        try:
+            cancelled = client.cancel_all_algo_orders(inst_id=inst_id, inst_type="SWAP")
+            if cancelled > 0:
+                logger.info(
+                    f"Pre-cleaned {cancelled} lingering algo order(s) on {inst_id} "
+                    "before setting leverage."
+                )
+        except Exception:
+            pass
+
         if position_mode in ("long_short_mode", "longshort_mode"):
             long_ok = client.set_leverage(
-                inst_id=to_okx_swap_inst_id(symbol),
+                inst_id=inst_id,
                 lever=target_leverage,
                 mgn_mode=mode,
                 pos_side="long",
             )
             short_ok = client.set_leverage(
-                inst_id=to_okx_swap_inst_id(symbol),
+                inst_id=inst_id,
                 lever=target_leverage,
                 mgn_mode=mode,
                 pos_side="short",
@@ -153,7 +172,7 @@ def configure_derivatives_account(
             details["position_mode"] = "hedge"
         else:
             ok = client.set_leverage(
-                inst_id=to_okx_swap_inst_id(symbol),
+                inst_id=inst_id,
                 lever=target_leverage,
                 mgn_mode=mode,
                 pos_side="net",

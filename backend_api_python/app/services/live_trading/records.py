@@ -505,6 +505,7 @@ def record_trade(
     fee_source: str = "",
     fees_by_ccy: Optional[Dict[str, float]] = None,
     exchange_order_id: str = "",
+    created_at: Optional[Any] = None,
 ) -> int:
     value = float(amount or 0.0) * float(price or 0.0)
     if user_id is None:
@@ -539,7 +540,7 @@ def record_trade(
              strategy_run_id, order_intent_id, execution_event_id, exchange_fill_id,
              fee_status, fee_source, commission_breakdown, exchange_order_id, created_at)
             VALUES
-            (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+            (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, COALESCE(%s, NOW()))
             ON CONFLICT (execution_event_id) WHERE execution_event_id > 0 DO NOTHING
             RETURNING id
             """,
@@ -573,6 +574,7 @@ def record_trade(
                 str(fee_source or ""),
                 json.dumps(fees_by_ccy or ({commission_ccy: commission} if commission_ccy and commission_ccy != 'MIXED' else {})),
                 str(exchange_order_id or ''),
+                created_at,
             ),
         )
         row = cur.fetchone()
