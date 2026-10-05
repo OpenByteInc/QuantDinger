@@ -5,6 +5,8 @@ def test_fxmacrodata_daily_kline_fetch(monkeypatch):
     captured = {}
 
     class FakeResponse:
+        status_code = 200
+
         @staticmethod
         def raise_for_status():
             return None
@@ -18,7 +20,7 @@ def test_fxmacrodata_daily_kline_fetch(monkeypatch):
                 ]
             }
 
-    def fake_get(url, params, headers, timeout):
+    def fake_get(url, params, headers, timeout, **kwargs):
         captured["url"] = url
         captured["params"] = params
         captured["headers"] = headers
@@ -62,6 +64,8 @@ def test_fxmacrodata_daily_kline_follows_pagination(monkeypatch):
     offsets = []
 
     class FakeResponse:
+        status_code = 200
+
         def __init__(self, payload):
             self.payload = payload
 
@@ -71,7 +75,7 @@ def test_fxmacrodata_daily_kline_follows_pagination(monkeypatch):
         def json(self):
             return self.payload
 
-    def fake_get(url, params, headers, timeout):
+    def fake_get(url, params, headers, timeout, **kwargs):
         offsets.append(params["offset"])
         return FakeResponse(pages[params["offset"]])
 
@@ -85,3 +89,28 @@ def test_fxmacrodata_daily_kline_follows_pagination(monkeypatch):
 def test_fxmacrodata_skips_intraday_timeframes():
     source = ForexDataSource()
     assert source._get_kline_fxmacrodata("EURUSD", "1m", 5) == []
+
+
+def test_fxmacrodata_does_not_follow_redirects(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        status_code = 302
+
+        @staticmethod
+        def raise_for_status():
+            return None
+
+        @staticmethod
+        def json():
+            return {"data": [{"date": "2024-01-03", "val": 1.0920}]}
+
+    def fake_get(url, params, headers, timeout, **kwargs):
+        captured.update(kwargs)
+        return FakeResponse()
+
+    monkeypatch.setenv("FXMACRODATA_API_KEY", "test-key")
+    monkeypatch.setattr("app.data_sources.forex.requests.get", fake_get)
+
+    assert ForexDataSource()._get_kline_fxmacrodata("EURUSD", "1D", 5) == []
+    assert captured["allow_redirects"] is False

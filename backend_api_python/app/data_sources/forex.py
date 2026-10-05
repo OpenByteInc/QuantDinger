@@ -376,7 +376,18 @@ class ForexDataSource(BaseDataSource):
         for _ in range(100):
             page_params = dict(params, limit=100, offset=offset)
             try:
-                response = requests.get(url, params=page_params, headers=headers, timeout=FXMacroDataConfig.TIMEOUT)
+                # Do not follow redirects, so the X-API-Key header is never
+                # forwarded to another host.
+                response = requests.get(
+                    url,
+                    params=page_params,
+                    headers=headers,
+                    timeout=FXMacroDataConfig.TIMEOUT,
+                    allow_redirects=False,
+                )
+                if 300 <= response.status_code < 400:
+                    logger.debug("FXMacroData forex kline request redirected for %s; not followed", symbol)
+                    return []
                 response.raise_for_status()
                 data = response.json()
             except requests.exceptions.RequestException as e:
