@@ -285,6 +285,55 @@ class LLMService:
             return bool((self.get_base_url(p) or "").strip())
         return p == LLMProvider.LITELLM
 
+    def test_connection(self, provider: LLMProvider = None) -> tuple[bool, str]:
+        """Probe the configured provider's models endpoint.
+
+        Intentionally does not spend completion tokens and does not fall back to
+        other providers, so a failure here means *this* provider/base URL/key
+        combination is unreachable or rejected. Returns ``(ok, detail)``.
+
+        Credentials are only ever sent in headers, never in the URL, so provider
+        errors and request exceptions cannot leak the key.
+        """
+        p = provider or self.provider
+        model = self.get_default_model(p)
+        if not self.is_configured(p):
+            return False, f"{p.value}: API key is not configured"
+        key = (self.get_api_key(p) or "").strip()
+        base = (self.get_base_url(p) or "").rstrip("/")
+        headers: Dict[str, str] = {}
+        if p == LLMProvider.OPENROUTER:
+            # OpenRouter's /models is public, so it cannot validate the key.
+            # /auth/key requires the bearer token and 401s on a bad key.
+            url = f"{base}/auth/key"
+            headers["Authorization"] = f"Bearer {key}"
+        elif p == LLMProvider.GOOGLE:
+            url = f"{base}/models"
+            headers["x-goog-api-key"] = key
+        else:
+            url = f"{base}/models"
+            headers["Authorization"] = f"Bearer {key}"
+        try:
+            resp = requests.get(url, headers=headers, timeout=15)
+        except Exception as exc:
+            return False, f"{p.value}: {exc}"
+        if resp.status_code == 200:
+            if p == LLMProvider.OPENROUTER:
+                # A provisioning/management key passes /auth/key but is rejected
+                # (401 "User not found") by chat completions, so flag it here.
+                try:
+                    info = (resp.json() or {}).get("data") or {}
+                except Exception:
+                    info = {}
+                if info.get("is_provisioning_key") or info.get("is_management_key"):
+                    return False, (
+                        f"{p.value}: this is a provisioning/management key, "
+                        "which cannot run inference. Create a normal API key instead."
+                    )
+            return True, f"{p.value} reachable · model={model}"
+        body = resp.text[:200] if resp.text else ""
+        return False, f"{p.value}: HTTP {resp.status_code} {body}".strip()
+
     # Legacy properties for backward compatibility
     @property
     def api_key(self):
