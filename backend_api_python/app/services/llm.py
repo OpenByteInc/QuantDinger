@@ -164,6 +164,11 @@ class LLMService:
             provider: Override the default provider (openrouter, openai, google, deepseek, grok, atlascloud, custom, minimax)
         """
         self._provider_override = provider
+        # Populated by call_llm_api() so callers can report what actually answered;
+        # a model-level fallback is otherwise only visible in provider dashboards.
+        self.last_model_used = ""
+        self.last_provider_used = ""
+        self.model_fallback_used = False
 
     @property
     def provider(self) -> LLMProvider:
@@ -284,6 +289,17 @@ class LLMService:
         if p == LLMProvider.CUSTOM:
             return bool((self.get_base_url(p) or "").strip())
         return p == LLMProvider.LITELLM
+
+    def _record_model_use(
+        self,
+        used_model: str,
+        requested_model: str,
+        provider: LLMProvider,
+    ) -> None:
+        """Remember which model/provider answered the most recent call."""
+        self.last_model_used = used_model
+        self.last_provider_used = provider.value
+        self.model_fallback_used = used_model != requested_model
 
     def test_connection(self, provider: LLMProvider = None) -> tuple[bool, str]:
         """Probe the configured provider's models endpoint.
@@ -1260,23 +1276,25 @@ class LLMService:
         for current_model in models_to_try:
             try:
                 if p == LLMProvider.LITELLM:
-                    return self._call_litellm(
+                    result = self._call_litellm(
                         messages, current_model, temperature,
                         api_key, base_url, timeout,
                         use_json_mode=use_json_mode
                     )
                 elif p == LLMProvider.GOOGLE:
-                    return self._call_google_gemini(
+                    result = self._call_google_gemini(
                         messages, current_model, temperature,
                         api_key, base_url, timeout
                     )
                 else:
                     # OpenAI-compatible providers
-                    return self._call_openai_compatible(
+                    result = self._call_openai_compatible(
                         messages, current_model, temperature,
                         api_key, base_url, timeout,
                         use_json_mode=use_json_mode
                     )
+                self._record_model_use(current_model, models_to_try[0], p)
+                return result
                     
             except LLMAPIError as e:
                 status_code = e.status_code

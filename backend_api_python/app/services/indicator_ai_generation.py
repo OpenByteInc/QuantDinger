@@ -156,7 +156,7 @@ def generate_indicator_code_candidate(
     )
     if use_patch_response:
         try:
-            return apply_model_code_edits(existing, content)
+            code, plan = apply_model_code_edits(existing, content)
         except CodeEditError as exc:
             logger.warning("indicator model patch rejected, retrying full candidate: %s", exc)
             fallback_prompt = (
@@ -182,7 +182,13 @@ def generate_indicator_code_candidate(
                 "operation": "generate_candidate",
                 "patch_error": str(exc),
             }
+            code = _strip_code_fences(content) or template_factory()
     else:
         plan = {"executor": "model", "operation": "generate_candidate"}
+        code = _strip_code_fences(content) or template_factory()
 
-    return _strip_code_fences(content) or template_factory(), plan
+    # A model-level fallback is otherwise only visible in the provider dashboard.
+    plan["model"] = llm.last_model_used
+    plan["provider"] = llm.last_provider_used
+    plan["model_fallback"] = llm.model_fallback_used
+    return code, plan

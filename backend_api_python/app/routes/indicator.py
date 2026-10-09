@@ -1192,6 +1192,10 @@ If the question actually requests a code modification, explain what should chang
         # call is indistinguishable from a successful template-shaped answer.
         if edit_plan.get("error"):
             debug_info["generation_error"] = str(edit_plan["error"])[:500]
+        if edit_plan.get("model"):
+            debug_info["generation_model"] = edit_plan["model"]
+            debug_info["generation_provider"] = edit_plan.get("provider") or ""
+            debug_info["generation_model_fallback"] = bool(edit_plan.get("model_fallback"))
 
         if workspace_context:
             validation = _validate_indicator_code_internal(code_text)
