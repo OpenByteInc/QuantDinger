@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.utils.redaction import redact_secrets
 from app.services.llm import LLMAPIError, LLMProvider, LLMService
 import app.utils.config_loader as config_loader
 from app.utils.config_loader import clear_config_cache, load_addon_config
@@ -701,3 +702,62 @@ def test_litellm_response_content(monkeypatch):
 
     assert out == "hello"
     assert captured["max_tokens"] == 16384
+
+
+def test_google_gemini_sends_api_key_in_header_not_url(monkeypatch):
+    """The Gemini key must never sit in the request URL: requests embeds URLs in
+    its exception messages, which the service logs."""
+    captured = {}
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"candidates": [{"content": {"parts": [{"text": "ok"}]}}]}
+
+    service = LLMService(provider="google")
+
+    def fake_post(url, **kwargs):
+        captured["url"] = url
+        captured["headers"] = kwargs.get("headers") or {}
+        return FakeResponse()
+
+    monkeypatch.setattr(service, "_llm_post", fake_post)
+
+    service._call_google_gemini(
+        [{"role": "user", "content": "hello"}],
+        "gemini-1.5-flash",
+        0.7,
+        "super-secret-key",
+        "https://generativelanguage.googleapis.com/v1beta",
+        30,
+    )
+
+    assert "super-secret-key" not in captured["url"]
+    assert "key=" not in captured["url"]
+    assert captured["headers"]["x-goog-api-key"] == "super-secret-key"
+
+
+def test_redact_secrets_scrubs_query_keys_and_bearer_tokens():
+    message = (
+        "HTTPSConnectionPool(host='generativelanguage.googleapis.com', port=443): "
+        "Max retries exceeded with url: /v1beta/models/gemini-1.5-flash:generateContent"
+        "?key=AIzaSyD-EXAMPLE-KEY (Caused by NewConnectionError) "
+        "headers={'Authorization': 'Bearer sk-abc123DEF456ghi'}"
+    )
+
+    scrubbed = redact_secrets(message)
+
+    assert "AIzaSyD-EXAMPLE-KEY" not in scrubbed
+    assert "sk-abc123DEF456ghi" not in scrubbed
+    assert "key=<redacted>" in scrubbed
+    assert "Bearer <redacted>" in scrubbed
+    # Non-secret context is preserved for debugging.
+    assert "generativelanguage.googleapis.com" in scrubbed
+
+
+def test_redact_secrets_passes_through_harmless_text():
+    assert redact_secrets("") == ""
+    assert redact_secrets(None) == ""
+    assert redact_secrets("plain failure") == "plain failure"
