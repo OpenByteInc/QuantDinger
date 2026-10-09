@@ -701,3 +701,100 @@ def test_litellm_response_content(monkeypatch):
 
     assert out == "hello"
     assert captured["max_tokens"] == 16384
+
+
+class _FakeHttpGetResponse:
+    def __init__(self, status_code, payload=None, text=""):
+        self.status_code = status_code
+        self._payload = payload
+        self.text = text
+
+    def json(self):
+        if self._payload is None:
+            raise ValueError("not json")
+        return self._payload
+
+
+def test_test_connection_requires_configured_key(monkeypatch):
+    service = LLMService(provider="openrouter")
+    monkeypatch.setattr(service, "get_api_key", lambda provider=None: "")
+
+    ok, detail = service.test_connection()
+
+    assert ok is False
+    assert "not configured" in detail
+
+
+def test_test_connection_uses_authenticated_endpoint_for_openrouter(monkeypatch):
+    captured = {}
+    service = LLMService(provider="openrouter")
+    monkeypatch.setattr(service, "get_api_key", lambda provider=None: "openrouter-key")
+    monkeypatch.setattr(service, "get_base_url", lambda provider=None: "https://openrouter.ai/api/v1")
+
+    def fake_get(url, headers=None, timeout=None):
+        captured.update({"url": url, "headers": headers, "timeout": timeout})
+        return _FakeHttpGetResponse(200, {"data": {}})
+
+    monkeypatch.setattr("app.services.llm.requests.get", fake_get)
+
+    ok, detail = service.test_connection()
+
+    assert ok is True
+    # /models is public on OpenRouter, so it cannot validate a key.
+    assert captured["url"] == "https://openrouter.ai/api/v1/auth/key"
+    assert captured["headers"]["Authorization"] == "Bearer openrouter-key"
+    assert "reachable" in detail
+
+
+def test_test_connection_flags_openrouter_provisioning_key(monkeypatch):
+    service = LLMService(provider="openrouter")
+    monkeypatch.setattr(service, "get_api_key", lambda provider=None: "provisioning-key")
+    monkeypatch.setattr(service, "get_base_url", lambda provider=None: "https://openrouter.ai/api/v1")
+    monkeypatch.setattr(
+        "app.services.llm.requests.get",
+        lambda *args, **kwargs: _FakeHttpGetResponse(200, {"data": {"is_provisioning_key": True}}),
+    )
+
+    ok, detail = service.test_connection()
+
+    assert ok is False
+    # Such a key passes /auth/key but chat completions reject it with 401.
+    assert "provisioning/management" in detail
+
+
+def test_test_connection_reports_http_failure(monkeypatch):
+    service = LLMService(provider="openrouter")
+    monkeypatch.setattr(service, "get_api_key", lambda provider=None: "bad-key")
+    monkeypatch.setattr(service, "get_base_url", lambda provider=None: "https://openrouter.ai/api/v1")
+    monkeypatch.setattr(
+        "app.services.llm.requests.get",
+        lambda *args, **kwargs: _FakeHttpGetResponse(401, None, '{"error":"unauthorized"}'),
+    )
+
+    ok, detail = service.test_connection()
+
+    assert ok is False
+    assert "HTTP 401" in detail
+
+
+def test_test_connection_never_puts_google_key_in_url(monkeypatch):
+    captured = {}
+    service = LLMService(provider="google")
+    monkeypatch.setattr(service, "get_api_key", lambda provider=None: "google-key")
+    monkeypatch.setattr(
+        service,
+        "get_base_url",
+        lambda provider=None: "https://generativelanguage.googleapis.com/v1beta",
+    )
+
+    def fake_get(url, headers=None, timeout=None):
+        captured.update({"url": url, "headers": headers})
+        return _FakeHttpGetResponse(200, {})
+
+    monkeypatch.setattr("app.services.llm.requests.get", fake_get)
+
+    ok, _ = service.test_connection()
+
+    assert ok is True
+    assert captured["headers"]["x-goog-api-key"] == "google-key"
+    assert "google-key" not in captured["url"]
