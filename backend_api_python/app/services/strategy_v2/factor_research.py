@@ -6,19 +6,34 @@ import math
 from statistics import median
 from typing import Any, Mapping, Sequence
 
+import numpy as np
 import pandas as pd
 
 
 class FactorResearchEngine:
     _FUNDAMENTAL_FIELDS = {
         "value": "pe_ratio",
+        "pe_ratio": "pe_ratio",
+        "earnings_yield": "pe_ratio",
+        "pb_ratio": "pb_ratio",
+        "book_to_price": "pb_ratio",
+        "book_to_market": "pb_ratio",
         "quality": "return_on_equity",
+        "return_on_equity": "return_on_equity",
+        "roe": "return_on_equity",
         "size": "market_cap",
+        "market_cap": "market_cap",
+        "debt_to_equity": "debt_to_equity",
+        "revenue_growth": "revenue_growth",
+        "free_cash_flow": "free_cash_flow",
     }
     _CORRELATION_FACTORS = (
         "momentum_20",
         "volatility_20",
         "reversal_5",
+        "rsi_14",
+        "amihud_illiquidity_20",
+        "skewness_20",
         "value",
         "quality",
         "size",
@@ -26,8 +41,18 @@ class FactorResearchEngine:
 
     @classmethod
     def required_fields(cls, factor_id: str) -> set[str]:
-        field = cls._FUNDAMENTAL_FIELDS.get(str(factor_id or "").strip().lower())
-        return {field} if field else set()
+        cleaned = str(factor_id or "").strip().lower()
+        field = cls._FUNDAMENTAL_FIELDS.get(cleaned)
+        if field:
+            return {field}
+        try:
+            from app.services.factors.registry import get_factor
+            defn = get_factor(cleaned)
+            if defn.factor_type == "fundamental":
+                return set(defn.required_fields)
+        except Exception:
+            pass
+        return set()
 
     def run(
         self,
@@ -314,20 +339,162 @@ class FactorResearchEngine:
         factor_id: str,
         close: pd.DataFrame,
     ) -> pd.DataFrame:
-        if factor_id.startswith("momentum"):
-            lookback = self._suffix_number(factor_id, 20)
+        name = str(factor_id or "").strip().lower()
+
+        # 1. Momentum & Trend
+        if name.startswith("momentum") or name.startswith("roc"):
+            lookback = self._suffix_number(name, 20 if name.startswith("momentum") else 12)
             return close.pct_change(lookback, fill_method=None)
-        if factor_id.startswith("volatility"):
-            lookback = self._suffix_number(factor_id, 20)
+        if name.startswith("reversal"):
+            lookback = self._suffix_number(name, 5)
+            return -close.pct_change(lookback, fill_method=None)
+        if name.startswith("sma_distance") or name.startswith("ma_distance"):
+            lookback = self._suffix_number(name, 20)
+            ma = close.rolling(lookback).mean()
+            return (close / ma - 1.0).where(ma > 0)
+        if name.startswith("ema_distance"):
+            lookback = self._suffix_number(name, 20)
+            ema = close.ewm(span=lookback, adjust=False).mean()
+            return (close / ema - 1.0).where(ema > 0)
+        if name.startswith("rsi"):
+            lookback = self._suffix_number(name, 14)
+            delta = close.diff()
+            gain = delta.clip(lower=0.0)
+            loss = (-delta).clip(lower=0.0)
+            avg_gain = gain.ewm(alpha=1.0 / lookback, min_periods=lookback, adjust=False).mean()
+            avg_loss = loss.ewm(alpha=1.0 / lookback, min_periods=lookback, adjust=False).mean()
+            rs = avg_gain / avg_loss.replace(0, np.nan)
+            rsi = 100.0 - (100.0 / (1.0 + rs))
+            return rsi.where(avg_loss != 0, 100.0).where(avg_gain != 0, 0.0)
+        if name.startswith("cmo"):
+            lookback = self._suffix_number(name, 14)
+            delta = close.diff()
+            gain = delta.clip(lower=0.0).rolling(lookback).sum()
+            loss = (-delta).clip(lower=0.0).rolling(lookback).sum()
+            total = (gain + loss).replace(0, np.nan)
+            return 100.0 * (gain - loss) / total
+        if name in {"macd", "macd_histogram", "macd_hist"}:
+            ema_fast = close.ewm(span=12, adjust=False).mean()
+            ema_slow = close.ewm(span=26, adjust=False).mean()
+            macd_line = ema_fast - ema_slow
+            signal_line = macd_line.ewm(span=9, adjust=False).mean()
+            return macd_line - signal_line
+
+        # 2. Volatility & Risk
+        if name.startswith("downside_volatility"):
+            lookback = self._suffix_number(name, 20)
+            returns = close.pct_change(fill_method=None)
+            downside = returns.clip(upper=0.0)
+            return downside.rolling(lookback).std()
+        if name.startswith("volatility") or name.startswith("realized_volatility"):
+            lookback = self._suffix_number(name, 20)
             return close.pct_change(fill_method=None).rolling(lookback).std()
-        if factor_id in {"reversal", "reversal_5"}:
-            return -close.pct_change(5, fill_method=None)
-        field = self._FUNDAMENTAL_FIELDS.get(factor_id, factor_id)
+        if name.startswith("natr") or name.startswith("atr_pct") or name.startswith("atr"):
+            lookback = self._suffix_number(name, 14)
+            high = self._panel(frames, "high").reindex(index=close.index, columns=close.columns)
+            low = self._panel(frames, "low").reindex(index=close.index, columns=close.columns)
+            prev_close = close.shift(1)
+            tr1 = (high - low).to_numpy(dtype=float)
+            tr2 = (high - prev_close).abs().to_numpy(dtype=float)
+            tr3 = (low - prev_close).abs().to_numpy(dtype=float)
+            tr = pd.DataFrame(
+                np.maximum(tr1, np.maximum(tr2, tr3)),
+                index=close.index,
+                columns=close.columns,
+            )
+            atr = tr.ewm(alpha=1.0 / lookback, min_periods=lookback, adjust=False).mean()
+            if name.startswith("natr") or name.startswith("atr_pct"):
+                return (atr / close).where(close > 0)
+            return atr
+        if name.startswith("bollinger_bandwidth") or name.startswith("bb_bandwidth"):
+            lookback = self._suffix_number(name, 20)
+            ma = close.rolling(lookback).mean()
+            std = close.rolling(lookback).std()
+            return (4.0 * std / ma).where(ma > 0)
+        if name.startswith("ulcer_index"):
+            lookback = self._suffix_number(name, 14)
+            rolling_max = close.rolling(lookback).max()
+            pct_dd = 100.0 * (close - rolling_max) / rolling_max.where(rolling_max > 0)
+            return np.sqrt((pct_dd ** 2).rolling(lookback).mean())
+        if name.startswith("max_drawdown"):
+            lookback = self._suffix_number(name, 60)
+            rolling_max = close.rolling(lookback).max()
+            dd = (close - rolling_max) / rolling_max.where(rolling_max > 0)
+            return dd.rolling(lookback).min()
+
+        # 3. Statistical Moments (Distribution properties)
+        if name.startswith("skewness"):
+            lookback = self._suffix_number(name, 20)
+            returns = close.pct_change(fill_method=None)
+            return returns.rolling(lookback).skew()
+        if name.startswith("kurtosis"):
+            lookback = self._suffix_number(name, 20)
+            returns = close.pct_change(fill_method=None)
+            return returns.rolling(lookback).kurt()
+
+        # 4. Volume & Liquidity Dynamics
+        if name.startswith("amihud_illiquidity"):
+            lookback = self._suffix_number(name, 20)
+            volume = self._panel(frames, "volume").reindex(index=close.index, columns=close.columns)
+            returns = close.pct_change(fill_method=None).abs()
+            dollar_volume = (close * volume).replace(0, np.nan)
+            return (returns / dollar_volume).rolling(lookback).mean()
+        if name.startswith("turnover"):
+            lookback = self._suffix_number(name, 20)
+            volume = self._panel(frames, "volume").reindex(index=close.index, columns=close.columns)
+            dollar_volume = close * volume
+            mean_turnover = dollar_volume.rolling(lookback).mean()
+            return np.log(mean_turnover.where(mean_turnover > 0))
+        if name.startswith("volume_ratio"):
+            lookback = self._suffix_number(name, 20)
+            volume = self._panel(frames, "volume").reindex(index=close.index, columns=close.columns)
+            mean_volume = volume.rolling(lookback).mean()
+            return (volume / mean_volume).where(mean_volume > 0)
+        if name.startswith("obv"):
+            lookback = self._suffix_number(name, 20)
+            volume = self._panel(frames, "volume").reindex(index=close.index, columns=close.columns)
+            direction = np.sign(close.diff()).fillna(0)
+            obv = (direction * volume).cumsum()
+            vol_sum = volume.rolling(lookback).sum().replace(0, np.nan)
+            return obv.diff(lookback) / vol_sum
+        if name.startswith("cmf"):
+            lookback = self._suffix_number(name, 20)
+            high = self._panel(frames, "high").reindex(index=close.index, columns=close.columns)
+            low = self._panel(frames, "low").reindex(index=close.index, columns=close.columns)
+            volume = self._panel(frames, "volume").reindex(index=close.index, columns=close.columns)
+            hl = (high - low).replace(0, np.nan)
+            mf_multiplier = ((close - low) - (high - close)) / hl
+            mf_volume = mf_multiplier.fillna(0.0) * volume
+            vol_sum = volume.rolling(lookback).sum().replace(0, np.nan)
+            return mf_volume.rolling(lookback).sum() / vol_sum
+        if name.startswith("mfi"):
+            lookback = self._suffix_number(name, 14)
+            high = self._panel(frames, "high").reindex(index=close.index, columns=close.columns)
+            low = self._panel(frames, "low").reindex(index=close.index, columns=close.columns)
+            volume = self._panel(frames, "volume").reindex(index=close.index, columns=close.columns)
+            typical_price = (high + low + close) / 3.0
+            money_flow = typical_price * volume
+            delta = typical_price.diff()
+            pos_flow = money_flow.where(delta > 0, 0.0).rolling(lookback).sum()
+            neg_flow = money_flow.where(delta < 0, 0.0).rolling(lookback).sum()
+            ratio = pos_flow / neg_flow.replace(0, np.nan)
+            mfi = 100.0 - (100.0 / (1.0 + ratio))
+            return mfi.where(neg_flow != 0, 100.0).where(pos_flow != 0, 0.0)
+        if name.startswith("efficiency_ratio"):
+            lookback = self._suffix_number(name, 10)
+            net_change = (close - close.shift(lookback)).abs()
+            vol_sum = close.diff().abs().rolling(lookback).sum().replace(0, np.nan)
+            return net_change / vol_sum
+
+        # 5. Fundamental Fields
+        field = self._FUNDAMENTAL_FIELDS.get(name, name)
         panel = self._panel(frames, field)
-        if field == "pe_ratio":
+        if field in {"pe_ratio", "value", "earnings_yield"}:
             panel = 1.0 / panel.where(panel > 0)
-        if field == "market_cap":
-            panel = panel.where(panel > 0).map(math.log)
+        elif field in {"pb_ratio", "book_to_price", "book_to_market"}:
+            panel = 1.0 / panel.where(panel > 0)
+        elif field in {"market_cap", "size"}:
+            panel = np.log(panel.where(panel > 0))
         return panel.reindex(index=close.index, columns=close.columns)
 
     @staticmethod
@@ -472,12 +639,11 @@ class FactorResearchEngine:
                         ],
                         axis=1,
                     ).dropna()
-                    if len(pair) < 3:
+                    left_ranks = pair["left"].rank(method="average")
+                    right_ranks = pair["right"].rank(method="average")
+                    if left_ranks.nunique() < 2 or right_ranks.nunique() < 2:
                         continue
-                    correlation = pair["left"].rank(method="average").corr(
-                        pair["right"].rank(method="average"),
-                        method="pearson",
-                    )
+                    correlation = left_ranks.corr(right_ranks, method="pearson")
                     if not pd.isna(correlation):
                         correlations.append(float(correlation))
                 value_row.append(sum(correlations) / len(correlations) if correlations else 0.0)

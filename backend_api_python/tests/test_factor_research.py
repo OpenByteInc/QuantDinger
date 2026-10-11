@@ -1,3 +1,5 @@
+import math
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -197,3 +199,247 @@ def test_factor_research_sizes_groups_from_usable_factor_cross_section():
 
     assert result["effectiveGroups"] == 2
     assert result["sampleDiagnostics"]["medianCrossSectionSize"] == 4
+
+
+def test_factor_research_supports_statistical_moments_factors():
+    index = pd.date_range("2025-01-01", periods=90, freq="B")
+    frames = {}
+    for offset, symbol in enumerate(["A", "B", "C", "D", "E", "F"]):
+        prices = [100 + offset * 3 + day * (0.1 + offset * 0.02) for day in range(len(index))]
+        frames[f"USStock:{symbol}"] = pd.DataFrame({
+            "open": prices,
+            "high": [value * 1.01 for value in prices],
+            "low": [value * 0.99 for value in prices],
+            "close": prices,
+            "volume": [100000] * len(index),
+        }, index=index)
+
+    result_skew = FactorResearchEngine().run(
+        frames=frames,
+        factor_id="skewness_20",
+        start_date=index[25],
+        end_date=index[-1],
+        groups=3,
+        holding_period=5,
+    )
+    assert result_skew["icSeries"]
+    assert len(result_skew["groupCurves"]) == 3
+    assert result_skew["coverage"] > 0
+
+    result_kurt = FactorResearchEngine().run(
+        frames=frames,
+        factor_id="kurtosis_20",
+        start_date=index[25],
+        end_date=index[-1],
+        groups=3,
+        holding_period=5,
+    )
+    assert result_kurt["icSeries"]
+    assert len(result_kurt["groupCurves"]) == 3
+
+
+def test_factor_research_supports_liquidity_and_volume_dynamics():
+    index = pd.date_range("2025-01-01", periods=90, freq="B")
+    frames = {}
+    for offset, symbol in enumerate(["A", "B", "C", "D", "E", "F"]):
+        prices = [100 + offset * 2 + day * (0.1 + offset * 0.03) for day in range(len(index))]
+        vols = [10000 * (offset + 1) + (day % 10) * 1000 for day in range(len(index))]
+        frames[f"USStock:{symbol}"] = pd.DataFrame({
+            "open": prices,
+            "high": [value * 1.01 for value in prices],
+            "low": [value * 0.99 for value in prices],
+            "close": prices,
+            "volume": vols,
+        }, index=index)
+
+    result_amihud = FactorResearchEngine().run(
+        frames=frames,
+        factor_id="amihud_illiquidity_20",
+        start_date=index[25],
+        end_date=index[-1],
+        groups=3,
+        holding_period=5,
+    )
+    assert result_amihud["icSeries"]
+    assert len(result_amihud["groupCurves"]) == 3
+
+    result_turnover = FactorResearchEngine().run(
+        frames=frames,
+        factor_id="turnover_20",
+        start_date=index[25],
+        end_date=index[-1],
+        groups=3,
+        holding_period=5,
+    )
+    assert result_turnover["icSeries"]
+
+    result_vol_ratio = FactorResearchEngine().run(
+        frames=frames,
+        factor_id="volume_ratio_20",
+        start_date=index[25],
+        end_date=index[-1],
+        groups=3,
+        holding_period=5,
+    )
+    assert result_vol_ratio["icSeries"]
+
+    result_cmf = FactorResearchEngine().run(
+        frames=frames,
+        factor_id="cmf_20",
+        start_date=index[25],
+        end_date=index[-1],
+        groups=3,
+        holding_period=5,
+    )
+    assert result_cmf["icSeries"]
+
+
+def test_factor_research_supports_volatility_and_tail_risk():
+    index = pd.date_range("2025-01-01", periods=90, freq="B")
+    frames = {}
+    for offset, symbol in enumerate(["A", "B", "C", "D", "E", "F"]):
+        prices = [
+            100.0 + offset * 3.0 + math.sin((day + offset) / 4.0) * (3.0 + offset) + day * 0.1
+            for day in range(len(index))
+        ]
+        frames[f"USStock:{symbol}"] = pd.DataFrame({
+            "open": prices,
+            "high": [value * 1.02 for value in prices],
+            "low": [value * 0.98 for value in prices],
+            "close": prices,
+            "volume": [50000] * len(index),
+        }, index=index)
+
+    result_natr = FactorResearchEngine().run(
+        frames=frames,
+        factor_id="natr_14",
+        start_date=index[20],
+        end_date=index[-1],
+        groups=3,
+        holding_period=5,
+    )
+    assert result_natr["icSeries"]
+    assert len(result_natr["groupCurves"]) == 3
+
+    result_ulcer = FactorResearchEngine().run(
+        frames=frames,
+        factor_id="ulcer_index_14",
+        start_date=index[20],
+        end_date=index[-1],
+        groups=3,
+        holding_period=5,
+    )
+    assert result_ulcer["icSeries"]
+
+    result_downside = FactorResearchEngine().run(
+        frames=frames,
+        factor_id="downside_volatility_20",
+        start_date=index[25],
+        end_date=index[-1],
+        groups=3,
+        holding_period=5,
+    )
+    assert result_downside["icSeries"]
+
+
+def test_factor_research_supports_oscillators_and_trend():
+    index = pd.date_range("2025-01-01", periods=90, freq="B")
+    frames = {}
+    for offset, symbol in enumerate(["A", "B", "C", "D", "E", "F"]):
+        prices = [
+            100.0 + offset * 4.0 + math.sin((day * 1.5 + offset * 2.0) / 3.0) * (4.0 + offset) + day * 0.1
+            for day in range(len(index))
+        ]
+        frames[f"USStock:{symbol}"] = pd.DataFrame({
+            "open": prices,
+            "high": [value * 1.01 for value in prices],
+            "low": [value * 0.99 for value in prices],
+            "close": prices,
+            "volume": [100000] * len(index),
+        }, index=index)
+
+    for factor_name in ["rsi_14", "cmo_14", "macd_histogram", "sma_distance_20", "ema_distance_20"]:
+        result = FactorResearchEngine().run(
+            frames=frames,
+            factor_id=factor_name,
+            start_date=index[30],
+            end_date=index[-1],
+            groups=3,
+            holding_period=5,
+        )
+        assert result["icSeries"], f"Factor {factor_name} returned empty icSeries"
+        assert len(result["groupCurves"]) == 3
+
+
+def test_factor_research_expanded_fundamental_fields_and_invariants():
+    assert FactorResearchEngine.required_fields("earnings_yield") == {"pe_ratio"}
+    assert FactorResearchEngine.required_fields("book_to_price") == {"pb_ratio"}
+    assert FactorResearchEngine.required_fields("debt_to_equity") == {"debt_to_equity"}
+    assert FactorResearchEngine.required_fields("momentum_20") == set()
+
+    index = pd.date_range("2025-01-01", periods=40, freq="B")
+    frames = {}
+    for offset, symbol in enumerate("ABCDEF"):
+        prices = [100 + offset + day * 0.1 for day in range(len(index))]
+        frames[symbol] = pd.DataFrame({
+            "open": prices,
+            "close": prices,
+            "pb_ratio": [2.0 + offset * 0.5] * len(index),
+        }, index=index)
+
+    result = FactorResearchEngine().run(
+        frames=frames,
+        factor_id="book_to_price",
+        start_date=index[0],
+        end_date=index[-1],
+        groups=3,
+        holding_period=5,
+    )
+    assert result["effectiveGroups"] == 3
+    assert result["coverage"] > 0
+
+
+def test_factor_research_prevents_lookahead_leak_in_extended_factors():
+    index = pd.date_range("2025-01-01", periods=60, freq="B")
+    mid_idx = 30
+    frames_clean = {}
+    frames_future_tampered = {}
+
+    for offset, symbol in enumerate(["A", "B", "C", "D", "E"]):
+        base_prices = [100.0 + offset * 2 + day * 0.2 for day in range(len(index))]
+        tampered_prices = list(base_prices)
+        for day in range(mid_idx + 1, len(index)):
+            tampered_prices[day] = base_prices[day] * (2.0 if offset % 2 == 0 else 0.5)
+
+        frames_clean[symbol] = pd.DataFrame({
+            "open": base_prices,
+            "high": [v * 1.01 for v in base_prices],
+            "low": [v * 0.99 for v in base_prices],
+            "close": base_prices,
+            "volume": [100000] * len(index),
+        }, index=index)
+
+        frames_future_tampered[symbol] = pd.DataFrame({
+            "open": tampered_prices,
+            "high": [v * 1.01 for v in tampered_prices],
+            "low": [v * 0.99 for v in tampered_prices],
+            "close": tampered_prices,
+            "volume": [100000] * len(index),
+        }, index=index)
+
+    engine = FactorResearchEngine()
+    close_clean = engine._panel(frames_clean, "close")
+    close_tampered = engine._panel(frames_future_tampered, "close")
+
+    for factor_test in ["rsi_14", "natr_14", "amihud_illiquidity_20", "skewness_20"]:
+        panel_clean = engine._factor_panel(frames_clean, factor_test, close_clean)
+        panel_tampered = engine._factor_panel(frames_future_tampered, factor_test, close_tampered)
+
+        val_clean = panel_clean.loc[index[mid_idx]].to_numpy()
+        val_tampered = panel_tampered.loc[index[mid_idx]].to_numpy()
+
+        np.testing.assert_allclose(
+            val_clean,
+            val_tampered,
+            err_msg=f"Lookahead leak detected for factor {factor_test} at mid-date!",
+        )
