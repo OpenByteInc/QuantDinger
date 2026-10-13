@@ -112,7 +112,11 @@ Use this flow for external AI agents, MCP clients, and automation:
 ## Add an AI Feature
 
 1. Keep prompts and skill definitions separate from provider calls.
-2. Keep provider adapters behind a service boundary.
+2. Keep provider adapters behind a service boundary. Typed-choice decision
+   providers such as Jev live in `app/services/decision_providers/` and
+   implement `DecisionProvider`. Adapters own transport and answer
+   normalization; confidence thresholds, fallback, billing, and audit stay in
+   the calling service.
 3. Localize user-facing text through translation/i18n structures.
 4. Do not let AI flows place live orders without explicit existing trade APIs,
    permissions, billing checks, and audit logs.
