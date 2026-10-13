@@ -322,7 +322,7 @@
     "/api/agent/v1/strategy-sources/compile": {
       "post": {
         "summary": "Compile Strategy API V2 source and return the canonical manifest without saving",
-        "x-scope-class": "R",
+        "x-scope-class": "W",
         "requestBody": {
           "required": true,
           "content": {

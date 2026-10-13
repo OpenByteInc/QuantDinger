@@ -41,7 +41,8 @@ Never place an agent token in prompts, logs, screenshots, source control, or MCP
 | Universe and factor tools | R | Point-in-time research inputs |
 | `list_watchlist`, `add_watchlist`, `remove_watchlist` | R/W | Watchlist workspace |
 | Indicator authoring, validation, save, link, and read tools | R/W | Chart-only indicators |
-| `list_strategy_templates`, `compile_strategy_code` | R | Strategy API V2 templates and manifest compilation |
+| `list_strategy_templates` | R | Strategy API V2 system templates |
+| `compile_strategy_code` | W | Compile Strategy API V2 code to its canonical manifest |
 | `list_strategy_sources`, `get_strategy_source`, `save_strategy_source` | R/W | Private Strategy API V2 source library |
 | `list_strategy_source_versions`, `restore_strategy_source_version` | R/W | Source history and explicitly confirmed restore |
 | `create_strategy`, `update_strategy`, `list_strategies`, `get_strategy` | R/W | Strategy API V2 deployments |
@@ -63,8 +64,8 @@ Executable strategy code must define `initialize(context)` and declare its unive
 Compile and save a source before creating a stopped deployment:
 
 ```text
-compile_strategy_code(code="...Strategy API V2 Python...")
-save_strategy_source(name="btc-momentum", code="...Strategy API V2 Python...")
+compile_strategy_code(code="...Strategy API V2 Python...", idempotency_key="compile-btc-momentum-v1")
+save_strategy_source(name="btc-momentum", code="...Strategy API V2 Python...", idempotency_key="save-btc-momentum-v1")
 ```
 
 Use the returned source id:

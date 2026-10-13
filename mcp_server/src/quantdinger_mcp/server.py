@@ -689,7 +689,11 @@ def list_strategy_templates(limit: int = 20) -> Any:
 
 
 @_tool
-def compile_strategy_code(code: str | None = None, source_id: int | None = None) -> Any:
+def compile_strategy_code(
+    code: str | None = None,
+    source_id: int | None = None,
+    idempotency_key: str = "",
+) -> Any:
     """Compile Strategy API V2 code and return its canonical manifest without saving."""
     payload: dict[str, Any] = {}
     if code is not None:
@@ -699,7 +703,11 @@ def compile_strategy_code(code: str | None = None, source_id: int | None = None)
         payload["source_id"] = int(source_id)
     if not payload:
         raise ValueError("code or source_id is required")
-    return _post("/api/agent/v1/strategy-sources/compile", json=payload)
+    return _post(
+        "/api/agent/v1/strategy-sources/compile",
+        json=payload,
+        headers=_idempotency_headers(idempotency_key),
+    )
 
 
 @_tool
