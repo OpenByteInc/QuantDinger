@@ -216,6 +216,41 @@ def test_new_protected_order_does_not_unlock_an_inflight_protection_exit():
     assert session.pending_protection_exit_symbols() == {"Crypto:BTC/USDT@spot"}
 
 
+def test_ordinary_zero_target_order_does_not_create_a_protection_exit_latch():
+    frame = _frame([(100, 101, 99, 100, 1000)])
+    session = StrategyV2LiveSession(
+        code=PROTECTED_ENTRY,
+        frames={"Crypto:BTC/USDT": frame},
+        initial_capital=10_000,
+    )
+
+    session._capture_protection_intents([OrderIntent(
+        "Crypto:BTC/USDT@spot",
+        "target_percent",
+        0,
+        reason="dual_ma_close_short",
+    )])
+
+    assert session.pending_protection_exit_symbols() == set()
+
+
+def test_restore_discards_legacy_orphaned_protection_exit_latch():
+    frame = _frame([(100, 101, 99, 100, 1000)])
+    session = StrategyV2LiveSession(
+        code=PROTECTED_ENTRY,
+        frames={"Crypto:BTC/USDT": frame},
+        initial_capital=10_000,
+    )
+
+    session.restore_protection_snapshot({
+        "specs": {},
+        "states": {},
+        "exitPending": ["Crypto:BTC/USDT@spot"],
+    })
+
+    assert session.pending_protection_exit_symbols() == set()
+
+
 def test_live_protection_snapshot_restores_after_restart():
     frame = _frame([(100, 101, 99, 100, 1000)])
     first = StrategyV2LiveSession(

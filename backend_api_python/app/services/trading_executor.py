@@ -336,15 +336,25 @@ class TradingExecutor:
         owns_both_legs = direction_mode in {"both", "neutral"} or neutral_grid
         if owns_both_legs and is_hedge is not True:
             raise RuntimeError(f"strategyV2.dualDirectionHedgeModeRequired:{label}")
-        if direction_mode == "one_way" and is_hedge is True:
-            raise RuntimeError(f"strategyV2.oneWayPositionModeRequired:{label}")
-        if is_hedge is not True:
-            if is_hedge is None:
-                raise RuntimeError(f"strategyV2.hedgeModeUnknown:{label}")
+        if is_hedge is None:
+            raise RuntimeError(f"strategyV2.hedgeModeUnknown:{label}")
+
+        # ``one_way`` describes a strategy that owns one signed exposure and
+        # never keeps long and short open together. It does not require the
+        # exchange account itself to use net-position mode: the pending-order
+        # worker maps every action to the correct LONG/SHORT leg in hedge mode,
+        # while reversal execution closes and synchronizes before re-entry.
+        # Only fixed-side strategies may share opposite hedge-account legs; a
+        # reversing strategy continues to reserve the whole instrument.
+        allow_opposite_leg = (
+            is_hedge is True
+            and direction_mode in {"long_only", "short_only"}
+            and not neutral_grid
+        )
         conflict = find_live_strategy_conflict(
             strategy,
             user_id,
-            allow_opposite_leg=is_hedge is True and not owns_both_legs,
+            allow_opposite_leg=allow_opposite_leg,
         )
         if conflict:
             raise RuntimeError(live_conflict_message(conflict))
@@ -1762,6 +1772,11 @@ class TradingExecutor:
             market_type=str(values.get("market_type") or "spot"),
             execution_mode=str(values.get("execution_mode") or "signal"),
             leverage=leverage,
+            margin_mode=str(
+                trading_config.get("margin_mode")
+                or trading_config.get("marginMode")
+                or "cross"
+            ),
             reason=str(values.get("signal_reason") or ""),
             notification_config=dict(values.get("notification_config") or {}),
             order_type=str(values.get("order_type") or "market"),

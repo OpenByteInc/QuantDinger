@@ -2626,15 +2626,22 @@ class StrategyV2LiveSession:
                 states[str(symbol)] = state
         self.protection_specs = specs
         self.protection_states = states
-        self._protection_exit_pending = {str(item) for item in (raw.get("exitPending") or [])}
+        # Older snapshots treated every zero-target strategy order as a
+        # protection exit.  A rejected ordinary close could therefore leave an
+        # orphaned latch that suppressed all future orders for the symbol, even
+        # after a runtime restart.  A genuine protection exit always has both a
+        # persisted spec and state, so discard legacy latches that do not.
+        self._protection_exit_pending = {
+            str(item)
+            for item in (raw.get("exitPending") or [])
+            if str(item) in specs and str(item) in states
+        }
 
     def _capture_protection_intents(self, orders: Iterable[OrderIntent]) -> None:
         for order in orders:
             position_key = _position_key(order.symbol, order.position_side)
             if order.protection is not None:
                 self.protection_specs[position_key] = order.protection
-            if order.kind in {"target_quantity", "target_value", "target_percent"} and abs(order.value) <= 1e-12:
-                self._protection_exit_pending.add(position_key)
 
     def _bind_runtime_api(self) -> None:
         ctx = self.context

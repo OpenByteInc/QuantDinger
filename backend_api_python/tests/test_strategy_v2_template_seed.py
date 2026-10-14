@@ -26,8 +26,9 @@ def test_strategy_v2_seed_has_explicit_cta_and_portfolio_catalogs():
     entries = _seed_entries()
     assert len(entries) == 12
     seed_sql = SEED_PATH.read_text(encoding="utf-8")
-    assert seed_sql.count('"version":11') == 11
+    assert seed_sql.count('"version":11') == 10
     assert seed_sql.count('"version":12') == 1
+    assert seed_sql.count('"version":13') == 1
     assert sum(item["asset_type"] == "script" for item in entries) == 8
     assert sum(item["asset_type"] == "portfolio_strategy" for item in entries) == 4
 
@@ -67,6 +68,14 @@ def test_swap_seed_template_uses_signed_one_way_position():
     assert "position_side=" not in entry["code"]
     assert "dual_ma_close_short" in entry["code"]
     assert "dual_ma_open_long" in entry["code"]
+
+
+def test_swap_seed_templates_advertise_account_mode_compatibility():
+    seed_sql = SEED_PATH.read_text(encoding="utf-8")
+
+    assert seed_sql.count('"positionModeCompatibility":["one_way","hedge"]') == 2
+    assert seed_sql.count('"account-mode-adaptive"') == 2
+    assert '"single-position"' in seed_sql
 
 
 def test_stateful_seed_templates_are_restart_safe():

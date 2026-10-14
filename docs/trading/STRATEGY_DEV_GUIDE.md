@@ -521,14 +521,14 @@ Common Position fields:
 - <code>market_value</code>
 - <code>position_side</code>
 
-In a hedge-mode swap strategy, read each leg explicitly:
+In an explicit hedge-leg swap strategy (`long_only`, `short_only`, `both`, or `neutral`), read each owned leg explicitly:
 
 ~~~python
 long_position = get_position(g.symbol, position_side="long")
 short_position = get_position(g.symbol, position_side="short")
 ~~~
 
-Do not treat <code>get_position(symbol)</code> as a synthetic net position in hedge mode. <code>get_positions()</code> may contain leg-aware keys such as <code>symbol::long</code> and <code>symbol::short</code>. Use <code>abs(position.amount)</code> when checking whether a leg is open.
+Do not treat <code>get_position(symbol)</code> as a synthetic net position in an explicit hedge-leg strategy. <code>get_positions()</code> may contain leg-aware keys such as <code>symbol::long</code> and <code>symbol::short</code>. Use <code>abs(position.amount)</code> when checking whether a leg is open. A <code>one_way</code> strategy is intentionally different: the runtime exposes its one active strategy-owned leg as a signed position even when the exchange account uses hedge mode.
 
 Do not confuse these definitions from different layers:
 
@@ -675,7 +675,7 @@ New Crypto swap strategies should declare their capability in `initialize`:
 context.set_metadata(direction_mode="one_way")
 ~~~
 
-Supported values are `long_only`, `short_only`, `one_way`, `both`, and `neutral`. `one_way` is one signed net position that can reverse between long and short and requires exchange one-way mode. `both` and `neutral` own independent long/short legs and require hedge mode. This declaration does not place orders or override strategy signals.
+Supported values are `long_only`, `short_only`, `one_way`, `both`, and `neutral`. `one_way` is one signed strategy position that can reverse between long and short; the live runtime adapts it to either exchange one-way mode or a single active leg in exchange hedge mode. `both` and `neutral` own independent long/short legs and require hedge mode. This declaration does not place orders or override strategy signals.
 
 Every new Crypto swap strategy must declare <code>direction_mode</code>. A <code>one_way</code> strategy reads <code>get_position(symbol)</code>, uses the sign of <code>amount</code>, omits <code>position_side</code>, and closes the current net position before opening the opposite side. Hedge-leg modes pass an explicit <code>position_side</code> on every contract-position read and order. Compiler inference from legacy constants exists only for migration. Write spot strategies as <code>long_only</code>.
 
@@ -733,7 +733,7 @@ def handle_data(context, data):
         )
 ~~~
 
-The quantity unit follows the venue instrument specification; do not assume one contract always equals one base coin. Before live start, the platform confirms the account position mode. `one_way` is rejected on a hedge-mode account; `both` and `neutral` fail closed unless hedge mode is confirmed. A running <code>one_way</code> strategy owns the whole account/exchange/market/symbol net position. Overlapping ownership raises <code>strategyV2.liveLegConflict</code>.
+The quantity unit follows the venue instrument specification; do not assume one contract always equals one base coin. Before live start, the platform confirms the account position mode. A <code>one_way</code> strategy runs on either account mode: on a hedge-mode account the runtime routes the active long or short leg explicitly and still enforces close-before-reverse. <code>both</code> and <code>neutral</code> fail closed unless hedge mode is confirmed. A running <code>one_way</code> strategy reserves the whole account/exchange/market/symbol for that strategy. Overlapping ownership raises <code>strategyV2.liveLegConflict</code>.
 
 Never maintain authoritative quantities only in <code>g.long_qty</code>/<code>g.short_qty</code>. An order can be rejected, deferred, partially filled, or rounded by venue rules. Read synchronized leg positions and order status before updating cycle state.
 
@@ -952,7 +952,7 @@ Mixed-market live deployment is unsupported. Other markets cannot be forced thro
 - Advanced coexistence is QuantDinger ledger isolation, not physical venue isolation. Spot inventory still shares the account balance; same-side derivatives still share venue entry price, margin, and liquidation risk.
 - Same account/exchange/market/symbol/leg ownership is exclusive. Confirmed hedge mode can allow separate long-only and short-only strategies on opposite legs; <code>both</code>/<code>neutral</code> reserves both.
 - Minimum quantity, quantity step, minimum notional, available margin, leverage, and venue caps are applied after strategy sizing. The final submitted quantity can differ from the raw request.
-- Only derivative opens/adds configure margin mode and leverage. Closes/reductions skip account configuration so a configuration endpoint failure cannot block an exit. After Binance HTTP 408, <code>-1007</code>, or “execution status unknown,” the runtime reads configuration back and proceeds only when observed margin mode/leverage matches the target.
+- Only derivative opens/adds configure margin mode and leverage. Closes/reductions skip account configuration so a configuration endpoint failure cannot block an exit. Binance configuration is read before mutation so an already-matching margin mode or leverage is not rewritten. After Binance HTTP 408, <code>-1000</code>, <code>-1006</code>, <code>-1007</code>, or another ambiguous configuration outcome, the runtime reads configuration back and proceeds only when the observed margin mode/leverage matches the target.
 - Optional account-risk limits can reject orders for gross notional, estimated margin, gross leverage, or per-symbol notional. Treat those as risk warnings that require configuration or sizing changes, not as reasons to bypass the guard.
 - Market data, private WebSocket events, and periodic REST reconciliation work together. WebSocket improves latency; REST remains the recovery source after disconnects or missed events.
 
@@ -984,7 +984,6 @@ Allowed import roots are <code>numpy</code>, <code>pandas</code>, <code>math</co
 | <code>strategyV2.initializeParamsUnavailable</code> | params read during discovery | move the read to a handler |
 | <code>strategyV2.directionModeViolation:...</code> | entry exceeds declared direction | fix metadata or signal direction; exits remain allowed |
 | <code>strategyV2.dualDirectionHedgeModeRequired:...</code> | account is not in hedge mode | enable venue hedge/dual-side mode |
-| <code>strategyV2.oneWayPositionModeRequired:...</code> | a one-way strategy is connected to a hedge-mode account | switch the venue account to one-way mode or use an explicit hedge-leg strategy |
 | <code>strategyV2.hedgeModeUnknown:...</code> | account mode could not be confirmed | repair credential/API access and retry |
 | <code>strategyV2.liveLegConflict:...</code> | another live strategy owns the leg | stop/reconfigure the conflicting strategy |
 | <code>position_drift_detected:...</code> | account, strategy, and protected baseline contain an unknown delta | recheck, protect manual inventory, or restore strict mode in Ownership & Repair; do not bypass |
@@ -1004,7 +1003,7 @@ The system preset catalog contains eight CTA templates and four portfolio templa
 
 Every system preset must satisfy these rules:
 
-- Declare <code>direction_mode</code> explicitly. A <code>one_way</code> template uses one signed net position without <code>position_side</code>; hedge-mode templates read and write explicit legs.
+- Declare <code>direction_mode</code> explicitly. A <code>one_way</code> template uses one signed strategy position without <code>position_side</code> and is adapted to the account mode at runtime; explicit hedge-leg templates read and write their legs directly.
 - A one-way trend template closes the current opposite position and waits for synchronized flat state before opening the target direction.
 - Reconstructible state comes from synchronized <code>amount</code>, <code>avg_cost</code>, and order status. State that cannot be rebuilt reliably must enable <code>PERSIST_RUNTIME_STATE</code>.
 - Every catalog revision must pass parameter-contract, compilation, direction-capability, and synthetic-backtest tests. After copying a preset, revalidate the manifest whenever market, direction, or frequency changes.

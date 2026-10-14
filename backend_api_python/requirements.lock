@@ -65,7 +65,7 @@ markupsafe==3.0.3
 marshmallow==4.3.0
 mdurl==0.1.2
 msgpack==1.2.1
-multidict==6.7.1
+multidict==6.9.1
 multitasking==0.0.13
 nest-asyncio==1.6.0
 numpy==2.5.1
@@ -128,7 +128,7 @@ webargs==8.7.1
 webencodings==0.5.1
 websocket-client==1.9.0
 websockets==16.1
-werkzeug==3.1.8
+werkzeug==3.1.9
 xlrd==2.0.2
 yarl==1.24.2
 yfinance==1.5.2

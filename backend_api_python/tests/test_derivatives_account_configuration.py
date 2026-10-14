@@ -5,6 +5,7 @@ import pytest
 from app.services.live_trading.account_configuration import (
     configure_derivatives_account,
     requires_derivatives_account_configuration,
+    resolve_derivatives_margin_mode,
 )
 from app.services.live_trading.base import LiveTradingError
 from app.services.live_trading.bybit import BybitClient
@@ -97,19 +98,22 @@ def test_reduce_only_swap_skips_derivatives_configuration():
     assert requires_derivatives_account_configuration(market_type="spot", reduce_only=False) is False
 
 
-def test_binance_margin_timeout_continues_after_configuration_readback():
+def test_strategy_margin_mode_is_resolved_from_nested_trading_config():
+    assert resolve_derivatives_margin_mode(
+        payload={},
+        strategy_config={"trading_config": {"margin_mode": "isolated"}},
+        exchange_config={},
+    ) == "isolated"
+
+
+def test_binance_matching_configuration_skips_mutating_requests():
     client = BinanceFuturesClient.__new__(BinanceFuturesClient)
-    client.set_margin_type = lambda **_kwargs: (_ for _ in ()).throw(
-        LiveTradingError(
-            'Binance HTTP 408: {"code":-1007,"msg":"Timeout waiting for response; execution status unknown."}'
-        )
-    )
-    leverage_calls = []
-    client.set_leverage = lambda **kwargs: leverage_calls.append(kwargs) or {"leverage": 5}
     client.get_symbol_configuration = lambda **_kwargs: {
         "margin_mode": "cross",
         "leverage": 5,
     }
+    client.set_margin_type = lambda **_kwargs: pytest.fail("margin mode must not be changed")
+    client.set_leverage = lambda **_kwargs: pytest.fail("leverage must not be changed")
 
     result = configure_derivatives_account(
         client,
@@ -119,20 +123,75 @@ def test_binance_margin_timeout_continues_after_configuration_readback():
         margin_mode="cross",
     )
 
-    assert result["margin_mode_confirmed_after_timeout"] is True
+    assert result["margin_mode_already_configured"] is True
+    assert result["leverage_already_configured"] is True
+
+
+def test_binance_margin_timeout_continues_after_configuration_readback():
+    client = BinanceFuturesClient.__new__(BinanceFuturesClient)
+    snapshots = iter((
+        {"margin_mode": "isolated", "leverage": 5},
+        {"margin_mode": "cross", "leverage": 5},
+    ))
+    client.set_margin_type = lambda **_kwargs: (_ for _ in ()).throw(
+        LiveTradingError(
+            'Binance HTTP 408: {"code":-1007,"msg":"Timeout waiting for response; execution status unknown."}'
+        )
+    )
+    leverage_calls = []
+    client.set_leverage = lambda **kwargs: leverage_calls.append(kwargs) or {"leverage": 5}
+    client.get_symbol_configuration = lambda **_kwargs: next(snapshots)
+
+    result = configure_derivatives_account(
+        client,
+        exchange_id="binance",
+        symbol="BTC/USDT",
+        leverage=5,
+        margin_mode="cross",
+    )
+
+    assert result["readback_after_margin_error"]["margin_mode"] == "cross"
     assert leverage_calls == [{"symbol": "BTC/USDT", "leverage": 5}]
+
+
+def test_binance_margin_unknown_error_continues_after_configuration_readback():
+    client = BinanceFuturesClient.__new__(BinanceFuturesClient)
+    snapshots = iter((
+        {"margin_mode": "isolated", "leverage": 2},
+        {"margin_mode": "cross", "leverage": 2},
+    ))
+    client.get_symbol_configuration = lambda **_kwargs: next(snapshots)
+    client.set_margin_type = lambda **_kwargs: (_ for _ in ()).throw(
+        LiveTradingError(
+            'Binance HTTP 400: {"code":-1000,"msg":"An unknown error occurred while processing the request."}'
+        )
+    )
+    leverage_calls = []
+    client.set_leverage = lambda **kwargs: leverage_calls.append(kwargs) or {"leverage": 2}
+
+    result = configure_derivatives_account(
+        client,
+        exchange_id="binance",
+        symbol="DOGE/USDT",
+        leverage=2,
+        margin_mode="cross",
+    )
+
+    assert result["readback_after_margin_error"]["margin_mode"] == "cross"
+    assert leverage_calls == [{"symbol": "DOGE/USDT", "leverage": 2}]
 
 
 def test_binance_margin_timeout_fails_when_readback_differs():
     client = BinanceFuturesClient.__new__(BinanceFuturesClient)
+    snapshots = iter((
+        {"margin_mode": "isolated", "leverage": 5},
+        {"margin_mode": "isolated", "leverage": 5},
+    ))
     client.set_margin_type = lambda **_kwargs: (_ for _ in ()).throw(
         LiveTradingError("Binance HTTP 408: code=-1007 execution status unknown")
     )
     client.set_leverage = lambda **_kwargs: pytest.fail("leverage must not be changed")
-    client.get_symbol_configuration = lambda **_kwargs: {
-        "margin_mode": "isolated",
-        "leverage": 5,
-    }
+    client.get_symbol_configuration = lambda **_kwargs: next(snapshots)
 
     with pytest.raises(LiveTradingError, match="could not be confirmed"):
         configure_derivatives_account(

@@ -1,11 +1,15 @@
 """Regression tests for JWT forgery and authorization bypasses."""
 
 import datetime
+from contextlib import contextmanager
 
 import jwt
 from flask import Flask, jsonify
 
 from app.config.settings import Config
+from app.services import user_service as user_service_module
+from app.services.user_service import UserService
+from app.utils import db as db_module
 from app.utils import auth
 
 
@@ -134,6 +138,61 @@ def test_token_version_change_during_verification_is_rejected(monkeypatch):
     )
 
     assert auth.verify_token(_encode(_claims(token_version=1))) is None
+
+
+def test_password_reset_invalidates_existing_token(monkeypatch):
+    state = {
+        "username": "victim",
+        "role": "user",
+        "status": "active",
+        "password_hash": "old-hash",
+        "token_version": 7,
+    }
+
+    class FakeCursor:
+        result = None
+
+        def execute(self, sql, params=()):
+            normalized = " ".join(sql.lower().split())
+            if normalized.startswith("update qd_users"):
+                state["password_hash"] = params[0]
+                if "token_version = coalesce(token_version, 1) + 1" in normalized:
+                    state["token_version"] = (state["token_version"] or 1) + 1
+                return
+            if "select username, role, status, token_version" in normalized:
+                self.result = dict(state)
+                return
+            raise AssertionError(f"Unexpected SQL: {normalized}")
+
+        def fetchone(self):
+            return self.result
+
+        def close(self):
+            pass
+
+    class FakeConnection:
+        def cursor(self):
+            return FakeCursor()
+
+        def commit(self):
+            pass
+
+    @contextmanager
+    def fake_connection():
+        yield FakeConnection()
+
+    monkeypatch.setattr(user_service_module, "get_db_connection", fake_connection)
+    monkeypatch.setattr(db_module, "get_db_connection", fake_connection)
+    monkeypatch.setattr(UserService, "_password_changed_column_ready", True)
+
+    service = UserService()
+    monkeypatch.setattr(service, "hash_password", lambda _: "new-hash")
+    token = auth.generate_token(1, "victim", "user", token_version=7)
+
+    assert service.reset_password(1, "new-password") is True
+    assert state["password_hash"] == "new-hash"
+    assert state["token_version"] == 8
+    assert auth.verify_token(token) is None
 
 
 def test_admin_required_uses_only_verified_database_role(monkeypatch):

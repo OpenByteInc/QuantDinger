@@ -2,7 +2,10 @@ from decimal import Decimal
 
 import pytest
 
-from app.services.pending_orders.error_classification import classify_exchange_order_error
+from app.services.pending_orders.error_classification import (
+    classify_exchange_order_error,
+    classify_strategy_exchange_log,
+)
 from app.services.pending_orders.order_budget import strategy_order_budget_snapshot
 from app.services.pending_orders.order_quantities import (
     exchange_executable_base_quantity,
@@ -108,6 +111,55 @@ def test_dynamic_price_band_error_has_retryable_category(error):
     result = classify_exchange_order_error(error)
     assert result["category"] == "price_band"
     assert result["retryable"] is True
+
+
+@pytest.mark.parametrize(
+    ("message", "category", "exchange"),
+    [
+        (
+            'Auto-stopped (position_sync_binance): Binance HTTP 401: {"code":-2015,"msg":"Invalid API-key, IP, or permissions for action"}',
+            "credentials",
+            "binance",
+        ),
+        (
+            'Exchange order failed (gate BTC/USDT close_short): Gate HTTP 400: {"label":"MARKET_PRICE_TOO_DEVIATED","message":"price deviates too much"}',
+            "price_band",
+            "gate",
+        ),
+        (
+            'Exchange order failed (gate BTC/USDT open_short): Gate HTTP 400: {"label":"INSUFFICIENT_AVAILABLE","message":"margin 950 while available 800"}',
+            "insufficient_funds",
+            "gate",
+        ),
+        (
+            'Exchange order failed (bybit BTC/USDT open_long): Bybit error: {"retCode":10006,"retMsg":"Too many visits"}',
+            "rate_limit",
+            "bybit",
+        ),
+        (
+            'Exchange order failed (okx BTC/USDT open_long): OKX error: {"sCode":"50102","sMsg":"Timestamp request expired"}',
+            "clock_skew",
+            "okx",
+        ),
+    ],
+)
+def test_strategy_exchange_logs_have_stable_user_facing_categories(message, category, exchange):
+    result = classify_strategy_exchange_log(message)
+    assert result is not None
+    assert result["category"] == category
+    assert result["exchange"] == exchange
+    assert result["technical_detail"] == message
+
+
+def test_non_exchange_strategy_log_is_not_misclassified():
+    assert classify_strategy_exchange_log("Strategy runtime scheduled") is None
+
+
+def test_binance_max_leverage_error_is_risk_limit_not_balance_shortfall():
+    result = classify_exchange_order_error(
+        'Binance HTTP 400: {"code":-2027,"msg":"Exceeded the maximum allowable position at current leverage."}'
+    )
+    assert result["category"] == "risk_limit"
 
 
 def test_legacy_executor_type_routes_to_grid_engine():

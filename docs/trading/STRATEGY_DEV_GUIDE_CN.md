@@ -523,14 +523,14 @@ Position 常用字段：
 - <code>market_value</code>
 - <code>position_side</code>
 
-swap 双向持仓策略必须显式读取每一条腿：
+显式分腿的 swap 策略（`long_only`、`short_only`、`both` 或 `neutral`）必须读取自己拥有的分腿：
 
 ~~~python
 long_position = get_position(g.symbol, position_side="long")
 short_position = get_position(g.symbol, position_side="short")
 ~~~
 
-在 hedge mode 下，不要把 <code>get_position(symbol)</code> 当成自动合成的净仓位。<code>get_positions()</code> 可能包含 <code>symbol::long</code>、<code>symbol::short</code> 这样的分腿键。判断某条腿是否有仓时建议使用 <code>abs(position.amount)</code>。
+在显式分腿策略中，不要把 <code>get_position(symbol)</code> 当成自动合成的净仓位。<code>get_positions()</code> 可能包含 <code>symbol::long</code>、<code>symbol::short</code> 这样的分腿键。判断某条腿是否有仓时建议使用 <code>abs(position.amount)</code>。<code>one_way</code> 是特意保留的例外：即使交易所账户使用双向持仓，运行时仍会把该策略唯一的活动腿暴露为一个有符号策略持仓。
 
 不要混淆下面几个不同层级的定义：
 
@@ -677,7 +677,7 @@ def initialize(context):
 context.set_metadata(direction_mode="one_way")
 ~~~
 
-支持 `long_only`（仅做多）、`short_only`（仅做空）、`one_way`（一个净持仓在多空之间切换）、`both`（独立多空腿）和 `neutral`（中性双腿）。`one_way` 要求交易所账户使用单向持仓模式；`both` 和 `neutral` 要求双向持仓模式。这个声明不会下单，也不会覆盖策略信号。
+支持 `long_only`（仅做多）、`short_only`（仅做空）、`one_way`（一个策略持仓在多空之间切换）、`both`（独立多空腿）和 `neutral`（中性双腿）。`one_way` 会自动适配交易所单向持仓账户，或在双向持仓账户中只操作一条活动腿；`both` 和 `neutral` 仍要求双向持仓模式。这个声明不会下单，也不会覆盖策略信号。
 
 新建 Crypto swap 策略必须显式声明 <code>direction_mode</code>。<code>one_way</code> 使用 <code>get_position(symbol)</code> 读取有符号净持仓，订单省略 <code>position_side</code>，反转时先平当前方向，等同步为空仓后再开反向。分腿模式则在每次合约仓位读取和订单调用中显式传入 <code>position_side</code>。编译器对旧源码的推断只用于迁移。现货策略按 <code>long_only</code> 编写。
 
@@ -735,7 +735,7 @@ def handle_data(context, data):
         )
 ~~~
 
-数量单位取决于交易所合约规格，不能假定一张合约一定等于一个基础币。实盘启动前，平台会确认账户持仓模式：<code>one_way</code> 连接到双向持仓账户会被拒绝，<code>both</code> 和 <code>neutral</code> 只有确认处于 hedge mode 才能启动。运行中的 <code>one_way</code> 策略占用账户/交易所/市场/标的的整个净持仓；重复占用返回 <code>strategyV2.liveLegConflict</code>。
+数量单位取决于交易所合约规格，不能假定一张合约一定等于一个基础币。实盘启动前，平台会确认账户持仓模式。<code>one_way</code> 可以运行在两种账户模式上：双向持仓账户中，运行时会显式路由当前多头或空头腿，并继续强制先平后反转。<code>both</code> 和 <code>neutral</code> 只有确认处于 hedge mode 才能启动。运行中的 <code>one_way</code> 策略会占用账户/交易所/市场/标的的完整策略归属；重复占用返回 <code>strategyV2.liveLegConflict</code>。
 
 不要只用 <code>g.long_qty</code>/<code>g.short_qty</code> 维护权威仓位。订单可能被拒绝、延迟、部分成交或按交易所规则取整。推进策略周期前必须读取同步后的分腿仓位和订单状态。
 
@@ -988,7 +988,6 @@ def rebalance(context, data):
 | <code>strategyV2.initializeParamsUnavailable</code> | 在清单发现阶段读取参数 | 把读取移到处理器 |
 | <code>strategyV2.directionModeViolation:...</code> | 开仓方向超出声明能力 | 修正 metadata 或信号方向；平仓仍允许 |
 | <code>strategyV2.dualDirectionHedgeModeRequired:...</code> | 账户没有开启双向持仓 | 在交易所开启 hedge/双向持仓模式 |
-| <code>strategyV2.oneWayPositionModeRequired:...</code> | 单向持仓策略连接了双向持仓账户 | 将交易所账户切换为单向持仓，或改用显式分腿策略 |
 | <code>strategyV2.hedgeModeUnknown:...</code> | 无法确认账户持仓模式 | 修复凭证/API 权限后重试 |
 | <code>strategyV2.liveLegConflict:...</code> | 另一实盘策略已占用该腿 | 停止或调整冲突策略 |
 | <code>position_drift_detected:...</code> | 账户、策略和保护基线存在未知差额 | 在“持仓归属与修复”中重新核对、保护用户仓位或恢复严格模式；不要绕过 |
@@ -1008,7 +1007,7 @@ def rebalance(context, data):
 
 系统预设必须满足：
 
-- 每个模板显式声明 <code>direction_mode</code>。<code>one_way</code> 模板使用不带 <code>position_side</code> 的有符号净持仓；双向持仓模板显式读取和操作分腿。
+- 每个模板显式声明 <code>direction_mode</code>。<code>one_way</code> 模板使用不带 <code>position_side</code> 的有符号策略持仓，由运行时适配账户模式；显式分腿模板直接读取和操作各自分腿。
 - 单向持仓趋势模板先平当前反向仓位，等待成交与空仓同步后，再开目标方向。
 - 可从交易所仓位恢复的状态应以同步后的 <code>amount</code>、<code>avg_cost</code> 和订单状态为准；无法可靠重建的状态必须启用 <code>PERSIST_RUNTIME_STATE</code>。
 - 每次目录更新都必须通过参数契约、编译、方向能力和合成回测测试。复制模板后如果修改了市场、方向或周期，应重新验证 manifest，而不是继续依赖模板身份。

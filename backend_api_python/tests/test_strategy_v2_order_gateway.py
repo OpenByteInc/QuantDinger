@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 from app.services.strategy_v2 import live_execution
@@ -49,6 +50,7 @@ def _request(action="open_long", **overrides):
         "signal_timestamp": 123,
         "market_type": "swap",
         "execution_mode": "live",
+        "margin_mode": "isolated",
     }
     values.update(overrides)
     return LiveOrderRequest(
@@ -134,6 +136,28 @@ def test_submit_does_not_reconsider_an_ai_rejected_signal(monkeypatch):
 
     monkeypatch.setattr(live_execution, "OrderIntentService", _IntentService)
     assert StrategyV2OrderGateway().submit(_request()) is None
+
+
+def test_submit_persists_margin_mode_in_pending_order_payload(monkeypatch):
+    class _IntentService:
+        def __init__(self, **_kwargs):
+            pass
+
+        @staticmethod
+        def build_signal_idempotency_key(**_kwargs):
+            return "margin-mode-signal"
+
+        @staticmethod
+        def create_intent(**_kwargs):
+            return SimpleNamespace(id=91, existing=False, status="intent_created")
+
+    cursor = _Cursor({"id": 123})
+    monkeypatch.setattr(live_execution, "OrderIntentService", _IntentService)
+    monkeypatch.setattr(live_execution, "get_db_connection", lambda: _Db(cursor))
+
+    assert StrategyV2OrderGateway().submit(_request(margin_mode="isolated")) == 123
+    payload = json.loads(cursor.params[10])
+    assert payload["margin_mode"] == "isolated"
 
 
 def test_ai_rejection_is_latched_until_the_signal_disappears(monkeypatch):

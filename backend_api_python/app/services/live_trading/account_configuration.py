@@ -16,12 +16,39 @@ def requires_derivatives_account_configuration(*, market_type: str, reduce_only:
     return market in {"swap", "future", "futures", "perp", "perpetual"} and not bool(reduce_only)
 
 
-def _is_binance_unknown_timeout(exc: BaseException | str) -> bool:
+def _is_binance_ambiguous_configuration_error(exc: BaseException | str) -> bool:
     text = str(exc or "").lower()
     return (
-        "-1007" in text
+        "-1000" in text
+        or "unknown error occurred while processing the request" in text
+        or "-1006" in text
+        or "-1007" in text
         or "execution status unknown" in text
         or ("http 408" in text and "timeout" in text)
+    )
+
+
+def resolve_derivatives_margin_mode(
+    *,
+    payload: Dict[str, Any],
+    strategy_config: Dict[str, Any],
+    exchange_config: Dict[str, Any] | None = None,
+) -> str:
+    """Resolve the persisted strategy margin mode for order dispatch."""
+    trading_config = strategy_config.get("trading_config") or {}
+    if not isinstance(trading_config, dict):
+        trading_config = {}
+    venue_config = exchange_config or {}
+    if not isinstance(venue_config, dict):
+        venue_config = {}
+    return normalize_margin_mode(
+        payload.get("margin_mode")
+        or payload.get("marginMode")
+        or trading_config.get("margin_mode")
+        or trading_config.get("marginMode")
+        or venue_config.get("margin_mode")
+        or venue_config.get("marginMode")
+        or "cross"
     )
 
 
@@ -42,12 +69,12 @@ def _confirm_binance_configuration(
         observed_leverage = 0
     if require_margin and observed_mode != margin_mode:
         raise LiveTradingError(
-            f"Binance configuration timeout could not be confirmed: "
+            f"Binance configuration outcome could not be confirmed: "
             f"margin_mode expected={margin_mode}, observed={observed_mode}"
         )
     if require_leverage and observed_leverage != int(leverage):
         raise LiveTradingError(
-            f"Binance configuration timeout could not be confirmed: "
+            f"Binance configuration outcome could not be confirmed: "
             f"leverage expected={int(leverage)}, observed={observed_leverage}"
         )
     return observed
@@ -95,40 +122,66 @@ def configure_derivatives_account(
     }
 
     if isinstance(client, BinanceFuturesClient):
-        margin_confirmed_after_timeout = False
+        observed_before: Dict[str, Any] | None = None
         try:
-            client.set_margin_type(symbol=symbol, margin_mode=mode)
-        except Exception as exc:
-            text = str(exc).lower()
-            if "-4046" not in text and "no need to change margin type" not in text:
-                if not _is_binance_unknown_timeout(exc):
-                    raise LiveTradingError(f"Binance margin mode setup failed: {exc}") from exc
+            observed_before = client.get_symbol_configuration(symbol=symbol) or None
+        except Exception:
+            observed_before = None
+        if observed_before:
+            details["configuration_before"] = observed_before
+
+        observed_mode = ""
+        if observed_before:
+            try:
+                observed_mode = normalize_margin_mode(
+                    str(observed_before.get("margin_mode") or "")
+                )
+            except LiveTradingError:
+                observed_mode = ""
+        margin_changed = observed_mode != mode
+        observed_after_margin: Dict[str, Any] | None = None
+        if margin_changed:
+            try:
+                client.set_margin_type(symbol=symbol, margin_mode=mode)
+            except Exception as exc:
+                text = str(exc).lower()
+                if "-4046" not in text and "no need to change margin type" not in text:
+                    if not _is_binance_ambiguous_configuration_error(exc):
+                        raise LiveTradingError(f"Binance margin mode setup failed: {exc}") from exc
+                    observed_after_margin = _confirm_binance_configuration(
+                        client,
+                        symbol=symbol,
+                        margin_mode=mode,
+                        leverage=target_leverage,
+                        require_margin=True,
+                        require_leverage=False,
+                    )
+                    details["readback_after_margin_error"] = observed_after_margin
+        else:
+            details["margin_mode_already_configured"] = True
+
+        effective_observed = observed_after_margin or observed_before or {}
+        try:
+            effective_leverage = int(float(effective_observed.get("leverage") or 0))
+        except (TypeError, ValueError):
+            effective_leverage = 0
+        if margin_changed or effective_leverage != target_leverage:
+            try:
+                client.set_leverage(symbol=symbol, leverage=target_leverage)
+            except Exception as exc:
+                if not _is_binance_ambiguous_configuration_error(exc):
+                    raise
                 observed = _confirm_binance_configuration(
                     client,
                     symbol=symbol,
                     margin_mode=mode,
                     leverage=target_leverage,
                     require_margin=True,
-                    require_leverage=False,
+                    require_leverage=True,
                 )
-                details["readback_after_margin_timeout"] = observed
-                margin_confirmed_after_timeout = True
-        try:
-            client.set_leverage(symbol=symbol, leverage=target_leverage)
-        except Exception as exc:
-            if not _is_binance_unknown_timeout(exc):
-                raise
-            observed = _confirm_binance_configuration(
-                client,
-                symbol=symbol,
-                margin_mode=mode,
-                leverage=target_leverage,
-                require_margin=True,
-                require_leverage=True,
-            )
-            details["readback_after_leverage_timeout"] = observed
-        if margin_confirmed_after_timeout:
-            details["margin_mode_confirmed_after_timeout"] = True
+                details["readback_after_leverage_error"] = observed
+        else:
+            details["leverage_already_configured"] = True
         return details
 
     if isinstance(client, OkxClient):

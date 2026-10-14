@@ -913,7 +913,10 @@ class UserService:
                 cur.execute(
                     """
                     UPDATE qd_users
-                    SET password_hash = ?, password_changed_at = NOW(), updated_at = NOW()
+                    SET password_hash = ?,
+                        password_changed_at = NOW(),
+                        token_version = COALESCE(token_version, 1) + 1,
+                        updated_at = NOW()
                     WHERE id = ?
                     """,
                     (password_hash, user_id),

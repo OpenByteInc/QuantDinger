@@ -29,6 +29,7 @@ from app.services.live_trading.records import (
 )
 from app.services.live_trading.account_configuration import (
     requires_derivatives_account_configuration,
+    resolve_derivatives_margin_mode,
 )
 from app.services.live_trading.strategy_position_sync import (
     strategy_uses_fill_ledger,
@@ -1960,12 +1961,10 @@ class PendingOrderWorker(
             try:
                 from app.services.live_trading.account_configuration import configure_derivatives_account
 
-                margin_mode = str(
-                    payload.get("margin_mode")
-                    or payload.get("marginMode")
-                    or cfg.get("margin_mode")
-                    or cfg.get("marginMode")
-                    or "cross"
+                margin_mode = resolve_derivatives_margin_mode(
+                    payload=payload,
+                    strategy_config=cfg,
+                    exchange_config=exchange_config,
                 )
                 phases["account_configuration"] = configure_derivatives_account(
                     client,

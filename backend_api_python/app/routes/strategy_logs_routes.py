@@ -3,6 +3,7 @@ from flask import g, jsonify, request
 
 from app.routes.strategy_blueprint import strategy_blp
 from app.routes.strategy_services import get_strategy_service
+from app.services.pending_orders.error_classification import classify_strategy_exchange_log
 from app.utils.auth import login_required
 from app.utils.db import get_db_connection
 from app.utils.logger import get_logger
@@ -73,6 +74,11 @@ def get_strategy_logs():
                 rr['message'] = str(
                     market_data_error.get('message') or 'No usable market data is available.'
                 )
+            else:
+                exchange_error = classify_strategy_exchange_log(msg)
+                if exchange_error:
+                    rr['event_type'] = 'exchange_error'
+                    rr['exchange_error'] = exchange_error
             ts = rr.get('timestamp')
             if ts is not None:
                 from app.utils.timeutil import to_utc_iso

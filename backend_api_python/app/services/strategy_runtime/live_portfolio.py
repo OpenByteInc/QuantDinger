@@ -39,18 +39,45 @@ def refresh_members(service, candidates, manifest, user_id, strategy_id, now, ex
 
 def positions_by_symbol(executor, strategy_id, candidates, strategy):
     from app.services.strategy_live_guard import resolve_strategy_direction_mode
-    owns_both = resolve_strategy_direction_mode(strategy or {}) in {'both', 'neutral'}
+    direction_mode = resolve_strategy_direction_mode(strategy or {})
+    strategy_config = strategy or {}
+    trading_config = strategy_config.get('trading_config') or {}
+    if not isinstance(trading_config, dict):
+        trading_config = {}
+    default_market_type = str(
+        trading_config.get('market_type')
+        or strategy_config.get('market_type')
+        or 'spot'
+    ).strip().lower()
     grouped = defaultdict(list)
     for row in executor._get_current_positions(strategy_id, None):
         grouped[str(row.get('symbol') or '').split(':')[0]].append(row)
     output = {}
     for member in candidates:
         rows = grouped.get(str(member.get('symbol') or '').split(':')[0], [])
-        for row in rows if owns_both else rows[:1]:
+        market_type = str(member.get('market_type') or default_market_type).strip().lower()
+        if market_type in {'future', 'futures', 'perp', 'perpetual'}:
+            market_type = 'swap'
+        explicit_legs = market_type == 'swap' and direction_mode in {
+            'long_only', 'short_only', 'both', 'neutral',
+        }
+        owned_sides = (
+            {'long'} if direction_mode == 'long_only'
+            else {'short'} if direction_mode == 'short_only'
+            else {'long', 'short'}
+        )
+        selected_rows = (
+            [
+                row for row in rows
+                if ('short' if row.get('side') == 'short' else 'long') in owned_sides
+            ]
+            if explicit_legs else rows[:1]
+        )
+        for row in selected_rows:
             side = 'short' if row.get('side') == 'short' else 'long'
-            key = member['key'] + (f'::{side}' if owns_both else '')
+            key = member['key'] + (f'::{side}' if explicit_legs else '')
             output[key] = dict(amount=row.get('size') or 0, side=side,
-                position_side=side if owns_both else '', avg_cost=row.get('entry_price') or 0,
+                position_side=side if explicit_legs else '', avg_cost=row.get('entry_price') or 0,
                 last_price=row.get('current_price') or 0)
     return output
 

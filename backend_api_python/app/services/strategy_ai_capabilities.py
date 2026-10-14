@@ -127,9 +127,9 @@ CAPABILITY_PACKS: dict[str, StrategyAICapability] = {
 - `direction_mode` is strategy capability metadata. `position_side` is the concrete `long` or `short` hedge leg on a position read or order. They are not interchangeable.
 - `one_way` means one signed net position. Use `get_position(symbol)` and omit `position_side` from every order. Positive targets open or maintain long exposure; negative targets open or maintain short exposure; close the current position before opening the opposite side.
 - For `long_only`, `short_only`, `both`, and `neutral`, every `get_position(...)` and order call for a swap instrument must explicitly pass `position_side="long"` or `position_side="short"` (a variable resolving to one of those values is also valid).
-- In hedge mode, `get_position(symbol)` is not a synthetic net position. Read each owned leg explicitly and test `abs(position.amount)`.
+- For `long_only`, `short_only`, `both`, and `neutral`, hedge-account positions remain explicit legs. A `one_way` strategy is the exception: the runtime exposes its single active strategy-owned leg through the signed `get_position(symbol)` view on either account mode.
 - Short targets use negative quantity, value, or percent while still declaring `position_side="short"`. Closing either leg uses a zero target for that same `position_side`.
-- `one_way` requires exchange one-way mode in live trading. `both` and `neutral` require exchange hedge mode. `allow_leverage` remains a separate source permission and must never be multiplied into order sizing.
+- `one_way` is account-mode adaptive in live trading: the runtime uses a net position on one-way accounts and routes the active leg explicitly on hedge accounts while preventing simultaneous strategy-owned legs. `both` and `neutral` still require exchange hedge mode. `allow_leverage` remains a separate source permission and must never be multiplied into order sizing.
 """,
         repair="""
 - For `one_way`, remove `position_side` and implement signed net-position reversal. For all hedge-leg modes, add an explicit valid `position_side` to every Crypto swap position read and order.

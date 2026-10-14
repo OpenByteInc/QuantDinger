@@ -25,6 +25,7 @@ class LiveOrderRequest:
     market_type: str
     execution_mode: str
     leverage: float = 1.0
+    margin_mode: str = "cross"
     reason: str = ""
     notification_config: dict[str, Any] | None = None
     order_type: str = "market"
@@ -286,6 +287,7 @@ class StrategyV2OrderGateway:
             "price": request.limit_price or request.reference_price,
             "ref_price": request.reference_price,
             "leverage": request.leverage,
+            "margin_mode": request.margin_mode,
             "execution_mode": request.execution_mode,
             "notification_config": request.notification_config or {},
             "signal_ts": request.signal_timestamp,
