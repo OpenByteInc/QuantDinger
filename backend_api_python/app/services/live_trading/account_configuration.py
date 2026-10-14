@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict
 
-from app.services.live_trading.base import LiveTradingError
+from app.services.live_trading.base import LiveTradingError, cancel_all_algo_orders_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -195,18 +195,19 @@ def configure_derivatives_account(
 
         inst_id = to_okx_swap_inst_id(symbol)
 
-        # Proactively cancel algo orders that would block leverage changes.
-        # This prevents the common 59669 error on strategy restart where stale
-        # algo orders from a previous run remain on the exchange.
-        try:
-            cancelled = client.cancel_all_algo_orders(inst_id=inst_id, inst_type="SWAP")
-            if cancelled > 0:
-                logger.info(
-                    f"Pre-cleaned {cancelled} lingering algo order(s) on {inst_id} "
-                    "before setting leverage."
-                )
-        except Exception:
-            pass
+        # Pre-cleaning algo orders avoids a 59669 on strategy restart, but the sweep
+        # cannot distinguish this system's protective orders from a user's manually
+        # placed TP/SL, so it stays opt-in via OKX_CANCEL_ALL_ALGO_ORDERS.
+        if cancel_all_algo_orders_enabled():
+            try:
+                cancelled = client.cancel_all_algo_orders(inst_id=inst_id, inst_type="SWAP")
+                if cancelled > 0:
+                    logger.info(
+                        f"Pre-cleaned {cancelled} lingering algo order(s) on {inst_id} "
+                        "before setting leverage."
+                    )
+            except Exception as exc:
+                logger.warning("Pre-cancel of algo orders failed for %s: %s", inst_id, exc)
 
         if position_mode in ("long_short_mode", "longshort_mode"):
             long_ok = client.set_leverage(

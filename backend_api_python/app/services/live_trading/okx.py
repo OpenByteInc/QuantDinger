@@ -16,7 +16,12 @@ from decimal import Decimal, ROUND_DOWN
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 from urllib.parse import urlencode
 
-from app.services.live_trading.base import BaseRestClient, LiveOrderResult, LiveTradingError
+from app.services.live_trading.base import (
+    BaseRestClient,
+    LiveOrderResult,
+    LiveTradingError,
+    cancel_all_algo_orders_enabled,
+)
 from app.utils.numeric_precision import floor_decimal_to_step, format_decimal
 
 logger = logging.getLogger(__name__)
@@ -668,7 +673,9 @@ class OkxClient(BaseRestClient):
 
                     # Also try cancelling ALL algo orders across all instruments,
                     # since OKX may block leverage changes for any instrument
-                    if cancelled == 0 or attempt >= 1:
+                    # The account-wide sweep can cancel protective orders on other
+                    # instruments (including a user's manual TP/SL), so it is opt-in.
+                    if (cancelled == 0 or attempt >= 1) and cancel_all_algo_orders_enabled():
                         all_cancelled = self.cancel_all_algo_orders(inst_type="SWAP")
                         logger.info(
                             f"Cancelled {all_cancelled} algo order(s) across all instruments."

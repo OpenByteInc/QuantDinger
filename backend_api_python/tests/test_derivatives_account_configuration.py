@@ -310,3 +310,42 @@ def test_okx_hedge_mode_sets_both_leg_leverages():
 
     assert result["position_mode"] == "hedge"
     assert {call["pos_side"] for call in calls} == {"long", "short"}
+
+
+def _okx_config_client(sweeps):
+    client = OkxClient.__new__(OkxClient)
+    client.get_account_config = lambda: {"acctLv": "2", "posMode": "net_mode"}
+    client.set_leverage = lambda **kwargs: True
+    client.cancel_all_algo_orders = lambda **kwargs: sweeps.append(kwargs) or 1
+    return client
+
+
+def test_okx_configuration_does_not_precancel_algo_orders_by_default(monkeypatch):
+    monkeypatch.delenv("OKX_CANCEL_ALL_ALGO_ORDERS", raising=False)
+    sweeps = []
+
+    configure_derivatives_account(
+        _okx_config_client(sweeps),
+        exchange_id="okx",
+        symbol="BTC/USDT",
+        leverage=5,
+        margin_mode="cross",
+    )
+
+    assert sweeps == []
+
+
+def test_okx_configuration_precancels_algo_orders_when_opted_in(monkeypatch):
+    monkeypatch.setenv("OKX_CANCEL_ALL_ALGO_ORDERS", "true")
+    sweeps = []
+
+    configure_derivatives_account(
+        _okx_config_client(sweeps),
+        exchange_id="okx",
+        symbol="BTC/USDT",
+        leverage=5,
+        margin_mode="cross",
+    )
+
+    assert len(sweeps) == 1
+    assert sweeps[0]["inst_id"].endswith("SWAP")
