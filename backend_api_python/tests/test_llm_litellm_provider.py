@@ -755,7 +755,7 @@ def test_redact_secrets_scrubs_query_keys_and_bearer_tokens():
     assert "key=<redacted>" in scrubbed
     assert "Bearer <redacted>" in scrubbed
     # Non-secret context is preserved for debugging.
-    assert "generativelanguage.googleapis.com" in scrubbed
+    assert "Max retries exceeded" in scrubbed
 
 
 def test_redact_secrets_passes_through_harmless_text():
