@@ -2,7 +2,9 @@ import sys
 from types import SimpleNamespace
 
 import pytest
+import requests
 
+from app.utils.redaction import redact_secrets
 from app.services.llm import LLMAPIError, LLMProvider, LLMService
 import app.utils.config_loader as config_loader
 from app.utils.config_loader import clear_config_cache, load_addon_config
@@ -703,6 +705,144 @@ def test_litellm_response_content(monkeypatch):
     assert captured["max_tokens"] == 16384
 
 
+def test_google_gemini_sends_api_key_in_header_not_url(monkeypatch):
+    """The Gemini key must never sit in the request URL: requests embeds URLs in
+    its exception messages, which the service logs."""
+    captured = {}
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"candidates": [{"content": {"parts": [{"text": "ok"}]}}]}
+
+    service = LLMService(provider="google")
+
+    def fake_post(url, **kwargs):
+        captured["url"] = url
+        captured["headers"] = kwargs.get("headers") or {}
+        return FakeResponse()
+
+    monkeypatch.setattr(service, "_llm_post", fake_post)
+
+    service._call_google_gemini(
+        [{"role": "user", "content": "hello"}],
+        "gemini-1.5-flash",
+        0.7,
+        "super-secret-key",
+        "https://generativelanguage.googleapis.com/v1beta",
+        30,
+    )
+
+    assert "super-secret-key" not in captured["url"]
+    assert "key=" not in captured["url"]
+    assert captured["headers"]["x-goog-api-key"] == "super-secret-key"
+
+
+def test_redact_secrets_scrubs_query_keys_and_bearer_tokens():
+    message = (
+        "HTTPSConnectionPool(host='generativelanguage.googleapis.com', port=443): "
+        "Max retries exceeded with url: /v1beta/models/gemini-1.5-flash:generateContent"
+        "?key=AIzaSyD-EXAMPLE-KEY (Caused by NewConnectionError) "
+        "headers={'Authorization': 'Bearer sk-abc123DEF456ghi'}"
+    )
+
+    scrubbed = redact_secrets(message)
+
+    assert "AIzaSyD-EXAMPLE-KEY" not in scrubbed
+    assert "sk-abc123DEF456ghi" not in scrubbed
+    assert "key=<redacted>" in scrubbed
+    assert "Bearer <redacted>" in scrubbed
+    # Non-secret context is preserved for debugging.
+    assert "Max retries exceeded" in scrubbed
+
+
+def test_redact_secrets_passes_through_harmless_text():
+    assert redact_secrets("") == ""
+    assert redact_secrets(None) == ""
+    assert redact_secrets("plain failure") == "plain failure"
+
+
+def test_call_llm_api_redacts_http_error_before_reraising(monkeypatch):
+    secret = "AIzaSyD-HTTP-SECRET"
+    service = LLMService(provider="google")
+    monkeypatch.setattr(service, "is_configured", lambda provider=None: True)
+    monkeypatch.setattr(service, "get_api_key", lambda provider=None: secret)
+    monkeypatch.setattr(
+        service,
+        "get_base_url",
+        lambda provider=None: "https://generativelanguage.googleapis.com/v1beta",
+    )
+
+    def fail_call(*args, **kwargs):
+        request = requests.Request(
+            "POST",
+            f"https://generativelanguage.googleapis.com/v1beta/models/test?key={secret}",
+        ).prepare()
+        response = requests.Response()
+        response.status_code = 500
+        response._content = f'{{"error":"key={secret}"}}'.encode()
+        response.request = request
+        raise requests.exceptions.HTTPError(
+            f"500 Server Error for url: {request.url}",
+            request=request,
+            response=response,
+        )
+
+    monkeypatch.setattr(service, "_call_google_gemini", fail_call)
+
+    with pytest.raises(LLMAPIError) as exc_info:
+        service.call_llm_api(
+            [{"role": "user", "content": "hello"}],
+            model="gemini-test",
+            use_fallback=False,
+            try_alternative_providers=False,
+        )
+
+    message = str(exc_info.value)
+    assert secret not in message
+    assert "key=<redacted>" in message
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.status_code == 500
+
+
+def test_call_llm_api_redacts_request_error_before_reraising(monkeypatch):
+    secret = "sk-request-secret-123"
+    service = LLMService(provider="google")
+    monkeypatch.setattr(service, "is_configured", lambda provider=None: True)
+    monkeypatch.setattr(service, "get_api_key", lambda provider=None: secret)
+    monkeypatch.setattr(
+        service,
+        "get_base_url",
+        lambda provider=None: "https://generativelanguage.googleapis.com/v1beta",
+    )
+    monkeypatch.setattr(
+        service,
+        "_call_google_gemini",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            requests.exceptions.ConnectionError(
+                f"failed ?api_key={secret} Authorization: Bearer {secret}"
+            )
+        ),
+    )
+
+    with pytest.raises(LLMAPIError) as exc_info:
+        service.call_llm_api(
+            [{"role": "user", "content": "hello"}],
+            model="gemini-test",
+            use_fallback=False,
+            try_alternative_providers=False,
+        )
+
+    message = str(exc_info.value)
+    assert secret not in message
+    assert "api_key=<redacted>" in message
+    assert "Bearer <redacted>" in message
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.retryable is True
+
+
 class _FakeHttpGetResponse:
     def __init__(self, status_code, payload=None, text=""):
         self.status_code = status_code
@@ -763,18 +903,25 @@ def test_test_connection_flags_openrouter_provisioning_key(monkeypatch):
 
 
 def test_test_connection_reports_http_failure(monkeypatch):
+    secret = "sk-response-secret-123"
     service = LLMService(provider="openrouter")
-    monkeypatch.setattr(service, "get_api_key", lambda provider=None: "bad-key")
+    monkeypatch.setattr(service, "get_api_key", lambda provider=None: secret)
     monkeypatch.setattr(service, "get_base_url", lambda provider=None: "https://openrouter.ai/api/v1")
     monkeypatch.setattr(
         "app.services.llm.requests.get",
-        lambda *args, **kwargs: _FakeHttpGetResponse(401, None, '{"error":"unauthorized"}'),
+        lambda *args, **kwargs: _FakeHttpGetResponse(
+            401,
+            None,
+            f'{{"error":"unauthorized ?api_key={secret}"}}',
+        ),
     )
 
     ok, detail = service.test_connection()
 
     assert ok is False
     assert "HTTP 401" in detail
+    assert secret not in detail
+    assert "api_key=<redacted>" in detail
 
 
 def test_test_connection_never_puts_google_key_in_url(monkeypatch):

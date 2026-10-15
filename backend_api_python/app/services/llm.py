@@ -13,6 +13,7 @@ from enum import Enum
 from app.utils.logger import get_logger
 from app.config import APIKeys
 from app.utils.config_loader import load_addon_config
+from app.utils.redaction import redact_secrets
 
 logger = get_logger(__name__)
 
@@ -88,6 +89,19 @@ class LLMAPIError(ValueError):
                 else status_code in RETRYABLE_LLM_STATUS_CODES
             )
         self.retryable = bool(retryable)
+
+
+def _redacted_llm_api_error(error: LLMAPIError) -> LLMAPIError:
+    """Copy an LLM error without carrying credential-bearing text forward."""
+    return LLMAPIError(
+        redact_secrets(error),
+        status_code=error.status_code,
+        request_id=error.request_id,
+        generation_id=error.generation_id,
+        error_type=error.error_type,
+        finish_reason=error.finish_reason,
+        retryable=error.retryable,
+    )
 
 
 class LLMProvider(Enum):
@@ -332,7 +346,7 @@ class LLMService:
         try:
             resp = requests.get(url, headers=headers, timeout=15)
         except Exception as exc:
-            return False, f"{p.value}: {exc}"
+            return False, f"{p.value}: {redact_secrets(exc)}"
         if resp.status_code == 200:
             if p == LLMProvider.OPENROUTER:
                 # A provisioning/management key passes /auth/key but is rejected
@@ -347,7 +361,7 @@ class LLMService:
                         "which cannot run inference. Create a normal API key instead."
                     )
             return True, f"{p.value} reachable · model={model}"
-        body = resp.text[:200] if resp.text else ""
+        body = redact_secrets(resp.text[:200]) if resp.text else ""
         return False, f"{p.value}: HTTP {resp.status_code} {body}".strip()
 
     # Legacy properties for backward compatibility
@@ -422,7 +436,7 @@ class LLMService:
                     "for direct LLM access, or set it to a reachable proxy and keep "
                     "LLM_USE_SYSTEM_PROXY disabled unless you really want system proxy env vars."
                 )
-            raise requests.exceptions.ConnectionError(f"{msg}{hint}") from exc
+            raise requests.exceptions.ConnectionError(f"{redact_secrets(msg)}{hint}") from None
 
         if stream:
             response._quantdinger_llm_session = session
@@ -675,7 +689,9 @@ class LLMService:
     def _call_google_gemini(self, messages: list, model: str, temperature: float,
                            api_key: str, base_url: str, timeout: int) -> str:
         """Call Google Gemini API."""
-        url = f"{base_url}/models/{model}:generateContent?key={api_key}"
+        # The key travels in a header, not the query string: request URLs end up
+        # inside requests' exception messages, which are logged.
+        url = f"{base_url}/models/{model}:generateContent"
         
         # Convert OpenAI message format to Gemini format
         contents = []
@@ -721,7 +737,10 @@ class LLMService:
         if system_instruction:
             data["systemInstruction"] = {"parts": [{"text": system_instruction}]}
         
-        headers = {"Content-Type": "application/json"}
+        headers = {
+            "Content-Type": "application/json",
+            "x-goog-api-key": str(api_key or "").strip(),
+        }
         
         response = self._llm_post(url, headers=headers, json_payload=data, timeout=timeout)
         response.raise_for_status()
@@ -1299,13 +1318,14 @@ class LLMService:
             except LLMAPIError as e:
                 status_code = e.status_code
                 last_status_code = status_code
-                last_error = str(e)
-                attempt_errors.append((current_model, str(e)))
+                safe_error = redact_secrets(e)
+                last_error = safe_error
+                attempt_errors.append((current_model, safe_error))
                 logger.warning(
                     "%s API HTTP error (%s): %s",
                     p.value,
                     current_model,
-                    e,
+                    safe_error,
                 )
 
                 if (
@@ -1327,7 +1347,7 @@ class LLMService:
                     )
 
                 if not use_fallback:
-                    raise
+                    raise _redacted_llm_api_error(e) from None
 
                 if current_model == models_to_try[-1]:
                     if len(attempt_errors) > 1:
@@ -1339,8 +1359,8 @@ class LLMService:
                             f"All model calls failed for {p.value}. Attempts: {attempts}",
                             status_code=status_code,
                             request_id=e.request_id,
-                        ) from e
-                    raise
+                        ) from None
+                    raise _redacted_llm_api_error(e) from None
 
                 logger.warning(
                     "%s returned %s for model %s; trying fallback model...",
@@ -1351,12 +1371,14 @@ class LLMService:
                 continue
 
             except requests.exceptions.HTTPError as e:
-                error_detail = e.response.text if e.response else str(e)
-                status_code = e.response.status_code if e.response else None
+                error_detail = e.response.text if e.response is not None else str(e)
+                status_code = e.response.status_code if e.response is not None else None
                 last_status_code = status_code
-                
-                logger.error(f"{p.value} API HTTP error ({current_model}): {status_code} - {error_detail}")
-                last_error = str(e)
+                safe_error = redact_secrets(error_detail or e)
+                error_message = f"{p.value} API HTTP error ({current_model}): {status_code} - {safe_error}"
+
+                logger.error(error_message)
+                last_error = redact_secrets(e)
                 
                 # 403/402 errors usually mean API key issue - try alternative provider
                 if status_code in (402, 403) and try_alternative_providers and current_model == models_to_try[-1]:
@@ -1374,27 +1396,37 @@ class LLMService:
                     continue
                 
                 if not use_fallback or current_model == models_to_try[-1]:
-                    raise
+                    raise LLMAPIError(
+                        error_message,
+                        status_code=status_code or 502,
+                    ) from None
                     
             except requests.exceptions.RequestException as e:
-                logger.error(f"{p.value} API request error ({current_model}): {str(e)}")
-                last_error = str(e)
+                safe_error = redact_secrets(e)
+                error_message = f"{p.value} API request error ({current_model}): {safe_error}"
+                logger.error(error_message)
+                last_error = safe_error
                 if not use_fallback or current_model == models_to_try[-1]:
-                    raise
+                    raise LLMAPIError(
+                        error_message,
+                        status_code=502,
+                        error_type="provider_unavailable",
+                        retryable=True,
+                    ) from None
                     
             except ValueError as e:
-                logger.warning(f"Model {current_model} returned invalid data: {str(e)}")
-                last_error = str(e)
+                logger.warning(f"Model {current_model} returned invalid data: {redact_secrets(e)}")
+                last_error = redact_secrets(e)
                 if current_model == models_to_try[-1]:
-                    raise
+                    raise ValueError(redact_secrets(e)) from None
         
         error_msg = f"All model calls failed for {p.value}. Last error: {last_error}"
         if last_status_code in (402, 403):
             error_msg += f"\nStatus {last_status_code} usually means: API key invalid/expired, insufficient balance, or no access to model."
             error_msg += f"\nPlease check your {p.value} API key configuration and account balance."
         
-        logger.error(error_msg)
-        raise Exception(error_msg)
+        logger.error(redact_secrets(error_msg))
+        raise Exception(redact_secrets(error_msg))
 
     def stream_llm_api(self, messages: list, model: str = None, temperature: float = 0.7):
         """Stream LLM response deltas for providers with OpenAI-compatible streaming."""
@@ -1457,7 +1489,7 @@ class LLMService:
                     try_alternative_providers=False  # Prevent infinite recursion
                 )
             except Exception as e:
-                logger.warning(f"Alternative provider {alt_provider.value} also failed: {str(e)}")
+                logger.warning(f"Alternative provider {alt_provider.value} also failed: {redact_secrets(e)}")
                 continue
         
         raise Exception(f"All LLM providers failed. Please check your API key configurations.")
@@ -1507,8 +1539,8 @@ class LLMService:
             default_structure['report'] = f"Failed to parse analysis result JSON. Raw output (partial): {response_text[:500] if response_text else 'N/A'}"
             return default_structure
         except Exception as e:
-            logger.error(f"LLM call failed: {str(e)}")
-            default_structure['report'] = f"Analysis failed: {str(e)}"
+            logger.error(f"LLM call failed: {redact_secrets(e)}")
+            default_structure['report'] = f"Analysis failed: {redact_secrets(e)}"
             return default_structure
 
     @classmethod

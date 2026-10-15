@@ -136,12 +136,6 @@ class DataSourceFactory:
             raw,
         )
         return raw
-        logger.warning(
-            "DataSourceFactory.normalize_market(): unknown market %r — "
-            "passing through as-is; downstream get_source() will likely fail.",
-            raw,
-        )
-        return raw
 
     @classmethod
     def get_source(cls, market: str) -> BaseDataSource:

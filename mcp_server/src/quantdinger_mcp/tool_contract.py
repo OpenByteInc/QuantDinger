@@ -18,6 +18,7 @@ WRITE_TOOLS = {
     "create_strategy": False,
     "update_strategy": True,
     "save_strategy_source": True,
+    "compile_strategy_code": False,
     "restore_strategy_source_version": True,
     "submit_backtest": False,
     "cancel_open_paper_orders": True,
