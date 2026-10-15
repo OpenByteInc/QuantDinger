@@ -552,7 +552,8 @@
     },
     "/api/agent/v1/research/factors": {
       "get": {
-        "summary": "List factor registry definitions",
+        "summary": "List built-in and TA-Lib factor registry definitions",
+        "description": "Returns the unified technical factor catalog. TA-Lib factors use the talib: namespace and include parameter and output schemas.",
         "x-scope-class": "R",
         "parameters": [
           { "in": "query", "name": "category", "required": false, "schema": { "type": "string" } },
@@ -563,7 +564,7 @@
     },
     "/api/agent/v1/research/factors/{factor_id}": {
       "get": {
-        "summary": "Get one factor definition",
+        "summary": "Get one built-in or TA-Lib factor definition",
         "x-scope-class": "R",
         "parameters": [{ "in": "path", "name": "factor_id", "required": true, "schema": { "type": "string" } }],
         "responses": { "200": { "description": "OK" }, "404": { "description": "Not found" } }

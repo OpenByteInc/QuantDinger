@@ -229,6 +229,18 @@ def test_registered_factor_resolver_selects_only_requested_factor_definitions():
     assert "Never guess output names or parameter aliases" in prompt
 
 
+def test_talib_081_factor_is_available_to_ai_authoring():
+    prompt, intent = build_strategy_system_prompt(
+        prompt="Build a PERCENTRANK factor strategy for SPY",
+        asset_type="script",
+    )
+
+    assert intent.factor_ids == ("talib:PERCENTRANK",)
+    assert intent.required_factor_ids == ("talib:PERCENTRANK",)
+    assert '"talib:PERCENTRANK": {' in prompt
+    assert '"timeperiod": 100' in prompt
+
+
 def test_generation_prompt_injects_only_relevant_capability_packs():
     stock_prompt, stock_intent = build_strategy_system_prompt(
         prompt="生成 SPY 日线均线策略",

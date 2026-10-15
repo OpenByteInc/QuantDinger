@@ -485,8 +485,12 @@ frames = data.history(
 ~~~python
 rsi_value = factor("rsi", g.symbol, period=14)
 macd = indicator("MACD", g.symbol, fastperiod=12, slowperiod=26, signalperiod=9)
+supertrend = indicator("talib:SUPERTREND", g.symbol, timeperiod=10, multiplier=3.0)
+trend_direction = factor("talib:SUPERTREND", g.symbol, timeperiod=10, output="trend")
 scores = get_factors(symbols, ["momentum_20", "volatility_20"])
 ~~~
+
+TA-Lib 0.8.1 指标在生成代码、因子库和因子投研中使用明确的 <code>talib:</code> 命名空间。当平台原生因子与 TA-Lib 存在同名指标时，这一规则可以保持原有策略行为稳定。多输出指标可在 <code>factor</code> 调用中通过 <code>output</code> 选择结果；<code>indicator</code> 会返回全部输出列。0.8.1 因子目录共包含 201 个函数，其中新增 40 个，包括 <code>SUPERTREND</code>、<code>KDJ</code>、<code>HMA</code>、<code>VWAP</code>、<code>DONCHIAN</code> 和 <code>PERCENTRANK</code>。
 
 基本面：
 

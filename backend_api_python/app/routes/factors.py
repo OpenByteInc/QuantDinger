@@ -6,10 +6,9 @@ from app.openapi.blueprint import HumanBlueprint as Blueprint
 from app.services.factors import (
     FactorError,
     TalibFactorError,
-    get_factor,
+    get_factor_metadata,
     is_talib_available,
-    list_factors,
-    list_talib_factors,
+    list_factor_catalog,
 )
 from app.services.factors.research import information_coefficient, quantile_returns, winsorize_zscore
 from app.services.fundamental_data import get_fundamental_data_service
@@ -28,23 +27,22 @@ def factor_catalog():
         factor_type = str(request.args.get("type") or request.args.get("factor_type") or "").strip()
         category = str(request.args.get("category") or "").strip()
         provider = str(request.args.get("provider") or "").strip().lower()
-        data = list_factors(
+        data = list_factor_catalog(
             category=category,
             factor_type=factor_type,
         )
-        talib_data = []
-        if provider in ("", "ta-lib", "talib") and is_talib_available() and factor_type != "fundamental":
-            talib_data = [
-                item for item in list_talib_factors()
-                if not category or item.get("category") == category
-            ]
+        if provider in ("ta-lib", "talib"):
+            data = [item for item in data if item.get("provider") == "ta-lib"]
+        elif provider:
+            data = [item for item in data if item.get("provider") != "ta-lib"]
+        talib_count = sum(1 for item in data if item.get("provider") == "ta-lib")
         return jsonify({
             "code": 1,
             "msg": "success",
-            "data": data + talib_data,
+            "data": data,
             "meta": {
-                "builtInCount": len(data),
-                "talibCount": len(talib_data),
+                "builtInCount": len(data) - talib_count,
+                "talibCount": talib_count,
                 "talibAvailable": is_talib_available(),
             },
         })
@@ -59,8 +57,8 @@ def factor_catalog():
 @login_required
 def factor_detail(factor_id: str):
     try:
-        return jsonify({"code": 1, "msg": "success", "data": get_factor(factor_id).metadata()})
-    except FactorError as exc:
+        return jsonify({"code": 1, "msg": "success", "data": get_factor_metadata(factor_id)})
+    except (FactorError, TalibFactorError) as exc:
         return jsonify({"code": 0, "msg": exc.code, "data": None}), 404
 
 

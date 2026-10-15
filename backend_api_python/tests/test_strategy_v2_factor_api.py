@@ -91,3 +91,36 @@ def handle_data(context, data):
         assert pd.Timestamp(execution["signal_time"]) == frame.index[index].tz_localize("UTC")
         assert pd.Timestamp(execution["time"]) == frame.index[index + 1].tz_localize("UTC")
         assert execution["price"] == pytest.approx(frame["open"].iloc[index + 1])
+
+
+def test_builtin_supertrend_remains_series_and_explicit_talib_is_dataframe():
+    pytest.importorskip("talib")
+    close = np.linspace(100.0, 140.0, 70) + np.sin(np.arange(70)) * 3
+    frame = pd.DataFrame({
+        "open": close,
+        "high": close + 1.0,
+        "low": close - 1.0,
+        "close": close,
+        "volume": np.full(len(close), 1000),
+    }, index=pd.date_range("2026-01-01", periods=len(close), freq="D"))
+    code = '''
+def initialize(context):
+    g.symbol = "Crypto:BTC/USDT@spot"
+    context.set_universe([g.symbol])
+    context.subscribe(frequency="1d")
+    context.set_warmup(30)
+
+def handle_data(context, data):
+    native = indicator("supertrend", g.symbol, period=10, multiplier=3.0, output="direction")
+    library = indicator("talib:SUPERTREND", g.symbol, timeperiod=10, multiplier=3.0)
+    context.log("native=%s talib_outputs=%s" % (native.name, len(library.columns)))
+'''
+
+    result = StrategyV2BacktestRunner(
+        code=code,
+        frames={"Crypto:BTC/USDT@spot": frame},
+        initial_capital=10000,
+    ).run()
+
+    assert result["logs"]
+    assert set(result["logs"]) == {"native=supertrend talib_outputs=2"}

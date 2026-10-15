@@ -483,8 +483,12 @@ Technical indicators and factors:
 ~~~python
 rsi_value = factor("rsi", g.symbol, period=14)
 macd = indicator("MACD", g.symbol, fastperiod=12, slowperiod=26, signalperiod=9)
+supertrend = indicator("talib:SUPERTREND", g.symbol, timeperiod=10, multiplier=3.0)
+trend_direction = factor("talib:SUPERTREND", g.symbol, timeperiod=10, output="trend")
 scores = get_factors(symbols, ["momentum_20", "volatility_20"])
 ~~~
+
+TA-Lib 0.8.1 functions use the explicit <code>talib:</code> namespace in generated code, the factor library, and factor research. This keeps platform-native factors stable when both libraries expose the same name. Multi-output functions expose an <code>output</code> parameter in factor calls; <code>indicator</code> returns all output columns. The 0.8.1 catalog contains 201 functions, including the 40 additions such as <code>SUPERTREND</code>, <code>KDJ</code>, <code>HMA</code>, <code>VWAP</code>, <code>DONCHIAN</code>, and <code>PERCENTRANK</code>.
 
 Fundamentals:
 

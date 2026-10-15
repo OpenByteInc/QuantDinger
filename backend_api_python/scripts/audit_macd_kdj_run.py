@@ -52,7 +52,7 @@ def audit_run(*, user_id: int, run_id: int) -> dict:
         },
     )
     kdj = compute_talib_indicator(
-        "STOCH",
+        "KDJ",
         frame,
         {
             "fastk_period": int(params.get("kdj_period", 9)),
@@ -86,10 +86,10 @@ def audit_run(*, user_id: int, run_id: int) -> dict:
         values = (
             float(macd["macdhist"].iloc[location - 1]),
             float(macd["macdhist"].iloc[location]),
-            float(kdj["slowk"].iloc[location - 1]),
-            float(kdj["slowd"].iloc[location - 1]),
-            float(kdj["slowk"].iloc[location]),
-            float(kdj["slowd"].iloc[location]),
+            float(kdj["k"].iloc[location - 1]),
+            float(kdj["d"].iloc[location - 1]),
+            float(kdj["k"].iloc[location]),
+            float(kdj["d"].iloc[location]),
         )
         if not all(value == value for value in values):
             continue

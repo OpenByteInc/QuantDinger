@@ -8,6 +8,8 @@ from typing import Any, Mapping, Sequence
 
 import pandas as pd
 
+from app.services.factors import compute_talib_indicator, get_factor_metadata
+
 
 class FactorResearchEngine:
     _FUNDAMENTAL_FIELDS = {
@@ -29,11 +31,31 @@ class FactorResearchEngine:
         field = cls._FUNDAMENTAL_FIELDS.get(str(factor_id or "").strip().lower())
         return {field} if field else set()
 
+    @classmethod
+    def warmup_bars(cls, factor_id: str, params: Mapping[str, Any] | None = None) -> int:
+        try:
+            metadata = get_factor_metadata(factor_id)
+        except ValueError:
+            return 0
+        base = int(metadata.get("default_warmup_bars") or 0)
+        defaults = metadata.get("default_params") or {}
+        requested = dict(params or {})
+        default_periods = [
+            int(value) for key, value in defaults.items()
+            if key != "output" and isinstance(value, int) and not isinstance(value, bool)
+        ]
+        requested_periods = [
+            int(value) for key, value in requested.items()
+            if key != "output" and isinstance(value, int) and not isinstance(value, bool)
+        ]
+        return base + max(0, max(requested_periods or [0]) - max(default_periods or [0]))
+
     def run(
         self,
         *,
         frames: Mapping[str, pd.DataFrame],
         factor_id: str,
+        factor_params: Mapping[str, Any] | None = None,
         start_date: Any,
         end_date: Any,
         groups: int = 5,
@@ -61,7 +83,8 @@ class FactorResearchEngine:
         if not research_dates:
             raise ValueError("strategyV2.factorResearchInsufficientObservations")
 
-        factor = self._factor_panel(prepared, factor_name, close)
+        normalized_factor_params = dict(factor_params or {})
+        factor = self._factor_panel(prepared, factor_name, close, normalized_factor_params)
         entry = open_price.shift(-1)
         exit_price = open_price.shift(-(holding_period + 1))
         forward_return = exit_price / entry - 1.0
@@ -236,6 +259,7 @@ class FactorResearchEngine:
         return {
             "methodologyVersion": 2,
             "factorId": factor_name,
+            "factorParams": normalized_factor_params,
             "rankIc": ic_mean,
             "icir": icir,
             "icPositiveRate": float((ic_series > 0).mean()),
@@ -260,6 +284,7 @@ class FactorResearchEngine:
                 membership,
                 research_dates,
                 factor_name,
+                normalized_factor_params,
             ),
             "stability": {
                 "firstHalfIc": float(first_half.mean()) if not first_half.empty else 0.0,
@@ -313,7 +338,22 @@ class FactorResearchEngine:
         frames: Mapping[str, pd.DataFrame],
         factor_id: str,
         close: pd.DataFrame,
+        params: Mapping[str, Any] | None = None,
     ) -> pd.DataFrame:
+        if factor_id.startswith("talib:"):
+            normalized = dict(params or {})
+            output = str(normalized.pop("output", "") or "")
+            columns = {}
+            for symbol, frame in frames.items():
+                result = compute_talib_indicator(factor_id, frame, normalized)
+                if isinstance(result, pd.DataFrame):
+                    selected = output or str(result.columns[0])
+                    if selected not in result.columns:
+                        raise ValueError("factor.outputNotFound")
+                    columns[symbol] = result[selected]
+                else:
+                    columns[symbol] = result
+            return pd.DataFrame(columns).reindex(index=close.index, columns=close.columns)
         if factor_id.startswith("momentum"):
             lookback = self._suffix_number(factor_id, 20)
             return close.pct_change(lookback, fill_method=None)
@@ -443,11 +483,17 @@ class FactorResearchEngine:
         membership: pd.DataFrame,
         research_dates: Sequence[pd.Timestamp],
         selected_factor: str,
+        selected_params: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         names = list(dict.fromkeys((selected_factor, *self._CORRELATION_FACTORS)))
         panels: dict[str, pd.DataFrame] = {}
         for name in names:
-            panel = self._factor_panel(frames, name, close)
+            panel = self._factor_panel(
+                frames,
+                name,
+                close,
+                selected_params if name == selected_factor else None,
+            )
             visible = panel.reindex(index=research_dates)
             if int(visible.notna().sum().sum()) >= 3:
                 panels[name] = panel

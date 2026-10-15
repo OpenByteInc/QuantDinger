@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.services.ai_generation_contracts import SCRIPT_STRATEGY_SYSTEM_PROMPT, STRATEGY_INSTRUMENT_IDENTITY_CONTRACT
-from app.services.factors.registry import list_factors
+from app.services.factors import list_factor_catalog
 from app.services.fundamental_data import FUNDAMENTAL_FIELDS
 from app.services.live_trading.capabilities import CRYPTO_VENUE_CAPABILITIES
 from app.services.strategy_ai_capabilities import strategy_ai_capability_catalog
@@ -260,7 +260,7 @@ def get_strategy_authoring_contract() -> dict[str, Any]:
             ),
         },
         "capability_packs": strategy_ai_capability_catalog(),
-        "technical_factor_catalog": list_factors(factor_type="technical"),
+        "technical_factor_catalog": list_factor_catalog(factor_type="technical"),
         "system_contract": SCRIPT_STRATEGY_SYSTEM_PROMPT,
         "starter_template": _STARTER_TEMPLATE,
         "multi_timeframe_template": _MULTI_TIMEFRAME_TEMPLATE,

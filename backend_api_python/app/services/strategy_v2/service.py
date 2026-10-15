@@ -73,6 +73,7 @@ class StrategyV2BacktestService:
         start_date: datetime,
         end_date: datetime,
         factor_id: str,
+        factor_params: dict[str, Any] | None = None,
         groups: int = 5,
         holding_period: int = 5,
         commission: float = 0.0005,
@@ -96,7 +97,11 @@ class StrategyV2BacktestService:
                 f"strategyV2.factorResearchUniverseTooSmall:{minimum_symbols}"
             )
         frequency = manifest.driving_frequency
-        warmup_bars = max(40, manifest.warmup_bars)
+        warmup_bars = max(
+            40,
+            manifest.warmup_bars,
+            FactorResearchEngine.warmup_bars(factor_id, factor_params),
+        )
         fetch_start = start_date - timedelta(days=_warmup_calendar_days(frequency, warmup_bars, candidates))
         _enforce_backtest_range(
             candidates=candidates,
@@ -120,6 +125,7 @@ class StrategyV2BacktestService:
         result = FactorResearchEngine().run(
             frames=frames,
             factor_id=factor_id,
+            factor_params=factor_params,
             start_date=start_date,
             end_date=end_date,
             groups=groups,

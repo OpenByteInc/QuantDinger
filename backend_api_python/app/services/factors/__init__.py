@@ -16,6 +16,11 @@ from app.services.factors.talib_adapter import (
     is_talib_available,
     list_talib_factors,
 )
+from app.services.factors.catalog import (
+    compute_catalog_factor,
+    get_factor_metadata,
+    list_factor_catalog,
+)
 
 __all__ = [
     "FactorDefinition",
@@ -30,4 +35,7 @@ __all__ = [
     "compute_talib_indicator",
     "is_talib_available",
     "list_talib_factors",
+    "compute_catalog_factor",
+    "get_factor_metadata",
+    "list_factor_catalog",
 ]

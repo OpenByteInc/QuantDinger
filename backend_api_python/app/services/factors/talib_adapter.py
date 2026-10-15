@@ -9,8 +9,16 @@ import numpy as np
 import pandas as pd
 
 
-MINIMUM_FUNCTION_COUNT = 129
+MINIMUM_FUNCTION_COUNT = 201
 
+TA_LIB_081_FUNCTIONS = frozenset({
+    "AC", "ADR", "AO", "CMF", "CMOU", "COPPOCK", "CUMSUM", "CVI",
+    "DONCHIAN", "DPO", "EFI", "ER", "ERI", "FOSC", "FRACTAL", "HA",
+    "HMA", "KC", "KDJ", "MARKETFI", "MASSI", "NVI", "PERCENTILE",
+    "PERCENTRANK", "PVI", "PVO", "PVT", "QSTICK", "RMA", "RVI", "RVOL",
+    "SMI", "SUPERTREND", "TSI", "VHF", "VORTEX", "VWAP", "VWMA", "WAD",
+    "ZLEMA",
+})
 
 class TalibFactorError(ValueError):
     def __init__(self, code: str):
@@ -41,22 +49,24 @@ def list_talib_factors() -> list[dict[str, Any]]:
         required_fields = tuple(sorted(_flatten_input_names(info.get("input_names") or {})))
         parameters = dict(info.get("parameters") or {})
         outputs = list(info.get("output_names") or [])
+        if len(outputs) > 1:
+            parameters["output"] = outputs[0]
         output.append({
             "factor_id": f"talib:{name.upper()}",
             "library_id": name.upper(),
             "version": str(getattr(talib, "__version__", "")),
+            "display_name": str(info.get("display_name") or name),
             "name_i18n_key": f"factor.talib.{name.lower()}.name",
             "description_i18n_key": f"factor.talib.{name.lower()}.description",
             "category": _category(group_by_name.get(name.upper(), "")),
             "factor_type": "technical",
             "provider": "ta-lib",
+            "introduced_in": "0.8.1" if name.upper() in TA_LIB_081_FUNCTIONS else "",
             "required_fields": list(required_fields),
             "default_params": parameters,
-            "parameter_schema": {
-                key: {"type": _parameter_type(value), "default": value}
-                for key, value in parameters.items()
-            },
+            "parameter_schema": _parameter_schema(parameters, outputs),
             "outputs": outputs,
+            "direction_hint": "neutral",
             "supported_contexts": ["cta", "portfolio"],
             "default_warmup_bars": int(getattr(function, "lookback", 0) or 0),
         })
@@ -64,9 +74,13 @@ def list_talib_factors() -> list[dict[str, Any]]:
 
 
 def assert_talib_catalog_ready() -> int:
-    count = len(list_talib_factors())
-    if count < MINIMUM_FUNCTION_COUNT:
-        raise TalibFactorError(f"factor.talibCatalogIncomplete:{count}")
+    catalog = list_talib_factors()
+    count = len(catalog)
+    available = {item["library_id"] for item in catalog}
+    missing = sorted(TA_LIB_081_FUNCTIONS - available)
+    if count < MINIMUM_FUNCTION_COUNT or missing:
+        suffix = f":{','.join(missing)}" if missing else ""
+        raise TalibFactorError(f"factor.talibCatalogIncomplete:{count}{suffix}")
     return count
 
 
@@ -88,10 +102,7 @@ def compute_talib_indicator(
         raise TalibFactorError(f"factor.missingFields:{','.join(missing)}")
     clean = frame.copy()
     clean.columns = [str(column).strip().lower() for column in clean.columns]
-    normalized = dict(params or {})
-    if library_id == "SMA" and "period" in normalized:
-        period = normalized.pop("period")
-        normalized.setdefault("timeperiod", period)
+    normalized = _normalized_parameters(function, params)
     try:
         result = function(clean, **normalized)
     except Exception as exc:
@@ -126,9 +137,11 @@ def compute_talib_factor(
     *,
     output: str = "",
 ) -> float:
-    result = compute_talib_indicator(name, frame, params)
+    normalized = dict(params or {})
+    selected_from_params = normalized.pop("output", "")
+    result = compute_talib_indicator(name, frame, normalized)
     if isinstance(result, pd.DataFrame):
-        selected = str(output or "").strip()
+        selected = str(output or selected_from_params or "").strip()
         if not selected:
             selected = str(result.columns[0])
         if selected not in result.columns:
@@ -175,6 +188,38 @@ def _parameter_type(value: Any) -> str:
     if isinstance(value, float):
         return "number"
     return "string"
+
+
+def _parameter_schema(parameters: Mapping[str, Any], outputs: list[str]) -> dict[str, dict[str, Any]]:
+    schema = {}
+    for key, value in parameters.items():
+        if key == "output":
+            schema[key] = {"type": "enum", "default": value, "options": list(outputs)}
+            continue
+        item = {"type": _parameter_type(value), "default": value}
+        if item["type"] == "integer":
+            item.update({"minimum": 1, "maximum": 5000, "step": 1})
+        elif item["type"] == "number":
+            item.update({"step": 0.1})
+        schema[key] = item
+    return schema
+
+
+def _normalized_parameters(function: Any, params: Mapping[str, Any] | None) -> dict[str, Any]:
+    supported = set((function.info.get("parameters") or {}).keys())
+    normalized = dict(params or {})
+    normalized.pop("output", None)
+    aliases = {
+        "period": "timeperiod",
+        "fast_period": "fastperiod",
+        "slow_period": "slowperiod",
+        "signal_period": "signalperiod",
+    }
+    for source, target in aliases.items():
+        if source in normalized and target in supported:
+            value = normalized.pop(source)
+            normalized.setdefault(target, value)
+    return normalized
 
 
 def _category(group: str) -> str:

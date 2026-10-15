@@ -2104,8 +2104,11 @@ paths:
                 $ref: '#/components/schemas/HumanSuccessEnvelope'
       tags:
       - Strategy
+      summary: Run factor research with built-in or TA-Lib 0.8.1 factors
+      description: 'Accepts factorId and optional factorParams. TA-Lib factors use
+        the talib: namespace and support explicit output selection for multi-output
+        functions.'
       operationId: postApiBacktestFactorResearch
-      summary: Post Api Backtest Factor Research
       x-visibility: internal
   /api/backtest/factor-research/history:
     get:

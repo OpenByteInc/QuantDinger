@@ -78,6 +78,37 @@ def test_factor_research_preserves_warmup_before_selected_start():
     assert pd.Timestamp(result["icSeries"][0]["time"]) == index[25]
 
 
+def test_factor_research_builds_talib_081_panel_with_selected_parameters():
+    pytest.importorskip("talib")
+    index = pd.date_range("2025-01-01", periods=80, freq="B")
+    frames = {}
+    for offset, symbol in enumerate(["A", "B", "C"]):
+        close = pd.Series(
+            [100 + offset * 5 + day * 0.2 + ((day + offset * 3) % 11) for day in range(len(index))],
+            index=index,
+            dtype=float,
+        )
+        frames[symbol] = pd.DataFrame({
+            "open": close - 0.2,
+            "high": close + 1.0,
+            "low": close - 1.0,
+            "close": close,
+            "volume": 1000 + close * (offset + 1),
+        }, index=index)
+    close_panel = FactorResearchEngine._panel(frames, "close")
+
+    panel = FactorResearchEngine()._factor_panel(
+        frames,
+        "talib:percentrank",
+        close_panel,
+        {"timeperiod": 15},
+    )
+
+    assert panel.shape == close_panel.shape
+    assert panel.iloc[-1].notna().all()
+    assert FactorResearchEngine.warmup_bars("talib:PERCENTRANK", {"timeperiod": 150}) >= 150
+
+
 def test_factor_research_applies_membership_intervals_on_each_research_date():
     index = pd.date_range("2025-01-01", periods=70, freq="B")
     symbols = ["A", "B", "C", "D", "E", "F"]

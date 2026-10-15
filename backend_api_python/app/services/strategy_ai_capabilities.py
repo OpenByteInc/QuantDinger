@@ -13,7 +13,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Iterable
 
-from app.services.factors.registry import list_factors
+from app.services.factors import list_factor_catalog
 from app.services.strategy_direction import DIRECTION_MODES, normalize_direction_mode
 from app.services.strategy_v2.contract import StrategyV2ContractError
 
@@ -445,7 +445,16 @@ _LEGACY_FACTOR_ALIASES = {
 }
 _TECHNICAL_FACTOR_DEFINITIONS = {
     str(item["factor_id"]): item
-    for item in list_factors(factor_type="technical")
+    for item in list_factor_catalog(factor_type="technical")
+}
+_TECHNICAL_FACTOR_LOOKUP = {
+    factor_id.lower(): factor_id
+    for factor_id in _TECHNICAL_FACTOR_DEFINITIONS
+}
+_BUILTIN_FACTOR_IDS = {
+    factor_id.lower()
+    for factor_id, definition in _TECHNICAL_FACTOR_DEFINITIONS.items()
+    if definition.get("provider") != "ta-lib"
 }
 _PERSISTENCE_TERMS = (
     "跨重启",
@@ -478,21 +487,30 @@ def _contains_any(text: str, terms: Iterable[str]) -> bool:
 
 def _requested_factor_ids(text: str) -> tuple[str, ...]:
     lowered = str(text or "").lower()
-    selected = {
-        factor_id
-        for factor_id in _TECHNICAL_FACTOR_DEFINITIONS
+    selected = set()
+    for factor_id, definition in _TECHNICAL_FACTOR_DEFINITIONS.items():
+        normalized_id = factor_id.lower()
+        aliases = {
+            normalized_id,
+            normalized_id.replace("_", " "),
+            normalized_id.replace("_", "-"),
+        }
+        library_id = str(definition.get("library_id") or "").lower()
+        if (
+            library_id
+            and definition.get("introduced_in")
+            and library_id not in _BUILTIN_FACTOR_IDS
+            and len(library_id) >= 3
+        ):
+            aliases.update({library_id, library_id.replace("_", " ")})
         if any(
             re.search(
                 rf"(?<![a-z0-9_]){re.escape(alias)}(?![a-z0-9_])",
                 lowered,
             )
-            for alias in {
-                factor_id,
-                factor_id.replace("_", " "),
-                factor_id.replace("_", "-"),
-            }
-        )
-    }
+            for alias in aliases
+        ):
+            selected.add(factor_id)
     selected.update(
         factor_id
         for alias, factor_id in _FACTOR_ALIASES.items()
@@ -532,9 +550,10 @@ def _source_factor_ids(source: str) -> tuple[str, ...]:
         for value_node in values:
             if not isinstance(value_node, ast.Constant) or not isinstance(value_node.value, str):
                 continue
-            factor_id = value_node.value.strip().lower().replace("-", "_").replace(" ", "_")
-            factor_id = _LEGACY_FACTOR_ALIASES.get(factor_id, factor_id)
-            if factor_id in _TECHNICAL_FACTOR_DEFINITIONS:
+            lookup_id = value_node.value.strip().lower().replace("-", "_").replace(" ", "_")
+            lookup_id = _LEGACY_FACTOR_ALIASES.get(lookup_id, lookup_id)
+            factor_id = _TECHNICAL_FACTOR_LOOKUP.get(lookup_id)
+            if factor_id:
                 selected.add(factor_id)
     return tuple(sorted(selected))
 
@@ -1337,7 +1356,8 @@ def validate_strategy_ai_semantics(
         elif call_name == "get_factors":
             factor_node = node.args[1] if len(node.args) > 1 else _keyword(node, "names")
         for value in _literal_text_values(factor_node, static_strings):
-            factor_id = value.strip().replace("-", "_").replace(" ", "_")
+            lookup_id = value.strip().replace("-", "_").replace(" ", "_")
+            factor_id = _TECHNICAL_FACTOR_LOOKUP.get(lookup_id.lower(), lookup_id)
             used_factor_ids.add(factor_id)
             if factor_id in intent.required_factor_ids and call_name in {"indicator", "factor"}:
                 requested_factor_calls.append((factor_id, node))

@@ -14,6 +14,7 @@ import pandas as pd
 
 from app.services.factors import (
     FactorError,
+    TalibFactorError,
     compute_factor,
     compute_talib_factor,
     compute_talib_indicator,
@@ -414,11 +415,27 @@ class StrategyRuntimeContext:
         )
         frame = self.portal.visible_frame(target, frequency=frequency)
         library_id = str(name or "").strip()
+        if library_id.lower().startswith("talib:"):
+            return compute_talib_indicator(library_id, frame, params)
+        try:
+            get_factor(library_id.lower())
+        except FactorError as exc:
+            if exc.code != "factor.notFound":
+                raise
+        else:
+            return self._compute_builtin_indicator(
+                library_id,
+                target,
+                frame,
+                params,
+                frequency=frequency,
+            )
         if is_talib_available():
             try:
                 return compute_talib_indicator(library_id, frame, params)
-            except Exception:
-                pass
+            except TalibFactorError as exc:
+                if exc.code != "factor.notFound":
+                    raise
         return self._compute_builtin_indicator(
             library_id,
             target,

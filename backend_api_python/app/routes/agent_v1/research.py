@@ -3,7 +3,13 @@ from __future__ import annotations
 
 from flask import request
 
-from app.services.factors import FactorError, get_factor, is_talib_available, list_factors
+from app.services.factors import (
+    FactorError,
+    TalibFactorError,
+    get_factor_metadata,
+    is_talib_available,
+    list_factor_catalog,
+)
 from app.services.market.watchlist import (
     add_watchlist_item,
     list_watchlist,
@@ -55,7 +61,7 @@ def list_research_universe_members(universe_id: int):
 @agent_v1_bp.route("/research/factors", methods=["GET"])
 @agent_required(SCOPE_R)
 def list_research_factors():
-    rows = list_factors(
+    rows = list_factor_catalog(
         category=(request.args.get("category") or "").strip(),
         factor_type=(request.args.get("factor_type") or "").strip(),
     )
@@ -66,8 +72,8 @@ def list_research_factors():
 @agent_required(SCOPE_R)
 def get_research_factor(factor_id: str):
     try:
-        return envelope(get_factor(factor_id).metadata())
-    except FactorError as exc:
+        return envelope(get_factor_metadata(factor_id))
+    except (FactorError, TalibFactorError) as exc:
         return error(404, exc.code, http=404)
 
 

@@ -231,12 +231,14 @@ def handle_data(context, data):
     target_pct = float(context.params.get("target_pct", 0.95))
     required = max(entry_period, exit_period, atr_period) + 2
     bars = get_history(required, "1d", ["high", "low", "close"], g.symbol)
-    atr = indicator("ATR", g.symbol, timeperiod=atr_period)
-    if len(bars) < required - 1 or len(atr) < 2:
+    entry_channel = indicator("talib:DONCHIAN", g.symbol, timeperiod=entry_period)
+    exit_channel = indicator("talib:DONCHIAN", g.symbol, timeperiod=exit_period)
+    atr = indicator("talib:ATR", g.symbol, timeperiod=atr_period)
+    if len(bars) < required - 1 or len(entry_channel) < 2 or len(exit_channel) < 2 or len(atr) < 2:
         return
     close = float(bars["close"].iloc[-1])
-    entry_high = float(bars["high"].iloc[-entry_period - 1:-1].max())
-    exit_low = float(bars["low"].iloc[-exit_period - 1:-1].min())
+    entry_high = float(entry_channel["upperband"].iloc[-2])
+    exit_low = float(exit_channel["lowerband"].iloc[-2])
     atr_value = float(atr.iloc[-1])
     position = get_position(g.symbol)
     is_long = float(position.amount or 0.0) > 0
@@ -247,7 +249,7 @@ def handle_data(context, data):
         stop_price = entry_price - atr_stop_mult * atr_value
         if close < exit_low or close < stop_price:
             order_target_percent(g.symbol, 0.0, reason="turtle_exit")
-$turtle$, '{"params":[{"name":"entry_period","type":"integer","default":20,"min":5,"max":120,"step":1,"labelKey":"strategyV2.params.entryPeriod"},{"name":"exit_period","type":"integer","default":10,"min":2,"max":60,"step":1,"labelKey":"strategyV2.params.exitPeriod"},{"name":"atr_period","type":"integer","default":14,"min":2,"max":100,"step":1,"labelKey":"strategyV2.params.atrPeriod"},{"name":"atr_stop_mult","type":"number","default":2,"min":0.5,"max":10,"step":0.25,"labelKey":"strategyV2.params.atrStopMult"},{"name":"target_pct","type":"percent","default":0.95,"min":0.05,"max":1,"step":0.05,"labelKey":"strategyV2.params.targetPosition"}]}'::jsonb, '["strategy-v2","cta","breakout","turtle","us-stock"]'::jsonb, 'flag', 'cyan', 50, TRUE, '{"source":"system_seed","version":11,"apiVersion":2}'::jsonb, NOW()),
+$turtle$, '{"params":[{"name":"entry_period","type":"integer","default":20,"min":5,"max":120,"step":1,"labelKey":"strategyV2.params.entryPeriod"},{"name":"exit_period","type":"integer","default":10,"min":2,"max":60,"step":1,"labelKey":"strategyV2.params.exitPeriod"},{"name":"atr_period","type":"integer","default":14,"min":2,"max":100,"step":1,"labelKey":"strategyV2.params.atrPeriod"},{"name":"atr_stop_mult","type":"number","default":2,"min":0.5,"max":10,"step":0.25,"labelKey":"strategyV2.params.atrStopMult"},{"name":"target_pct","type":"percent","default":0.95,"min":0.05,"max":1,"step":0.05,"labelKey":"strategyV2.params.targetPosition"}]}'::jsonb, '["strategy-v2","cta","breakout","turtle","ta-lib","donchian","atr","us-stock"]'::jsonb, 'flag', 'cyan', 50, TRUE, '{"source":"system_seed","version":14,"apiVersion":2,"taLibVersion":"0.8.1"}'::jsonb, NOW()),
 
 ('strategy_v2_indicator_resonance', 'script', 'Indicator Resonance', 'A parameterized QQQ strategy requiring MACD, RSI, and ADX confirmation.', $resonance$"""
 Indicator Resonance
@@ -283,9 +285,9 @@ def handle_data(context, data):
     adx_period = int(context.params.get("adx_period", 14))
     adx_min = float(context.params.get("adx_min", 20))
     target_pct = float(context.params.get("target_pct", 0.95))
-    macd = indicator("MACD", g.symbol, fastperiod=fast_period, slowperiod=slow_period, signalperiod=signal_period)
-    rsi = indicator("RSI", g.symbol, timeperiod=rsi_period)
-    adx = indicator("ADX", g.symbol, timeperiod=adx_period)
+    macd = indicator("talib:MACD", g.symbol, fastperiod=fast_period, slowperiod=slow_period, signalperiod=signal_period)
+    rsi = indicator("talib:RSI", g.symbol, timeperiod=rsi_period)
+    adx = indicator("talib:ADX", g.symbol, timeperiod=adx_period)
     if len(macd) < 2 or len(rsi) < 2 or len(adx) < 2:
         return
     histogram = float(macd["macdhist"].iloc[-1])
@@ -300,7 +302,7 @@ def handle_data(context, data):
         order_target_percent(g.symbol, target_pct, reason="indicator_resonance_entry")
     elif not bullish and is_long:
         order_target_percent(g.symbol, 0.0, reason="indicator_resonance_exit")
-$resonance$, '{"params":[{"name":"fast_period","type":"integer","default":12,"min":2,"max":100,"step":1,"labelKey":"trading-assistant.templateParam.fast_period.label"},{"name":"slow_period","type":"integer","default":26,"min":3,"max":200,"step":1,"labelKey":"trading-assistant.templateParam.slow_period.label"},{"name":"signal_period","type":"integer","default":9,"min":2,"max":100,"step":1,"labelKey":"strategyV2.params.signalPeriod"},{"name":"rsi_period","type":"integer","default":14,"min":2,"max":100,"step":1,"labelKey":"strategyV2.params.rsiPeriod"},{"name":"rsi_min","type":"number","default":50,"min":0,"max":100,"step":1,"labelKey":"strategyV2.params.rsiMin"},{"name":"rsi_max","type":"number","default":75,"min":0,"max":100,"step":1,"labelKey":"strategyV2.params.rsiMax"},{"name":"adx_period","type":"integer","default":14,"min":2,"max":100,"step":1,"labelKey":"strategyV2.params.adxPeriod"},{"name":"adx_min","type":"number","default":20,"min":0,"max":100,"step":1,"labelKey":"strategyV2.params.adxMin"},{"name":"target_pct","type":"percent","default":0.95,"min":0.05,"max":1,"step":0.05,"labelKey":"strategyV2.params.targetPosition"}]}'::jsonb, '["strategy-v2","cta","ta-lib","resonance","us-stock"]'::jsonb, 'fund', 'purple', 60, TRUE, '{"source":"system_seed","version":11,"apiVersion":2}'::jsonb, NOW()),
+$resonance$, '{"params":[{"name":"fast_period","type":"integer","default":12,"min":2,"max":100,"step":1,"labelKey":"trading-assistant.templateParam.fast_period.label"},{"name":"slow_period","type":"integer","default":26,"min":3,"max":200,"step":1,"labelKey":"trading-assistant.templateParam.slow_period.label"},{"name":"signal_period","type":"integer","default":9,"min":2,"max":100,"step":1,"labelKey":"strategyV2.params.signalPeriod"},{"name":"rsi_period","type":"integer","default":14,"min":2,"max":100,"step":1,"labelKey":"strategyV2.params.rsiPeriod"},{"name":"rsi_min","type":"number","default":50,"min":0,"max":100,"step":1,"labelKey":"strategyV2.params.rsiMin"},{"name":"rsi_max","type":"number","default":75,"min":0,"max":100,"step":1,"labelKey":"strategyV2.params.rsiMax"},{"name":"adx_period","type":"integer","default":14,"min":2,"max":100,"step":1,"labelKey":"strategyV2.params.adxPeriod"},{"name":"adx_min","type":"number","default":20,"min":0,"max":100,"step":1,"labelKey":"strategyV2.params.adxMin"},{"name":"target_pct","type":"percent","default":0.95,"min":0.05,"max":1,"step":0.05,"labelKey":"strategyV2.params.targetPosition"}]}'::jsonb, '["strategy-v2","cta","ta-lib","resonance","us-stock"]'::jsonb, 'fund', 'purple', 60, TRUE, '{"source":"system_seed","version":14,"apiVersion":2,"taLibVersion":"0.8.1"}'::jsonb, NOW()),
 
 ('strategy_v2_macd_kdj', 'script', 'MACD and KDJ Confirmation', 'A long-only BTC perpetual strategy with explicit protection that adapts to one-way and hedge-mode accounts.', $macdkdj$"""
 MACD and KDJ Confirmation
@@ -342,16 +344,22 @@ def handle_data(context, data):
     stop_loss_pct = float(context.params.get("stop_loss_pct", 0.02))
     trailing_activation_pct = float(context.params.get("trailing_activation_pct", 0.05))
     trailing_stop_pct = float(context.params.get("trailing_stop_pct", 0.01))
-    macd = indicator("MACD", g.symbol, fastperiod=fast_period, slowperiod=slow_period, signalperiod=signal_period)
-    kdj = indicator("STOCH", g.symbol, fastk_period=kdj_period, slowk_period=kdj_smooth_k, slowd_period=kdj_smooth_d)
+    macd = indicator("talib:MACD", g.symbol, fastperiod=fast_period, slowperiod=slow_period, signalperiod=signal_period)
+    kdj = indicator(
+        "talib:KDJ",
+        g.symbol,
+        fastk_period=kdj_period,
+        slowk_period=kdj_smooth_k,
+        slowd_period=kdj_smooth_d,
+    )
     if len(macd) < 2 or len(kdj) < 2:
         return
     previous_histogram = float(macd["macdhist"].iloc[-2])
     histogram = float(macd["macdhist"].iloc[-1])
-    previous_k = float(kdj["slowk"].iloc[-2])
-    previous_d = float(kdj["slowd"].iloc[-2])
-    k_value = float(kdj["slowk"].iloc[-1])
-    d_value = float(kdj["slowd"].iloc[-1])
+    previous_k = float(kdj["k"].iloc[-2])
+    previous_d = float(kdj["d"].iloc[-2])
+    k_value = float(kdj["k"].iloc[-1])
+    d_value = float(kdj["d"].iloc[-1])
     if not all(value == value for value in (previous_histogram, histogram, previous_k, previous_d, k_value, d_value)):
         return
     macd_cross_up = previous_histogram <= 0 < histogram
@@ -372,24 +380,19 @@ def handle_data(context, data):
         )
     elif exit_signal and is_long:
         order_target_percent(g.symbol, 0.0, position_side="long", reason="macd_kdj_exit")
-$macdkdj$, '{"params":[{"name":"fast_period","type":"integer","default":12,"min":2,"max":100,"step":1,"labelKey":"trading-assistant.templateParam.fast_period.label"},{"name":"slow_period","type":"integer","default":26,"min":3,"max":200,"step":1,"labelKey":"trading-assistant.templateParam.slow_period.label"},{"name":"signal_period","type":"integer","default":9,"min":2,"max":100,"step":1,"labelKey":"strategyV2.params.signalPeriod"},{"name":"kdj_period","type":"integer","default":9,"min":2,"max":100,"step":1,"labelKey":"strategyV2.params.kdjPeriod"},{"name":"kdj_smooth_k","type":"integer","default":3,"min":1,"max":20,"step":1,"labelKey":"strategyV2.params.kdjSmoothK"},{"name":"kdj_smooth_d","type":"integer","default":3,"min":1,"max":20,"step":1,"labelKey":"strategyV2.params.kdjSmoothD"},{"name":"overbought","type":"number","default":85,"min":50,"max":100,"step":1,"labelKey":"trading-assistant.templateParam.overbought.label"},{"name":"target_pct","type":"number","default":0.95,"min":0.1,"max":5,"step":0.05,"labelKey":"strategyV2.params.targetExposure"},{"name":"stop_loss_pct","type":"percent","default":0.02,"min":0.005,"max":0.2,"step":0.005,"labelKey":"strategyV2.params.stopLoss"},{"name":"trailing_activation_pct","type":"percent","default":0.05,"min":0.005,"max":0.5,"step":0.005,"labelKey":"strategyV2.params.trailingActivation"},{"name":"trailing_stop_pct","type":"percent","default":0.01,"min":0.005,"max":0.2,"step":0.005,"labelKey":"strategyV2.params.trailingDrawdown"}]}'::jsonb, '["strategy-v2","cta","ta-lib","macd","kdj","crypto","swap","risk","account-mode-adaptive"]'::jsonb, 'bar-chart', 'gold', 70, TRUE, '{"source":"system_seed","version":12,"apiVersion":2,"positionModeCompatibility":["one_way","hedge"]}'::jsonb, NOW()),
+$macdkdj$, '{"params":[{"name":"fast_period","type":"integer","default":12,"min":2,"max":100,"step":1,"labelKey":"trading-assistant.templateParam.fast_period.label"},{"name":"slow_period","type":"integer","default":26,"min":3,"max":200,"step":1,"labelKey":"trading-assistant.templateParam.slow_period.label"},{"name":"signal_period","type":"integer","default":9,"min":2,"max":100,"step":1,"labelKey":"strategyV2.params.signalPeriod"},{"name":"kdj_period","type":"integer","default":9,"min":2,"max":100,"step":1,"labelKey":"strategyV2.params.kdjPeriod"},{"name":"kdj_smooth_k","type":"integer","default":3,"min":1,"max":20,"step":1,"labelKey":"strategyV2.params.kdjSmoothK"},{"name":"kdj_smooth_d","type":"integer","default":3,"min":1,"max":20,"step":1,"labelKey":"strategyV2.params.kdjSmoothD"},{"name":"overbought","type":"number","default":85,"min":50,"max":100,"step":1,"labelKey":"trading-assistant.templateParam.overbought.label"},{"name":"target_pct","type":"number","default":0.95,"min":0.1,"max":5,"step":0.05,"labelKey":"strategyV2.params.targetExposure"},{"name":"stop_loss_pct","type":"percent","default":0.02,"min":0.005,"max":0.2,"step":0.005,"labelKey":"strategyV2.params.stopLoss"},{"name":"trailing_activation_pct","type":"percent","default":0.05,"min":0.005,"max":0.5,"step":0.005,"labelKey":"strategyV2.params.trailingActivation"},{"name":"trailing_stop_pct","type":"percent","default":0.01,"min":0.005,"max":0.2,"step":0.005,"labelKey":"strategyV2.params.trailingDrawdown"}]}'::jsonb, '["strategy-v2","cta","ta-lib","macd","kdj","crypto","swap","risk","account-mode-adaptive"]'::jsonb, 'bar-chart', 'gold', 70, TRUE, '{"source":"system_seed","version":14,"apiVersion":2,"taLibVersion":"0.8.1","positionModeCompatibility":["one_way","hedge"]}'::jsonb, NOW()),
 
 ('strategy_v2_supertrend', 'script', 'SuperTrend', 'A configurable SPY SuperTrend strategy using ATR trailing bands.', $supertrend$"""
 SuperTrend
-ATR trailing bands define a stateful SPY trend regime.
+TA-Lib 0.8.1 SuperTrend defines the SPY trend regime.
 """
 
 # @param atr_period int 10 range=2:100:1
 # @param atr_multiplier float 3 range=0.5:10:0.25
 # @param target_pct float 0.95 range=0.05:1:0.05
 
-PERSIST_RUNTIME_STATE = True
-
 def initialize(context):
     g.symbol = "USStock:SPY"
-    g.trend = 0
-    g.upper_band = None
-    g.lower_band = None
     context.set_universe([g.symbol])
     context.set_benchmark(g.symbol)
     context.subscribe(frequency="1d")
@@ -401,33 +404,24 @@ def handle_data(context, data):
     atr_period = int(context.params.get("atr_period", 10))
     multiplier = float(context.params.get("atr_multiplier", 3.0))
     target_pct = float(context.params.get("target_pct", 0.95))
-    bars = get_history(atr_period + 3, "1d", ["high", "low", "close"], g.symbol)
-    atr = indicator("ATR", g.symbol, timeperiod=atr_period)
-    if len(bars) < atr_period + 2 or len(atr) < 2:
+    supertrend = indicator(
+        "talib:SUPERTREND",
+        g.symbol,
+        timeperiod=atr_period,
+        multiplier=multiplier,
+    )
+    if len(supertrend) < 2:
         return
-    high = float(bars["high"].iloc[-1])
-    low = float(bars["low"].iloc[-1])
-    close = float(bars["close"].iloc[-1])
-    previous_close = float(bars["close"].iloc[-2])
-    atr_value = float(atr.iloc[-1])
-    middle = (high + low) / 2.0
-    basic_upper = middle + multiplier * atr_value
-    basic_lower = middle - multiplier * atr_value
-    previous_upper = float(g.upper_band) if g.upper_band is not None else basic_upper
-    previous_lower = float(g.lower_band) if g.lower_band is not None else basic_lower
-    g.upper_band = basic_upper if basic_upper < previous_upper or previous_close > previous_upper else previous_upper
-    g.lower_band = basic_lower if basic_lower > previous_lower or previous_close < previous_lower else previous_lower
-    if close > previous_upper:
-        g.trend = 1
-    elif close < previous_lower:
-        g.trend = -1
+    trend = float(supertrend["trend"].iloc[-1])
+    if trend != trend:
+        return
     position = get_position(g.symbol)
     is_long = float(position.amount or 0.0) > 0
-    if g.trend > 0 and not is_long:
+    if trend > 0 and not is_long:
         order_target_percent(g.symbol, target_pct, reason="supertrend_entry")
-    elif g.trend < 0 and is_long:
+    elif trend < 0 and is_long:
         order_target_percent(g.symbol, 0.0, reason="supertrend_exit")
-$supertrend$, '{"params":[{"name":"atr_period","type":"integer","default":10,"min":2,"max":100,"step":1,"labelKey":"strategyV2.params.atrPeriod"},{"name":"atr_multiplier","type":"number","default":3,"min":0.5,"max":10,"step":0.25,"labelKey":"strategyV2.params.atrMultiplier"},{"name":"target_pct","type":"percent","default":0.95,"min":0.05,"max":1,"step":0.05,"labelKey":"strategyV2.params.targetPosition"}]}'::jsonb, '["strategy-v2","cta","supertrend","atr","us-stock"]'::jsonb, 'stock', 'lime', 80, TRUE, '{"source":"system_seed","version":11,"apiVersion":2}'::jsonb, NOW()),
+$supertrend$, '{"params":[{"name":"atr_period","type":"integer","default":10,"min":2,"max":100,"step":1,"labelKey":"strategyV2.params.atrPeriod"},{"name":"atr_multiplier","type":"number","default":3,"min":0.5,"max":10,"step":0.25,"labelKey":"strategyV2.params.atrMultiplier"},{"name":"target_pct","type":"percent","default":0.95,"min":0.05,"max":1,"step":0.05,"labelKey":"strategyV2.params.targetPosition"}]}'::jsonb, '["strategy-v2","cta","ta-lib","supertrend","atr","us-stock"]'::jsonb, 'stock', 'lime', 80, TRUE, '{"source":"system_seed","version":14,"apiVersion":2,"taLibVersion":"0.8.1"}'::jsonb, NOW()),
 
 ('strategy_v2_market_cap_barbell', 'portfolio_strategy', 'Small and Large Cap Barbell', 'A weekly cross-sectional portfolio combining small and large eligible U.S. companies.', $marketcap$"""
 Small and Large Cap Barbell

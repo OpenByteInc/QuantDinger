@@ -3,8 +3,10 @@ import pandas as pd
 import pytest
 
 talib = pytest.importorskip("talib")
+from talib import abstract
 
 from app.services.factors.talib_adapter import (
+    TA_LIB_081_FUNCTIONS,
     assert_talib_catalog_ready,
     compute_talib_factor,
     compute_talib_indicator,
@@ -23,10 +25,27 @@ def _frame():
     })
 
 
-def test_talib_catalog_exposes_at_least_129_functions():
-    assert assert_talib_catalog_ready() >= 129
-    ids = {item["factor_id"] for item in list_talib_factors()}
+def test_talib_catalog_exposes_081_functions_and_metadata():
+    assert assert_talib_catalog_ready() >= 201
+    catalog = {item["factor_id"]: item for item in list_talib_factors()}
+    ids = set(catalog)
     assert {"talib:RSI", "talib:MACD", "talib:CDLDOJI"} <= ids
+    assert {f"talib:{name}" for name in TA_LIB_081_FUNCTIONS} <= ids
+    assert catalog["talib:SUPERTREND"]["introduced_in"] == "0.8.1"
+    assert catalog["talib:SUPERTREND"]["default_params"]["output"] == "supertrend"
+    assert catalog["talib:SUPERTREND"]["parameter_schema"]["output"]["options"] == [
+        "supertrend",
+        "trend",
+    ]
+
+
+@pytest.mark.parametrize("name", ["APO", "BBANDS", "PPO"])
+def test_talib_catalog_uses_081_native_defaults(name):
+    catalog = {item["library_id"]: item for item in list_talib_factors()}
+    actual = dict(catalog[name]["default_params"])
+    actual.pop("output", None)
+
+    assert actual == dict(abstract.Function(name).info["parameters"])
 
 
 def test_talib_single_and_multi_output_computation():
@@ -37,6 +56,19 @@ def test_talib_single_and_multi_output_computation():
     assert np.isfinite(rsi)
     assert list(macd.columns) == ["macd", "macdsignal", "macdhist"]
     assert np.isfinite(macd["macdhist"].dropna().iloc[-1])
+
+
+def test_talib_081_supertrend_supports_series_and_selected_factor_output():
+    frame = _frame()
+    result = compute_talib_indicator("talib:SUPERTREND", frame, {"period": 10, "multiplier": 3.0})
+
+    assert list(result.columns) == ["supertrend", "trend"]
+    assert np.isfinite(result["supertrend"].dropna().iloc[-1])
+    assert compute_talib_factor(
+        "talib:SUPERTREND",
+        frame,
+        {"timeperiod": 10, "multiplier": 3.0, "output": "trend"},
+    ) in {-1.0, 1.0}
 
 
 @pytest.mark.parametrize("name", ["sma", "SMA", "talib:SMA"])

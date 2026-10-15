@@ -220,6 +220,14 @@ def run_strategy_backtest():
 
 
 @backtest_center_blp.route("/factor-research", methods=["POST"])
+@backtest_center_blp.doc(
+    summary="Run factor research with built-in or TA-Lib 0.8.1 factors",
+    description=(
+        "Accepts factorId and optional factorParams. TA-Lib factors use the "
+        "talib: namespace and support explicit output selection for "
+        "multi-output functions."
+    ),
+)
 @login_required
 def run_factor_research():
     try:
@@ -232,6 +240,7 @@ def run_factor_research():
         if not start_raw or not end_raw:
             raise ValueError("strategyV2.dateRangeRequired")
         factor_id = str(payload.get("factorId") or "momentum_20")
+        factor_params = payload.get("factorParams") if isinstance(payload.get("factorParams"), dict) else {}
         groups = max(2, min(10, int(payload.get("groups") or 5)))
         holding_period = max(1, int(payload.get("holdingPeriod") or 5))
         commission = parse_rate(payload.get("commission"), default=default_commission_if_missing(None))
@@ -243,6 +252,7 @@ def run_factor_research():
             start_date=datetime.strptime(start_raw, "%Y-%m-%d"),
             end_date=datetime.strptime(end_raw, "%Y-%m-%d").replace(hour=23, minute=59, second=59),
             factor_id=factor_id,
+            factor_params=factor_params,
             groups=groups,
             holding_period=holding_period,
             commission=commission,
