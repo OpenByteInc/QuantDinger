@@ -2,6 +2,7 @@ import sys
 from types import SimpleNamespace
 
 import pytest
+import requests
 
 from app.utils.redaction import redact_secrets
 from app.services.llm import LLMAPIError, LLMProvider, LLMService
@@ -761,3 +762,82 @@ def test_redact_secrets_passes_through_harmless_text():
     assert redact_secrets("") == ""
     assert redact_secrets(None) == ""
     assert redact_secrets("plain failure") == "plain failure"
+
+
+def test_call_llm_api_redacts_http_error_before_reraising(monkeypatch):
+    secret = "AIzaSyD-HTTP-SECRET"
+    service = LLMService(provider="google")
+    monkeypatch.setattr(service, "is_configured", lambda provider=None: True)
+    monkeypatch.setattr(service, "get_api_key", lambda provider=None: secret)
+    monkeypatch.setattr(
+        service,
+        "get_base_url",
+        lambda provider=None: "https://generativelanguage.googleapis.com/v1beta",
+    )
+
+    def fail_call(*args, **kwargs):
+        request = requests.Request(
+            "POST",
+            f"https://generativelanguage.googleapis.com/v1beta/models/test?key={secret}",
+        ).prepare()
+        response = requests.Response()
+        response.status_code = 500
+        response._content = f'{{"error":"key={secret}"}}'.encode()
+        response.request = request
+        raise requests.exceptions.HTTPError(
+            f"500 Server Error for url: {request.url}",
+            request=request,
+            response=response,
+        )
+
+    monkeypatch.setattr(service, "_call_google_gemini", fail_call)
+
+    with pytest.raises(LLMAPIError) as exc_info:
+        service.call_llm_api(
+            [{"role": "user", "content": "hello"}],
+            model="gemini-test",
+            use_fallback=False,
+            try_alternative_providers=False,
+        )
+
+    message = str(exc_info.value)
+    assert secret not in message
+    assert "key=<redacted>" in message
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.status_code == 500
+
+
+def test_call_llm_api_redacts_request_error_before_reraising(monkeypatch):
+    secret = "sk-request-secret-123"
+    service = LLMService(provider="google")
+    monkeypatch.setattr(service, "is_configured", lambda provider=None: True)
+    monkeypatch.setattr(service, "get_api_key", lambda provider=None: secret)
+    monkeypatch.setattr(
+        service,
+        "get_base_url",
+        lambda provider=None: "https://generativelanguage.googleapis.com/v1beta",
+    )
+    monkeypatch.setattr(
+        service,
+        "_call_google_gemini",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            requests.exceptions.ConnectionError(
+                f"failed ?api_key={secret} Authorization: Bearer {secret}"
+            )
+        ),
+    )
+
+    with pytest.raises(LLMAPIError) as exc_info:
+        service.call_llm_api(
+            [{"role": "user", "content": "hello"}],
+            model="gemini-test",
+            use_fallback=False,
+            try_alternative_providers=False,
+        )
+
+    message = str(exc_info.value)
+    assert secret not in message
+    assert "api_key=<redacted>" in message
+    assert "Bearer <redacted>" in message
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.retryable is True
