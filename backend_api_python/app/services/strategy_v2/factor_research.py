@@ -8,7 +8,13 @@ from typing import Any, Mapping, Sequence
 
 import pandas as pd
 
-from app.services.factors import compute_talib_indicator, get_factor_metadata
+from app.services.factors import (
+    FactorError,
+    compute_panel_factor,
+    compute_talib_indicator,
+    get_factor,
+    get_factor_metadata,
+)
 
 
 class FactorResearchEngine:
@@ -21,6 +27,9 @@ class FactorResearchEngine:
         "momentum_20",
         "volatility_20",
         "reversal_5",
+        "rsi",
+        "amihud_illiquidity",
+        "skewness",
         "value",
         "quality",
         "size",
@@ -28,8 +37,15 @@ class FactorResearchEngine:
 
     @classmethod
     def required_fields(cls, factor_id: str) -> set[str]:
-        field = cls._FUNDAMENTAL_FIELDS.get(str(factor_id or "").strip().lower())
-        return {field} if field else set()
+        cleaned = str(factor_id or "").strip().lower()
+        field = cls._FUNDAMENTAL_FIELDS.get(cleaned)
+        if field:
+            return {field}
+        try:
+            definition = get_factor(cleaned)
+        except FactorError:
+            return set()
+        return set(definition.required_fields) if definition.factor_type == "fundamental" else set()
 
     @classmethod
     def warmup_bars(cls, factor_id: str, params: Mapping[str, Any] | None = None) -> int:
@@ -84,7 +100,13 @@ class FactorResearchEngine:
             raise ValueError("strategyV2.factorResearchInsufficientObservations")
 
         normalized_factor_params = dict(factor_params or {})
-        factor = self._factor_panel(prepared, factor_name, close, normalized_factor_params)
+        factor = self._factor_panel(
+            prepared,
+            factor_name,
+            close,
+            normalized_factor_params,
+            research_dates,
+        )
         entry = open_price.shift(-1)
         exit_price = open_price.shift(-(holding_period + 1))
         forward_return = exit_price / entry - 1.0
@@ -339,6 +361,7 @@ class FactorResearchEngine:
         factor_id: str,
         close: pd.DataFrame,
         params: Mapping[str, Any] | None = None,
+        timestamps: Sequence[pd.Timestamp] | None = None,
     ) -> pd.DataFrame:
         if factor_id.startswith("talib:"):
             normalized = dict(params or {})
@@ -354,14 +377,27 @@ class FactorResearchEngine:
                 else:
                     columns[symbol] = result
             return pd.DataFrame(columns).reindex(index=close.index, columns=close.columns)
-        if factor_id.startswith("momentum"):
+        if factor_id.startswith("momentum_"):
             lookback = self._suffix_number(factor_id, 20)
             return close.pct_change(lookback, fill_method=None)
-        if factor_id.startswith("volatility"):
+        if factor_id.startswith("volatility_"):
             lookback = self._suffix_number(factor_id, 20)
             return close.pct_change(fill_method=None).rolling(lookback).std()
         if factor_id in {"reversal", "reversal_5"}:
             return -close.pct_change(5, fill_method=None)
+        try:
+            get_factor(factor_id)
+        except FactorError as exc:
+            if exc.code != "factor.notFound":
+                raise
+        else:
+            return self._registered_factor_panel(
+                frames,
+                factor_id,
+                close,
+                params,
+                timestamps,
+            )
         field = self._FUNDAMENTAL_FIELDS.get(factor_id, factor_id)
         panel = self._panel(frames, field)
         if field == "pe_ratio":
@@ -369,6 +405,29 @@ class FactorResearchEngine:
         if field == "market_cap":
             panel = panel.where(panel > 0).map(math.log)
         return panel.reindex(index=close.index, columns=close.columns)
+
+    @staticmethod
+    def _registered_factor_panel(
+        frames: Mapping[str, pd.DataFrame],
+        factor_id: str,
+        close: pd.DataFrame,
+        params: Mapping[str, Any] | None,
+        timestamps: Sequence[pd.Timestamp] | None,
+    ) -> pd.DataFrame:
+        result = pd.DataFrame(index=close.index, columns=close.columns, dtype=float)
+        requested = close.index if timestamps is None else pd.Index(timestamps)
+        requested = requested.intersection(close.index, sort=False)
+        for timestamp in requested:
+            point_in_time = {
+                symbol: frame.loc[frame.index <= timestamp]
+                for symbol, frame in frames.items()
+                if not frame.empty and frame.index[0] <= timestamp
+            }
+            scores = compute_panel_factor(factor_id, point_in_time, params)
+            for symbol, value in scores.items():
+                if symbol in result.columns:
+                    result.at[timestamp, symbol] = value
+        return result
 
     @staticmethod
     def _suffix_number(value: str, default: int) -> int:
@@ -493,6 +552,7 @@ class FactorResearchEngine:
                 name,
                 close,
                 selected_params if name == selected_factor else None,
+                research_dates,
             )
             visible = panel.reindex(index=research_dates)
             if int(visible.notna().sum().sum()) >= 3:
@@ -520,10 +580,11 @@ class FactorResearchEngine:
                     ).dropna()
                     if len(pair) < 3:
                         continue
-                    correlation = pair["left"].rank(method="average").corr(
-                        pair["right"].rank(method="average"),
-                        method="pearson",
-                    )
+                    left_rank = pair["left"].rank(method="average")
+                    right_rank = pair["right"].rank(method="average")
+                    if left_rank.nunique() < 2 or right_rank.nunique() < 2:
+                        continue
+                    correlation = left_rank.corr(right_rank, method="pearson")
                     if not pd.isna(correlation):
                         correlations.append(float(correlation))
                 value_row.append(sum(correlations) / len(correlations) if correlations else 0.0)

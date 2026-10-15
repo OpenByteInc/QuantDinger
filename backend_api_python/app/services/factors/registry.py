@@ -40,7 +40,14 @@ class FactorDefinition:
 
 def _technical_warmup(factor_id: str, params: Mapping[str, Any]) -> int:
     period = int(params.get("period") or 1)
-    if factor_id in {"momentum", "roc", "rsi", "downside_volatility"}:
+    if factor_id in {
+        "momentum",
+        "roc",
+        "rsi",
+        "downside_volatility",
+        "skewness",
+        "kurtosis",
+    }:
         return period + 1
     if factor_id == "ema_slope":
         return period + int(params.get("slope_period") or 1)
@@ -177,6 +184,8 @@ _FACTORS = {
         _technical("supertrend", "trend", ("high", "low", "close"), {"period": 10, "multiplier": 3.0, "output": "direction"}, "higher_is_bullish", lambda f, p: _supertrend(f, p)),
         _technical("atr", "volatility", ("high", "low", "close"), {"period": 14}, "neutral", lambda f, p: _atr(f, p)),
         _technical("realized_volatility", "risk", ("close",), {"period": 20}, "lower_is_bullish", lambda f, p: _realized_vol(f, p)),
+        _technical("skewness", "risk", ("close",), {"period": 20}, "neutral", lambda f, p: _skewness(f, p)),
+        _technical("kurtosis", "risk", ("close",), {"period": 20}, "lower_is_bullish", lambda f, p: _kurtosis(f, p)),
         _technical("ema_slope", "trend", ("close",), {"period": 20, "slope_period": 5}, "higher_is_bullish", lambda f, p: _ema_slope(f, p)),
         _technical("atr_pct", "risk", ("high", "low", "close"), {"period": 14}, "lower_is_bullish", lambda f, p: _atr_pct(f, p)),
         _technical("downside_volatility", "risk", ("close",), {"period": 20}, "lower_is_bullish", lambda f, p: _downside_volatility(f, p)),
@@ -305,6 +314,22 @@ def _realized_vol(frame: pd.DataFrame, params: Mapping[str, Any]) -> float:
     if len(returns) < period:
         raise FactorError("factor.insufficientHistory")
     return float(returns.iloc[-period:].std(ddof=1) * math.sqrt(252))
+
+
+def _skewness(frame: pd.DataFrame, params: Mapping[str, Any]) -> float:
+    period = _period(params)
+    returns = _numeric(frame["close"]).pct_change().dropna()
+    if len(returns) < period:
+        raise FactorError("factor.insufficientHistory")
+    return float(returns.iloc[-period:].skew())
+
+
+def _kurtosis(frame: pd.DataFrame, params: Mapping[str, Any]) -> float:
+    period = _period(params)
+    returns = _numeric(frame["close"]).pct_change().dropna()
+    if len(returns) < period:
+        raise FactorError("factor.insufficientHistory")
+    return float(returns.iloc[-period:].kurt())
 
 
 def _ema_slope(frame: pd.DataFrame, params: Mapping[str, Any]) -> float:

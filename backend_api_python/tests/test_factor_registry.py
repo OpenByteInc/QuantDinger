@@ -14,6 +14,8 @@ def test_factor_catalog_contains_technical_and_fundamental_definitions():
     assert {item["factor_id"] for item in factors} >= {
         "momentum",
         "realized_volatility",
+        "skewness",
+        "kurtosis",
         "earnings_yield",
         "return_on_equity",
     }
@@ -110,3 +112,5 @@ def test_extended_factor_families_have_expected_invariants():
     assert compute_factor("vortex", frame, {"period": 14, "output": "plus"}) > 0
     assert compute_factor("ulcer_index", frame) == pytest.approx(0.0)
     assert compute_factor("parkinson_volatility", frame) > 0
+    assert np.isfinite(compute_factor("skewness", frame))
+    assert np.isfinite(compute_factor("kurtosis", frame))
