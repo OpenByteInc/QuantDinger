@@ -10,6 +10,7 @@ from app.data_sources.errors import (
     classify_market_data_failure,
 )
 from app.services.strategy_v2 import market_data
+from app.services.strategy_v2 import StrategyV2BacktestService, compile_strategy_v2
 
 
 @pytest.fixture(autouse=True)
@@ -642,3 +643,85 @@ def test_gate_hk_stock_shared_cache_uses_trading_calendar_coverage(monkeypatch):
     assert len(first) == 5
     assert second.equals(first)
     assert calls == [True]
+
+
+def test_explicit_binance_swap_identity_survives_strategy_v2_dataflow(monkeypatch):
+    program = compile_strategy_v2('''
+def initialize(context):
+    context.set_universe(["Crypto:BTC/USDT@binance:swap"])
+    context.subscribe(frequency="1d")
+
+def handle_data(context, data):
+    pass
+''')
+    start = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    captured = {}
+    rows = [{
+        "time": int(start.timestamp()),
+        "open": 100,
+        "high": 101,
+        "low": 99,
+        "close": 100,
+        "volume": 10,
+    }]
+
+    def get_kline_with_diagnostics(**kwargs):
+        captured.update(kwargs)
+        return rows, None
+
+    monkeypatch.setattr(market_data, "_resolve_catalog_product", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(market_data._cache, "get", lambda _key: None)
+    monkeypatch.setattr(market_data._cache, "put", lambda *_args: None)
+    monkeypatch.setattr(market_data.DataSourceFactory, "get_kline_with_diagnostics", get_kline_with_diagnostics)
+    monkeypatch.setattr(
+        market_data.DataSourceFactory,
+        "get_kline",
+        lambda **_kwargs: pytest.fail("explicit Binance request used the unscoped fallback router"),
+    )
+
+    service = StrategyV2BacktestService(frame_fetcher=market_data.load_strategy_frame)
+    candidates, _ = service.resolve_candidates(
+        user_id=7,
+        manifest=program.manifest,
+        start_date=start,
+        end_date=start,
+    )
+    frames, skipped = service.fetch_frames(candidates, "1d", start, start)
+
+    instrument = program.manifest.universe.instruments[0]
+    assert instrument.exchange_id == "binance"
+    assert instrument.market_type == "swap"
+    assert captured["exchange_id"] == "binance"
+    assert captured["market_type"] == "swap"
+    assert captured["symbol"] == "BTC/USDT"
+    assert "Crypto:BTC/USDT@binance:swap" in frames
+    assert frames["Crypto:BTC/USDT@binance:swap"].iloc[0]["close"] == pytest.approx(100)
+    assert skipped == []
+
+
+def test_explicit_exchange_with_empty_diagnostics_fails_without_unscoped_fallback(monkeypatch):
+    monkeypatch.setattr(market_data, "_resolve_catalog_product", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(market_data._cache, "get", lambda _key: None)
+    monkeypatch.setattr(market_data._cache, "put", lambda *_args: None)
+    monkeypatch.setattr(
+        market_data.DataSourceFactory,
+        "get_kline_with_diagnostics",
+        lambda **_kwargs: ([], None),
+    )
+    monkeypatch.setattr(
+        market_data.DataSourceFactory,
+        "get_kline",
+        lambda **_kwargs: pytest.fail("explicit venue request used unscoped fallback"),
+    )
+    start = datetime(2025, 1, 1, tzinfo=timezone.utc)
+
+    with pytest.raises(MarketDataUnavailableError):
+        market_data._load_strategy_frame_uncached(
+            "Crypto",
+            "BTC/USDT",
+            "1h",
+            start,
+            start + timedelta(hours=1),
+            exchange_id="binance",
+            market_type="swap",
+        )

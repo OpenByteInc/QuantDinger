@@ -607,6 +607,20 @@ class NativeCryptoPublicClient:
         unique = {int(row[0]): row for row in parsed if row and int(row[0]) >= lower_bound}
         return sorted(unique.values(), key=lambda row: row[0])[:limit]
 
+    def fetch_server_time(self) -> int:
+        """Return exchange UTC time from a public market-data endpoint."""
+        if self.id != "binance":
+            raise NotImplementedError("Public server time is only implemented for Binance")
+        if self.market_type == "swap":
+            url = "https://fapi.binance.com/fapi/v1/time"
+        else:
+            url = "https://api.binance.com/api/v3/time"
+        payload = self._get(url)
+        server_time = int(payload.get("serverTime") or 0)
+        if server_time <= 0:
+            raise NativeCryptoAPIError("Binance public server time response was invalid")
+        return server_time
+
 
 def create_native_crypto_client(
     exchange_id: str,

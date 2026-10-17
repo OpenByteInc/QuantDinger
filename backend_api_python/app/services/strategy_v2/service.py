@@ -497,10 +497,27 @@ class StrategyV2BacktestService:
                 try:
                     member, frame = future.result()
                     if frame is None or frame.empty:
+                        if _is_explicit_binance_perpetual_member(member):
+                            raise StrategyV2ContractError(
+                                "strategyV2.explicitBinancePerpetualDataUnavailable:"
+                                f"{member.get('key') or member.get('symbol')}:strategyV2.noMarketData"
+                            )
                         skipped.append({"symbol": member.get("key") or "", "reason": "strategyV2.noMarketData"})
                         continue
                     frames[member["key"]] = frame
                 except Exception as exc:
+                    if isinstance(exc, StrategyV2ContractError):
+                        raise
+                    if _is_explicit_binance_perpetual_member(member):
+                        failure_code = (
+                            exc.failure.code
+                            if isinstance(exc, MarketDataUnavailableError)
+                            else type(exc).__name__
+                        )
+                        raise StrategyV2ContractError(
+                            "strategyV2.explicitBinancePerpetualDataUnavailable:"
+                            f"{member.get('key') or member.get('symbol')}:{failure_code}"
+                        ) from exc
                     if isinstance(exc, MarketDataUnavailableError):
                         skipped.append({
                             "symbol": member.get("key") or "",
@@ -557,6 +574,11 @@ class StrategyV2BacktestService:
                 try:
                     _, _, frame = future.result()
                     if frame is None or frame.empty:
+                        if _is_explicit_binance_perpetual_member(member):
+                            raise StrategyV2ContractError(
+                                "strategyV2.explicitBinancePerpetualDataUnavailable:"
+                                f"{member.get('key') or member.get('symbol')}:{frequency}:strategyV2.noMarketData"
+                            )
                         skipped.append({
                             "symbol": member.get("key") or "",
                             "frequency": frequency,
@@ -565,6 +587,18 @@ class StrategyV2BacktestService:
                         continue
                     bundles[frequency][member["key"]] = frame
                 except Exception as exc:
+                    if isinstance(exc, StrategyV2ContractError):
+                        raise
+                    if _is_explicit_binance_perpetual_member(member):
+                        failure_code = (
+                            exc.failure.code
+                            if isinstance(exc, MarketDataUnavailableError)
+                            else type(exc).__name__
+                        )
+                        raise StrategyV2ContractError(
+                            "strategyV2.explicitBinancePerpetualDataUnavailable:"
+                            f"{member.get('key') or member.get('symbol')}:{frequency}:{failure_code}"
+                        ) from exc
                     item: dict[str, Any] = {
                         "symbol": member.get("key") or "",
                         "frequency": frequency,
@@ -636,6 +670,15 @@ def _instrument_member(item: InstrumentSpec) -> dict[str, Any]:
         "market_type": item.market_type,
         "instrument_id": item.instrument_id,
     }
+
+
+def _is_explicit_binance_perpetual_member(member: dict[str, Any]) -> bool:
+    return (
+        str(member.get("market") or "").strip().lower() == "crypto"
+        and str(member.get("exchange_id") or "").strip().lower() == "binance"
+        and str(member.get("market_type") or "").strip().lower()
+        in {"swap", "future", "futures", "perp", "perpetual"}
+    )
 
 
 def _instrument_rules_as_of(

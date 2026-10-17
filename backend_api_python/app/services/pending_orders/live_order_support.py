@@ -356,7 +356,19 @@ def build_live_order_context(
     safe_exchange_config_for_log: Callable[[Dict[str, Any]], Dict[str, Any]],
 ) -> LiveOrderExecutionContext:
     """Load and validate immutable context for a live pending order."""
-    strategy_id = int(payload.get("strategy_id") or order_row.get("strategy_id") or 0)
+    row_strategy_id = order_row.get("strategy_id")
+    payload_strategy_id = payload.get("strategy_id")
+    if row_strategy_id and payload_strategy_id:
+        try:
+            strategy_ids_match = int(row_strategy_id) == int(payload_strategy_id)
+        except (TypeError, ValueError):
+            strategy_ids_match = str(row_strategy_id).strip() == str(payload_strategy_id).strip()
+        if not strategy_ids_match:
+            raise LiveOrderRejected(
+                error="execution_mode_validation_failed:strategy_id_mismatch",
+                strategy_id=int(row_strategy_id or 0),
+            )
+    strategy_id = int(row_strategy_id or payload_strategy_id or 0)
     if strategy_id <= 0:
         raise LiveOrderRejected(error="missing_strategy_id")
 
@@ -372,6 +384,23 @@ def build_live_order_context(
         )
 
     cfg = load_strategy_configs(strategy_id)
+    order_mode = str(order_row.get("execution_mode") or "").strip().lower()
+    payload_mode = str(payload.get("execution_mode") or "").strip().lower()
+    strategy_mode = str(cfg.get("execution_mode") or "signal").strip().lower()
+    if (
+        order_mode != "live"
+        or payload_mode not in {"", "live"}
+        or strategy_mode != "live"
+    ):
+        raise LiveOrderRejected(
+            error=(
+                "execution_mode_mismatch:"
+                f"order={order_mode or 'missing'}:"
+                f"payload={payload_mode or 'missing'}:"
+                f"strategy={strategy_mode or 'missing'}"
+            ),
+            strategy_id=strategy_id,
+        )
     strategy_status = str(cfg.get("status") or "").strip().lower()
     if (
         strategy_status

@@ -9,7 +9,11 @@ import traceback
 from app.services.kline import KlineService
 from app.utils.logger import get_logger
 from app.services.market.watchlist import validate_watchlist_pair
-from app.services.market_context import MarketContext, SUPPORTED_CRYPTO_EXCHANGE_IDS
+from app.services.market_context import (
+    MarketContext,
+    SUPPORTED_CRYPTO_EXCHANGE_IDS,
+    parse_crypto_identifier,
+)
 from app.utils.request_guard import RequestGuardError, cache_key, guarded_cached
 
 logger = get_logger(__name__)
@@ -83,7 +87,14 @@ def get_kline():
         exchange_id = (request.args.get('exchange_id') or request.args.get('exchangeId') or '').strip() or None
         market_type = (request.args.get('market_type') or request.args.get('marketType') or '').strip() or None
         instrument_id = (request.args.get('instrument_id') or request.args.get('instrumentId') or '').strip()
-        if market == 'Crypto':
+        if not symbol:
+            return jsonify({
+                'code': 0,
+                'msg': 'Missing symbol parameter',
+                'data': None
+            }), 400
+
+        try:
             context = MarketContext.from_mapping({
                 'market': market,
                 'symbol': symbol,
@@ -92,39 +103,55 @@ def get_kline():
                 'instrument_id': instrument_id,
                 'timeframe': timeframe,
             })
+        except ValueError as e:
+            return jsonify({'code': 0, 'msg': str(e), 'data': None}), 400
+
+        service_symbol = context.symbol if market == 'Crypto' else symbol
+        service_exchange_id = context.exchange_id if market == 'Crypto' else exchange_id
+        service_market_type = context.market_type if market == 'Crypto' else market_type
+        if market == 'Crypto':
             if context.exchange_id not in SUPPORTED_CRYPTO_EXCHANGE_IDS:
                 return jsonify({'code': 0, 'msg': 'Unsupported crypto exchange', 'data': None}), 400
+
+            try:
+                parsed_symbol, suffix_market_type, suffix_exchange_id = parse_crypto_identifier(symbol)
+            except ValueError as e:
+                return jsonify({'code': 0, 'msg': str(e), 'data': None}), 400
+            if (
+                parsed_symbol == 'BTC/USDT'
+                and suffix_market_type == 'swap'
+                and not suffix_exchange_id
+                and context.exchange_id != 'binance'
+            ):
+                return jsonify({
+                    'code': 0,
+                    'msg': 'Crypto:BTC/USDT@swap is mapped to Binance USDⓈ-M; use an explicit venue-qualified symbol for another exchange',
+                    'data': None,
+                }), 400
         
         if before_time:
             before_time = int(before_time)
         
-        if not symbol:
-            return jsonify({
-                'code': 0,
-                'msg': 'Missing symbol parameter',
-                'data': None
-            }), 400
-
-        validation_err = validate_watchlist_pair(market, symbol)
+        validation_err = validate_watchlist_pair(market, service_symbol)
         if validation_err:
             return jsonify({'code': 0, 'msg': validation_err, 'data': None}), 400
         
-        logger.info(f"Requesting K-lines: {market}:{symbol}, timeframe={timeframe}, limit={limit}")
+        logger.info(f"Requesting K-lines: {market}:{service_symbol}, timeframe={timeframe}, limit={limit}")
         
         policy = _guard_policy(timeframe, limit, before_time)
         klines = guarded_cached(
             cache_key(
-                "indicator_kline", market, symbol, timeframe, limit, before_time or "",
-                exchange_id or "", market_type or "", instrument_id,
+                "indicator_kline", market, service_symbol, timeframe, limit, before_time or "",
+                service_exchange_id or "", service_market_type or "", instrument_id,
             ),
             lambda: kline_service.get_kline(
                 market=market,
-                symbol=symbol,
+                symbol=service_symbol,
                 timeframe=timeframe,
                 limit=limit,
                 before_time=before_time,
-                exchange_id=exchange_id,
-                market_type=market_type,
+                exchange_id=service_exchange_id,
+                market_type=service_market_type,
                 instrument_id=instrument_id,
             ),
             ttl_sec=policy['ttl_sec'],
@@ -147,14 +174,6 @@ def get_kline():
                 'hint': 'tiingo_subscription' if (market == 'Forex' and timeframe == '1m') else None
             })
         
-        context = MarketContext.from_mapping({
-            'market': market,
-            'symbol': symbol,
-            'exchange_id': exchange_id,
-            'market_type': market_type,
-            'instrument_id': instrument_id,
-            'timeframe': timeframe,
-        })
         return jsonify({
             'code': 1,
             'msg': 'success',
