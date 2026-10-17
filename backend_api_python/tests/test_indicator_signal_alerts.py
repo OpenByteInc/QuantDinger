@@ -197,3 +197,27 @@ def test_signal_alert_payload_uses_profile_notification_defaults(monkeypatch):
     assert payload["targets"]["webhook_url"] == "https://example.com/hook"
     assert payload["targets"]["webhook_token"] == "hook-token"
     assert payload["targets"]["webhook_signing_secret"] == "hook-secret"
+
+
+@pytest.mark.parametrize(
+    ("timeframe", "expected"),
+    [
+        ("1m", 20),
+        ("3m", 25),
+        ("5m", 30),
+        ("1h", 120),
+        ("1H", 120),
+        ("4h", 300),
+        ("4H", 300),
+        ("1d", 600),
+        ("1D", 600),
+        ("1w", 1800),
+        ("1W", 1800),
+        ("", 120),
+        (None, 120),
+    ],
+)
+def test_signal_alert_poll_seconds_handles_timeframe_case(timeframe, expected):
+    service = IndicatorSignalAlertService.__new__(IndicatorSignalAlertService)
+
+    assert service._poll_seconds(timeframe) == expected
