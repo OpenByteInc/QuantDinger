@@ -1392,7 +1392,7 @@ class PendingOrderWorker(
         if intercept_cancelled_dispatch(order_row):
             return
         order_id = int(order_row["id"])
-        mode = (order_row.get("execution_mode") or "signal").strip().lower()
+        mode = str(order_row.get("execution_mode") or "signal").strip().lower()
         payload_json = order_row.get("payload_json") or ""
 
         payload: Dict[str, Any] = {}
@@ -1404,27 +1404,73 @@ class PendingOrderWorker(
 
         signal_type = payload.get("signal_type") or order_row.get("signal_type")
         symbol = payload.get("symbol") or order_row.get("symbol")
-        strategy_id = payload.get("strategy_id") or order_row.get("strategy_id")
+        row_strategy_id = order_row.get("strategy_id")
+        payload_strategy_id = payload.get("strategy_id")
+        if row_strategy_id and payload_strategy_id:
+            try:
+                strategy_ids_match = int(row_strategy_id) == int(payload_strategy_id)
+            except (TypeError, ValueError):
+                strategy_ids_match = str(row_strategy_id).strip() == str(payload_strategy_id).strip()
+            if not strategy_ids_match:
+                self._mark_failed(
+                    order_id=order_id,
+                    error="execution_mode_validation_failed:strategy_id_mismatch",
+                )
+                return
+        # The database row owns the order identity; the serialized payload is only a copy.
+        strategy_id = row_strategy_id or payload_strategy_id
         price = float(payload.get("price") or order_row.get("price") or 0.0)
         amount = float(payload.get("amount") or order_row.get("amount") or 0.0)
         direction = "short" if "short" in str(signal_type) else "long"
         notification_config = payload.get("notification_config") or {}
+
+        # The queued order and its payload must agree. In particular, a payload
+        # cannot turn a signal order into a live order.
+        payload_mode = str(payload.get("execution_mode") or "").strip().lower()
+        if mode not in {"signal", "live"}:
+            self._mark_failed(order_id=order_id, error=f"unsupported_execution_mode:{mode}")
+            return
+        if payload_mode and (payload_mode not in {"signal", "live"} or payload_mode != mode):
+            self._mark_failed(
+                order_id=order_id,
+                error=f"execution_mode_mismatch:order={mode}:payload={payload_mode}",
+            )
+            return
+
+        # Check the persisted strategy mode on every dispatch, including retries
+        # and rows recovered after a worker restart. Never promote or downgrade an
+        # order to match a strategy that changed after the order was queued.
+        if strategy_id:
+            try:
+                strategy_config = load_strategy_configs(int(strategy_id))
+                if not isinstance(strategy_config, dict):
+                    raise ValueError("strategy configuration unavailable")
+            except Exception:
+                self._mark_failed(
+                    order_id=order_id,
+                    error="execution_mode_validation_failed:strategy_unavailable",
+                )
+                return
+            strategy_mode = str(strategy_config.get("execution_mode") or "signal").strip().lower()
+            if strategy_mode not in {"signal", "live"} or strategy_mode != mode:
+                self._mark_failed(
+                    order_id=order_id,
+                    error=f"execution_mode_mismatch:order={mode}:strategy={strategy_mode}",
+                )
+                return
+        elif mode == "live":
+            self._mark_failed(
+                order_id=order_id,
+                error="execution_mode_validation_failed:strategy_id_required",
+            )
+            return
+
         strategy_name = str(payload.get("strategy_name") or "").strip()
         if not strategy_name:
             # Best-effort: load from DB for nicer notifications.
             strategy_name = self._load_strategy_name(int(strategy_id or 0)) if strategy_id else ""
         if not strategy_name:
             strategy_name = f"Strategy_{strategy_id}"
-
-        # If the queued record is legacy ("signal") but the strategy is configured as live,
-        # automatically upgrade it to live execution to keep the system moving.
-        try:
-            if mode != "live" and strategy_id:
-                sc = load_strategy_configs(int(strategy_id))
-                if (sc.get("execution_mode") or "").strip().lower() == "live":
-                    mode = "live"
-        except Exception:
-            pass
 
         if mode == "signal":
             from app.services.pending_orders.signal_execution import (
@@ -1452,8 +1498,6 @@ class PendingOrderWorker(
         if mode == "live":
             self._execute_live_order(order_id=order_id, order_row=order_row, payload=payload)
             return
-
-        self._mark_failed(order_id=order_id, error=f"unsupported_execution_mode:{mode}")
 
     def _load_notification_config(self, strategy_id: int) -> Dict[str, Any]:
         try:

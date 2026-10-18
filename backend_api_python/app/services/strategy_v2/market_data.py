@@ -237,7 +237,15 @@ def _load_strategy_frame_uncached(
             pass
         elif effective_market == market and exchange_id:
             rows, failure = DataSourceFactory.get_kline_with_diagnostics(**kwargs)
-            if not rows and failure is not None:
+            if not rows:
+                if failure is None:
+                    failure = classify_market_data_failure(
+                        "The explicitly requested exchange returned no K-line rows",
+                        exchange_id=exchange_id,
+                        market_type=market_type or "",
+                        symbol=symbol,
+                        timeframe=timeframe,
+                    )
                 raise MarketDataUnavailableError(failure)
         else:
             rows = DataSourceFactory.get_kline(**kwargs)

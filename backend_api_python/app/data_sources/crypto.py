@@ -268,6 +268,69 @@ class CryptoDataSource(BaseDataSource):
                 return f"{normalized}:{quote}"
         return normalized
 
+    def _is_binance_btc_usdm_request(self, symbol_pair: str) -> bool:
+        return (
+            not bool(getattr(self, "_allow_public_fallback", False))
+            and
+            str(getattr(self.exchange, "id", "") or "").strip().lower() == "binance"
+            and str(getattr(self, "_scoped_market_type", "") or "").strip().lower() == "swap"
+            and str(symbol_pair or "").strip().upper() == "BTC/USDT:USDT"
+        )
+
+    def _validate_binance_btc_usdm_market(self, symbol_pair: str) -> Dict[str, Any]:
+        """Fail closed unless BTC/USDT resolves to the active linear USDⓈ-M perpetual."""
+        if not self._is_binance_btc_usdm_request(symbol_pair):
+            raise ValueError("Request is not scoped to Binance BTC/USDT USDⓈ-M swap")
+        if str(getattr(self.exchange, "market_type", "") or "").strip().lower() != "swap":
+            raise ValueError("Binance BTC/USDT perpetual requires the swap market adapter")
+        if not self._ensure_markets_loaded():
+            raise ValueError("Unable to validate Binance BTC/USDT perpetual market metadata")
+
+        markets = self._markets_cache or {}
+        market = markets.get("BTC/USDT:USDT") or markets.get("BTC/USDT")
+        if not isinstance(market, dict):
+            raise ValueError("Binance BTCUSDT USDⓈ-M perpetual is not present in exchange metadata")
+        info = market.get("info") or {}
+        valid = (
+            str(market.get("id") or "").upper() == "BTCUSDT"
+            and str(market.get("symbol") or "").upper() == "BTC/USDT:USDT"
+            and str(market.get("base") or "").upper() == "BTC"
+            and str(market.get("quote") or "").upper() == "USDT"
+            and str(market.get("settle") or "").upper() == "USDT"
+            and bool(market.get("active"))
+            and market.get("spot") is False
+            and bool(market.get("swap"))
+            and bool(market.get("contract"))
+            and bool(market.get("linear"))
+            and str(info.get("contractType") or "").upper() == "PERPETUAL"
+            and str(info.get("status") or "").upper() == "TRADING"
+            and str(info.get("quoteAsset") or "").upper() == "USDT"
+            and str(info.get("marginAsset") or "").upper() == "USDT"
+        )
+        if not valid:
+            raise ValueError("Binance BTCUSDT market metadata is not an active linear USDⓈ-M perpetual")
+        return market
+
+    @staticmethod
+    def _filter_closed_ohlcv(
+        ohlcv: List,
+        timeframe: str,
+        server_time_ms: int,
+    ) -> List:
+        """Keep unique, ordered candles whose complete interval has elapsed."""
+        duration_seconds = TIMEFRAME_SECONDS.get(timeframe)
+        if not duration_seconds:
+            raise ValueError(f"Unsupported timeframe for closed-candle validation: {timeframe}")
+        interval_ms = int(duration_seconds) * 1000
+        by_timestamp = {}
+        for candle in ohlcv or []:
+            if not candle or len(candle) < 6:
+                continue
+            timestamp_ms = int(candle[0])
+            if timestamp_ms + interval_ms <= int(server_time_ms):
+                by_timestamp[timestamp_ms] = candle
+        return [by_timestamp[timestamp] for timestamp in sorted(by_timestamp)]
+
     def _invalid_symbol_key(self, symbol_pair: str) -> str:
         exchange_id = getattr(self.exchange, 'id', '').lower()
         mt = getattr(self, "_scoped_market_type", "") or "spot"
@@ -578,6 +641,11 @@ class CryptoDataSource(BaseDataSource):
                 logger.warning(f"Failed to normalize symbol for K-line: {symbol}")
                 raise _PublicKlineUnavailable
 
+            server_time_ms = None
+            if self._is_binance_btc_usdm_request(symbol_pair):
+                self._validate_binance_btc_usdm_market(symbol_pair)
+                server_time_ms = self.exchange.fetch_server_time()
+
             if self._is_invalid_symbol_cached(symbol_pair):
                 self._set_last_failure(
                     f"Symbol not found (cached): {symbol_pair}",
@@ -590,6 +658,13 @@ class CryptoDataSource(BaseDataSource):
                 symbol_pair, fetch_exchange_timeframe, fetch_limit,
                 before_time, fetch_qd_timeframe, after_time,
             )
+
+            if ohlcv and server_time_ms is not None:
+                ohlcv = self._filter_closed_ohlcv(
+                    ohlcv,
+                    fetch_qd_timeframe,
+                    server_time_ms,
+                )
 
             if not ohlcv:
                 if self.get_last_failure() is None:
