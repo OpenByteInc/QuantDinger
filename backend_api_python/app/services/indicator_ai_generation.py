@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Any, Callable, Dict, List, Mapping
 
 from app.services.ai_code_edits import (
@@ -46,8 +47,30 @@ def _context_block(context: Mapping[str, Any]) -> str:
     )
 
 
+_THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+_FENCED_BLOCK_RE = re.compile(r"```(?:python)?\s*\n(.*?)```", re.DOTALL | re.IGNORECASE)
+
+
 def _strip_code_fences(content: Any) -> str:
     text = str(content or "").strip()
+
+    # Reasoning models (MiniMax-M3, DeepSeek-R1, ...) prepend <think>...</think>
+    # chains of thought. That prose fails ast.parse downstream, so drop it before
+    # any fence handling. An unterminated <think> (truncated response) drops
+    # everything from the tag onward: no usable code survives truncation anyway.
+    text = _THINK_BLOCK_RE.sub("", text)
+    unterminated = text.lower().find("<think>")
+    if unterminated != -1:
+        text = text[:unterminated]
+    text = text.strip()
+
+    # Models sometimes add prose or explanation fences around the code. When any
+    # complete fenced block exists, return the last one (the final answer).
+    if "```" in text:
+        blocks = [b.strip() for b in _FENCED_BLOCK_RE.findall(text) if b.strip()]
+        if blocks:
+            return blocks[-1]
+
     if text.startswith("```python"):
         text = text[9:]
     elif text.startswith("```"):
