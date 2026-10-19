@@ -6,6 +6,7 @@ Kept separate from AnalysisService to avoid circular imports.
 """
 import json
 import os
+import re
 import requests
 from typing import Dict, Any, Optional, List
 from enum import Enum
@@ -16,6 +17,25 @@ from app.utils.config_loader import load_addon_config
 from app.utils.redaction import redact_secrets
 
 logger = get_logger(__name__)
+
+_THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+
+
+def strip_think_blocks(text: str) -> str:
+    """Remove reasoning-model <think>...</think> chains of thought.
+
+    Reasoning models (MiniMax-M3, DeepSeek-R1, ...) prepend <think>...</think>
+    prose to code and JSON answers. Downstream parsers (ast.parse, json.loads)
+    fail on it, so every LLM response path must strip it before parsing.
+    An unterminated <think> (truncated response) drops everything from the tag
+    onward: no usable payload survives truncation anyway.
+    """
+    text = str(text or "")
+    text = _THINK_BLOCK_RE.sub("", text)
+    unterminated = text.lower().find("<think>")
+    if unterminated != -1:
+        text = text[:unterminated]
+    return text.strip()
 
 DEFAULT_MAX_TOKENS = 16_384
 
@@ -1509,8 +1529,8 @@ class LLMService:
                 {"role": "user", "content": user_prompt}
             ], model=model, provider=provider)
             
-            # Strip markdown fences if present
-            clean_text = response_text.strip()
+            # Strip reasoning-model think prose and markdown fences if present
+            clean_text = strip_think_blocks(response_text)
             if clean_text.startswith("```"):
                 first_newline = clean_text.find("\n")
                 if first_newline != -1:

@@ -14,6 +14,7 @@ from app.services.ai_code_edits import (
     code_edit_user_instruction,
 )
 from app.services.ai_copilot_context import fit_messages_to_budget
+from app.services.llm import strip_think_blocks
 
 
 def _context_block(context: Mapping[str, Any]) -> str:
@@ -47,22 +48,11 @@ def _context_block(context: Mapping[str, Any]) -> str:
     )
 
 
-_THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 _FENCED_BLOCK_RE = re.compile(r"```(?:python)?\s*\n(.*?)```", re.DOTALL | re.IGNORECASE)
 
 
 def _strip_code_fences(content: Any) -> str:
-    text = str(content or "").strip()
-
-    # Reasoning models (MiniMax-M3, DeepSeek-R1, ...) prepend <think>...</think>
-    # chains of thought. That prose fails ast.parse downstream, so drop it before
-    # any fence handling. An unterminated <think> (truncated response) drops
-    # everything from the tag onward: no usable code survives truncation anyway.
-    text = _THINK_BLOCK_RE.sub("", text)
-    unterminated = text.lower().find("<think>")
-    if unterminated != -1:
-        text = text[:unterminated]
-    text = text.strip()
+    text = strip_think_blocks(str(content or ""))
 
     # Models sometimes add prose or explanation fences around the code. When any
     # complete fenced block exists, return the last one (the final answer).

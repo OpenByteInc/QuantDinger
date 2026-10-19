@@ -37,7 +37,10 @@ def code_edit_user_instruction() -> str:
 def _parse_payload(response: Any) -> dict[str, Any]:
     if isinstance(response, dict):
         return response
-    raw = str(response or "").strip()
+    # Reasoning models prepend <think>...</think> prose; json.loads fails on it.
+    from app.services.llm import strip_think_blocks
+
+    raw = strip_think_blocks(str(response or ""))
     if raw.startswith("```json"):
         raw = raw[7:]
     elif raw.startswith("```"):

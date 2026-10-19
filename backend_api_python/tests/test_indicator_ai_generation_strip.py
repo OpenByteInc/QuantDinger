@@ -103,3 +103,36 @@ def test_prose_only_without_fences_is_returned_as_is():
     # validation will reject it), we must not silently invent code.
     raw = "Sorry, I cannot generate that indicator."
     assert _strip_code_fences(raw) == raw
+
+
+# ---------------------------------------------------------------------------
+# Shared strip_think_blocks helper (app.services.llm)
+# ---------------------------------------------------------------------------
+
+from app.services.llm import strip_think_blocks
+
+
+def test_strip_think_blocks_shared_helper():
+    assert strip_think_blocks("<think>x</think>\n\ncode()") == "code()"
+    assert strip_think_blocks("<THINK>x</THINK>code()") == "code()"
+    assert strip_think_blocks("code()\n<think>truncated") == "code()"
+    assert strip_think_blocks("") == ""
+    assert strip_think_blocks(None) == ""
+    assert strip_think_blocks("no tags here") == "no tags here"
+
+
+# ---------------------------------------------------------------------------
+# Edit-payload JSON parsing must tolerate think prose (app.services.ai_code_edits)
+# ---------------------------------------------------------------------------
+
+from app.services.ai_code_edits import CodeEditError, _parse_payload
+
+
+def test_parse_payload_with_think_prefix():
+    raw = '<think>I will replace the plot line.</think>\n{"operations": []}'
+    assert _parse_payload(raw) == {"operations": []}
+
+
+def test_parse_payload_still_rejects_garbage():
+    with pytest.raises(CodeEditError):
+        _parse_payload("not json at all")

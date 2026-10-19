@@ -1063,13 +1063,12 @@ If the question actually requests a code modification, explain what should chang
         )
 
         content = (content or "").strip()
-        if content.startswith("```python"):
-            content = content[9:]
-        elif content.startswith("```"):
-            content = content[3:]
-        if content.endswith("```"):
-            content = content[:-3]
-        return content.strip() or bad_code
+        # Reuse the hardened stripper: reasoning models prepend <think> prose
+        # and wrap code in fences with surrounding text; the naive startswith/
+        # endswith strip here used to leak both into validation.
+        from app.services.indicator_ai_generation import _strip_code_fences
+
+        return _strip_code_fences(content) or bad_code
 
     def _generate_final_code() -> tuple[str, Dict[str, Any], Dict[str, Any]]:
         try:
