@@ -178,6 +178,8 @@ def calculate_beta_and_alpha(
     observations = int(len(returns.index))
     result: dict[str, Any] = {
         "status": "insufficient_history",
+        "correlationStatus": "insufficient_history",
+        "treynorStatus": "insufficient_history",
         "portfolioReturnAnnualized": None,
         "benchmarkReturnAnnualized": None,
         "riskFreeRate": rf,
@@ -203,39 +205,14 @@ def calculate_beta_and_alpha(
     if observations < 2:
         return result
 
-    bench_var = float(returns["benchmark"].var(ddof=1))
-    port_var = float(returns["portfolio"].var(ddof=1))
-    covar = float(returns["portfolio"].cov(returns["benchmark"]))
-
-    if bench_var <= 1e-15:
-        result["status"] = "zero_benchmark_variance"
-        return result
-
-    beta = covar / bench_var
-    alpha_annualized = (portfolio_annualized - rf) - beta * (benchmark_annualized - rf)
-    treynor_ratio = (portfolio_annualized - rf) / beta if abs(beta) > 1e-15 else None
-
-    bench_std = math.sqrt(bench_var)
-    port_std = math.sqrt(port_var)
-    if port_std > 1e-15 and bench_std > 1e-15:
-        raw_corr = covar / (port_std * bench_std)
-        corr = max(-1.0, min(1.0, raw_corr))
-        r_squared = max(0.0, min(1.0, corr**2))
-    elif port_std <= 1e-15:
-        corr = 0.0
-        r_squared = 0.0
-    else:
-        corr = None
-        r_squared = None
-
-    result.update({
-        "status": "available",
-        "beta": beta,
-        "alphaAnnualized": alpha_annualized,
-        "treynorRatio": treynor_ratio,
-        "correlation": corr,
-        "rSquared": r_squared,
-    })
+    systematic = _calculate_systematic_risk_metrics(
+        returns,
+        annualization_factor=factor,
+        risk_free_rate=rf,
+    )
+    result.update(systematic)
+    result["status"] = systematic["betaStatus"]
+    result.pop("betaStatus", None)
     return result
 
 
@@ -251,10 +228,10 @@ def calculate_capture_ratios(
 
     Up-market periods are intervals where the benchmark return is strictly positive (> 0).
     Down-market periods are intervals where the benchmark return is strictly negative (< 0).
-    Capture ratios are computed as the compounded return of the portfolio divided by
-    the compounded return of the benchmark in those respective periods:
-    Up Capture = (Prod(1 + R_p_up) - 1) / (Prod(1 + R_b_up) - 1)
-    Down Capture = (Prod(1 + R_p_down) - 1) / (Prod(1 + R_b_down) - 1)
+    Capture ratios compare the geometric mean portfolio and benchmark returns
+    within each regime. Results use ratio units, where 1.0 means 100% capture:
+    Up Capture = GeoMean(R_p_up) / GeoMean(R_b_up)
+    Down Capture = GeoMean(R_p_down) / GeoMean(R_b_down)
     Capture Ratio = Up Capture / Down Capture.
     """
     returns, normalized_frequency = _align_curves_and_returns(
@@ -272,45 +249,10 @@ def calculate_capture_ratios(
         "observations": observations,
         "frequency": normalized_frequency,
     }
-    if observations == 0:
-        return result
-
-    up_returns = returns.loc[returns["benchmark"] > 0]
-    down_returns = returns.loc[returns["benchmark"] < 0]
-    up_periods = int(len(up_returns))
-    down_periods = int(len(down_returns))
-    result["upMarketPeriods"] = up_periods
-    result["downMarketPeriods"] = down_periods
-
-    up_capture = None
-    if up_periods > 0:
-        bench_up_comp = float((1.0 + up_returns["benchmark"]).prod() - 1.0)
-        port_up_comp = float((1.0 + up_returns["portfolio"]).prod() - 1.0)
-        if abs(bench_up_comp) > 1e-15:
-            up_capture = port_up_comp / bench_up_comp
-
-    down_capture = None
-    if down_periods > 0:
-        bench_down_comp = float((1.0 + down_returns["benchmark"]).prod() - 1.0)
-        port_down_comp = float((1.0 + down_returns["portfolio"]).prod() - 1.0)
-        if abs(bench_down_comp) > 1e-15:
-            down_capture = port_down_comp / bench_down_comp
-
-    capture_ratio = None
-    if up_capture is not None and down_capture is not None and abs(down_capture) > 1e-15:
-        capture_ratio = up_capture / down_capture
-
-    status = (
-        "available"
-        if (up_capture is not None or down_capture is not None)
-        else "insufficient_regimes"
-    )
-    result.update({
-        "status": status,
-        "upCapture": up_capture,
-        "downCapture": down_capture,
-        "captureRatio": capture_ratio,
-    })
+    capture = _calculate_capture_metrics(returns)
+    result.update(capture)
+    result["status"] = capture["captureStatus"]
+    result.pop("captureStatus", None)
     return result
 
 
@@ -356,6 +298,11 @@ def calculate_benchmark_relative_metrics(
         "informationRatio": None,
         "classification": None,
         "riskFreeRate": rf,
+        "riskFreeRateSource": "configured" if rf else "default_zero",
+        "betaStatus": "insufficient_history",
+        "correlationStatus": "insufficient_history",
+        "treynorStatus": "insufficient_history",
+        "captureStatus": "insufficient_history",
         "beta": None,
         "alphaAnnualized": None,
         "treynorRatio": None,
@@ -384,37 +331,7 @@ def calculate_benchmark_relative_metrics(
         "activeReturnAnnualized": active_annualized,
     })
 
-    # Capture ratios
-    up_returns = returns.loc[returns["benchmark"] > 0]
-    down_returns = returns.loc[returns["benchmark"] < 0]
-    up_periods = int(len(up_returns))
-    down_periods = int(len(down_returns))
-    result["upMarketPeriods"] = up_periods
-    result["downMarketPeriods"] = down_periods
-
-    up_capture = None
-    if up_periods > 0:
-        bench_up_comp = float((1.0 + up_returns["benchmark"]).prod() - 1.0)
-        port_up_comp = float((1.0 + up_returns["portfolio"]).prod() - 1.0)
-        if abs(bench_up_comp) > 1e-15:
-            up_capture = port_up_comp / bench_up_comp
-
-    down_capture = None
-    if down_periods > 0:
-        bench_down_comp = float((1.0 + down_returns["benchmark"]).prod() - 1.0)
-        port_down_comp = float((1.0 + down_returns["portfolio"]).prod() - 1.0)
-        if abs(bench_down_comp) > 1e-15:
-            down_capture = port_down_comp / bench_down_comp
-
-    capture_ratio = None
-    if up_capture is not None and down_capture is not None and abs(down_capture) > 1e-15:
-        capture_ratio = up_capture / down_capture
-
-    result.update({
-        "upCapture": up_capture,
-        "downCapture": down_capture,
-        "captureRatio": capture_ratio,
-    })
+    result.update(_calculate_capture_metrics(returns))
 
     if observations < 2:
         return result
@@ -424,38 +341,14 @@ def calculate_benchmark_relative_metrics(
     tracking_error_annualized = periodic_tracking_error * math.sqrt(factor)
     result["trackingErrorAnnualized"] = tracking_error_annualized
 
-    bench_var = float(returns["benchmark"].var(ddof=1))
-    port_var = float(returns["portfolio"].var(ddof=1))
-    covar = float(returns["portfolio"].cov(returns["benchmark"]))
-
-    if bench_var > 1e-15:
-        beta = covar / bench_var
-        alpha_annualized = (portfolio_annualized - rf) - beta * (benchmark_annualized - rf)
-        treynor_ratio = (portfolio_annualized - rf) / beta if abs(beta) > 1e-15 else None
-        result.update({
-            "beta": beta,
-            "alphaAnnualized": alpha_annualized,
-            "treynorRatio": treynor_ratio,
-        })
-
-    bench_std = math.sqrt(bench_var)
-    port_std = math.sqrt(port_var)
-    if port_std > 1e-15 and bench_std > 1e-15:
-        raw_corr = covar / (port_std * bench_std)
-        corr = max(-1.0, min(1.0, raw_corr))
-        r_squared = max(0.0, min(1.0, corr**2))
-        result["correlation"] = corr
-        result["rSquared"] = r_squared
-    elif port_std <= 1e-15 and bench_std > 1e-15:
-        result["correlation"] = 0.0
-        result["rSquared"] = 0.0
+    result.update(_calculate_systematic_risk_metrics(
+        returns,
+        annualization_factor=factor,
+        risk_free_rate=rf,
+    ))
 
     if math.isclose(periodic_tracking_error, 0.0, rel_tol=0.0, abs_tol=1e-15):
         result["status"] = "zero_tracking_error"
-        return result
-
-    if bench_var <= 1e-15:
-        result["status"] = "zero_benchmark_variance"
         return result
 
     information_ratio = active_annualized / tracking_error_annualized
@@ -465,6 +358,118 @@ def calculate_benchmark_relative_metrics(
         "classification": _classify_information_ratio(information_ratio, bands),
     })
     return result
+
+
+def _calculate_systematic_risk_metrics(
+    returns: pd.DataFrame,
+    *,
+    annualization_factor: float,
+    risk_free_rate: float,
+) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "betaStatus": "insufficient_history",
+        "correlationStatus": "insufficient_history",
+        "treynorStatus": "insufficient_history",
+        "beta": None,
+        "alphaAnnualized": None,
+        "treynorRatio": None,
+        "correlation": None,
+        "rSquared": None,
+    }
+    if len(returns.index) < 2:
+        return result
+
+    bench_var = max(0.0, float(returns["benchmark"].var(ddof=1)))
+    port_var = max(0.0, float(returns["portfolio"].var(ddof=1)))
+    covar = float(returns["portfolio"].cov(returns["benchmark"]))
+    if bench_var <= 1e-15:
+        result.update({
+            "betaStatus": "zero_benchmark_variance",
+            "correlationStatus": "undefined_constant_benchmark",
+            "treynorStatus": "zero_benchmark_variance",
+        })
+        return result
+
+    portfolio_annualized = float(returns["portfolio"].mean()) * annualization_factor
+    benchmark_annualized = float(returns["benchmark"].mean()) * annualization_factor
+    beta = covar / bench_var
+    alpha_annualized = (
+        (portfolio_annualized - risk_free_rate)
+        - beta * (benchmark_annualized - risk_free_rate)
+    )
+    treynor_ratio = None
+    treynor_status = "zero_beta"
+    if abs(beta) > 1e-15:
+        treynor_ratio = (portfolio_annualized - risk_free_rate) / beta
+        treynor_status = "available"
+
+    result.update({
+        "betaStatus": "available",
+        "treynorStatus": treynor_status,
+        "beta": beta,
+        "alphaAnnualized": alpha_annualized,
+        "treynorRatio": treynor_ratio,
+    })
+    if port_var <= 1e-15:
+        result["correlationStatus"] = "undefined_constant_portfolio"
+        return result
+
+    raw_corr = covar / math.sqrt(port_var * bench_var)
+    correlation = max(-1.0, min(1.0, raw_corr))
+    result.update({
+        "correlationStatus": "available",
+        "correlation": correlation,
+        "rSquared": max(0.0, min(1.0, correlation**2)),
+    })
+    return result
+
+
+def _calculate_capture_metrics(returns: pd.DataFrame) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "captureStatus": "insufficient_history",
+        "upCapture": None,
+        "downCapture": None,
+        "captureRatio": None,
+        "upMarketPeriods": 0,
+        "downMarketPeriods": 0,
+    }
+    if returns.empty:
+        return result
+
+    up_returns = returns.loc[returns["benchmark"] > 0]
+    down_returns = returns.loc[returns["benchmark"] < 0]
+    result["upMarketPeriods"] = int(len(up_returns.index))
+    result["downMarketPeriods"] = int(len(down_returns.index))
+    up_capture = _capture_ratio(up_returns)
+    down_capture = _capture_ratio(down_returns)
+    capture_ratio = None
+    if up_capture is not None and down_capture is not None and abs(down_capture) > 1e-15:
+        capture_ratio = up_capture / down_capture
+
+    if up_capture is not None and down_capture is not None:
+        status = "available"
+    elif up_capture is not None or down_capture is not None:
+        status = "partial"
+    else:
+        status = "insufficient_regimes"
+    result.update({
+        "captureStatus": status,
+        "upCapture": up_capture,
+        "downCapture": down_capture,
+        "captureRatio": capture_ratio,
+    })
+    return result
+
+
+def _capture_ratio(regime_returns: pd.DataFrame) -> float | None:
+    if regime_returns.empty:
+        return None
+    observations = len(regime_returns.index)
+    benchmark_return = float((1.0 + regime_returns["benchmark"]).prod()) ** (1.0 / observations) - 1.0
+    if abs(benchmark_return) <= 1e-15:
+        return None
+    portfolio_return = float((1.0 + regime_returns["portfolio"]).prod()) ** (1.0 / observations) - 1.0
+    return portfolio_return / benchmark_return
 
 
 def benchmark_level_curve(frame: pd.DataFrame | None) -> list[dict[str, Any]]:

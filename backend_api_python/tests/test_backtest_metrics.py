@@ -305,8 +305,10 @@ def test_calculate_beta_and_alpha_known_values():
     assert result["beta"] == pytest.approx(2.0)
     assert result["alphaAnnualized"] == pytest.approx(0.0)
     assert result["treynorRatio"] == pytest.approx(2.52)
+    assert result["treynorStatus"] == "available"
     assert result["correlation"] == pytest.approx(1.0)
     assert result["rSquared"] == pytest.approx(1.0)
+    assert result["correlationStatus"] == "available"
 
 
 def test_calculate_beta_and_alpha_with_positive_risk_free_rate():
@@ -342,15 +344,10 @@ def test_calculate_capture_ratios_known_values():
     assert result["observations"] == 4
     assert result["upMarketPeriods"] == 2
     assert result["downMarketPeriods"] == 2
-    # Up market: benchmark = [0.05, 0.03], port = [0.06, 0.04]
-    # bench_up = 1.05 * 1.03 - 1 = 0.0815
-    # port_up = 1.06 * 1.04 - 1 = 0.1024
-    expected_up_capture = 0.1024 / 0.0815
+    # Capture uses geometric-mean returns within each market regime.
+    expected_up_capture = ((1.06 * 1.04) ** 0.5 - 1.0) / ((1.05 * 1.03) ** 0.5 - 1.0)
     assert result["upCapture"] == pytest.approx(expected_up_capture)
-    # Down market: benchmark = [-0.04, -0.02], port = [-0.02, -0.01]
-    # bench_down = 0.96 * 0.98 - 1 = -0.0592
-    # port_down = 0.98 * 0.99 - 1 = -0.0298
-    expected_down_capture = -0.0298 / -0.0592
+    expected_down_capture = ((0.98 * 0.99) ** 0.5 - 1.0) / ((0.96 * 0.98) ** 0.5 - 1.0)
     assert result["downCapture"] == pytest.approx(expected_down_capture)
     assert result["captureRatio"] == pytest.approx(expected_up_capture / expected_down_capture)
 
@@ -363,7 +360,7 @@ def test_capture_ratios_only_up_market():
         market="USStock",
     )
 
-    assert result["status"] == "available"
+    assert result["status"] == "partial"
     assert result["upMarketPeriods"] == 3
     assert result["downMarketPeriods"] == 0
     assert result["upCapture"] is not None
@@ -379,7 +376,7 @@ def test_capture_ratios_only_down_market():
         market="USStock",
     )
 
-    assert result["status"] == "available"
+    assert result["status"] == "partial"
     assert result["upMarketPeriods"] == 0
     assert result["downMarketPeriods"] == 3
     assert result["upCapture"] is None
@@ -397,6 +394,8 @@ def test_zero_benchmark_variance():
     )
 
     assert result["status"] == "zero_benchmark_variance"
+    assert result["correlationStatus"] == "undefined_constant_benchmark"
+    assert result["treynorStatus"] == "zero_benchmark_variance"
     assert result["beta"] is None
     assert result["alphaAnnualized"] is None
     assert result["treynorRatio"] is None
@@ -414,6 +413,52 @@ def test_zero_beta_treynor_is_none():
     assert result["status"] == "available"
     assert result["beta"] == pytest.approx(0.0, abs=1e-12)
     assert result["treynorRatio"] is None
+    assert result["treynorStatus"] == "zero_beta"
+
+
+def test_constant_portfolio_leaves_correlation_undefined():
+    result = calculate_beta_and_alpha(
+        _curve([0.0, 0.0, 0.0]),
+        _curve([0.01, -0.02, 0.03]),
+        frequency="1d",
+        annualization_factor=252.0,
+        market="Crypto",
+    )
+
+    assert result["status"] == "available"
+    assert result["beta"] == pytest.approx(0.0)
+    assert result["correlationStatus"] == "undefined_constant_portfolio"
+    assert result["correlation"] is None
+    assert result["rSquared"] is None
+
+
+def test_flat_benchmark_does_not_suppress_information_ratio():
+    portfolio = _curve([0.01, -0.02, 0.03])
+    benchmark = _curve([0.0, 0.0, 0.0])
+
+    information = calculate_information_ratio(
+        portfolio,
+        benchmark,
+        benchmark="flat",
+        frequency="1d",
+        annualization_factor=365.25,
+        market="Crypto",
+    )
+    combined = calculate_benchmark_relative_metrics(
+        portfolio,
+        benchmark,
+        benchmark="flat",
+        frequency="1d",
+        annualization_factor=365.25,
+        market="Crypto",
+    )
+
+    assert combined["status"] == information["status"] == "available"
+    assert combined["informationRatio"] == pytest.approx(information["informationRatio"])
+    assert combined["classification"] == information["classification"]
+    assert combined["betaStatus"] == "zero_benchmark_variance"
+    assert combined["correlationStatus"] == "undefined_constant_benchmark"
+    assert combined["beta"] is None
 
 
 def test_benchmark_metrics_insufficient_history():
@@ -429,6 +474,7 @@ def test_benchmark_metrics_insufficient_history():
     assert result_zero["observations"] == 0
     assert result_zero["portfolioReturnAnnualized"] is None
     assert result_zero["beta"] is None
+    assert result_zero["riskFreeRateSource"] == "default_zero"
 
     result_one = calculate_benchmark_relative_metrics(
         [{"time": "2026-01-01T00:00:00Z", "value": 100.0}, {"time": "2026-01-02T00:00:00Z", "value": 102.0}],
@@ -488,6 +534,11 @@ def test_calculate_benchmark_relative_metrics_full_integration():
     assert result["informationRatio"] == pytest.approx(8.270196225621152)
     assert result["classification"] == "exceptional"
     assert result["riskFreeRate"] == pytest.approx(0.02)
+    assert result["riskFreeRateSource"] == "configured"
+    assert result["betaStatus"] == "available"
+    assert result["correlationStatus"] == "available"
+    assert result["treynorStatus"] == "available"
+    assert result["captureStatus"] == "available"
     assert result["beta"] == pytest.approx(1.991525423728826)
     assert result["alphaAnnualized"] == pytest.approx(0.08923728813558407)
     assert result["treynorRatio"] == pytest.approx(0.7808085106382866)
@@ -495,9 +546,14 @@ def test_calculate_benchmark_relative_metrics_full_integration():
     assert result["rSquared"] == pytest.approx(0.9984180790960459)
     assert result["upMarketPeriods"] == 3
     assert result["downMarketPeriods"] == 1
-    assert result["upCapture"] == pytest.approx(2.0697185613667264)
+    expected_up_capture = (
+        (1.01 * 1.02 * 1.005) ** (1.0 / 3.0) - 1.0
+    ) / (
+        (1.005 * 1.01 * 1.002) ** (1.0 / 3.0) - 1.0
+    )
+    assert result["upCapture"] == pytest.approx(expected_up_capture)
     assert result["downCapture"] == pytest.approx(2.0)
-    assert result["captureRatio"] == pytest.approx(1.0348592806833516)
+    assert result["captureRatio"] == pytest.approx(expected_up_capture / 2.0)
 
 
 def test_calculate_benchmark_relative_metrics_zero_tracking_error():
