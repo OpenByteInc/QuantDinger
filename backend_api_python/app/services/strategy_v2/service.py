@@ -13,7 +13,11 @@ from typing import Any, Callable
 import pandas as pd
 
 from app.data_sources.errors import MarketDataUnavailableError
-from app.services.backtest.metrics import benchmark_level_curve, calculate_information_ratio
+from app.services.backtest.metrics import (
+    benchmark_level_curve,
+    calculate_benchmark_relative_metrics,
+    calculate_information_ratio,
+)
 from app.services.backtest_limits import (
     BacktestRangeLimitError,
     backtest_warmup_calendar_days,
@@ -379,7 +383,7 @@ class StrategyV2BacktestService:
         result["excessReturn"] = float(result.get("totalReturn") or 0.0) - float(result.get("benchmarkTotalReturn") or 0.0)
         normalized_benchmark_frequency = normalize_frequency(benchmark_frequency)
         benchmark_markets = (benchmark_spec.market,) if benchmark_spec is not None else manifest.markets
-        result["benchmarkRelativeMetrics"] = calculate_information_ratio(
+        result["benchmarkRelativeMetrics"] = calculate_benchmark_relative_metrics(
             result.get("equityCurve") or [],
             benchmark_level_curve(benchmark_frame),
             benchmark=benchmark_spec.key if benchmark_spec is not None else None,

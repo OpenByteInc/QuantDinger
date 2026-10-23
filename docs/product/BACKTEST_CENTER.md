@@ -48,6 +48,17 @@ The default interpretation bands (`weak`, `acceptable`, `good`, and
 `exceptional`) are operational labels rather than a universal market standard.
 The calculation accepts alternative bands for mandates that require them.
 
+In addition to the Information Ratio, `benchmarkRelativeMetrics` provides:
+
+- **Beta ($\beta$):** Systematic risk relative to the benchmark ($\text{Cov}(R_p, R_b) / \text{Var}(R_b)$). Zero benchmark variance yields `zero_benchmark_variance` status.
+- **Jensen's Alpha ($\alpha_{\text{ann}}$):** Annualized risk-adjusted excess return over CAPM expected return: $(R_{p,\text{ann}} - R_f) - \beta (R_{b,\text{ann}} - R_f)$.
+- **Treynor Ratio:** Annualized excess return per unit of systematic risk: $(R_{p,\text{ann}} - R_f) / \beta$.
+- **Correlation & $R^2$:** Pearson correlation coefficient ($r \in [-1, 1]$) and coefficient of determination ($R^2 \in [0, 1]$).
+- **Capture Ratios:**
+  - `upCapture`: Compounded portfolio return divided by compounded benchmark return across periods where $R_b > 0$.
+  - `downCapture`: Compounded portfolio return divided by compounded benchmark return across periods where $R_b < 0$.
+  - `captureRatio`: Ratio of upside capture to downside capture (`upCapture / downCapture`). A value $> 1.0$ indicates greater participation in up markets than down markets.
+
 Benchmark choice remains part of the research hypothesis. CDI can be suitable
 for Brazilian cash-like and low-duration fixed-income strategies, but it is not
 an automatic default for inflation-linked, longer-duration, or credit-risk

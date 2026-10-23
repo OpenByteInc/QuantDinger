@@ -3,7 +3,13 @@ import math
 import pandas as pd
 import pytest
 
-from app.services.backtest.metrics import benchmark_level_curve, calculate_information_ratio
+from app.services.backtest.metrics import (
+    benchmark_level_curve,
+    calculate_benchmark_relative_metrics,
+    calculate_beta_and_alpha,
+    calculate_capture_ratios,
+    calculate_information_ratio,
+)
 
 
 def _curve(returns, *, frequency="D"):
@@ -276,3 +282,242 @@ def test_metric_normalizes_monthly_aliases():
             market="Crypto",
         )
         assert result["frequency"] == "1mo"
+
+
+
+def test_calculate_beta_and_alpha_known_values():
+    result = calculate_beta_and_alpha(
+        _curve([0.02, 0.04, -0.01, 0.03]),
+        _curve([0.01, 0.02, -0.005, 0.015]),
+        benchmark="USStock:SPY",
+        frequency="1d",
+        annualization_factor=252.0,
+        risk_free_rate=0.0,
+        market="USStock",
+    )
+
+    assert result["status"] == "available"
+    assert result["observations"] == 4
+    assert result["frequency"] == "1d"
+    assert result["annualizationFactor"] == 252.0
+    assert result["portfolioReturnAnnualized"] == pytest.approx(5.04)
+    assert result["benchmarkReturnAnnualized"] == pytest.approx(2.52)
+    assert result["beta"] == pytest.approx(2.0)
+    assert result["alphaAnnualized"] == pytest.approx(0.0)
+    assert result["treynorRatio"] == pytest.approx(2.52)
+    assert result["correlation"] == pytest.approx(1.0)
+    assert result["rSquared"] == pytest.approx(1.0)
+
+
+def test_calculate_beta_and_alpha_with_positive_risk_free_rate():
+    result = calculate_beta_and_alpha(
+        _curve([0.02, 0.04, -0.01, 0.03]),
+        _curve([0.01, 0.02, -0.005, 0.015]),
+        benchmark="USStock:SPY",
+        frequency="1d",
+        annualization_factor=252.0,
+        risk_free_rate=0.04,
+        market="USStock",
+    )
+
+    assert result["status"] == "available"
+    assert result["riskFreeRate"] == pytest.approx(0.04)
+    assert result["beta"] == pytest.approx(2.0)
+    # alpha = (5.04 - 0.04) - 2.0 * (2.52 - 0.04) = 5.00 - 4.96 = 0.04
+    assert result["alphaAnnualized"] == pytest.approx(0.04)
+    # treynor = (5.04 - 0.04) / 2.0 = 2.50
+    assert result["treynorRatio"] == pytest.approx(2.50)
+
+
+def test_calculate_capture_ratios_known_values():
+    result = calculate_capture_ratios(
+        _curve([0.06, -0.02, 0.04, -0.01]),
+        _curve([0.05, -0.04, 0.03, -0.02]),
+        benchmark="USStock:SPY",
+        frequency="1d",
+        market="USStock",
+    )
+
+    assert result["status"] == "available"
+    assert result["observations"] == 4
+    assert result["upMarketPeriods"] == 2
+    assert result["downMarketPeriods"] == 2
+    # Up market: benchmark = [0.05, 0.03], port = [0.06, 0.04]
+    # bench_up = 1.05 * 1.03 - 1 = 0.0815
+    # port_up = 1.06 * 1.04 - 1 = 0.1024
+    expected_up_capture = 0.1024 / 0.0815
+    assert result["upCapture"] == pytest.approx(expected_up_capture)
+    # Down market: benchmark = [-0.04, -0.02], port = [-0.02, -0.01]
+    # bench_down = 0.96 * 0.98 - 1 = -0.0592
+    # port_down = 0.98 * 0.99 - 1 = -0.0298
+    expected_down_capture = -0.0298 / -0.0592
+    assert result["downCapture"] == pytest.approx(expected_down_capture)
+    assert result["captureRatio"] == pytest.approx(expected_up_capture / expected_down_capture)
+
+
+def test_capture_ratios_only_up_market():
+    result = calculate_capture_ratios(
+        _curve([0.02, 0.03, 0.01]),
+        _curve([0.01, 0.02, 0.01]),
+        frequency="1d",
+        market="USStock",
+    )
+
+    assert result["status"] == "available"
+    assert result["upMarketPeriods"] == 3
+    assert result["downMarketPeriods"] == 0
+    assert result["upCapture"] is not None
+    assert result["downCapture"] is None
+    assert result["captureRatio"] is None
+
+
+def test_capture_ratios_only_down_market():
+    result = calculate_capture_ratios(
+        _curve([-0.01, -0.02, -0.005]),
+        _curve([-0.02, -0.03, -0.01]),
+        frequency="1d",
+        market="USStock",
+    )
+
+    assert result["status"] == "available"
+    assert result["upMarketPeriods"] == 0
+    assert result["downMarketPeriods"] == 3
+    assert result["upCapture"] is None
+    assert result["downCapture"] is not None
+    assert result["captureRatio"] is None
+
+
+def test_zero_benchmark_variance():
+    result = calculate_beta_and_alpha(
+        _curve([0.01, 0.02, 0.03]),
+        _curve([0.0, 0.0, 0.0]),
+        frequency="1d",
+        annualization_factor=252.0,
+        market="USStock",
+    )
+
+    assert result["status"] == "zero_benchmark_variance"
+    assert result["beta"] is None
+    assert result["alphaAnnualized"] is None
+    assert result["treynorRatio"] is None
+
+
+def test_zero_beta_treynor_is_none():
+    result = calculate_beta_and_alpha(
+        _curve([0.02, 0.02, -0.02, -0.02]),
+        _curve([0.01, -0.01, 0.01, -0.01]),
+        frequency="1d",
+        annualization_factor=252.0,
+        market="USStock",
+    )
+
+    assert result["status"] == "available"
+    assert result["beta"] == pytest.approx(0.0, abs=1e-12)
+    assert result["treynorRatio"] is None
+
+
+def test_benchmark_metrics_insufficient_history():
+    result_zero = calculate_benchmark_relative_metrics(
+        [],
+        [],
+        benchmark="USStock:SPY",
+        frequency="1d",
+        annualization_factor=252.0,
+        market="USStock",
+    )
+    assert result_zero["status"] == "insufficient_history"
+    assert result_zero["observations"] == 0
+    assert result_zero["portfolioReturnAnnualized"] is None
+    assert result_zero["beta"] is None
+
+    result_one = calculate_benchmark_relative_metrics(
+        [{"time": "2026-01-01T00:00:00Z", "value": 100.0}, {"time": "2026-01-02T00:00:00Z", "value": 102.0}],
+        [{"time": "2026-01-01T00:00:00Z", "value": 100.0}, {"time": "2026-01-02T00:00:00Z", "value": 101.0}],
+        benchmark="USStock:SPY",
+        frequency="1d",
+        annualization_factor=252.0,
+        market="USStock",
+    )
+    assert result_one["status"] == "insufficient_history"
+    assert result_one["observations"] == 1
+    assert result_one["portfolioReturnAnnualized"] == pytest.approx(252.0 * 0.02)
+    assert result_one["benchmarkReturnAnnualized"] == pytest.approx(252.0 * 0.01)
+    assert result_one["beta"] is None
+    assert result_one["informationRatio"] is None
+
+
+def test_benchmark_metrics_input_validation():
+    with pytest.raises(ValueError, match="annualization_factor"):
+        calculate_benchmark_relative_metrics(
+            [], [], benchmark="USStock:SPY", frequency="1d", annualization_factor=-1.0
+        )
+
+    with pytest.raises(ValueError, match="annualization_factor"):
+        calculate_benchmark_relative_metrics(
+            [], [], benchmark="USStock:SPY", frequency="1d", annualization_factor=float("nan")
+        )
+
+    with pytest.raises(ValueError, match="risk_free_rate"):
+        calculate_benchmark_relative_metrics(
+            [], [], benchmark="USStock:SPY", frequency="1d", annualization_factor=252.0, risk_free_rate=float("nan")
+        )
+
+
+def test_calculate_benchmark_relative_metrics_full_integration():
+    portfolio = _curve([0.01, 0.02, -0.01, 0.005])
+    benchmark = _curve([0.005, 0.01, -0.005, 0.002])
+
+    result = calculate_benchmark_relative_metrics(
+        portfolio,
+        benchmark,
+        benchmark="USStock:SPY",
+        frequency="1d",
+        annualization_factor=252.0,
+        risk_free_rate=0.02,
+        market="USStock",
+    )
+
+    assert result["status"] == "available"
+    assert result["benchmark"] == "USStock:SPY"
+    assert result["frequency"] == "1d"
+    assert result["annualizationFactor"] == 252.0
+    assert result["observations"] == 4
+    assert result["portfolioReturnAnnualized"] == pytest.approx(1.575)
+    assert result["benchmarkReturnAnnualized"] == pytest.approx(0.756)
+    assert result["activeReturnAnnualized"] == pytest.approx(0.819)
+    assert result["informationRatio"] == pytest.approx(8.270196225621152)
+    assert result["classification"] == "exceptional"
+    assert result["riskFreeRate"] == pytest.approx(0.02)
+    assert result["beta"] == pytest.approx(1.991525423728826)
+    assert result["alphaAnnualized"] == pytest.approx(0.08923728813558407)
+    assert result["treynorRatio"] == pytest.approx(0.7808085106382866)
+    assert result["correlation"] == pytest.approx(0.99920872649114)
+    assert result["rSquared"] == pytest.approx(0.9984180790960459)
+    assert result["upMarketPeriods"] == 3
+    assert result["downMarketPeriods"] == 1
+    assert result["upCapture"] == pytest.approx(2.0697185613667264)
+    assert result["downCapture"] == pytest.approx(2.0)
+    assert result["captureRatio"] == pytest.approx(1.0348592806833516)
+
+
+def test_calculate_benchmark_relative_metrics_zero_tracking_error():
+    curve = _curve([0.01, 0.02, -0.005, 0.015])
+    result = calculate_benchmark_relative_metrics(
+        curve,
+        curve,
+        benchmark="Crypto:BTC/USDT",
+        frequency="1d",
+        annualization_factor=365.25,
+        market="Crypto",
+    )
+
+    assert result["status"] == "zero_tracking_error"
+    assert result["trackingErrorAnnualized"] == pytest.approx(0.0, abs=1e-12)
+    assert result["informationRatio"] is None
+    assert result["beta"] == pytest.approx(1.0)
+    assert result["alphaAnnualized"] == pytest.approx(0.0, abs=1e-12)
+    assert result["correlation"] == pytest.approx(1.0)
+    assert result["rSquared"] == pytest.approx(1.0)
+    assert result["upCapture"] == pytest.approx(1.0)
+    assert result["downCapture"] == pytest.approx(1.0)
+    assert result["captureRatio"] == pytest.approx(1.0)
