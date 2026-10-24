@@ -13,10 +13,13 @@ from app.services.market_schedule import CALENDAR_BY_MARKET, equity_bar_session_
 __all__ = [
     "DEFAULT_INFORMATION_RATIO_BANDS",
     "benchmark_level_curve",
+    "calculate_batting_average",
     "calculate_benchmark_relative_metrics",
     "calculate_beta_and_alpha",
     "calculate_capture_ratios",
+    "calculate_dual_beta",
     "calculate_information_ratio",
+    "calculate_m_squared",
 ]
 
 
@@ -303,16 +306,28 @@ def calculate_benchmark_relative_metrics(
         "correlationStatus": "insufficient_history",
         "treynorStatus": "insufficient_history",
         "captureStatus": "insufficient_history",
+        "mSquaredStatus": "insufficient_history",
+        "dualBetaStatus": "insufficient_history",
+        "battingStatus": "insufficient_history",
         "beta": None,
         "alphaAnnualized": None,
         "treynorRatio": None,
         "correlation": None,
         "rSquared": None,
+        "mSquared": None,
+        "mSquaredAlpha": None,
         "upCapture": None,
         "downCapture": None,
         "captureRatio": None,
         "upMarketPeriods": 0,
         "downMarketPeriods": 0,
+        "upBeta": None,
+        "downBeta": None,
+        "betaSpread": None,
+        "battingAverage": None,
+        "outperformancePeriods": 0,
+        "underperformancePeriods": 0,
+        "outperformancePayoffRatio": None,
         "benchmark": benchmark,
         "observations": observations,
         "frequency": normalized_frequency,
@@ -332,6 +347,8 @@ def calculate_benchmark_relative_metrics(
     })
 
     result.update(_calculate_capture_metrics(returns))
+    result.update(_calculate_dual_beta_metrics(returns))
+    result.update(_calculate_batting_metrics(returns))
 
     if observations < 2:
         return result
@@ -342,6 +359,11 @@ def calculate_benchmark_relative_metrics(
     result["trackingErrorAnnualized"] = tracking_error_annualized
 
     result.update(_calculate_systematic_risk_metrics(
+        returns,
+        annualization_factor=factor,
+        risk_free_rate=rf,
+    ))
+    result.update(_calculate_m_squared_metrics(
         returns,
         annualization_factor=factor,
         risk_free_rate=rf,
@@ -602,3 +624,276 @@ def _classify_information_ratio(
         if value < upper_bound:
             return label
     return bands[-1][1]
+
+
+
+def calculate_m_squared(
+    portfolio_curve: Iterable[dict[str, Any]],
+    benchmark_curve: Iterable[dict[str, Any]],
+    *,
+    benchmark: str | None = None,
+    frequency: str = "1d",
+    annualization_factor: float = 252.0,
+    risk_free_rate: float = 0.0,
+    market: str = "",
+) -> dict[str, Any]:
+    """Calculate the Modigliani-Modigliani (M^2) measure and M^2 Alpha.
+
+    M^2 leverages or deleverages the portfolio to match benchmark total volatility,
+    converting the Sharpe ratio into an annualized percentage return directly
+    comparable to the benchmark:
+        M^2 = R_f + Sharpe_p * Vol_b_ann
+        M^2_alpha = M^2 - R_b_ann
+    """
+    factor = float(annualization_factor)
+    if not math.isfinite(factor) or factor <= 0:
+        raise ValueError("annualization_factor must be a positive finite number")
+
+    rf = float(risk_free_rate)
+    if not math.isfinite(rf):
+        raise ValueError("risk_free_rate must be a finite number")
+
+    returns, normalized_frequency = _align_curves_and_returns(
+        portfolio_curve, benchmark_curve, frequency, market=market
+    )
+    observations = int(len(returns.index))
+    result: dict[str, Any] = {
+        "status": "insufficient_history",
+        "portfolioReturnAnnualized": None,
+        "benchmarkReturnAnnualized": None,
+        "riskFreeRate": rf,
+        "mSquared": None,
+        "mSquaredAlpha": None,
+        "benchmark": benchmark,
+        "observations": observations,
+        "frequency": normalized_frequency,
+        "annualizationFactor": factor,
+    }
+    if observations < 2:
+        return result
+
+    result["portfolioReturnAnnualized"] = float(returns["portfolio"].mean()) * factor
+    result["benchmarkReturnAnnualized"] = float(returns["benchmark"].mean()) * factor
+    m2 = _calculate_m_squared_metrics(
+        returns,
+        annualization_factor=factor,
+        risk_free_rate=rf,
+    )
+    result.update({
+        "status": m2["mSquaredStatus"],
+        "mSquared": m2["mSquared"],
+        "mSquaredAlpha": m2["mSquaredAlpha"],
+    })
+    return result
+
+
+def calculate_dual_beta(
+    portfolio_curve: Iterable[dict[str, Any]],
+    benchmark_curve: Iterable[dict[str, Any]],
+    *,
+    benchmark: str | None = None,
+    frequency: str = "1d",
+    market: str = "",
+) -> dict[str, Any]:
+    """Calculate Up-Market Beta (beta+), Down-Market Beta (beta-), and Beta Spread.
+
+    Up-market beta measures sensitivity during benchmark positive periods (R_b > 0).
+    Down-market beta measures sensitivity during benchmark negative periods (R_b < 0).
+    Beta spread = beta+ - beta-. A positive spread indicates convex upside participation.
+    """
+    returns, normalized_frequency = _align_curves_and_returns(
+        portfolio_curve, benchmark_curve, frequency, market=market
+    )
+    observations = int(len(returns.index))
+    result: dict[str, Any] = {
+        "status": "insufficient_history",
+        "upBeta": None,
+        "downBeta": None,
+        "betaSpread": None,
+        "upMarketPeriods": 0,
+        "downMarketPeriods": 0,
+        "benchmark": benchmark,
+        "observations": observations,
+        "frequency": normalized_frequency,
+    }
+    if observations < 2:
+        return result
+
+    dual = _calculate_dual_beta_metrics(returns)
+    result.update({
+        "status": dual["dualBetaStatus"],
+        "upBeta": dual["upBeta"],
+        "downBeta": dual["downBeta"],
+        "betaSpread": dual["betaSpread"],
+        "upMarketPeriods": int(len(returns.loc[returns["benchmark"] > 0].index)),
+        "downMarketPeriods": int(len(returns.loc[returns["benchmark"] < 0].index)),
+    })
+    return result
+
+
+def calculate_batting_average(
+    portfolio_curve: Iterable[dict[str, Any]],
+    benchmark_curve: Iterable[dict[str, Any]],
+    *,
+    benchmark: str | None = None,
+    frequency: str = "1d",
+    market: str = "",
+) -> dict[str, Any]:
+    """Calculate Batting Average and Outperformance Payoff Ratio relative to benchmark.
+
+    Batting average is the percentage of observation periods where portfolio return
+    exceeds benchmark return: Sum(I(R_p > R_b)) / T.
+    Outperformance payoff ratio is average excess return in outperforming periods divided
+    by average underperformance in underperforming periods.
+    """
+    returns, normalized_frequency = _align_curves_and_returns(
+        portfolio_curve, benchmark_curve, frequency, market=market
+    )
+    observations = int(len(returns.index))
+    result: dict[str, Any] = {
+        "status": "insufficient_history",
+        "battingAverage": None,
+        "outperformancePeriods": 0,
+        "underperformancePeriods": 0,
+        "outperformancePayoffRatio": None,
+        "benchmark": benchmark,
+        "observations": observations,
+        "frequency": normalized_frequency,
+    }
+    if observations == 0:
+        return result
+
+    batting = _calculate_batting_metrics(returns)
+    result.update({
+        "status": batting["battingStatus"],
+        "battingAverage": batting["battingAverage"],
+        "outperformancePeriods": batting["outperformancePeriods"],
+        "underperformancePeriods": batting["underperformancePeriods"],
+        "outperformancePayoffRatio": batting["outperformancePayoffRatio"],
+    })
+    return result
+
+
+def _calculate_m_squared_metrics(
+    returns: pd.DataFrame,
+    *,
+    annualization_factor: float,
+    risk_free_rate: float,
+) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "mSquaredStatus": "insufficient_history",
+        "mSquared": None,
+        "mSquaredAlpha": None,
+    }
+    if len(returns.index) < 2:
+        return result
+
+    bench_var = max(0.0, float(returns["benchmark"].var(ddof=1)))
+    port_var = max(0.0, float(returns["portfolio"].var(ddof=1)))
+    port_vol_ann = math.sqrt(port_var * annualization_factor)
+    bench_vol_ann = math.sqrt(bench_var * annualization_factor)
+
+    portfolio_annualized = float(returns["portfolio"].mean()) * annualization_factor
+    benchmark_annualized = float(returns["benchmark"].mean()) * annualization_factor
+
+    if port_vol_ann <= 1e-15:
+        result.update({
+            "mSquaredStatus": "zero_portfolio_variance",
+            "mSquared": None,
+            "mSquaredAlpha": None,
+        })
+        return result
+
+    if bench_vol_ann <= 1e-15:
+        result.update({
+            "mSquaredStatus": "zero_benchmark_variance",
+            "mSquared": risk_free_rate,
+            "mSquaredAlpha": risk_free_rate - benchmark_annualized,
+        })
+        return result
+
+    sharpe_p = (portfolio_annualized - risk_free_rate) / port_vol_ann
+    m_squared = risk_free_rate + sharpe_p * bench_vol_ann
+    m_squared_alpha = m_squared - benchmark_annualized
+
+    result.update({
+        "mSquaredStatus": "available",
+        "mSquared": m_squared,
+        "mSquaredAlpha": m_squared_alpha,
+    })
+    return result
+
+
+def _calculate_dual_beta_metrics(returns: pd.DataFrame) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "dualBetaStatus": "insufficient_history",
+        "upBeta": None,
+        "downBeta": None,
+        "betaSpread": None,
+    }
+    if len(returns.index) < 2:
+        return result
+
+    up_returns = returns.loc[returns["benchmark"] > 0]
+    down_returns = returns.loc[returns["benchmark"] < 0]
+
+    up_beta: float | None = None
+    if len(up_returns.index) >= 2:
+        up_bench_var = max(0.0, float(up_returns["benchmark"].var(ddof=1)))
+        if up_bench_var > 1e-15:
+            up_covar = float(up_returns["portfolio"].cov(up_returns["benchmark"]))
+            up_beta = up_covar / up_bench_var
+
+    down_beta: float | None = None
+    if len(down_returns.index) >= 2:
+        down_bench_var = max(0.0, float(down_returns["benchmark"].var(ddof=1)))
+        if down_bench_var > 1e-15:
+            down_covar = float(down_returns["portfolio"].cov(down_returns["benchmark"]))
+            down_beta = down_covar / down_bench_var
+
+    beta_spread = (up_beta - down_beta) if (up_beta is not None and down_beta is not None) else None
+    status = "available" if (up_beta is not None or down_beta is not None) else "insufficient_regimes"
+
+    result.update({
+        "dualBetaStatus": status,
+        "upBeta": up_beta,
+        "downBeta": down_beta,
+        "betaSpread": beta_spread,
+    })
+    return result
+
+
+def _calculate_batting_metrics(returns: pd.DataFrame) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "battingStatus": "insufficient_history",
+        "battingAverage": None,
+        "outperformancePeriods": 0,
+        "underperformancePeriods": 0,
+        "outperformancePayoffRatio": None,
+    }
+    if returns.empty:
+        return result
+
+    active = returns["portfolio"] - returns["benchmark"]
+    outperformed = active > 0
+    underperformed = active < 0
+
+    out_count = int(outperformed.sum())
+    under_count = int(underperformed.sum())
+    batting_avg = float(out_count / len(returns.index))
+
+    avg_out: float | None = float(active.loc[outperformed].mean()) if out_count > 0 else None
+    avg_under: float | None = float(abs(active.loc[underperformed].mean())) if under_count > 0 else None
+
+    payoff: float | None = None
+    if avg_out is not None and avg_under is not None and avg_under > 1e-15:
+        payoff = avg_out / avg_under
+
+    result.update({
+        "battingStatus": "available",
+        "battingAverage": batting_avg,
+        "outperformancePeriods": out_count,
+        "underperformancePeriods": under_count,
+        "outperformancePayoffRatio": payoff,
+    })
+    return result

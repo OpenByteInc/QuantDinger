@@ -40,9 +40,17 @@
 - **相关系数和 $R^2$**：策略与基准收益的 Pearson 相关性及其解释比例。任一收益序列恒定时，这两个值保持为空，因为此时相关系数没有数学定义。
 - **上涨/下跌捕获率**：分别在基准上涨和下跌周期内，用策略几何平均收益除以基准几何平均收益；`1.0` 表示 100% 捕获。
 - **捕获比率**：上涨捕获率除以下跌捕获率。
+- **Modigliani–Modigliani ($M^2$) 及 $M^2$ Alpha**：将策略杠杆调整至与基准波动率一致后的年化收益率：$M^2 = R_f + \text{Sharpe}_p \times \sigma_{b,\text{ann}}$，以及相对基准的超额 $M^2_{\text{alpha}} = M^2 - R_{b,\text{ann}}$。
+- **双重 Beta（上涨 Beta 与下跌 Beta）**：
+  - `upBeta`（$\beta^+$）：仅在基准上涨周期（$R_b > 0$）内计算的系统性敏感度。
+  - `downBeta`（$\beta^-$）：仅在基准下跌周期（$R_b < 0$）内计算的系统性敏感度。
+  - `betaSpread`：上涨 Beta 与下跌 Beta 之差（$\beta^+ - \beta^-$）。正差值体现上行参与度高、下行防御性强的凸性收益特征。
+- **胜率（Batting Average）与超额盈亏比**：
+  - `battingAverage`：策略收益跑赢基准的周期占比（$\sum \mathbb{I}(R_{p,t} > R_{b,t}) / T$）。
+  - `outperformancePayoffRatio`：跑赢周期平均超额收益与跑输周期平均超额亏损之比。
 
 为保持兼容，顶层 `status` 继续表示信息比率状态；`betaStatus`、
-`correlationStatus`、`treynorStatus` 和 `captureStatus` 分别说明对应指标是否
+`correlationStatus`、`treynorStatus`、`captureStatus`、`mSquaredStatus`、`dualBetaStatus` 和 `battingStatus` 分别说明对应指标是否
 可用。基准收益恒定只会使 Beta 不可用，不会清空仍然可以计算的信息比率。
 读取指标前应先检查相应状态和有效观察数。
 

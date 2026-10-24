@@ -58,9 +58,17 @@ In addition to the Information Ratio, `benchmarkRelativeMetrics` provides:
   - `upCapture`: Geometric-mean portfolio return divided by geometric-mean benchmark return across periods where $R_b > 0$.
   - `downCapture`: Geometric-mean portfolio return divided by geometric-mean benchmark return across periods where $R_b < 0$.
   - `captureRatio`: Ratio of upside capture to downside capture (`upCapture / downCapture`). A value $> 1.0$ indicates greater participation in up markets than down markets.
+- **Modigliani–Modigliani ($M^2$) & $M^2 	ext{ Alpha}$:** Scales portfolio volatility to match benchmark volatility, converting the Sharpe ratio into an annualized percentage return: $M^2 = R_f + 	ext{Sharpe}_p 	imes \sigma_{b,	ext{ann}}$ and $M^2_{	ext{alpha}} = M^2 - R_{b,	ext{ann}}$.
+- **Dual Beta (Up-Market & Down-Market Beta):**
+  - `upBeta` ($eta^+$): Systematic sensitivity evaluated strictly over benchmark up-market periods ($R_b > 0$).
+  - `downBeta` ($eta^-$): Systematic sensitivity evaluated strictly over benchmark down-market periods ($R_b < 0$).
+  - `betaSpread`: Difference between upside and downside beta ($eta^+ - eta^-$). A positive spread indicates convex upside participation with defensive downside insulation.
+- **Batting Average & Outperformance Payoff:**
+  - `battingAverage`: Percentage of observation periods where portfolio return exceeds benchmark return ($\sum \mathbb{I}(R_{p,t} > R_{b,t}) / T$).
+  - `outperformancePayoffRatio`: Ratio of average active return during outperforming periods to average active loss during underperforming periods.
 
 The top-level `status` remains the Information Ratio status for compatibility.
-`betaStatus`, `correlationStatus`, `treynorStatus`, and `captureStatus`
+`betaStatus`, `correlationStatus`, `treynorStatus`, `captureStatus`, `mSquaredStatus`, `dualBetaStatus`, and `battingStatus`
 describe metric-specific availability. In particular, a flat benchmark makes
 Beta unavailable but does not suppress a valid Information Ratio. Correlation
 and $R^2$ remain unset when either return series is constant because Pearson

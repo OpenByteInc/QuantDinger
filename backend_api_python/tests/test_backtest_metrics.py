@@ -5,10 +5,13 @@ import pytest
 
 from app.services.backtest.metrics import (
     benchmark_level_curve,
+    calculate_batting_average,
     calculate_benchmark_relative_metrics,
     calculate_beta_and_alpha,
     calculate_capture_ratios,
+    calculate_dual_beta,
     calculate_information_ratio,
+    calculate_m_squared,
 )
 
 
@@ -577,3 +580,182 @@ def test_calculate_benchmark_relative_metrics_zero_tracking_error():
     assert result["upCapture"] == pytest.approx(1.0)
     assert result["downCapture"] == pytest.approx(1.0)
     assert result["captureRatio"] == pytest.approx(1.0)
+
+
+
+def test_calculate_m_squared_known_values():
+    port_ret = [0.02, 0.04, -0.01, 0.03]
+    bench_ret = [0.01, 0.02, -0.005, 0.015]
+    portfolio = _curve(port_ret)
+    benchmark = _curve(bench_ret)
+
+    result = calculate_m_squared(
+        portfolio,
+        benchmark,
+        benchmark="USStock:SPY",
+        frequency="1d",
+        annualization_factor=252.0,
+        risk_free_rate=0.02,
+        market="USStock",
+    )
+
+    port_s = pd.Series(port_ret)
+    bench_s = pd.Series(bench_ret)
+    factor = 252.0
+    rf = 0.02
+
+    port_ann = float(port_s.mean()) * factor
+    bench_ann = float(bench_s.mean()) * factor
+    port_vol = float(port_s.std(ddof=1)) * math.sqrt(factor)
+    bench_vol = float(bench_s.std(ddof=1)) * math.sqrt(factor)
+
+    expected_sharpe = (port_ann - rf) / port_vol
+    expected_m2 = rf + expected_sharpe * bench_vol
+    expected_m2_alpha = expected_m2 - bench_ann
+
+    assert result["status"] == "available"
+    assert result["mSquared"] == pytest.approx(expected_m2)
+    assert result["mSquaredAlpha"] == pytest.approx(expected_m2_alpha)
+    assert result["portfolioReturnAnnualized"] == pytest.approx(port_ann)
+    assert result["benchmarkReturnAnnualized"] == pytest.approx(bench_ann)
+
+
+def test_calculate_m_squared_zero_variances_and_validation():
+    # Flat portfolio: zero portfolio variance
+    flat_portfolio = _curve([0.01, 0.01, 0.01])
+    varying_bench = _curve([0.01, 0.02, -0.005])
+
+    res_flat_p = calculate_m_squared(flat_portfolio, varying_bench)
+    assert res_flat_p["status"] == "zero_portfolio_variance"
+    assert res_flat_p["mSquared"] is None
+    assert res_flat_p["mSquaredAlpha"] is None
+
+    # Flat benchmark: zero benchmark variance
+    varying_portfolio = _curve([0.01, 0.02, -0.005])
+    flat_bench = _curve([0.01, 0.01, 0.01])
+
+    res_flat_b = calculate_m_squared(varying_portfolio, flat_bench, risk_free_rate=0.03)
+    assert res_flat_b["status"] == "zero_benchmark_variance"
+    assert res_flat_b["mSquared"] == pytest.approx(0.03)
+    assert res_flat_b["mSquaredAlpha"] == pytest.approx(0.03 - 252.0 * 0.01)
+
+    # Input validation
+    with pytest.raises(ValueError, match="annualization_factor"):
+        calculate_m_squared(varying_portfolio, varying_bench, annualization_factor=-1.0)
+    with pytest.raises(ValueError, match="risk_free_rate"):
+        calculate_m_squared(varying_portfolio, varying_bench, risk_free_rate=float("nan"))
+
+
+def test_calculate_dual_beta_known_values():
+    # Up-market periods: indices 0, 1, 3 (bench: 0.01, 0.02, 0.015)
+    # Down-market periods: indices 2, 4 (bench: -0.01, -0.02)
+    port_ret = [0.02, 0.03, -0.015, 0.025, -0.035]
+    bench_ret = [0.01, 0.02, -0.01, 0.015, -0.02]
+    portfolio = _curve(port_ret)
+    benchmark = _curve(bench_ret)
+
+    result = calculate_dual_beta(portfolio, benchmark)
+
+    assert result["status"] == "available"
+    assert result["upMarketPeriods"] == 3
+    assert result["downMarketPeriods"] == 2
+
+    # Up beta:
+    up_p = [0.02, 0.03, 0.025]
+    up_b = [0.01, 0.02, 0.015]
+    up_cov = float(pd.Series(up_p).cov(pd.Series(up_b)))
+    up_var = float(pd.Series(up_b).var(ddof=1))
+    expected_up_beta = up_cov / up_var
+
+    # Down beta:
+    down_p = [-0.015, -0.035]
+    down_b = [-0.01, -0.02]
+    down_cov = float(pd.Series(down_p).cov(pd.Series(down_b)))
+    down_var = float(pd.Series(down_b).var(ddof=1))
+    expected_down_beta = down_cov / down_var
+
+    assert result["upBeta"] == pytest.approx(expected_up_beta)
+    assert result["downBeta"] == pytest.approx(expected_down_beta)
+    assert result["betaSpread"] == pytest.approx(expected_up_beta - expected_down_beta)
+
+
+def test_calculate_dual_beta_insufficient_regimes():
+    # Only up-market
+    portfolio = _curve([0.02, 0.03, 0.025])
+    benchmark = _curve([0.01, 0.02, 0.015])
+
+    result = calculate_dual_beta(portfolio, benchmark)
+    assert result["status"] == "available"
+    assert result["upBeta"] is not None
+    assert result["downBeta"] is None
+    assert result["betaSpread"] is None
+    assert result["upMarketPeriods"] == 3
+    assert result["downMarketPeriods"] == 0
+
+
+def test_calculate_batting_average_and_payoff_ratio():
+    # 4 observations:
+    # 0: port 0.02, bench 0.01 -> diff +0.01 (win)
+    # 1: port 0.03, bench 0.01 -> diff +0.02 (win)
+    # 2: port -0.01, bench 0.005 -> diff -0.015 (loss)
+    # 3: port 0.015, bench 0.01 -> diff +0.005 (win)
+    # Batting average = 3 / 4 = 0.75
+    # Outperformance average = (0.01 + 0.02 + 0.005) / 3 = 0.035 / 3 = 0.01166667
+    # Underperformance average = 0.015
+    # Payoff ratio = (0.035 / 3) / 0.015 = 0.035 / 0.045 = 0.7777777777777778
+    port_ret = [0.02, 0.03, -0.01, 0.015]
+    bench_ret = [0.01, 0.01, 0.005, 0.01]
+    portfolio = _curve(port_ret)
+    benchmark = _curve(bench_ret)
+
+    result = calculate_batting_average(portfolio, benchmark)
+
+    assert result["status"] == "available"
+    assert result["battingAverage"] == pytest.approx(0.75)
+    assert result["outperformancePeriods"] == 3
+    assert result["underperformancePeriods"] == 1
+    expected_payoff = (0.035 / 3.0) / 0.015
+    assert result["outperformancePayoffRatio"] == pytest.approx(expected_payoff)
+
+
+def test_calculate_batting_average_all_wins_no_losses():
+    portfolio = _curve([0.02, 0.03])
+    benchmark = _curve([0.01, 0.01])
+
+    result = calculate_batting_average(portfolio, benchmark)
+    assert result["battingAverage"] == pytest.approx(1.0)
+    assert result["outperformancePeriods"] == 2
+    assert result["underperformancePeriods"] == 0
+    assert result["outperformancePayoffRatio"] is None
+
+
+def test_calculate_benchmark_relative_metrics_includes_m2_dual_beta_and_batting():
+    # Integrate into full calculate_benchmark_relative_metrics
+    port_ret = [0.02, 0.03, -0.015, 0.025, -0.035]
+    bench_ret = [0.01, 0.02, -0.01, 0.015, -0.02]
+    portfolio = _curve(port_ret)
+    benchmark = _curve(bench_ret)
+
+    result = calculate_benchmark_relative_metrics(
+        portfolio,
+        benchmark,
+        benchmark="USStock:SPY",
+        frequency="1d",
+        annualization_factor=252.0,
+        risk_free_rate=0.01,
+        market="USStock",
+    )
+
+    # Verify that new Idea 2 fields are properly integrated
+    assert result["mSquaredStatus"] == "available"
+    assert result["mSquared"] is not None
+    assert result["mSquaredAlpha"] is not None
+
+    assert result["dualBetaStatus"] == "available"
+    assert result["upBeta"] is not None
+    assert result["downBeta"] is not None
+    assert result["betaSpread"] is not None
+
+    assert result["battingStatus"] == "available"
+    assert result["battingAverage"] is not None
+    assert result["outperformancePeriods"] > 0
