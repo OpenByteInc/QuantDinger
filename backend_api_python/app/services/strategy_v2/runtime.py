@@ -21,6 +21,11 @@ from app.services.factors import (
     get_factor,
     is_talib_available,
 )
+from app.services.backtest.metrics import (
+    calculate_calmar_ratio,
+    calculate_downside_risk,
+    calculate_drawdown_recovery,
+)
 from app.services.instrument_rules import (
     InstrumentRules,
     InstrumentRulesSnapshot,
@@ -2043,6 +2048,13 @@ class StrategyV2BacktestRunner:
         gross_loss = abs(sum(losses))
         profit_factor = gross_profit / gross_loss if gross_loss > 0 else (gross_profit if gross_profit > 0 else 0.0)
         average_profit = sum(profits) / len(profits) if profits else 0.0
+        downside_metrics = calculate_downside_risk(returns, periods_per_year=periods_per_year)
+        drawdown_details = calculate_drawdown_recovery(equity_curve, initial)
+        calmar_ratio = calculate_calmar_ratio(
+            annualized_return,
+            max_drawdown,
+            available=annualized_return_available,
+        )
         attribution = self._attribution(initial)
         ledger_occurrences = sum(
             max(1, int(item.get("occurrenceCount") or 1))
@@ -2106,6 +2118,15 @@ class StrategyV2BacktestRunner:
             ),
             "totalProfit": final - initial,
             "sharpeRatio": sharpe_ratio,
+            "sortinoRatio": downside_metrics["sortinoRatio"],
+            "calmarRatio": calmar_ratio,
+            "downsideDeviation": downside_metrics["downsideDeviation"],
+            "annualizedDownsideDeviation": downside_metrics["annualizedDownsideDeviation"],
+            "maxDrawdownDurationDays": drawdown_details["maxDrawdownDurationDays"],
+            "maxDrawdownRecoveryTime": drawdown_details["maxDrawdownRecoveryTime"],
+            "maxDrawdownRecoveryDays": drawdown_details["maxDrawdownRecoveryDays"],
+            "maxDrawdownRecovered": drawdown_details["maxDrawdownRecovered"],
+            "recoveryFactor": drawdown_details["recoveryFactor"],
             "annualizedReturn": annualized_return,
             "annualizedReturnAvailable": annualized_return_available,
             "annualizedReturnCapped": annualized_return_capped,

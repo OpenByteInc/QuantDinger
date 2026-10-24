@@ -1654,3 +1654,48 @@ def handle_data(context, data):
     ).run()
 
     assert result["totalExecutions"] == 0
+
+
+
+def test_result_includes_downside_risk_and_drawdown_recovery_metrics():
+    runner = StrategyV2BacktestRunner(
+        code="""
+def initialize(context):
+    context.set_universe(["USStock:AAPL"])
+    context.subscribe(frequency="1d")
+
+def handle_data(context, data):
+    pass
+""",
+        frames={"USStock:AAPL": _frame([100, 101, 102])},
+        initial_capital=100,
+        commission=0,
+        slippage=0,
+    )
+    runner.broker.equity_curve = [
+        {"time": "2026-01-01", "value": 100.0},
+        {"time": "2026-01-02", "value": 120.0},
+        {"time": "2026-01-03", "value": 90.0},
+        {"time": "2026-01-05", "value": 125.0},
+    ]
+    runner.broker.portfolio.total_value = 125.0
+
+    result = runner._result()
+
+    assert "sortinoRatio" in result
+    assert "calmarRatio" in result
+    assert "downsideDeviation" in result
+    assert "annualizedDownsideDeviation" in result
+    assert "maxDrawdownDurationDays" in result
+    assert "maxDrawdownRecoveryTime" in result
+    assert "maxDrawdownRecoveryDays" in result
+    assert "maxDrawdownRecovered" in result
+    assert "recoveryFactor" in result
+
+    assert result["maxDrawdown"] == pytest.approx(-25.0)
+    assert result["maxDrawdownRecovered"] is True
+    assert result["maxDrawdownRecoveryTime"] == "2026-01-05"
+    assert result["maxDrawdownRecoveryDays"] == pytest.approx(3.0)
+    assert result["recoveryFactor"] == pytest.approx((125.0 - 100.0) / (120.0 - 90.0))
+    assert result["sortinoRatio"] is not None
+    assert result["calmarRatio"] is not None

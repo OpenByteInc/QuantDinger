@@ -74,6 +74,26 @@ mandates. CDI ingestion and its canonical identifier require a separate market
 data design; do not substitute a static annual CDI rate for periodic benchmark
 observations.
 
+### Downside risk and drawdown metrics
+
+In addition to standard volatility and Sharpe Ratio, Strategy API V2 backtests
+calculate downside risk and drawdown lifecycle metrics in the primary result:
+
+- **Sortino Ratio:** Annualized return divided by annualized downside deviation:
+  $$\text{Sortino} = \frac{\text{Mean}(R_t) \times \sqrt{N}}{\sigma_{\text{down}}}$$
+  Unlike Sharpe Ratio, Sortino Ratio penalizes only returns falling below the Minimum Acceptable Return ($\text{MAR} = 0.0$), avoiding penalization of positive upside volatility. When no downside observations occur and returns are positive, Sortino Ratio is unset (`null`) rather than emitting infinity.
+- **Calmar Ratio:** Ratio of annualized return to maximum drawdown magnitude:
+  $$\text{Calmar} = \frac{\text{Annualized Return (in \%)}}{|\text{Max Drawdown (in \%)}|}$$
+  Gauges compounding return relative to peak-to-trough tail risk. Safely returns `null` when no drawdown occurred or when annualized return is unavailable.
+- **Downside Deviation ($\sigma_{\text{down}}$):** Target semi-deviation measuring the root-mean-square of negative returns relative to MAR across all observations. Also reported annualized in percent via `annualizedDownsideDeviation`.
+- **Drawdown Lifecycle & Recovery:**
+  - `maxDrawdownDurationDays`: Longest continuous underwater duration (in calendar days) where portfolio equity remained below a previous high-water mark before establishing a new peak (or until the end of backtest).
+  - `maxDrawdownRecoveryTime`: Explicit timestamp when equity fully recovered to the peak of the deepest drawdown episode (or `""` if unrecovered before backtest close).
+  - `maxDrawdownRecoveryDays`: Calendar days elapsed from the maximum drawdown peak to full recovery (or to backtest end if unrecovered).
+  - `maxDrawdownRecovered`: Boolean flag indicating whether the maximum drawdown episode fully recovered within the backtest window.
+  - `recoveryFactor`: Total net profit divided by maximum drawdown dollar loss:
+    $$\text{Recovery Factor} = \frac{\text{Final Equity} - \text{Initial Capital}}{\text{Max Drawdown Peak Equity} - \text{Max Drawdown Trough Equity}}$$
+
 ## Common misreadings
 
 - Zero executions may mean missing data, insufficient warmup, or unreachable conditions.

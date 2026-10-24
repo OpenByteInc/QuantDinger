@@ -15,7 +15,10 @@ __all__ = [
     "benchmark_level_curve",
     "calculate_benchmark_relative_metrics",
     "calculate_beta_and_alpha",
+    "calculate_calmar_ratio",
     "calculate_capture_ratios",
+    "calculate_downside_risk",
+    "calculate_drawdown_recovery",
     "calculate_information_ratio",
 ]
 
@@ -602,3 +605,264 @@ def _classify_information_ratio(
         if value < upper_bound:
             return label
     return bands[-1][1]
+
+
+
+def calculate_downside_risk(
+    returns: pd.Series | Iterable[float],
+    *,
+    periods_per_year: float = 252.0,
+    mar: float = 0.0,
+) -> dict[str, Any]:
+    """Calculate downside risk metrics including Downside Deviation and Sortino Ratio.
+
+    Downside deviation (Target Semi-Deviation) evaluates the volatility of returns
+    falling below the Minimum Acceptable Return (MAR, default 0.0) across all T observations:
+        DownsideDeviation = sqrt(sum(min(R_t - MAR, 0)^2) / T)
+
+    Sortino Ratio evaluates annualized excess return per unit of downside risk:
+        Sortino = (Mean(R_t - MAR) * sqrt(periods_per_year)) / DownsideDeviation
+
+    Returns:
+        dict containing:
+            - downsideDeviation: periodic downside deviation (ddof=0)
+            - annualizedDownsideDeviation: annualized downside deviation in %
+            - sortinoRatio: Sortino ratio, or None if downside deviation is zero with positive excess return
+            - observations: total number of return observations
+            - downsideObservations: count of returns strictly below MAR
+    """
+    factor = float(periods_per_year)
+    if not math.isfinite(factor) or factor <= 0:
+        raise ValueError("periods_per_year must be a positive finite number")
+
+    target_mar = float(mar)
+    if not math.isfinite(target_mar):
+        raise ValueError("mar must be a finite number")
+
+    if isinstance(returns, pd.Series):
+        clean_returns = returns.dropna()
+    else:
+        clean_returns = pd.Series(
+            [float(x) for x in returns if x is not None and math.isfinite(float(x))],
+            dtype="float64",
+        )
+
+    observations = int(len(clean_returns))
+    if observations == 0:
+        return {
+            "downsideDeviation": 0.0,
+            "annualizedDownsideDeviation": 0.0,
+            "sortinoRatio": 0.0,
+            "observations": 0,
+            "downsideObservations": 0,
+        }
+
+    excess = clean_returns - target_mar
+    negative_excess = excess.loc[excess < 0.0]
+    downside_count = int(len(negative_excess))
+
+    if downside_count == 0:
+        return {
+            "downsideDeviation": 0.0,
+            "annualizedDownsideDeviation": 0.0,
+            "sortinoRatio": None if float(excess.mean()) > 0 else 0.0,
+            "observations": observations,
+            "downsideObservations": 0,
+        }
+
+    semi_variance = float((negative_excess**2).sum() / observations)
+    downside_dev = math.sqrt(semi_variance)
+    annualized_downside_dev = downside_dev * math.sqrt(factor) * 100.0
+
+    if downside_dev > 1e-15:
+        sortino = float(excess.mean() / downside_dev * math.sqrt(factor))
+    elif float(excess.mean()) > 0:
+        sortino = None
+    else:
+        sortino = 0.0
+
+    return {
+        "downsideDeviation": downside_dev,
+        "annualizedDownsideDeviation": annualized_downside_dev,
+        "sortinoRatio": sortino,
+        "observations": observations,
+        "downsideObservations": downside_count,
+    }
+
+
+def calculate_calmar_ratio(
+    annualized_return: float,
+    max_drawdown: float,
+    *,
+    available: bool = True,
+) -> float | None:
+    """Calculate the Calmar Ratio: Annualized Return / |Max Drawdown|.
+
+    Parameters:
+        annualized_return: Annualized return in percent (e.g. 25.0 for 25%).
+        max_drawdown: Maximum drawdown in percent (e.g. -15.0 or 15.0).
+        available: Flag indicating whether annualized return is valid.
+
+    Returns:
+        float | None: Calmar ratio, or None if drawdown is zero or return is unavailable.
+    """
+    if not available:
+        return None
+    try:
+        ann_ret = float(annualized_return)
+        mdd = abs(float(max_drawdown))
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(ann_ret) or not math.isfinite(mdd):
+        return None
+    if mdd > 1e-15:
+        return float(ann_ret / mdd)
+    if ann_ret <= 0:
+        return 0.0
+    return None
+
+
+def calculate_drawdown_recovery(
+    equity_curve: Iterable[dict[str, Any]],
+    initial_capital: float = 0.0,
+) -> dict[str, Any]:
+    """Calculate maximum drawdown duration, recovery timestamps, and recovery factor.
+
+    Tracks high-water marks (peaks), drawdown episodes, recovery points, and duration
+    across an equity curve.
+
+    Returns:
+        dict containing:
+            - maxDrawdownDurationDays: Longest continuous underwater period across all drawdowns in calendar days.
+            - maxDrawdownRecoveryTime: Timestamp when the deepest drawdown recovered (or "" if unrecovered).
+            - maxDrawdownRecoveryDays: Days from deepest drawdown peak to recovery (or to backtest end).
+            - maxDrawdownRecovered: True if the deepest drawdown fully recovered before backtest end.
+            - recoveryFactor: Total net profit divided by max drawdown dollar magnitude.
+    """
+    curve = list(equity_curve)
+    if not curve:
+        return {
+            "maxDrawdownDurationDays": 0.0,
+            "maxDrawdownRecoveryTime": "",
+            "maxDrawdownRecoveryDays": 0.0,
+            "maxDrawdownRecovered": True,
+            "recoveryFactor": 0.0,
+        }
+
+    initial = float(initial_capital)
+    final = float(curve[-1].get("value") or 0.0)
+
+    points: list[tuple[pd.Timestamp, float, str]] = []
+    for item in curve:
+        time_str = str(item.get("time") or "")
+        t = pd.to_datetime(time_str, errors="coerce", utc=True)
+        v = pd.to_numeric(item.get("value"), errors="coerce")
+        if pd.isna(t) or pd.isna(v) or not math.isfinite(float(v)):
+            continue
+        points.append((t, float(v), time_str))
+
+    if not points:
+        return {
+            "maxDrawdownDurationDays": 0.0,
+            "maxDrawdownRecoveryTime": "",
+            "maxDrawdownRecoveryDays": 0.0,
+            "maxDrawdownRecovered": True,
+            "recoveryFactor": 0.0,
+        }
+
+    peak = initial if initial > 0 else points[0][1]
+    peak_time = points[0][0]
+
+    max_dd = 0.0
+    max_dd_peak = peak
+    max_dd_trough = peak
+    max_dd_peak_time = peak_time
+
+    episodes: list[dict[str, Any]] = []
+    current_episode: dict[str, Any] | None = None
+
+    for t, v, _ in points:
+        if peak <= 0 or v > peak:
+            if current_episode is not None:
+                current_episode["recovery_time"] = t
+                current_episode["duration_days"] = max(
+                    0.0,
+                    (t - current_episode["peak_time"]).total_seconds() / 86400.0,
+                )
+                current_episode["recovered"] = True
+                episodes.append(current_episode)
+                current_episode = None
+            peak = v
+            peak_time = t
+        elif v < peak:
+            dd = (v / peak - 1.0) * 100.0
+            if current_episode is None:
+                current_episode = {
+                    "peak_time": peak_time,
+                    "peak_value": peak,
+                    "trough_value": v,
+                    "trough_time": t,
+                    "max_drawdown": dd,
+                    "duration_days": 0.0,
+                    "recovered": False,
+                }
+            else:
+                if v < current_episode["trough_value"]:
+                    current_episode["trough_value"] = v
+                    current_episode["trough_time"] = t
+                    current_episode["max_drawdown"] = min(current_episode["max_drawdown"], dd)
+
+            if dd < max_dd:
+                max_dd = dd
+                max_dd_peak = peak
+                max_dd_trough = v
+                max_dd_peak_time = peak_time
+
+    last_time = points[-1][0]
+    if current_episode is not None:
+        current_episode["duration_days"] = max(
+            0.0,
+            (last_time - current_episode["peak_time"]).total_seconds() / 86400.0,
+        )
+        current_episode["recovered"] = False
+        episodes.append(current_episode)
+
+    max_duration_days = max((ep["duration_days"] for ep in episodes), default=0.0)
+
+    max_dd_recovery_time_str = ""
+    max_dd_recovered = False
+    max_dd_recovery_days = 0.0
+
+    if abs(max_dd) > 1e-15:
+        for t, v, original_str in points:
+            if t > max_dd_peak_time and v >= max_dd_peak:
+                max_dd_recovery_time_str = original_str
+                max_dd_recovered = True
+                max_dd_recovery_days = max(
+                    0.0,
+                    (t - max_dd_peak_time).total_seconds() / 86400.0,
+                )
+                break
+        if not max_dd_recovered:
+            max_dd_recovery_days = max(
+                0.0,
+                (last_time - max_dd_peak_time).total_seconds() / 86400.0,
+            )
+    else:
+        max_dd_recovered = True
+
+    dollar_drawdown = max_dd_peak - max_dd_trough
+    if dollar_drawdown > 1e-15 and initial > 0:
+        recovery_factor = float((final - initial) / dollar_drawdown)
+    elif final > initial:
+        recovery_factor = None
+    else:
+        recovery_factor = 0.0
+
+    return {
+        "maxDrawdownDurationDays": max_duration_days,
+        "maxDrawdownRecoveryTime": max_dd_recovery_time_str,
+        "maxDrawdownRecoveryDays": max_dd_recovery_days,
+        "maxDrawdownRecovered": max_dd_recovered,
+        "recoveryFactor": recovery_factor,
+    }
