@@ -8,12 +8,18 @@ updates:
     groups:
       python-runtime:
         patterns: ["*"]
+    ignore:
+      - dependency-name: redis
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    groups:
+      codeql-actions:
+        patterns: ["github/codeql-action/*"]
 
   - package-ecosystem: docker
     directory: /backend_api_python
