@@ -1,0 +1,7 @@
+version = 1
+
+[[annotations]]
+path = "**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2025-2026 Open Byte Inc. and QuantDinger contributors"
+SPDX-License-Identifier = "Apache-2.0"
