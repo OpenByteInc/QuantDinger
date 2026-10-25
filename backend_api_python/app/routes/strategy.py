@@ -69,6 +69,27 @@ def _request_lang(default: str = "zh-CN") -> str:
     return lang or default
 
 
+@strategy_blp.route("/strategies/ai-workspace/account-models", methods=["GET"])
+@login_required
+def list_strategy_workspace_account_models():
+    """Return the safe model catalog owned by the local Codex login."""
+    try:
+        from app.services.chatgpt_account import CodexAppServerClient
+
+        models = CodexAppServerClient(timeout_seconds=30).list_models()
+        return _ok({
+            "authMode": "chatgpt_account",
+            "connected": True,
+            "models": [
+                {"id": item.slug, "name": item.display_name}
+                for item in models
+            ],
+        })
+    except Exception as exc:
+        logger.warning("ChatGPT account model discovery failed: %s", exc)
+        return _error("strategyV2.chatgptAccountUnavailable", 503)
+
+
 def _strategy_ai_text(key: str, lang: str = "zh-CN") -> str:
     texts = {
         STRATEGY_CANDIDATE_MESSAGE_KEY: (
@@ -348,7 +369,9 @@ def generate_strategy():
         from app.services.billing_service import get_billing_service
         from app.services.llm import LLMService
 
-        llm = LLMService()
+        auth_mode = str(payload.get("authMode") or "api_key").strip().lower()
+        requested_model = str(payload.get("model") or "").strip() or None
+        llm = LLMService(auth_mode=auth_mode)
         if not llm.is_configured():
             return _error("strategyV2.llmNotConfigured")
         asset_type = normalize_asset_type(payload.get("assetType") or payload.get("asset_type"))
@@ -629,7 +652,9 @@ def run_strategy_workspace_turn():
         context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
         requested_mode = str(payload.get("interactionMode") or "auto")
         generation_mode = str(payload.get("generationMode") or "authoring").strip().lower()
-        llm = LLMService()
+        auth_mode = str(payload.get("authMode") or "api_key").strip().lower()
+        requested_model = str(payload.get("model") or "").strip() or None
+        llm = LLMService(auth_mode=auth_mode)
         if not llm.is_configured():
             return _error("strategyV2.llmNotConfigured")
         intent_workspace = None
@@ -710,7 +735,7 @@ def run_strategy_workspace_turn():
             logger.info("strategy discussion context budget=%s", budget)
             answer = str(llm.call_llm_api(
                 messages=messages,
-                model=llm.get_default_model(),
+                model=requested_model or llm.get_default_model(),
                 temperature=0.2,
                 use_json_mode=False,
             ) or "").strip()
@@ -780,7 +805,7 @@ def run_strategy_workspace_turn():
         else:
             generated = llm.call_llm_api(
                 messages=messages,
-                model=llm.get_code_generation_model(),
+                model=requested_model or llm.get_code_generation_model(),
                 temperature=0.2 if use_patch_response else 0.35,
                 use_json_mode=use_patch_response,
             )
@@ -802,7 +827,7 @@ def run_strategy_workspace_turn():
                     full_messages[-1] = {"role": "user", "content": full_request}
                     fallback = llm.call_llm_api(
                         messages=full_messages,
-                        model=llm.get_code_generation_model(),
+                        model=requested_model or llm.get_code_generation_model(),
                         temperature=0.25,
                         use_json_mode=False,
                     )

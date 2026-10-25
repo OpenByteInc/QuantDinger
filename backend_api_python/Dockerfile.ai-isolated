@@ -1,0 +1,10 @@
+FROM aq-qd-result-003:1173a0b
+
+USER root
+WORKDIR /app
+COPY . /app
+RUN chown -R quantdinger:quantdinger /app
+USER quantdinger
+
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
+CMD ["gunicorn", "--config", "gunicorn_config.py", "run:app"]
