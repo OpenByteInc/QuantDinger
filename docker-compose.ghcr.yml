@@ -17,9 +17,9 @@
 #   - .env contains backend runtime settings and Docker Compose orchestration knobs.
 #   - The env-sync service imports missing legacy values before startup.
 #
-# Database schema is bootstrapped automatically: the backend re-applies
-# `migrations/init.sql` idempotently on every start, so no host-side SQL
-# mount is needed (unlike docker-compose.yml).
+# Database schema and registered seed components are bootstrapped automatically.
+# The backend applies them idempotently through `qd_bootstrap_migrations` on
+# every start, so no host-side SQL mount is needed (unlike docker-compose.yml).
 #
 # Orchestration override knobs (project-root .env, all optional):
 #   IMAGE_TAG       - unified tag for backend AND frontend  (optional; see per-side defaults below)

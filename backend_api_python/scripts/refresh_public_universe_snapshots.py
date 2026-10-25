@@ -42,6 +42,7 @@ SZSE_HK_CONNECT_URL = "https://www.szse.cn/api/report/ShowReport/data"
 SSE_HK_CONNECT_REFERER = "https://www.sse.com.cn/services/hkexsc/disclo/eligible/"
 SZSE_HK_CONNECT_REFERER = "https://investor.szse.cn/szhk/hkbussiness/underlylist/index.html"
 BUNDLED_UNIVERSE_PATH = ROOT / "app" / "data" / "default_cn_hk_universes.json"
+GLOBAL_BUNDLED_UNIVERSE_PATH = ROOT / "app" / "data" / "default_global_universes.json"
 logger = logging.getLogger(__name__)
 
 HK_HSI_SERIES = {
@@ -121,7 +122,12 @@ def _resilient_get(url: str, **kwargs) -> requests.Response:
 
 @lru_cache(maxsize=1)
 def _bundled_universe_document() -> dict:
-    return json.loads(BUNDLED_UNIVERSE_PATH.read_text(encoding="utf-8"))
+    document = json.loads(BUNDLED_UNIVERSE_PATH.read_text(encoding="utf-8"))
+    universes = dict(document.get("universes") or {})
+    if GLOBAL_BUNDLED_UNIVERSE_PATH.exists():
+        global_document = json.loads(GLOBAL_BUNDLED_UNIVERSE_PATH.read_text(encoding="utf-8"))
+        universes.update(global_document.get("universes") or {})
+    return {**document, "universes": universes}
 
 
 def bundled_universe_members(code: str) -> list[dict]:
@@ -195,7 +201,20 @@ def load_universe_members(code: str, cache: dict[str, list[dict]] | None = None)
         loader = LOADERS.get(code)
         if loader is None:
             raise RuntimeError(f"unsupported universe: {code}")
-        members = loader()
+        try:
+            members = loader()
+        except Exception as exc:
+            logger.warning("Public source failed for %s; using the bundled snapshot: %s", code, exc)
+            members = bundled_universe_members(code)
+    minimum, maximum = EXPECTED_MEMBER_COUNTS[code]
+    member_count = len({item.get("symbol") for item in members if item.get("symbol")})
+    if not minimum <= member_count <= maximum:
+        logger.warning(
+            "Public source returned %s members for %s; using the bundled snapshot",
+            member_count,
+            code,
+        )
+        members = bundled_universe_members(code)
     member_cache[code] = members
     return members
 

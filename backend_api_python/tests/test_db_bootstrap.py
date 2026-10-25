@@ -135,6 +135,7 @@ def test_apply_init_sql_includes_public_universe_expansion(tmp_path, monkeypatch
 
     assert 'public-universe-expansion-20261024' in applied
     assert 'default-cn-hk-universe-members-20261025' in applied
+    assert 'default-global-universe-members-20261025' in applied
 
 
 def test_public_universe_expansion_has_explicit_returning_clause():
@@ -145,6 +146,18 @@ def test_public_universe_expansion_has_explicit_returning_clause():
     )
 
     assert 'RETURNING code' in migration_path.read_text(encoding='utf-8')
+
+
+def test_global_universe_seed_only_populates_empty_system_pools():
+    migration_path = (
+        Path(__file__).resolve().parents[1]
+        / 'migrations'
+        / '20261025_default_global_universe_members.sql'
+    )
+    migration = migration_path.read_text(encoding='utf-8')
+
+    assert 'NOT EXISTS (' in migration
+    assert 'DELETE FROM qd_universe_members' not in migration
 
 
 class _MigrationCursor:

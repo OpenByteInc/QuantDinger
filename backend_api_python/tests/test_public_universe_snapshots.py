@@ -102,6 +102,50 @@ def test_bundled_cn_hk_universes_have_expected_counts_and_history_start():
     }
 
 
+def test_bundled_global_universes_have_expected_counts_and_history_start():
+    data_path = Path(snapshots.GLOBAL_BUNDLED_UNIVERSE_PATH)
+    document = json.loads(data_path.read_text(encoding="utf-8"))
+
+    assert document["history_from"] == "2023-01-01"
+    assert {code: len(item["members"]) for code, item in document["universes"].items()} == {
+        "sp500": 503,
+        "nasdaq100": 101,
+        "dow30": 30,
+        "sp400": 400,
+        "sp600": 603,
+        "russell1000": 1021,
+        "crypto_top100": 100,
+        "hk_hsi": 95,
+        "hk_tech30": 30,
+        "hk_china_enterprises50": 50,
+        "hk_etf": 18,
+        "us_etf": 31,
+        "us_sector_information_technology": 75,
+        "us_sector_health_care": 60,
+        "us_sector_financials": 76,
+        "us_sector_consumer_discretionary": 47,
+        "us_sector_communication_services": 22,
+        "us_sector_industrials": 83,
+        "us_sector_consumer_staples": 34,
+        "us_sector_energy": 21,
+        "us_sector_utilities": 31,
+        "us_sector_real_estate": 30,
+        "us_sector_materials": 24,
+    }
+
+
+def test_common_public_loader_uses_bundled_snapshot_when_source_fails(monkeypatch):
+    def unavailable():
+        raise RuntimeError("network unavailable")
+
+    monkeypatch.setitem(snapshots.LOADERS, "sp500", unavailable)
+
+    rows = snapshots.load_universe_members("sp500")
+
+    assert len(rows) == 503
+    assert rows[0]["market"] == "USStock"
+
+
 def test_hk_stock_connect_uses_bundled_snapshot_when_official_sources_fail(monkeypatch):
     def unavailable():
         raise RuntimeError("network unavailable")
@@ -195,6 +239,9 @@ def test_sector_loader_reuses_sp500_download_and_preserves_sector_metadata(monke
         ]
 
     monkeypatch.setitem(snapshots.LOADERS, "sp500", fake_sp500)
+    monkeypatch.setitem(snapshots.EXPECTED_MEMBER_COUNTS, "sp500", (1, 10))
+    monkeypatch.setitem(snapshots.EXPECTED_MEMBER_COUNTS, "us_sector_energy", (1, 10))
+    monkeypatch.setitem(snapshots.EXPECTED_MEMBER_COUNTS, "us_sector_financials", (1, 10))
     cache = {}
 
     energy = snapshots.load_universe_members("us_sector_energy", cache)

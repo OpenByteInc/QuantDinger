@@ -14,7 +14,7 @@ INSERT INTO qd_universe_members
    settle_currency, valid_from, valid_to, member_weight, member_rank, source_version, metadata_json)
 SELECT target.id, seed.market, seed.symbol, seed.name, seed.exchange_id, seed.market_type,
        seed.instrument_id, seed.settle_currency,
-       DATE '2023-01-01', NULL, seed.member_weight, seed.member_rank,
+       DATE '2023-01-01', NULL, seed.member_weight::double precision, seed.member_rank::integer,
        seed.source_version, seed.metadata_json::jsonb
 FROM (VALUES
   ('sp500', 'USStock', 'MMM', '3M', '', 'spot', '', 'USD', NULL, 1, 'bundled:2026-10-24', '{"cik":"66740","sector":"Industrials","date_added":"1957-03-04","headquarters":"Saint Paul, Minnesota","sub_industry":"Industrial Conglomerates"}'),

@@ -168,7 +168,7 @@ def _render_migration(document: dict) -> str:
         "   settle_currency, valid_from, valid_to, member_weight, member_rank, source_version, metadata_json)",
         "SELECT target.id, seed.market, seed.symbol, seed.name, seed.exchange_id, seed.market_type,",
         "       seed.instrument_id, seed.settle_currency,",
-        f"       DATE '{document['history_from']}', NULL, seed.member_weight, seed.member_rank,",
+        f"       DATE '{document['history_from']}', NULL, seed.member_weight::double precision, seed.member_rank::integer,",
         "       seed.source_version, seed.metadata_json::jsonb",
         "FROM (VALUES",
     ]
