@@ -20,6 +20,7 @@ from typing import Dict, Iterable, List, Tuple
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BASELINE = ROOT / "scripts" / "backend_quality_baseline.json"
 DEFAULT_SCAN_ROOTS = ("app", "scripts", "tests")
+GENERATED_DATA_PREFIX = ("app", "data")
 
 
 def _read_text(path: Path) -> str:
@@ -37,6 +38,9 @@ def _iter_files(roots: Iterable[str]) -> Iterable[Path]:
             continue
         for path in base.rglob("*"):
             if path.is_file() and path.suffix in (".py", ".md", ".json", ".txt"):
+                relative_parts = path.relative_to(ROOT).parts
+                if relative_parts[:2] == GENERATED_DATA_PREFIX:
+                    continue
                 if path.name in ignored_names:
                     continue
                 if ".venv" not in path.parts and ".pytest_cache" not in path.parts:
