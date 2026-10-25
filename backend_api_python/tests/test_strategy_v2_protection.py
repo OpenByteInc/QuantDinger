@@ -106,6 +106,43 @@ def handle_data(context, data):
     assert result["totalTrades"] == 1
 
 
+def test_same_bar_protection_exits_are_recorded_as_one_risk_batch():
+    symbols = ["USStock:AAPL", "USStock:MSFT"]
+    code = f'''
+def initialize(context):
+    context.set_universe({symbols!r})
+    context.subscribe(frequency="1d")
+    g.sent = False
+
+def on_rebalance(context, data):
+    if g.sent:
+        return
+    for symbol in {symbols!r}:
+        order_target_percent(symbol, 0.4, reason="portfolio_target", stop_loss_pct=0.05)
+    g.sent = True
+'''
+    frame = pd.DataFrame(
+        [(100, 101, 90, 100, 10_000)],
+        columns=["open", "high", "low", "close", "volume"],
+        index=pd.date_range("2026-01-01", periods=1, freq="D"),
+    )
+    result = StrategyV2BacktestRunner(
+        code=code,
+        frames={symbol: frame.copy() for symbol in symbols},
+        initial_capital=10_000,
+        commission=0,
+        slippage=0,
+    ).run()
+
+    records = result["rebalanceRecords"]
+    assert [record["recordType"] for record in records] == ["rebalance", "protection"]
+    assert records[1]["reasons"] == ["stop_loss"]
+    assert records[1]["orderCount"] == 2
+    assert records[1]["filled"] == 2
+    assert len(result["protectionEvents"]) == 2
+    assert result["positions"] == {}
+
+
 def test_conservative_intrabar_mode_prioritizes_stop_loss():
     spec = ProtectionSpec(stop_loss_pct=0.02, take_profit_pct=0.05)
     state = ProtectionState.open(

@@ -37,6 +37,14 @@ from .frequencies import normalize_frequency, periods_per_year
 from .protection import ProtectionDecision, ProtectionEngine, ProtectionSpec, ProtectionState
 
 
+_PROTECTION_EXIT_REASONS = frozenset({
+    "stop_loss",
+    "take_profit",
+    "trailing_stop",
+    "time_limit",
+})
+
+
 def _backtest_time_iso(value: Any) -> str:
     """Serialize the UTC-naive market index as an unambiguous UTC instant."""
     return _cached_backtest_time_iso(pd.Timestamp(value))
@@ -759,7 +767,10 @@ class MultiAssetSimulationBroker:
             forced_liquidation = order.reason == "margin_liquidation"
             self._order_sequence += 1
             order_id = f"{pd.Timestamp(timestamp).isoformat()}:{self._order_sequence}"
-            override = (price_overrides or {}).get(order.symbol)
+            position_key = _position_key(order.symbol, order.position_side)
+            override = (price_overrides or {}).get(position_key)
+            if override is None:
+                override = (price_overrides or {}).get(order.symbol)
             bar = portal.bar_at(order.symbol, timestamp)
             open_price = float(override) if override is not None else (float(bar["open"]) if bar else None)
             blocked_reason = "" if forced_liquidation else self._execution_block_reason(order, bar, open_price)
@@ -770,7 +781,6 @@ class MultiAssetSimulationBroker:
                 if status == "deferred":
                     deferred.append(replace(order, attempts=order.attempts + 1))
                 continue
-            position_key = _position_key(order.symbol, order.position_side)
             current = self.portfolio.positions.get(position_key) or Position(
                 order.symbol,
                 position_side=_normalize_position_side(order.position_side),
@@ -969,7 +979,7 @@ class MultiAssetSimulationBroker:
             current.amount = target_qty
             current.avg_cost = _next_average_cost(old_amount, current.avg_cost, delta, fill_price)
             current.last_price = fill_price
-            execution_price_overrides[order.symbol] = fill_price
+            execution_price_overrides[position_key] = fill_price
             self.portfolio.available_cash = projected_cash
             if abs(current.amount) <= 1e-12:
                 current.amount = 0.0
@@ -1367,10 +1377,19 @@ class MultiAssetSimulationBroker:
             for symbol, position in self.portfolio.positions.items()
         }
         events = [self.order_ledger[index] for index in event_indexes]
+        reasons = sorted({str(item.get("reason") or "") for item in events if item.get("reason")})
+        if reasons and all(reason in _PROTECTION_EXIT_REASONS for reason in reasons):
+            record_type = "protection"
+        elif "margin_liquidation" in reasons:
+            record_type = "liquidation"
+        else:
+            record_type = "rebalance"
         turnover = sum(float(item.get("filledQuantity") or 0.0) * float(item.get("price") or 0.0) for item in events)
         counts = {name: sum(1 for item in events if item.get("status") == name) for name in ("filled", "partial", "deferred", "rejected")}
         self.rebalance_records.append({
             "time": _backtest_time_iso(timestamp),
+            "recordType": record_type,
+            "reasons": reasons,
             "targetWeights": dict(target_weights),
             "actualWeights": actual_weights,
             "cashBefore": cash_before,
@@ -1387,7 +1406,9 @@ class MultiAssetSimulationBroker:
         portal: MultiAssetDataPortal,
         timestamp: Any,
     ) -> list[ProtectionDecision]:
-        decisions: list[ProtectionDecision] = []
+        candidates: list[tuple[str, str, str, ProtectionDecision]] = []
+        orders: list[OrderIntent] = []
+        price_overrides: dict[str, float] = {}
         for position_key, state in list(self._protections.items()):
             position = self.portfolio.positions.get(position_key)
             symbol = position.symbol if position is not None else str(state.symbol or "")
@@ -1406,23 +1427,45 @@ class MultiAssetSimulationBroker:
             )
             if decision is None:
                 continue
-            execution_count = len(self.executions)
-            self.execute(
-                [OrderIntent(
-                    symbol,
-                    "target_quantity",
-                    0.0,
-                    decision.reason,
-                    signal_time=pd.Timestamp(timestamp),
-                    position_side=position.position_side,
-                )],
-                portal,
-                timestamp,
-                price_overrides={symbol: decision.price},
-            )
-            if len(self.executions) == execution_count:
-                latest = self.order_ledger[-1] if self.order_ledger else {}
-                if latest.get("statusReason") == "target_already_met":
+            position_side = _normalize_position_side(position.position_side)
+            candidates.append((position_key, symbol, position_side, decision))
+            orders.append(OrderIntent(
+                symbol,
+                "target_quantity",
+                0.0,
+                decision.reason,
+                signal_time=pd.Timestamp(timestamp),
+                position_side=position_side,
+            ))
+            price_overrides[position_key] = decision.price
+
+        if not orders:
+            return []
+
+        execution_start = len(self.executions)
+        ledger_start = len(self.order_ledger)
+        self.execute(
+            orders,
+            portal,
+            timestamp,
+            price_overrides=price_overrides,
+        )
+        executed = {
+            (str(item.get("position_key") or ""), str(item.get("reason") or ""))
+            for item in self.executions[execution_start:]
+        }
+        attempted = self.order_ledger[ledger_start:]
+        decisions: list[ProtectionDecision] = []
+        for position_key, symbol, position_side, decision in candidates:
+            if (position_key, decision.reason) not in executed:
+                target_already_met = any(
+                    item.get("symbol") == symbol
+                    and _normalize_position_side(item.get("positionSide")) == position_side
+                    and item.get("reason") == decision.reason
+                    and item.get("statusReason") == "target_already_met"
+                    for item in attempted
+                )
+                if target_already_met:
                     self._protections.pop(position_key, None)
                 continue
             decisions.append(decision)
