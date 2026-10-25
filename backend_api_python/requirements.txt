@@ -7,7 +7,7 @@ yfinance>=1.7.0
 # GHSA-cq5v-8q36-5273 (C parser OOB read), GHSA-mfx4-hv73-q22v and
 # GHSA-mq44-7p77-q5h7 (WebSocket parsing); 3.14.3+
 aiohttp>=3.14.5,<3.15
-pandas>=3.0.6
+pandas>=3.1.0
 # Strategy API V2 technical indicator runtime. Wheels bundle the C library.
 TA-Lib==0.8.2
 exchange-calendars>=4.13.2,<5
@@ -57,7 +57,7 @@ PyYAML>=6.0.3
 # Server-side PDF export for AI analysis reports
 # PDF parser security advisories through CVE-2026-115580; 6.21.2+
 pypdf>=6.21.2,<7
-reportlab>=5.0.1
+reportlab>=5.1.0
 # Password hashing
 bcrypt>=5.0.0
 # Interactive Brokers trading (optional, for US stock trading via TWS/IB Gateway)
