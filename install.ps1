@@ -17,6 +17,7 @@ $ComposeFile = "docker-compose.yml"
 $EnvFile = ".env"
 $EnvTemplate = ".env.example"
 $LegacyEnv = "backend.env"
+$script:EnvExistedBeforeInstall = $false
 
 function Fail($Message) {
     Write-Host "Error: $Message" -ForegroundColor Red
@@ -224,6 +225,7 @@ function Check-Prerequisites {
 function Prepare-Directory {
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
     Set-Location $InstallDir
+    $script:EnvExistedBeforeInstall = (Test-Path -LiteralPath $EnvFile) -or (Test-Path -LiteralPath $LegacyEnv)
 }
 
 function Download-Files {
@@ -304,8 +306,8 @@ function Collect-Settings {
             Write-Host "Recovered the existing PostgreSQL credential from DATABASE_URL." -ForegroundColor Yellow
         }
     }
-    if (-not $existingPgPassword -and (Test-ExistingPostgresVolume)) {
-        Fail "An existing PostgreSQL data volume was found, but its password could not be recovered. Restore POSTGRES_PASSWORD in $EnvFile before continuing."
+    if (-not $existingPgPassword -and ($EnvExistedBeforeInstall -or (Test-ExistingPostgresVolume))) {
+        Fail "The existing installation has no recoverable PostgreSQL password. Refusing to generate a replacement because it could disconnect existing data. Restore POSTGRES_PASSWORD in $EnvFile before continuing."
     }
     if ($existingPgPassword) { $script:PostgresPassword = $existingPgPassword } else { $script:PostgresPassword = New-HexSecret 18 }
 

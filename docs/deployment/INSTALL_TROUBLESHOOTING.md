@@ -38,10 +38,15 @@ python3 scripts/bootstrap_env.py --compose-file docker-compose.ghcr.yml
 The bootstrap command never prints secrets. It generates a random password for
 a new installation, preserves the value already present in `.env`, and can
 recover the original value from a legacy `DATABASE_URL` or a surviving
-`quantdinger-db` container. If it reports an existing PostgreSQL volume whose
-password cannot be recovered, restore the original `POSTGRES_PASSWORD` from an
-`.env` or server backup. Do not substitute a new password and do not run
-`docker compose down -v`.
+`quantdinger-db` container. If an existing `.env`, legacy environment file, or
+PostgreSQL volume is present and the password cannot be recovered, the command
+stops instead of generating a replacement. Restore the original
+`POSTGRES_PASSWORD` from an `.env` or server backup. Do not substitute a new
+password and do not run `docker compose down -v`.
+
+Only for a verified new deployment where an empty `.env` was created manually
+and no PostgreSQL data exists, use `--allow-new-database` to permit generation.
+Never use that flag to repair an upgrade.
 
 ## Image pull fails
 

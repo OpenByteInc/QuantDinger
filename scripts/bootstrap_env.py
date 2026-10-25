@@ -157,6 +157,7 @@ def bootstrap_environment(
     compose_file: Path,
     *,
     probe_docker: bool = True,
+    allow_new_database: bool = False,
 ) -> dict[str, str]:
     if not template.is_file():
         raise BootstrapError(f"Environment template not found: {template}")
@@ -179,10 +180,12 @@ def bootstrap_environment(
         recovery_source = "container"
     if not postgres_password:
         has_volume = probe_docker and compose_file.is_file() and _has_existing_database_volume(compose_file)
-        if has_volume:
+        if has_volume or (not created and not allow_new_database):
             raise BootstrapError(
-                "An existing PostgreSQL data volume was found, but its password could not be recovered. "
-                "Restore POSTGRES_PASSWORD in .env before continuing."
+                "The existing environment has no recoverable PostgreSQL password. Refusing to generate "
+                "a replacement because it could disconnect an existing database. Restore POSTGRES_PASSWORD "
+                "in .env before continuing. For a verified new deployment only, rerun with "
+                "--allow-new-database."
             )
         postgres_password = secrets.token_hex(18)
         recovery_source = "generated"
@@ -207,6 +210,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--env-file", type=Path, default=Path(".env"))
     parser.add_argument("--template", type=Path, default=Path(".env.example"))
     parser.add_argument("--compose-file", type=Path, default=Path("docker-compose.yml"))
+    parser.add_argument(
+        "--allow-new-database",
+        action="store_true",
+        help="Allow a password to be generated for an existing .env only when no database exists.",
+    )
     return parser
 
 
@@ -217,6 +225,7 @@ def main(argv: list[str] | None = None) -> int:
             args.env_file.resolve(),
             args.template.resolve(),
             args.compose_file.resolve(),
+            allow_new_database=args.allow_new_database,
         )
     except (BootstrapError, OSError) as exc:
         print(f"Environment bootstrap failed: {exc}", file=sys.stderr)

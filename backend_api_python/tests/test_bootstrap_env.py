@@ -90,9 +90,38 @@ def test_bootstrap_refuses_unrecoverable_existing_volume(tmp_path: Path, monkeyp
     monkeypatch.setattr(bootstrap_env, "_container_password", lambda _: "")
     monkeypatch.setattr(bootstrap_env, "_has_existing_database_volume", lambda _: True)
 
-    with pytest.raises(bootstrap_env.BootstrapError, match="existing PostgreSQL data volume"):
+    with pytest.raises(bootstrap_env.BootstrapError, match="no recoverable PostgreSQL password"):
         bootstrap_env.bootstrap_environment(
             env_file,
             _template(tmp_path / ".env.example"),
             compose_file,
         )
+
+
+def test_bootstrap_refuses_existing_env_when_docker_detection_misses(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text("POSTGRES_PASSWORD=\nDATABASE_URL=\n", encoding="utf-8")
+
+    with pytest.raises(bootstrap_env.BootstrapError, match="no recoverable PostgreSQL password"):
+        bootstrap_env.bootstrap_environment(
+            env_file,
+            _template(tmp_path / ".env.example"),
+            tmp_path / "docker-compose.yml",
+            probe_docker=False,
+        )
+
+
+def test_bootstrap_allows_verified_new_database_with_existing_env(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text("POSTGRES_PASSWORD=\nDATABASE_URL=\n", encoding="utf-8")
+
+    result = bootstrap_env.bootstrap_environment(
+        env_file,
+        _template(tmp_path / ".env.example"),
+        tmp_path / "docker-compose.yml",
+        probe_docker=False,
+        allow_new_database=True,
+    )
+
+    assert result == {"postgres_password_source": "generated", "created": "false"}
+    assert re.fullmatch(r"[0-9a-f]{36}", bootstrap_env._read_values(env_file)["POSTGRES_PASSWORD"])

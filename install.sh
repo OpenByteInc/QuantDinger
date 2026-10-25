@@ -50,6 +50,7 @@ POSTGRES_PASSWORD_VALUE=""
 IMAGE_PREFIX_VALUE=""
 SECRET_KEY_VALUE=""
 ADMIN_CREDENTIALS_REUSED="false"
+ENV_EXISTED_BEFORE_INSTALL="false"
 
 say() {
     printf '%b\n' "$1"
@@ -319,6 +320,9 @@ check_prerequisites() {
 prepare_directory() {
     mkdir -p "$INSTALL_DIR"
     cd "$INSTALL_DIR"
+    if [[ -f "$ENV_FILE" || -f "$LEGACY_ENV" ]]; then
+        ENV_EXISTED_BEFORE_INSTALL="true"
+    fi
 }
 
 download_files() {
@@ -349,8 +353,9 @@ collect_settings() {
             say "${YELLOW}Recovered the existing PostgreSQL credential from DATABASE_URL.${NC}"
         fi
     fi
-    if [[ -z "$existing_pg_password" ]] && has_existing_postgres_volume; then
-        fail "An existing PostgreSQL data volume was found, but its password could not be recovered. Restore POSTGRES_PASSWORD in ${ENV_FILE} before continuing."
+    if [[ -z "$existing_pg_password" ]] \
+        && { [[ "$ENV_EXISTED_BEFORE_INSTALL" = "true" ]] || has_existing_postgres_volume; }; then
+        fail "The existing installation has no recoverable PostgreSQL password. Refusing to generate a replacement because it could disconnect existing data. Restore POSTGRES_PASSWORD in ${ENV_FILE} before continuing."
     fi
     existing_image_prefix=$(env_get "$ENV_FILE" "IMAGE_PREFIX")
 
