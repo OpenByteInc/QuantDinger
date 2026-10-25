@@ -191,6 +191,10 @@ jobs:
   compose-check:
     name: Docker Compose validation
     runs-on: ubuntu-latest
+    env:
+      # Compose requires a non-empty database password after security hardening.
+      # This deterministic CI-only value is used for static configuration validation.
+      POSTGRES_PASSWORD: compose-validation-${{ github.run_id }}
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
