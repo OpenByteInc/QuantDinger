@@ -283,7 +283,7 @@ docker compose exec -u 10001:10001 -T backend \
 ```bash
 git clone https://github.com/OpenByteInc/QuantDinger.git
 cd QuantDinger
-cp .env.example .env
+python scripts/bootstrap_env.py
 ```
 
 首次启动前，请替换统一环境文件中的示例值：
@@ -303,7 +303,8 @@ python scripts/sync_env.py --env-file .env --template .env.example --backup
 手动执行旧版本首次迁移时，再增加 `--legacy backend_api_python/.env`（源码部署）或
 `--legacy backend.env`（旧 GHCR 部署）。旧文件不会被删除。
 
-使用以下命令生成相互独立的密钥：
+初始化命令会创建 `.env`，在升级时保留已有配置，并分别生成 PostgreSQL、会话签名和凭据加密密钥。
+如需手动生成额外的独立密钥，可使用：
 
 ```bash
 python -c "import secrets; print(secrets.token_hex(32))"

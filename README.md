@@ -313,7 +313,7 @@ legacy-image recovery and rootless/NFS notes.
 ```bash
 git clone https://github.com/OpenByteInc/QuantDinger.git
 cd QuantDinger
-cp .env.example .env
+python scripts/bootstrap_env.py
 ```
 
 Before the first start, replace the example values in the unified environment file:
@@ -336,7 +336,9 @@ For a manual one-time migration from older releases, add
 `--legacy backend_api_python/.env` (source deployment) or `--legacy backend.env`
 (old GHCR deployment). The old file is not deleted.
 
-Generate independent secrets with:
+The bootstrap command creates `.env`, preserves existing values during upgrades,
+and generates independent PostgreSQL, session, and credential-encryption secrets.
+To generate another independent secret manually:
 
 ```bash
 python -c "import secrets; print(secrets.token_hex(32))"

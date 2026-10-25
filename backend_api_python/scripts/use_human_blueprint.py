@@ -9,9 +9,18 @@ _OLD = "from flask_smorest import Blueprint"
 _NEW = "from app.openapi.blueprint import HumanBlueprint as Blueprint"
 
 
+def route_file(path: Path) -> Path:
+    routes_root = _ROUTES_DIR.resolve()
+    candidate = path.resolve()
+    if candidate.parent != routes_root or candidate.suffix != ".py":
+        raise ValueError("route file must stay within app/routes")
+    return candidate
+
+
 def main() -> None:
     changed = 0
     for path in sorted(_ROUTES_DIR.glob("*.py")):
+        path = route_file(path)
         if path.name == "__init__.py":
             continue
         text = path.read_text(encoding="utf-8")

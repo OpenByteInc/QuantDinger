@@ -15,10 +15,9 @@
 git clone https://github.com/<your-org>/quantdinger.git
 cd quantdinger
 
-# 2. Configure
-cp .env.example .env
-# Edit .env — at minimum set SECRET_KEY to a random value:
-#   SECRET_KEY=$(python3 -c "import secrets; print(secrets.token_hex(32))")
+# 2. Configure and generate local credentials
+python scripts/bootstrap_env.py
+# Edit .env to set administrator credentials and optional integrations.
 # The same project-root `.env` also contains image and port settings.
 
 # 3. Launch
@@ -62,11 +61,11 @@ quantdinger/
 ## Running Backend Locally (without Docker)
 
 ```bash
-cp .env.example .env
+python scripts/bootstrap_env.py
 cd backend_api_python
 python -m venv .venv && source .venv/bin/activate  # or .venv\Scripts\activate on Windows
 pip install -r requirements.txt
-# Edit ../.env before starting the backend.
+# Edit ../.env and set DATABASE_URL for the host PostgreSQL endpoint.
 python run.py
 ```
 

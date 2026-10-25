@@ -18,6 +18,14 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def contained_path(root: Path, candidate: Path) -> Path:
+    resolved_root = root.resolve()
+    resolved_candidate = candidate.resolve()
+    if not resolved_candidate.is_relative_to(resolved_root):
+        raise ValueError(f"Path must stay within {resolved_root}")
+    return resolved_candidate
+
+
 def digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, default=str).encode()).hexdigest()
 
@@ -62,13 +70,18 @@ def frame_for(rank, frequency, periods):
 
 
 def worker(args):
+    if args.audit_root is None or args.input is None:
+        raise ValueError("worker mode requires --audit-root and --input")
+    audit_root = args.audit_root.resolve()
+    input_path = contained_path(audit_root, args.input)
+    output_path = contained_path(audit_root, args.output)
     sys.path.insert(0, str(args.app_root))
     from app.services.strategy_v2 import StrategyV2BacktestRunner, StrategyV2LiveSession, compile_strategy_v2
     from app.services.strategy_v2.frequencies import frequency_seconds
     import pandas as pd
 
     results = []
-    for scenario in json.loads(args.input.read_text(encoding="utf-8")):
+    for scenario in json.loads(input_path.read_text(encoding="utf-8")):
         code = scenario["code"]
         manifest = compile_strategy_v2(code).manifest
         frames = {
@@ -136,9 +149,9 @@ def worker(args):
             live_seconds=live_seconds, live_duplicate_orders=sum(len(r["repeatedOrders"]) for r in live_records),
         )
         results.append(entry)
-        args.output.write_text(json.dumps(results, indent=2), encoding="utf-8")
+        output_path.write_text(json.dumps(results, indent=2), encoding="utf-8")
         print(json.dumps(entry), flush=True)
-    args.output.write_text(json.dumps(results, indent=2), encoding="utf-8")
+    output_path.write_text(json.dumps(results, indent=2), encoding="utf-8")
 
 
 def main():
@@ -149,6 +162,7 @@ def main():
     parser.add_argument("--worker", action="store_true")
     parser.add_argument("--docker-image")
     parser.add_argument("--app-root", type=Path, default=ROOT)
+    parser.add_argument("--audit-root", type=Path)
     parser.add_argument("--input", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
@@ -174,11 +188,13 @@ def main():
                     "--mount", f"type=bind,src={args.output},dst=/audit",
                     "--workdir", "/work", "--entrypoint", "python", args.docker_image,
                     "/work/scripts/audit_strategy_runtime.py", "--worker", "--app-root", "/source",
+                    "--audit-root", "/audit",
                     "--input", "/audit/scenarios.json", "--output", f"/audit/{name}.json",
                 ]
             else:
                 command = [
                     sys.executable, str(Path(__file__).resolve()), "--worker", "--app-root", str(app_root),
+                    "--audit-root", str(args.output),
                     "--input", str(inputs), "--output", str(args.output / f"{name}.json"),
                 ]
             subprocess.run(command + ["--bars", str(args.bars), "--repeats", str(args.repeats)], check=True, cwd=ROOT)

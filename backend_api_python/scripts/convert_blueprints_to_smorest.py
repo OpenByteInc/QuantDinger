@@ -7,7 +7,16 @@ ROUTES = Path(__file__).resolve().parents[1] / "app" / "routes"
 SKIP = {"__init__.py", "health.py"}
 
 
+def route_file(path: Path) -> Path:
+    routes_root = ROUTES.resolve()
+    candidate = path.resolve()
+    if candidate.parent != routes_root or candidate.suffix != ".py":
+        raise ValueError("route file must stay within app/routes")
+    return candidate
+
+
 def convert(path: Path) -> bool:
+    path = route_file(path)
     text = path.read_text(encoding="utf-8")
     orig = text
 

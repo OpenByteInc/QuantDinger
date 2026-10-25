@@ -60,6 +60,51 @@ function Repair-EnvLayout($Path, [string[]]$KnownKeys) {
     }
 }
 
+function Get-PostgresPasswordFromUrl($DatabaseUrl) {
+    if (-not $DatabaseUrl) { return "" }
+    try {
+        $uri = [Uri]$DatabaseUrl
+        if ($uri.Scheme -notin @("postgres", "postgresql")) { return "" }
+        $separator = $uri.UserInfo.IndexOf(":")
+        if ($separator -lt 0) { return "" }
+        return [Uri]::UnescapeDataString($uri.UserInfo.Substring($separator + 1))
+    } catch {
+        return ""
+    }
+}
+
+function Get-PostgresPasswordFromContainer {
+    try {
+        $raw = docker inspect --format '{{json .Config.Env}}' quantdinger-db 2>$null
+        if ($LASTEXITCODE -ne 0 -or -not $raw) { return "" }
+        foreach ($entry in ($raw | ConvertFrom-Json)) {
+            if ($entry -like "POSTGRES_PASSWORD=*") {
+                return $entry.Substring("POSTGRES_PASSWORD=".Length)
+            }
+        }
+    } catch {
+        return ""
+    }
+    return ""
+}
+
+function Test-ExistingPostgresVolume {
+    $projectName = if ($env:COMPOSE_PROJECT_NAME) {
+        $env:COMPOSE_PROJECT_NAME
+    } else {
+        ((Split-Path -Leaf $InstallDir).ToLowerInvariant() -replace '[^a-z0-9_-]', '').TrimStart([char[]]"_-")
+    }
+    if (-not $projectName) { $projectName = "quantdinger" }
+    try {
+        $volume = docker volume ls --quiet `
+            --filter "label=com.docker.compose.project=$projectName" `
+            --filter "label=com.docker.compose.volume=postgres_data" 2>$null
+        return [bool]$volume
+    } catch {
+        return $false
+    }
+}
+
 function Sync-MissingEnvKeys($Target, $Template, $Legacy = "") {
     if (-not (Test-Path -LiteralPath $Template)) {
         Fail "Environment template not found: $Template"
@@ -247,6 +292,21 @@ function Collect-Settings {
     $script:BackendPort = Read-Value "Backend bind address" ((Get-EnvValue $EnvFile "BACKEND_PORT") -replace '^$', '127.0.0.1:5000')
 
     $existingPgPassword = Get-EnvValue $EnvFile "POSTGRES_PASSWORD"
+    if (-not $existingPgPassword) {
+        $existingPgPassword = Get-PostgresPasswordFromContainer
+        if ($existingPgPassword) {
+            Write-Host "Recovered the existing PostgreSQL credential from the current container." -ForegroundColor Yellow
+        }
+    }
+    if (-not $existingPgPassword) {
+        $existingPgPassword = Get-PostgresPasswordFromUrl (Get-EnvValue $EnvFile "DATABASE_URL")
+        if ($existingPgPassword) {
+            Write-Host "Recovered the existing PostgreSQL credential from DATABASE_URL." -ForegroundColor Yellow
+        }
+    }
+    if (-not $existingPgPassword -and (Test-ExistingPostgresVolume)) {
+        Fail "An existing PostgreSQL data volume was found, but its password could not be recovered. Restore POSTGRES_PASSWORD in $EnvFile before continuing."
+    }
     if ($existingPgPassword) { $script:PostgresPassword = $existingPgPassword } else { $script:PostgresPassword = New-HexSecret 18 }
 
     Write-Host ""

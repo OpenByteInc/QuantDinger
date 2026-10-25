@@ -10,7 +10,16 @@ FLASK_ONLY = {
 }
 
 
+def route_file(path: Path) -> Path:
+    routes_root = ROUTES.resolve()
+    candidate = path.resolve()
+    if candidate.parent != routes_root or candidate.suffix != ".py":
+        raise ValueError("route file must stay within app/routes")
+    return candidate
+
+
 def fix_file(path: Path) -> None:
+    path = route_file(path)
     text = path.read_text(encoding="utf-8")
     m = re.search(r"^from flask_smorest import (.+)$", text, re.MULTILINE)
     if not m:
@@ -30,7 +39,12 @@ def fix_file(path: Path) -> None:
     print("fixed", path.name)
 
 
-for path in sorted(ROUTES.glob("*.py")):
-    if path.name in ("__init__.py", "health.py"):
-        continue
-    fix_file(path)
+def main() -> None:
+    for path in sorted(ROUTES.glob("*.py")):
+        if path.name in ("__init__.py", "health.py"):
+            continue
+        fix_file(path)
+
+
+if __name__ == "__main__":
+    main()

@@ -65,6 +65,22 @@ env_set_quoted "$env_file" ADMIN_PASSWORD "$expected"
     assert env_file.read_text(encoding="utf-8").count("ADMIN_PASSWORD=") == 1
 
 
+@pytest.mark.skipif(os.name == "nt" or BASH is None, reason="Linux or macOS bash is required")
+def test_installer_recovers_postgres_password_from_database_url() -> None:
+    program = r"""
+script_path=$1
+set --
+QUANTDINGER_INSTALL_LIB_ONLY=true . "$script_path"
+[ "$(postgres_password_from_url 'postgresql://quantdinger:legacy-db-secret@postgres:5432/quantdinger')" = 'legacy-db-secret' ]
+"""
+
+    subprocess.run(
+        [BASH, "-c", program, "bash", str(INSTALL_SCRIPT)],
+        check=True,
+        env={**os.environ, "QUANTDINGER_INSTALL_LIB_ONLY": "true"},
+    )
+
+
 @pytest.mark.skipif(POWERSHELL is None, reason="PowerShell is required")
 def test_powershell_installer_sync_preserves_existing_values(tmp_path: Path) -> None:
     env_file = tmp_path / ".env"
@@ -94,3 +110,22 @@ def test_powershell_installer_sync_preserves_existing_values(tmp_path: Path) -> 
     assert "SECRET=legacy-secret" in text
     assert "SECRET=template-secret" not in text
     assert "B=two" in text
+
+
+@pytest.mark.skipif(POWERSHELL is None, reason="PowerShell is required")
+def test_powershell_installer_recovers_postgres_password_from_database_url() -> None:
+    command = (
+        "$env:QUANTDINGER_INSTALL_LIB_ONLY='true'; "
+        f". '{INSTALL_PS1}'; "
+        "$password = Get-PostgresPasswordFromUrl "
+        "'postgresql://quantdinger:legacy%23secret@postgres:5432/quantdinger'; "
+        "if ($password -ne 'legacy#secret') { exit 1 }"
+    )
+
+    subprocess.run(
+        [POWERSHELL, "-NoProfile", "-Command", command],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
