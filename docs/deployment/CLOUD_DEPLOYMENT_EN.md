@@ -176,11 +176,13 @@ All deployment and application settings use one project-root file:
 |------|---------|---------|
 | `.env` | Docker Compose and every backend process | Runtime settings, credentials, ports, image tags, database, Redis, Kafka, and worker settings |
 
-After pulling an update, Compose runs the one-shot `env-sync` service before
-database and Kafka initialization. It appends new fields and imports values that
-exist only in legacy backend env files without replacing current values or
-comments. A timestamped backup is created only when `.env` changes. The manual
-command remains available for preview and maintenance:
+After pulling an update, run `python3 scripts/bootstrap_env.py` before any
+Compose command (add `--compose-file docker-compose.ghcr.yml` for a manually
+managed GHCR deployment). After bootstrap, Compose runs the one-shot `env-sync`
+service before database and Kafka initialization. It appends new fields and
+imports values that exist only in legacy backend environment files without
+replacing current values or comments. A timestamped backup is created only when
+`.env` changes. The manual command remains available for preview and maintenance:
 
 ```bash
 python scripts/sync_env.py --env-file .env --template .env.example --backup
@@ -424,6 +426,7 @@ docker compose -f docker-compose.ghcr.yml restart backend
 Update GHCR images:
 
 ```bash
+python3 scripts/bootstrap_env.py --compose-file docker-compose.ghcr.yml
 docker compose -f docker-compose.ghcr.yml pull
 docker compose -f docker-compose.ghcr.yml run --rm migration
 docker compose -f docker-compose.ghcr.yml run --rm kafka-init
@@ -434,6 +437,7 @@ For full repository deployment:
 
 ```bash
 git pull --ff-only
+python3 scripts/bootstrap_env.py
 docker compose build backend
 docker compose run --rm migration
 docker compose run --rm kafka-init

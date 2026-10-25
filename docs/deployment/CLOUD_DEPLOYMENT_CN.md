@@ -169,9 +169,11 @@ docker compose ps
 |------|--------|------|
 | `.env` | Docker Compose 与全部后端进程 | 运行参数、凭据、端口、镜像 tag、数据库、Redis、Kafka 与 Worker 配置 |
 
-拉取更新后，Compose 会先运行一次性的 `env-sync` 服务，再启动数据库迁移和 Kafka 初始化。
-它会追加新字段，并导入只存在于旧后端环境文件中的值，不替换当前值或注释；仅当 `.env`
-确有变化时才创建带时间戳的备份。以下手动命令仍可用于预检和维护：
+拉取更新后，先运行 `python3 scripts/bootstrap_env.py`（GHCR 手动部署增加
+`--compose-file docker-compose.ghcr.yml`），再执行任何 Compose 命令。初始化完成后，
+Compose 会运行一次性的 `env-sync` 服务，再启动数据库迁移和 Kafka 初始化。它会追加
+新字段，并导入只存在于旧后端环境文件中的值，不替换当前值或注释；仅当 `.env` 确有变化时
+才创建带时间戳的备份。以下手动命令仍可用于预检和维护：
 
 ```bash
 python scripts/sync_env.py --env-file .env --template .env.example --backup
@@ -405,6 +407,7 @@ docker compose -f docker-compose.ghcr.yml restart backend
 更新 GHCR 镜像：
 
 ```bash
+python3 scripts/bootstrap_env.py --compose-file docker-compose.ghcr.yml
 docker compose -f docker-compose.ghcr.yml pull
 docker compose -f docker-compose.ghcr.yml run --rm migration
 docker compose -f docker-compose.ghcr.yml run --rm kafka-init
@@ -415,6 +418,7 @@ docker compose -f docker-compose.ghcr.yml up -d --remove-orphans
 
 ```bash
 git pull --ff-only
+python3 scripts/bootstrap_env.py
 docker compose build backend
 docker compose run --rm migration
 docker compose run --rm kafka-init

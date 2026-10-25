@@ -50,7 +50,7 @@ x-backend-runtime: &backend-runtime
 x-worker-environment: &worker-environment
   TZ: ${TZ:-Asia/Shanghai}
   LOG_FORMAT: ${LOG_FORMAT:-json}
-  DATABASE_URL: postgresql://${POSTGRES_USER:-quantdinger}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required; run the QuantDinger installer or initialize .env}@postgres:5432/${POSTGRES_DB:-quantdinger}
+  DATABASE_URL: postgresql://${POSTGRES_USER:-quantdinger}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required; run the QuantDinger installer or scripts/bootstrap_env.py before docker compose}@postgres:5432/${POSTGRES_DB:-quantdinger}
   DB_TYPE: postgresql
   REDIS_HOST: redis
   REDIS_PORT: 6379
@@ -103,7 +103,7 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-quantdinger}
       POSTGRES_USER: ${POSTGRES_USER:-quantdinger}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required; run the QuantDinger installer or initialize .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required; run the QuantDinger installer or scripts/bootstrap_env.py before docker compose}
       PGDATA: ${POSTGRES_PGDATA:-/var/lib/postgresql/18/docker}
       TZ: ${TZ:-Asia/Shanghai}
     # Raise PostgreSQL's max_connections so API and worker pools plus
@@ -249,7 +249,7 @@ services:
       - backend_data:/app/data
       - ./.env:/app/.env
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-quantdinger}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required; run the QuantDinger installer or initialize .env}@postgres:5432/${POSTGRES_DB:-quantdinger}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-quantdinger}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required; run the QuantDinger installer or scripts/bootstrap_env.py before docker compose}@postgres:5432/${POSTGRES_DB:-quantdinger}
       DB_TYPE: postgresql
       DB_POOL_MIN: 1
       DB_POOL_MAX: 2
@@ -292,7 +292,7 @@ services:
       - INDICATOR_PREVIEW_DIR=${INDICATOR_PREVIEW_DIR:-/app/data/indicator_previews}
       - GIT_TAG=${GIT_TAG:-${IMAGE_TAG:-}}
       - TZ=${TZ:-Asia/Shanghai}
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-quantdinger}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required; run the QuantDinger installer or initialize .env}@postgres:5432/${POSTGRES_DB:-quantdinger}
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-quantdinger}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required; run the QuantDinger installer or scripts/bootstrap_env.py before docker compose}@postgres:5432/${POSTGRES_DB:-quantdinger}
       - DB_TYPE=postgresql
       - REDIS_HOST=redis
       - REDIS_PORT=6379

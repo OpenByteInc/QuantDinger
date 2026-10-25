@@ -60,6 +60,7 @@ stream and must never be used as the only routing key.
 Prebuilt-image deployment:
 
 ```bash
+python3 scripts/bootstrap_env.py --compose-file docker-compose.ghcr.yml
 docker compose -f docker-compose.ghcr.yml pull
 docker compose -f docker-compose.ghcr.yml run --rm migration
 docker compose -f docker-compose.ghcr.yml run --rm kafka-init
@@ -71,6 +72,7 @@ Source deployment:
 
 ```bash
 git pull --ff-only
+python3 scripts/bootstrap_env.py
 docker compose build backend
 docker compose run --rm migration
 docker compose run --rm kafka-init

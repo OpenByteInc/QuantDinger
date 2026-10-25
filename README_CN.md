@@ -293,9 +293,22 @@ python scripts/bootstrap_env.py
 | --- | --- |
 | `.env` | 管理员凭据；可选的 Redis、Grafana 凭据；部署域名及外部集成 |
 
-更新代码后，`docker compose up` 会先执行一次性的 `env-sync` 服务，再启动数据库迁移与
-Kafka 初始化。它会补充新字段，从旧后端环境文件导入根 `.env` 中缺少的值，保留已有值和
-注释，并且只在文件确有变化时创建带时间戳的备份。下面的命令仍可用于手动预检或维护：
+拉取更新后，必须先初始化统一环境文件，再执行任何 Compose 命令。从曾经依赖内置
+PostgreSQL 默认密码的旧版本升级时，这是一项必要的一次性迁移：
+
+```bash
+git pull --ff-only
+python3 scripts/bootstrap_env.py
+docker compose up -d --build
+```
+
+初始化脚本会保留已有凭据，并可从旧 `DATABASE_URL` 或现有数据库容器恢复原 PostgreSQL
+密码。如果检测到已有数据卷但无法恢复密码，它会停止而不是让数据库失联。不要随意填写
+替代密码，也不要删除数据卷。
+
+初始化完成后，Compose 会先执行一次性的 `env-sync` 服务，再启动数据库迁移与 Kafka
+初始化。它会补充新字段，从旧后端环境文件导入根 `.env` 中缺少的值，保留已有值和注释，
+并且只在文件确有变化时创建带时间戳的备份。下面的命令仍可用于手动预检或维护：
 
 ```bash
 python scripts/sync_env.py --env-file .env --template .env.example --backup

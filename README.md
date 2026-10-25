@@ -325,9 +325,25 @@ integrations:
 | --- | --- |
 | `.env` | Administrator credentials; optional Redis and Grafana credentials; deployment-specific URLs and integrations |
 
-After an update, `docker compose up` runs the one-shot `env-sync` service before
-database and Kafka initialization. It appends newly introduced settings, imports
-missing values from the legacy backend env files, preserves existing values and
+After pulling an update, initialize the unified environment before running any
+Compose command. This one-time step is required when upgrading from releases
+that relied on the former built-in PostgreSQL password:
+
+```bash
+git pull --ff-only
+python3 scripts/bootstrap_env.py
+docker compose up -d --build
+```
+
+The bootstrap command preserves existing credentials and can recover the former
+PostgreSQL password from a legacy `DATABASE_URL` or the existing database
+container. If it detects an existing data volume but cannot recover the password,
+it stops instead of disconnecting the database. Do not invent a replacement
+password and do not delete the volume.
+
+After bootstrap, Compose runs the one-shot `env-sync` service before database and
+Kafka initialization. It appends newly introduced settings, imports missing
+values from legacy backend environment files, preserves existing values and
 comments, and creates a timestamped backup only when the unified file changes.
 The command below remains available for a manual preview or maintenance run:
 

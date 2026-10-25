@@ -57,6 +57,7 @@ Actor 邮箱、租约、fencing token、幂等键或订单对账。
 预构建镜像部署：
 
 ```bash
+python3 scripts/bootstrap_env.py --compose-file docker-compose.ghcr.yml
 docker compose -f docker-compose.ghcr.yml pull
 docker compose -f docker-compose.ghcr.yml run --rm migration
 docker compose -f docker-compose.ghcr.yml run --rm kafka-init
@@ -68,6 +69,7 @@ docker compose -f docker-compose.ghcr.yml ps
 
 ```bash
 git pull --ff-only
+python3 scripts/bootstrap_env.py
 docker compose build backend
 docker compose run --rm migration
 docker compose run --rm kafka-init

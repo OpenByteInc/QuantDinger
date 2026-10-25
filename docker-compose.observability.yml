@@ -77,7 +77,7 @@ services:
     container_name: quantdinger-postgres-exporter
     restart: unless-stopped
     environment:
-      DATA_SOURCE_NAME: postgresql://${POSTGRES_USER:-quantdinger}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required; run the QuantDinger installer or initialize .env}@postgres:5432/${POSTGRES_DB:-quantdinger}?sslmode=disable
+      DATA_SOURCE_NAME: postgresql://${POSTGRES_USER:-quantdinger}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required; run the QuantDinger installer or scripts/bootstrap_env.py before docker compose}@postgres:5432/${POSTGRES_DB:-quantdinger}?sslmode=disable
     depends_on:
       postgres:
         condition: service_healthy
