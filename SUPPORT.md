@@ -27,6 +27,13 @@ Search existing issues and discussions before opening a new request.
 
 Do not disclose security vulnerabilities in a public issue or chat channel. Follow the private reporting process in [SECURITY.md](SECURITY.md).
 
+## Open source license compliance
+
+For a license, notice, source-availability, or other open source compliance
+inquiry, email <support@quantdinger.com> with subject
+`[Open Source License]`. The public procedure and program scope are documented
+in [docs/compliance](docs/compliance/README.md).
+
 ## Commercial support
 
 For commercial licensing, deployment assistance, partnerships, or service-level support, email <support@quantdinger.com>.

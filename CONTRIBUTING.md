@@ -258,6 +258,13 @@ By contributing, you agree that your contributions will be licensed
 under the project's license (see LICENSE) and certify each commit under the
 Developer Certificate of Origin as described above.
 
+Dependency additions, vendored code, copied examples, generated assets, and
+changes to distribution behavior must also follow the
+[open source license compliance procedure](docs/compliance/LICENSE_COMPLIANCE_PROCEDURE.md).
+Include the component source, version, license, intended use, and required
+notices in the pull request. Do not submit material that you do not have the
+right to contribute.
+
 ---
 
 ## 🧠 A Note on the Future

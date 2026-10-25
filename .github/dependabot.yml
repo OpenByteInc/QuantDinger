@@ -12,6 +12,15 @@ updates:
       - dependency-name: redis
         update-types: ["version-update:semver-major"]
 
+  - package-ecosystem: pip
+    directory: /mcp_server
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      mcp-python:
+        patterns: ["*"]
+
   - package-ecosystem: github-actions
     directory: /
     schedule:

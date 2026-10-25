@@ -67,6 +67,8 @@
     <a href="https://www.bestpractices.dev/projects/15860"><img src="https://www.bestpractices.dev/projects/15860/badge" alt="OpenSSF Best Practices"></a>
     <a href="https://sonarcloud.io/summary/new_code?id=OpenByteInc_QuantDinger"><img src="https://sonarcloud.io/api/project_badges/measure?project=OpenByteInc_QuantDinger&metric=alert_status" alt="SonarQube Cloud Quality Gate"></a>
     <a href="https://api.reuse.software/info/github.com/OpenByteInc/QuantDinger"><img src="https://api.reuse.software/badge/github.com/OpenByteInc/QuantDinger" alt="REUSE status"></a>
+    <a href="docs/compliance/OPENCHAIN_ISO_5230_SELF_ASSESSMENT.md"><img src="https://img.shields.io/badge/OpenChain_ISO%2FIEC_5230-self--assessed-0B6B53?style=flat-square" alt="OpenChain ISO/IEC 5230 self-assessed"></a>
+    <a href="docs/compliance/OPENCHAIN_ISO_18974_SELF_ASSESSMENT.md"><img src="https://img.shields.io/badge/OpenChain_ISO%2FIEC_18974-self--assessed-0B6B53?style=flat-square" alt="OpenChain ISO/IEC 18974 self-assessed"></a>
     <img src="docs/badges/python-3.12.svg" alt="Python 3.12">
     <img src="https://img.shields.io/badge/PostgreSQL-18-4169E1?style=flat-square&logo=postgresql&logoColor=white" alt="PostgreSQL 18">
     <img src="https://img.shields.io/badge/Redis-8-DC382D?style=flat-square&logo=redis&logoColor=white" alt="Redis 8">
@@ -727,6 +729,7 @@ Project engineering and assurance documents:
 - [Security assessment](docs/security/SECURITY_ASSESSMENT.md)
 - [Secure development practices](docs/security/SECURE_DEVELOPMENT.md)
 - [Dependency management policy](docs/security/DEPENDENCY_POLICY.md)
+- [Open source compliance and security assurance program](docs/compliance/README.md)
 - [Release history](CHANGELOG.md)
 
 The maintained documentation index is available at [`docs/README.md`](docs/README.md).

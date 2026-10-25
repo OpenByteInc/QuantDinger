@@ -89,6 +89,13 @@ ownership or shared state.
 - [Live-trading safety guide](trading/LIVE_TRADING_SAFETY.md)
 - [Security, versions, and vulnerability reporting](security/README.md)
 
+### Open source assurance
+
+- [Compliance and security assurance program](compliance/README.md)
+- [OpenChain ISO/IEC 5230 self-assessment](compliance/OPENCHAIN_ISO_5230_SELF_ASSESSMENT.md)
+- [OpenChain ISO/IEC 18974 self-assessment](compliance/OPENCHAIN_ISO_18974_SELF_ASSESSMENT.md)
+- [Release compliance checklist](compliance/RELEASE_COMPLIANCE_CHECKLIST.md)
+
 ### Deployment and operations
 
 - [Cloud deployment](deployment/CLOUD_DEPLOYMENT_EN.md)

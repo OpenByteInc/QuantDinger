@@ -12,6 +12,11 @@ Repository access is granted manually using the lowest role that can perform
 the required task. New maintainers are reviewed by the Project Lead before
 receiving write, release, security-advisory, or organization-level access.
 
+The Project Lead also owns the scoped
+[open source compliance and security assurance program](docs/compliance/README.md).
+Approval and merge of the program adoption change records the initial role,
+competence, and policy-awareness assessment. Later access grants and periodic
+reviews must record the same assessment for every program participant.
+
 Report an incorrect or outdated entry through a regular issue. Do not disclose
 credentials or private security information in that issue.
-
