@@ -81,77 +81,80 @@ def worker(args):
     import pandas as pd
 
     results = []
-    for scenario in json.loads(input_path.read_text(encoding="utf-8")):
-        code = scenario["code"]
-        manifest = compile_strategy_v2(code).manifest
-        frames = {
-            item.key: frame_for(rank, manifest.driving_frequency, args.bars)
-            for rank, item in enumerate(manifest.universe.instruments)
-        }
-        if scenario.get("wide_body"):
-            for frame in frames.values():
-                frame["open"] = frame["close"] * .8
-                frame["low"] = frame["open"] * .985
-        durations, hashes = [], []
-        for _ in range(args.repeats):
-            start = time.perf_counter()
-            result = StrategyV2BacktestRunner(
-                code=code, frames=frames, initial_capital=100000,
-                commission=.0005, slippage=.0005,
-            ).run()
-            durations.append(time.perf_counter() - start)
-            hashes.append(digest(result))
-        assert len(set(hashes)) == 1, scenario["name"]
-        if scenario.get("wide_body"):
-            assert result["totalExecutions"] > 0, scenario["name"]
-
-        def session(current_frames):
-            return StrategyV2LiveSession(
-                code=code, frames=current_frames, initial_capital=100000,
-                params={"persist_runtime_state": True}, schedule_timezone="UTC",
-            )
-
-        live_records = []
-        live_seconds = 0
-        active = None
-        for offset in range(args.bars - 12, args.bars):
-            current = {key: frame.iloc[:offset + 1] for key, frame in frames.items()}
-            if active is None:
-                active = session(current)
-            elif offset == args.bars - 6:
-                saved = active.session_snapshot()
-                active = session(current)
-                active.restore_session_snapshot(saved)
-            # Fixed external snapshots exercise both flat and held legs without sending orders.
-            positions = {
-                key: {"amount": (2 if offset % 3 else 0) * (-1 if manifest.direction_mode == "short_only" else 1),
-                      "avg_cost": float(frame.close.iloc[-1]), "last_price": float(frame.close.iloc[-1]),
-                      "side": "short" if manifest.direction_mode == "short_only" else "long"}
-                for key, frame in current.items()
+    with output_path.open("w", encoding="utf-8") as output_stream:
+        for scenario in json.loads(input_path.read_text(encoding="utf-8")):
+            code = scenario["code"]
+            manifest = compile_strategy_v2(code).manifest
+            frames = {
+                item.key: frame_for(rank, manifest.driving_frequency, args.bars)
+                for rank, item in enumerate(manifest.universe.instruments)
             }
-            active.synchronize_positions(positions, available_cash=90000, total_value=100000)
-            when = next(iter(current.values())).index[-1]
-            clock = when + pd.Timedelta(seconds=frequency_seconds(manifest.driving_frequency))
-            start = time.perf_counter()
-            orders, logs, timestamp = active.process(current, schedule_time=clock)
-            live_seconds += time.perf_counter() - start
-            repeated, repeated_logs, _ = active.process(current, schedule_time=clock)
-            live_records.append({
-                "orders": [asdict(item) for item in orders], "logs": logs,
-                "time": timestamp, "repeatedOrders": [asdict(item) for item in repeated],
-                "repeatedLogs": repeated_logs, "snapshot": active.session_snapshot(),
-            })
-        entry = dict(
-            name=scenario["name"], strategy_type=manifest.strategy_type, symbols=len(frames),
-            seconds=durations, median_seconds=statistics.median(durations),
-            result_sha256=hashes[0], executions=result["totalExecutions"],
-            audit=result["audit"]["passed"], live_sha256=digest(live_records),
-            live_seconds=live_seconds, live_duplicate_orders=sum(len(r["repeatedOrders"]) for r in live_records),
-        )
-        results.append(entry)
-        output_path.write_text(json.dumps(results, indent=2), encoding="utf-8")
-        print(json.dumps(entry), flush=True)
-    output_path.write_text(json.dumps(results, indent=2), encoding="utf-8")
+            if scenario.get("wide_body"):
+                for frame in frames.values():
+                    frame["open"] = frame["close"] * .8
+                    frame["low"] = frame["open"] * .985
+            durations, hashes = [], []
+            for _ in range(args.repeats):
+                start = time.perf_counter()
+                result = StrategyV2BacktestRunner(
+                    code=code, frames=frames, initial_capital=100000,
+                    commission=.0005, slippage=.0005,
+                ).run()
+                durations.append(time.perf_counter() - start)
+                hashes.append(digest(result))
+            assert len(set(hashes)) == 1, scenario["name"]
+            if scenario.get("wide_body"):
+                assert result["totalExecutions"] > 0, scenario["name"]
+
+            def session(current_frames):
+                return StrategyV2LiveSession(
+                    code=code, frames=current_frames, initial_capital=100000,
+                    params={"persist_runtime_state": True}, schedule_timezone="UTC",
+                )
+
+            live_records = []
+            live_seconds = 0
+            active = None
+            for offset in range(args.bars - 12, args.bars):
+                current = {key: frame.iloc[:offset + 1] for key, frame in frames.items()}
+                if active is None:
+                    active = session(current)
+                elif offset == args.bars - 6:
+                    saved = active.session_snapshot()
+                    active = session(current)
+                    active.restore_session_snapshot(saved)
+                # Fixed external snapshots exercise both flat and held legs without sending orders.
+                positions = {
+                    key: {"amount": (2 if offset % 3 else 0) * (-1 if manifest.direction_mode == "short_only" else 1),
+                          "avg_cost": float(frame.close.iloc[-1]), "last_price": float(frame.close.iloc[-1]),
+                          "side": "short" if manifest.direction_mode == "short_only" else "long"}
+                    for key, frame in current.items()
+                }
+                active.synchronize_positions(positions, available_cash=90000, total_value=100000)
+                when = next(iter(current.values())).index[-1]
+                clock = when + pd.Timedelta(seconds=frequency_seconds(manifest.driving_frequency))
+                start = time.perf_counter()
+                orders, logs, timestamp = active.process(current, schedule_time=clock)
+                live_seconds += time.perf_counter() - start
+                repeated, repeated_logs, _ = active.process(current, schedule_time=clock)
+                live_records.append({
+                    "orders": [asdict(item) for item in orders], "logs": logs,
+                    "time": timestamp, "repeatedOrders": [asdict(item) for item in repeated],
+                    "repeatedLogs": repeated_logs, "snapshot": active.session_snapshot(),
+                })
+            entry = dict(
+                name=scenario["name"], strategy_type=manifest.strategy_type, symbols=len(frames),
+                seconds=durations, median_seconds=statistics.median(durations),
+                result_sha256=hashes[0], executions=result["totalExecutions"],
+                audit=result["audit"]["passed"], live_sha256=digest(live_records),
+                live_seconds=live_seconds, live_duplicate_orders=sum(len(r["repeatedOrders"]) for r in live_records),
+            )
+            results.append(entry)
+            output_stream.seek(0)
+            output_stream.truncate()
+            json.dump(results, output_stream, indent=2)
+            output_stream.flush()
+            print(json.dumps(entry), flush=True)
 
 
 def main():

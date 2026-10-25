@@ -154,10 +154,10 @@ postgres_password_from_container() {
 
 has_existing_postgres_volume() {
     project_name="${COMPOSE_PROJECT_NAME:-$(basename "$INSTALL_DIR" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-')}"
-    [ -n "$project_name" ] || project_name="quantdinger"
-    [ -n "$(docker volume ls -q \
+    [[ -n "$project_name" ]] || project_name="quantdinger"
+    [[ -n "$(docker volume ls -q \
         --filter "label=com.docker.compose.project=${project_name}" \
-        --filter "label=com.docker.compose.volume=postgres_data" 2>/dev/null)" ]
+        --filter "label=com.docker.compose.volume=postgres_data" 2>/dev/null)" ]]
 }
 
 env_set() {
@@ -336,20 +336,20 @@ collect_settings() {
     existing_mobile_port=$(env_get "$ENV_FILE" "MOBILE_PORT")
     existing_backend_port=$(env_get "$ENV_FILE" "BACKEND_PORT")
     existing_pg_password=$(env_get "$ENV_FILE" "POSTGRES_PASSWORD")
-    if [ -z "$existing_pg_password" ]; then
+    if [[ -z "$existing_pg_password" ]]; then
         existing_pg_password=$(postgres_password_from_container || true)
-        if [ -n "$existing_pg_password" ]; then
+        if [[ -n "$existing_pg_password" ]]; then
             say "${YELLOW}Recovered the existing PostgreSQL credential from the current container.${NC}"
         fi
     fi
-    if [ -z "$existing_pg_password" ]; then
+    if [[ -z "$existing_pg_password" ]]; then
         existing_database_url=$(env_get "$ENV_FILE" "DATABASE_URL")
         existing_pg_password=$(postgres_password_from_url "$existing_database_url")
-        if [ -n "$existing_pg_password" ]; then
+        if [[ -n "$existing_pg_password" ]]; then
             say "${YELLOW}Recovered the existing PostgreSQL credential from DATABASE_URL.${NC}"
         fi
     fi
-    if [ -z "$existing_pg_password" ] && has_existing_postgres_volume; then
+    if [[ -z "$existing_pg_password" ]] && has_existing_postgres_volume; then
         fail "An existing PostgreSQL data volume was found, but its password could not be recovered. Restore POSTGRES_PASSWORD in ${ENV_FILE} before continuing."
     fi
     existing_image_prefix=$(env_get "$ENV_FILE" "IMAGE_PREFIX")

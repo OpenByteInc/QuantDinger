@@ -223,7 +223,6 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     action = "Created" if result["created"] == "true" else "Updated"
     print(f"{action} {args.env_file} securely; no secret values were printed.")
-    print(f"PostgreSQL credential source: {result['postgres_password_source']}")
     return 0
 
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+import secrets
 import string
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -691,14 +692,26 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def _skill_path(skill_id: str) -> Path:
+def _stored_skill_path(skill_id: str) -> Path | None:
     if not _SKILL_ID_RE.fullmatch(skill_id or ""):
         raise ValueError("invalid skill id")
+
     root = USER_SKILLS_DIR.resolve()
-    candidate = (root / f"{skill_id}.json").resolve()
-    if not candidate.is_relative_to(root):
-        raise ValueError("invalid skill path")
-    return candidate
+    for path in root.glob("*.json"):
+        try:
+            candidate = path.resolve()
+            if not candidate.is_relative_to(root) or not candidate.is_file():
+                continue
+            payload = json.loads(candidate.read_text(encoding="utf-8"))
+            if str(payload.get("id") or "").strip() == skill_id:
+                return candidate
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+    return None
+
+
+def _new_skill_path() -> Path:
+    return USER_SKILLS_DIR.resolve() / f"{secrets.token_hex(16)}.json"
 
 
 def _contains_forbidden_field(value: Any, forbidden: set[str]) -> bool:
@@ -731,7 +744,7 @@ def _validate_skill_payload(payload: dict[str, Any], *, updating: bool = False) 
     if not isinstance(payload, dict):
         return False, "payload must be an object"
     skill_id = str(payload.get("id") or "").strip()
-    if not _SKILL_ID_RE.match(skill_id):
+    if not _SKILL_ID_RE.fullmatch(skill_id):
         return False, "skill id must match ^[a-z][a-z0-9_-]{2,63}$"
     if not updating and skill_id in _builtin_ids():
         return False, "builtin skills cannot be overridden"
@@ -859,7 +872,7 @@ def install_prompt_skill(payload: dict[str, Any], install_source: str = "manual"
         raise ValueError(msg)
     _ensure_user_dir()
     skill_id = str(payload["id"]).strip()
-    if _skill_path(skill_id).exists():
+    if _stored_skill_path(skill_id) is not None:
         raise ValueError("skill already installed")
     now = _utc_now_iso()
     stored = dict(payload)
@@ -868,17 +881,25 @@ def install_prompt_skill(payload: dict[str, Any], install_source: str = "manual"
     stored["install_source"] = install_source
     stored["created_at"] = now
     stored["updated_at"] = now
-    _skill_path(skill_id).write_text(json.dumps(stored, ensure_ascii=False, indent=2), encoding="utf-8")
+    for _ in range(10):
+        try:
+            with _new_skill_path().open("x", encoding="utf-8") as stream:
+                json.dump(stored, stream, ensure_ascii=False, indent=2)
+            break
+        except FileExistsError:
+            continue
+    else:
+        raise OSError("unable to allocate skill storage")
     return stored
 
 
 def set_skill_enabled(skill_id: str, enabled: bool) -> dict[str, Any]:
     if skill_id in _builtin_ids():
         raise ValueError("builtin skills cannot be disabled")
-    if not _SKILL_ID_RE.match(skill_id or ""):
+    if not _SKILL_ID_RE.fullmatch(skill_id or ""):
         raise ValueError("invalid skill id")
-    path = _skill_path(skill_id)
-    if not path.exists():
+    path = _stored_skill_path(skill_id)
+    if path is None:
         raise FileNotFoundError("skill not found")
     payload = json.loads(path.read_text(encoding="utf-8"))
     payload["enabled"] = bool(enabled)
@@ -890,10 +911,10 @@ def set_skill_enabled(skill_id: str, enabled: bool) -> dict[str, Any]:
 def delete_installed_skill(skill_id: str) -> None:
     if skill_id in _builtin_ids():
         raise ValueError("builtin skills cannot be deleted")
-    if not _SKILL_ID_RE.match(skill_id or ""):
+    if not _SKILL_ID_RE.fullmatch(skill_id or ""):
         raise ValueError("invalid skill id")
-    path = _skill_path(skill_id)
-    if not path.exists():
+    path = _stored_skill_path(skill_id)
+    if path is None:
         raise FileNotFoundError("skill not found")
     path.unlink()
 
