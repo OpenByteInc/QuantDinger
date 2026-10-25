@@ -316,11 +316,14 @@ cd QuantDinger
 python scripts/bootstrap_env.py
 ```
 
-Before the first start, replace the example values in the unified environment file:
+Before the first start, review the unified environment file. The bootstrap command
+already generates the PostgreSQL, session-signing, and credential-encryption
+secrets; set the administrator credentials and review any production-only
+integrations:
 
 | File | Required production values |
 | --- | --- |
-| `.env` | `SECRET_KEY`, `CREDENTIAL_ENCRYPTION_KEY`, administrator, PostgreSQL, Redis, and Grafana credentials |
+| `.env` | Administrator credentials; optional Redis and Grafana credentials; deployment-specific URLs and integrations |
 
 After an update, `docker compose up` runs the one-shot `env-sync` service before
 database and Kafka initialization. It appends newly introduced settings, imports

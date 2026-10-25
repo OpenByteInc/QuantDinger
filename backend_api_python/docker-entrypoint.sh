@@ -20,7 +20,7 @@ if [ ! -f /app/.env ]; then
             echo "[WARNING] Cannot create /app/.env: $(cat /tmp/quantdinger-env-copy.err)"
             echo "[WARNING] Continuing with container environment variables only."
             echo "[TIP] Create the host env file before starting Docker:"
-            echo "      cp .env.example .env"
+            echo "      python3 scripts/bootstrap_env.py"
             rm -f /tmp/quantdinger-env-copy.err
         fi
     else

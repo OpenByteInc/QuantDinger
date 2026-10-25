@@ -286,11 +286,12 @@ cd QuantDinger
 python scripts/bootstrap_env.py
 ```
 
-首次启动前，请替换统一环境文件中的示例值：
+首次启动前，请检查统一环境文件。初始化命令已经自动生成 PostgreSQL、会话签名和凭据加密密钥；
+你只需设置管理员凭据，并检查生产环境专用的集成配置：
 
 | 文件 | 生产环境必填项 |
 | --- | --- |
-| `.env` | `SECRET_KEY`、`CREDENTIAL_ENCRYPTION_KEY`、管理员、PostgreSQL、Redis 和 Grafana 凭据 |
+| `.env` | 管理员凭据；可选的 Redis、Grafana 凭据；部署域名及外部集成 |
 
 更新代码后，`docker compose up` 会先执行一次性的 `env-sync` 服务，再启动数据库迁移与
 Kafka 初始化。它会补充新字段，从旧后端环境文件导入根 `.env` 中缺少的值，保留已有值和
@@ -320,8 +321,8 @@ docker compose ps
 基础服务栈不会启动 Prometheus、Grafana 或 Alertmanager，从而保持默认开源安装的轻量化。
 
 有关详细安装路径、Windows 注意事项、中国镜像设置和 PostgreSQL 迁移指导，请参阅
-[安装故障排查](docs/deployment/INSTALL_TROUBLESHOOTING.md)和
-[云部署指南](docs/deployment/CLOUD_DEPLOYMENT_EN.md)。
+[安装故障排查](docs/deployment/INSTALL_TROUBLESHOOTING_CN.md)和
+[云部署指南](docs/deployment/CLOUD_DEPLOYMENT_CN.md)。
 
 ## 生产环境部署
 

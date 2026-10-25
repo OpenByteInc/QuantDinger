@@ -2,7 +2,7 @@
 
 本文说明当前版本 QuantDinger 在云服务器上的 Docker 部署方式，覆盖推荐的 GHCR 预构建镜像部署、可选源码部署、Nginx、HTTPS、升级和常见排错。
 
-首次安装时如果遇到 Docker 拉镜像或 Postgres 启动问题，也请参考 [安装排错指南](INSTALL_TROUBLESHOOTING.md)。
+首次安装时如果遇到 Docker 拉镜像或 Postgres 启动问题，也请参考 [安装排错指南](INSTALL_TROUBLESHOOTING_CN.md)。
 
 ## 推荐架构
 
@@ -61,12 +61,22 @@ docker compose version
 
 普通云服务器部署建议使用这个模式。后端、Web 前端、移动 H5 都从 GHCR 拉取镜像，不需要在服务器上本地构建 Python 或 Node 项目。
 
+推荐直接使用一键安装程序。它会创建安装目录、生成随机本地凭据、要求设置初始管理员，
+并启动服务：
+
 ```bash
-mkdir -p ~/quantdinger
+curl -fsSL https://raw.githubusercontent.com/OpenByteInc/QuantDinger/main/install.sh | bash -s -- ~/quantdinger
+```
+
+如需手动管理下载的文件，请同时下载环境初始化脚本：
+
+```bash
+mkdir -p ~/quantdinger/scripts
 cd ~/quantdinger
 curl -O https://raw.githubusercontent.com/OpenByteInc/QuantDinger/main/docker-compose.ghcr.yml
 curl -O https://raw.githubusercontent.com/OpenByteInc/QuantDinger/main/.env.example
-cp .env.example .env
+curl -o scripts/bootstrap_env.py https://raw.githubusercontent.com/OpenByteInc/QuantDinger/main/scripts/bootstrap_env.py
+python3 scripts/bootstrap_env.py --compose-file docker-compose.ghcr.yml
 ```
 
 首次启动前编辑 `.env`：
@@ -78,7 +88,10 @@ FRONTEND_URL=https://app.example.com,https://m.example.com
 ALLOW_LOCAL_DESKTOP_BROKERS=false
 ```
 
-GHCR 后端入口脚本可以在首次启动时自动生成 `SECRET_KEY` 并写回 `.env`。你也可以手动设置一个足够长的随机字符串。同一文件也保存 Compose 编排配置：
+初始化脚本会生成 `POSTGRES_PASSWORD`、`SECRET_KEY` 和
+`CREDENTIAL_ENCRYPTION_KEY`，且不会在终端输出密钥。不要重新生成正在使用的 PostgreSQL
+密码；升级时再次运行同一命令会保留已有值，并在需要时从现有容器或旧
+`DATABASE_URL` 安全恢复数据库密码。同一文件也保存 Compose 编排配置：
 
 ```ini
 FRONTEND_HOST=127.0.0.1
@@ -128,8 +141,7 @@ docker compose -f docker-compose.ghcr.yml up -d --force-recreate frontend mobile
 ```bash
 git clone https://github.com/OpenByteInc/QuantDinger.git
 cd QuantDinger
-cp .env.example .env
-./scripts/generate-secret-key.sh
+python3 scripts/bootstrap_env.py
 ```
 
 编辑 `.env`：
@@ -167,6 +179,11 @@ python scripts/sync_env.py --env-file .env --template .env.example --backup
 
 重新执行一键安装程序时也会自动做相同合并。手动执行旧版本首次迁移时可传入
 `--legacy backend.env` 或 `--legacy backend_api_python/.env`；旧文件不会被删除。
+
+升级前也可以再次执行 `python3 scripts/bootstrap_env.py`。它按顺序保留 `.env` 中的
+`POSTGRES_PASSWORD`、从旧 `DATABASE_URL` 恢复，或从仍存在的 `quantdinger-db` 容器恢复。
+如果检测到已有 PostgreSQL 数据卷但无法恢复密码，命令会停止而不是生成新密码，避免
+让现有数据库失联。此时请从 `.env` 备份恢复原密码；不要删除数据卷。
 
 ## 5. 事件运行时与副本配置
 

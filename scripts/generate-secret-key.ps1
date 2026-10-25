@@ -6,7 +6,7 @@ $envFile = ".env"
 # Check if .env exists.
 if (-not (Test-Path $envFile)) {
     Write-Host "Error: $envFile not found" -ForegroundColor Red
-    Write-Host "Please run: Copy-Item .env.example -Destination .env"
+    Write-Host "Please run: python scripts/bootstrap_env.py"
     exit 1
 }
 
@@ -36,4 +36,4 @@ $content | Set-Content $envFile
 Write-Host "[OK] SECRET_KEY generated and updated in $envFile" -ForegroundColor Green
 Write-Host ""
 Write-Host "You can now start the application:"
-Write-Host "  docker-compose up -d --build"
+Write-Host "  docker compose up -d --build"

@@ -62,19 +62,23 @@ Read [Backend architecture](../docs/architecture/ARCHITECTURE.md) and
 Create the unified runtime environment file from the repository root:
 
 ```bash
-cp .env.example .env
+python scripts/bootstrap_env.py
 ```
 
-At minimum, replace these values before a shared or production deployment:
+The bootstrap command creates `.env`, generates missing PostgreSQL,
+session-signing, and credential-encryption secrets, and preserves existing
+values during upgrades. Before a shared or production deployment, set the
+administrator credentials and review optional service credentials:
 
 ```dotenv
-SECRET_KEY=<independent-random-value-at-least-10-bytes-32-plus-recommended>
-CREDENTIAL_ENCRYPTION_KEY=<independent-random-value-at-least-32-bytes>
 ADMIN_USER=<initial-admin-name>
 ADMIN_PASSWORD=<strong-initial-password>
+REDIS_PASSWORD=<optional-independent-random-value>
+CELERY_REDIS_PASSWORD=<optional-independent-random-value>
 ```
 
-Generate each secret independently:
+When running the backend directly on the host, also set `DATABASE_URL` to the
+host PostgreSQL endpoint. To generate an additional independent secret manually:
 
 ```bash
 python -c "import secrets; print(secrets.token_hex(32))"

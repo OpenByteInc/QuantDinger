@@ -135,11 +135,15 @@ The web UI source lives in the separate private **QuantDinger-Vue** repo, which 
 ### Backend (Python)
 
 ```bash
-cp .env.example .env   # Windows: copy .env.example .env
+python scripts/bootstrap_env.py
 cd backend_api_python
 pip install -r requirements.txt
 python run.py
 ```
+
+`bootstrap_env.py` creates the project-root `.env`, generates missing local
+credentials, and preserves existing values. Set `DATABASE_URL` explicitly when
+the backend runs directly on the host instead of through Docker Compose.
 
 ### Frontend
 

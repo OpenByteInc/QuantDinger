@@ -18,6 +18,26 @@ docker compose logs --tail=100 env-sync postgres redis redis-jobs kafka kafka-in
 `env-sync`、PostgreSQL/两类 Redis/Kafka 状态服务、`migration` 与 `kafka-init`，然后才是
 API 和各 Worker。
 
+## 缺少 PostgreSQL 密码
+
+如果 Compose 提示 `POSTGRES_PASSWORD is required`，不要在已有数据库上随意填写新密码。
+源码检出部署请从仓库根目录执行：
+
+```bash
+python3 scripts/bootstrap_env.py
+```
+
+手动下载的 GHCR 部署请确保 `scripts/bootstrap_env.py` 已按云部署指南下载，然后执行：
+
+```bash
+python3 scripts/bootstrap_env.py --compose-file docker-compose.ghcr.yml
+```
+
+初始化脚本不会打印密钥。全新安装会生成随机密码；升级时会保留 `.env` 中的值，并尝试从
+旧 `DATABASE_URL` 或仍存在的 `quantdinger-db` 容器恢复原密码。如果它报告已有
+PostgreSQL 数据卷但无法恢复密码，请从 `.env` 或服务器备份中恢复原
+`POSTGRES_PASSWORD`。不要生成替代密码，也不要执行 `docker compose down -v`。
+
 ## 镜像拉取失败
 
 常见错误包含 `registry-1.docker.io`、`failed to resolve reference`、连接超时，

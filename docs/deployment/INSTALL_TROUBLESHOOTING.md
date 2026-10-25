@@ -18,6 +18,31 @@ Read the first failing dependency, not only the final `backend` error. The
 normal startup order is `env-sync`, the PostgreSQL/Redis/Kafka state services,
 `migration` and `kafka-init`, then the API and workers.
 
+## PostgreSQL password is missing
+
+If Compose reports `POSTGRES_PASSWORD is required`, do not invent a new value
+for an existing database. For a source checkout, run this from the repository
+root:
+
+```bash
+python3 scripts/bootstrap_env.py
+```
+
+For a manually downloaded GHCR deployment, make sure `scripts/bootstrap_env.py`
+was downloaded as described in the cloud guide, then run:
+
+```bash
+python3 scripts/bootstrap_env.py --compose-file docker-compose.ghcr.yml
+```
+
+The bootstrap command never prints secrets. It generates a random password for
+a new installation, preserves the value already present in `.env`, and can
+recover the original value from a legacy `DATABASE_URL` or a surviving
+`quantdinger-db` container. If it reports an existing PostgreSQL volume whose
+password cannot be recovered, restore the original `POSTGRES_PASSWORD` from an
+`.env` or server backup. Do not substitute a new password and do not run
+`docker compose down -v`.
+
 ## Image pull fails
 
 Typical errors mention `registry-1.docker.io`, `failed to resolve reference`,

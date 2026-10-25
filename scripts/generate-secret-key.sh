@@ -9,7 +9,7 @@ ENV_FILE=".env"
 # Check if .env exists.
 if [ ! -f "$ENV_FILE" ]; then
     echo "Error: $ENV_FILE not found"
-    echo "Please run: cp .env.example .env"
+    echo "Please run: python3 scripts/bootstrap_env.py"
     exit 1
 fi
 
@@ -28,4 +28,4 @@ fi
 echo "[OK] SECRET_KEY generated and updated in $ENV_FILE"
 echo ""
 echo "You can now start the application:"
-echo "  docker-compose up -d --build"
+echo "  docker compose up -d --build"
