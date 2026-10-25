@@ -6,8 +6,10 @@ import argparse
 import csv
 import io
 import json
+import logging
 import sys
 from datetime import date
+from functools import lru_cache
 from pathlib import Path
 
 import pandas as pd
@@ -35,7 +37,12 @@ HSI_CONSTITUENT_URL = (
     "https://www.hsi.com.hk/api/wsit-hsi-ddoc-ea-public-website-proxy/"
     "v1/product-data/pub/constituent/metadata/v2"
 )
-EASTMONEY_HK_CONNECT_URL = "https://push2.eastmoney.com/api/qt/clist/get"
+SSE_HK_CONNECT_URL = "https://query.sse.com.cn/commonQuery.do"
+SZSE_HK_CONNECT_URL = "https://www.szse.cn/api/report/ShowReport/data"
+SSE_HK_CONNECT_REFERER = "https://www.sse.com.cn/services/hkexsc/disclo/eligible/"
+SZSE_HK_CONNECT_REFERER = "https://investor.szse.cn/szhk/hkbussiness/underlylist/index.html"
+BUNDLED_UNIVERSE_PATH = ROOT / "app" / "data" / "default_cn_hk_universes.json"
+logger = logging.getLogger(__name__)
 
 HK_HSI_SERIES = {
     "hk_hsi": ("hsi", "00001.00"),
@@ -112,11 +119,17 @@ def _resilient_get(url: str, **kwargs) -> requests.Response:
         return session.get(url, **kwargs)
 
 
-def _decode_json_bytes(content: bytes) -> dict:
-    try:
-        return json.loads(content.decode("utf-8"))
-    except UnicodeDecodeError:
-        return json.loads(content.decode("gb18030"))
+@lru_cache(maxsize=1)
+def _bundled_universe_document() -> dict:
+    return json.loads(BUNDLED_UNIVERSE_PATH.read_text(encoding="utf-8"))
+
+
+def bundled_universe_members(code: str) -> list[dict]:
+    universe = (_bundled_universe_document().get("universes") or {}).get(code) or {}
+    members = universe.get("members") or []
+    if not members:
+        raise RuntimeError(f"bundled universe is unavailable: {code}")
+    return [dict(item) for item in members]
 
 
 def sp500() -> list[dict]:
@@ -309,50 +322,90 @@ def hsi_constituents(series_code: str, index_code: str) -> list[dict]:
     return _parse_hsi_constituent_payload(response.json(), index_code, series_code)
 
 
-def _parse_hk_stock_connect_items(items: list[dict]) -> list[dict]:
+def _parse_sse_hk_stock_connect_payload(payload: dict) -> list[dict]:
     rows = []
-    for item in items:
-        symbol = str(item.get("f12") or "").strip()
+    for item in (payload.get("pageHelp") or {}).get("data") or []:
+        symbol = str(item.get("SECURITY_CODE") or "").strip()
         if not symbol.isdigit():
             continue
         rows.append({
             "market": "HKStock",
             "symbol": symbol.zfill(5),
-            "name": str(item.get("f14") or "").strip(),
-            "metadata": {"source": "eastmoney_hk_stock_connect"},
+            "name": str(item.get("ABBR_CN") or item.get("ABBR_EN") or "").strip(),
+            "rank": len(rows) + 1,
+            "metadata": {
+                "english_name": str(item.get("ABBR_EN") or "").strip(),
+                "source": "sse_hk_stock_connect_official",
+            },
         })
     return rows
 
 
-def hk_stock_connect() -> list[dict]:
+def _parse_szse_hk_stock_connect_report(report: dict) -> list[dict]:
+    rows = []
+    for item in report.get("data") or []:
+        symbol = str(item.get("zqdm") or "").strip()
+        if not symbol.isdigit():
+            continue
+        rows.append({
+            "market": "HKStock",
+            "symbol": symbol.zfill(5),
+            "name": str(item.get("zqjc") or item.get("zqywjc") or "").strip(),
+            "rank": len(rows) + 1,
+            "metadata": {
+                "english_name": str(item.get("zqywjc") or "").strip(),
+                "source": "szse_hk_stock_connect_official",
+            },
+        })
+    return rows
+
+
+def _sse_hk_stock_connect() -> list[dict]:
     params = {
-        "pz": 100,
-        "po": 1,
-        "np": 1,
-        "ut": "bd1d9ddb04089700cf9c27f6f7426281",
-        "fltt": 2,
-        "fid": "f12",
-        "fs": "b:DLMK0146,b:DLMK0144",
-        "fields": "f12,f13,f14",
+        "jsonCallBack": "callback",
+        "sqlId": "COMMON_SSE_JYFW_HGT_XXPL_BDZQQD_L",
+        "isPagination": "true",
+        "pageHelp.pageSize": 1000,
+        "pageHelp.pageNo": 1,
+        "pageHelp.beginPage": 1,
+        "pageHelp.cacheSize": 1,
+        "pageHelp.endPage": 1,
+        "keyword": "",
     }
+    response = _resilient_get(
+        SSE_HK_CONNECT_URL,
+        params=params,
+        timeout=(15, 60),
+        headers={"User-Agent": "QuantDinger/5.7.1", "Referer": SSE_HK_CONNECT_REFERER},
+    )
+    response.raise_for_status()
+    text = response.text.strip()
+    payload = json.loads(text[text.index("(") + 1:text.rindex(")")])
+    return _parse_sse_hk_stock_connect_payload(payload)
+
+
+def _szse_hk_stock_connect() -> list[dict]:
     rows_by_symbol = {}
     page = 1
-    total = None
-    while total is None or len(rows_by_symbol) < total:
+    page_count = 1
+    while page <= page_count:
         response = _resilient_get(
-            EASTMONEY_HK_CONNECT_URL,
-            params={**params, "pn": page},
-            timeout=45,
-            headers={"User-Agent": "QuantDinger/5.7.1"},
+            SZSE_HK_CONNECT_URL,
+            params={
+                "SHOWTYPE": "JSON",
+                "CATALOGID": "SGT_GGTBDQD",
+                "tab1PAGENO": page,
+            },
+            timeout=(15, 60),
+            headers={"User-Agent": "QuantDinger/5.7.1", "Referer": SZSE_HK_CONNECT_REFERER},
         )
         response.raise_for_status()
-        data = (_decode_json_bytes(response.content).get("data") or {})
-        total = int(data.get("total") or 0)
-        items = data.get("diff") or []
-        if not items:
-            break
-        for row in _parse_hk_stock_connect_items(items):
-            rows_by_symbol[row["symbol"]] = row
+        payload = response.json()
+        report = payload[0] if payload else {}
+        metadata = report.get("metadata") or {}
+        page_count = int(metadata.get("pagecount") or 1)
+        for item in _parse_szse_hk_stock_connect_report(report):
+            rows_by_symbol[item["symbol"]] = item
         page += 1
     rows = list(rows_by_symbol.values())
     for index, row in enumerate(rows, start=1):
@@ -360,10 +413,27 @@ def hk_stock_connect() -> list[dict]:
     return rows
 
 
-def csi(index_code: str) -> list[dict]:
-    import akshare as ak  # type: ignore
+def hk_stock_connect() -> list[dict]:
+    for loader in (_sse_hk_stock_connect, _szse_hk_stock_connect):
+        try:
+            rows = loader()
+            if 500 <= len(rows) <= 900:
+                return rows
+            logger.warning("%s returned an invalid member count: %s", loader.__name__, len(rows))
+        except Exception as exc:
+            logger.warning("%s failed, trying the next source: %s", loader.__name__, exc)
+    logger.warning("Official Hong Kong Stock Connect sources failed; using the bundled snapshot")
+    return bundled_universe_members("hk_stock_connect")
 
-    frame = ak.index_stock_cons_weight_csindex(symbol=index_code)
+
+def csi(code: str, index_code: str) -> list[dict]:
+    try:
+        import akshare as ak  # type: ignore
+
+        frame = ak.index_stock_cons_weight_csindex(symbol=index_code)
+    except Exception as exc:
+        logger.warning("CSI source failed for %s; using the bundled snapshot: %s", code, exc)
+        return bundled_universe_members(code)
     rows = []
     for index, item in enumerate(frame.to_dict("records"), start=1):
         symbol = str(item.get("品种代码") or item.get("成分券代码") or item.get("代码") or "").strip().zfill(6)
@@ -379,6 +449,10 @@ def csi(index_code: str) -> list[dict]:
                 "weight": weight,
                 "metadata": {"exchange": item.get("交易所") or ""},
             })
+    minimum, maximum = EXPECTED_MEMBER_COUNTS[code]
+    if not minimum <= len(rows) <= maximum:
+        logger.warning("CSI source returned %s members for %s; using the bundled snapshot", len(rows), code)
+        return bundled_universe_members(code)
     return rows
 
 
@@ -464,11 +538,11 @@ LOADERS = {
     "sp400": lambda: wikipedia_us_index(SP400_URL, EXPECTED_MEMBER_COUNTS["sp400"]),
     "sp600": lambda: wikipedia_us_index(SP600_URL, EXPECTED_MEMBER_COUNTS["sp600"]),
     "russell1000": lambda: wikipedia_us_index(RUSSELL1000_URL, EXPECTED_MEMBER_COUNTS["russell1000"]),
-    "csi300": lambda: csi("000300"),
-    "csi500": lambda: csi("000905"),
-    "csi1000": lambda: csi("000852"),
-    "csi800": lambda: csi("000906"),
-    "sse50": lambda: csi("000016"),
+    "csi300": lambda: csi("csi300", "000300"),
+    "csi500": lambda: csi("csi500", "000905"),
+    "csi1000": lambda: csi("csi1000", "000852"),
+    "csi800": lambda: csi("csi800", "000906"),
+    "sse50": lambda: csi("sse50", "000016"),
     "crypto_top100": crypto_top100,
     "hk_stock_connect": hk_stock_connect,
     "hk_etf": lambda: symbol_master_etfs("HKStock"),
@@ -497,8 +571,9 @@ SOURCE_METADATA = {
     "sse50": {"url": "https://www.csindex.com.cn/", "adapter": "AKShare index_stock_cons_weight_csindex", "snapshot_only": True},
     "crypto_top100": {"url": COINGECKO_URL, "snapshot_only": True},
     "hk_stock_connect": {
-        "url": EASTMONEY_HK_CONNECT_URL,
-        "publisher": "Eastmoney",
+        "urls": [SSE_HK_CONNECT_URL, SZSE_HK_CONNECT_URL],
+        "publisher": "Shanghai Stock Exchange / Shenzhen Stock Exchange",
+        "bundled_fallback": True,
         "snapshot_only": True,
     },
     "hk_etf": {"adapter": "symbol_master", "market": "HKStock", "asset_class": "etf", "snapshot_only": True},

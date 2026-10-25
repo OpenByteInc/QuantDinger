@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 import pandas as pd
 
 from scripts import refresh_public_universe_snapshots as snapshots
@@ -63,23 +66,53 @@ def test_hsi_api_parser_uses_requested_parent_index_and_normalizes_codes():
     assert rows[0]["metadata"]["source_timestamp"] == "2026-10-23 16:08:30"
 
 
-def test_hk_stock_connect_parser_normalizes_codes():
-    rows = snapshots._parse_hk_stock_connect_items([
-        {"f12": "700", "f14": "Tencent"},
-        {"f12": "09988", "f14": "Alibaba"},
-        {"f12": "invalid", "f14": "Ignored"},
-    ])
+def test_sse_hk_stock_connect_parser_normalizes_codes():
+    rows = snapshots._parse_sse_hk_stock_connect_payload({"pageHelp": {"data": [
+        {"SECURITY_CODE": "700", "ABBR_CN": "Tencent", "ABBR_EN": "TENCENT"},
+        {"SECURITY_CODE": "09988", "ABBR_CN": "Alibaba", "ABBR_EN": "BABA-W"},
+        {"SECURITY_CODE": "invalid", "ABBR_CN": "Ignored"},
+    ]}})
 
     assert [row["symbol"] for row in rows] == ["00700", "09988"]
-    assert rows[0]["metadata"]["source"] == "eastmoney_hk_stock_connect"
+    assert rows[0]["metadata"]["source"] == "sse_hk_stock_connect_official"
 
 
-def test_json_decoder_accepts_gb18030_market_names():
-    payload = '{"data":{"diff":[{"f12":"00700","f14":"腾讯控股"}]}}'.encode("gb18030")
+def test_szse_hk_stock_connect_parser_normalizes_codes():
+    rows = snapshots._parse_szse_hk_stock_connect_report({"data": [
+        {"zqdm": "700", "zqjc": "Tencent", "zqywjc": "TENCENT"},
+        {"zqdm": "invalid", "zqjc": "Ignored"},
+    ]})
 
-    decoded = snapshots._decode_json_bytes(payload)
+    assert [row["symbol"] for row in rows] == ["00700"]
+    assert rows[0]["metadata"]["source"] == "szse_hk_stock_connect_official"
 
-    assert decoded["data"]["diff"][0]["f14"] == "腾讯控股"
+
+def test_bundled_cn_hk_universes_have_expected_counts_and_history_start():
+    data_path = Path(snapshots.BUNDLED_UNIVERSE_PATH)
+    document = json.loads(data_path.read_text(encoding="utf-8"))
+
+    assert document["history_from"] == "2023-01-01"
+    assert {code: len(item["members"]) for code, item in document["universes"].items()} == {
+        "csi300": 300,
+        "csi500": 500,
+        "csi1000": 1000,
+        "csi800": 800,
+        "sse50": 50,
+        "hk_stock_connect": 697,
+    }
+
+
+def test_hk_stock_connect_uses_bundled_snapshot_when_official_sources_fail(monkeypatch):
+    def unavailable():
+        raise RuntimeError("network unavailable")
+
+    monkeypatch.setattr(snapshots, "_sse_hk_stock_connect", unavailable)
+    monkeypatch.setattr(snapshots, "_szse_hk_stock_connect", unavailable)
+
+    rows = snapshots.hk_stock_connect()
+
+    assert len(rows) == 697
+    assert rows[0]["market"] == "HKStock"
 
 
 def test_etf_snapshot_loader_reads_hot_symbol_master_rows(monkeypatch):

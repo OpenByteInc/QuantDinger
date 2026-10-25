@@ -134,6 +134,7 @@ def test_apply_init_sql_includes_public_universe_expansion(tmp_path, monkeypatch
         db_module._apply_init_sql(logging.getLogger('test'))
 
     assert 'public-universe-expansion-20261024' in applied
+    assert 'default-cn-hk-universe-members-20261025' in applied
 
 
 def test_public_universe_expansion_has_explicit_returning_clause():

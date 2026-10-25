@@ -77,6 +77,71 @@ def system_universe_overview():
         return jsonify({"code": 0, "msg": "universe.overviewFailed", "data": None}), 500
 
 
+@universe_blp.route("/admin/system", methods=["POST"])
+@login_required
+@admin_required
+def create_system_universe():
+    try:
+        return _success(
+            get_universe_service().create_system(request.get_json(silent=True) or {}),
+            status=201,
+        )
+    except UniverseError as exc:
+        return _failure(exc)
+    except Exception:
+        logger.exception("create system universe failed")
+        return jsonify({"code": 0, "msg": "universe.createFailed", "data": None}), 500
+
+
+@universe_blp.route("/admin/system/<int:universe_id>", methods=["PUT"])
+@login_required
+@admin_required
+def update_system_universe(universe_id: int):
+    try:
+        return _success(
+            get_universe_service().update_system(
+                universe_id,
+                request.get_json(silent=True) or {},
+            )
+        )
+    except UniverseError as exc:
+        return _failure(exc)
+    except Exception:
+        logger.exception("update system universe failed")
+        return jsonify({"code": 0, "msg": "universe.updateFailed", "data": None}), 500
+
+
+@universe_blp.route("/admin/system/<int:universe_id>/visibility", methods=["PUT"])
+@login_required
+@admin_required
+def set_system_universe_visibility(universe_id: int):
+    try:
+        payload = request.get_json(silent=True) or {}
+        if not isinstance(payload.get("visible"), bool):
+            raise UniverseError("universe.invalidVisibility")
+        return _success(
+            get_universe_service().set_system_visibility(universe_id, payload["visible"])
+        )
+    except UniverseError as exc:
+        return _failure(exc)
+    except Exception:
+        logger.exception("set system universe visibility failed")
+        return jsonify({"code": 0, "msg": "universe.updateFailed", "data": None}), 500
+
+
+@universe_blp.route("/admin/system/<int:universe_id>", methods=["DELETE"])
+@login_required
+@admin_required
+def delete_system_universe(universe_id: int):
+    try:
+        return _success(get_universe_service().delete_system(universe_id))
+    except UniverseError as exc:
+        return _failure(exc)
+    except Exception:
+        logger.exception("delete system universe failed")
+        return jsonify({"code": 0, "msg": "universe.deleteFailed", "data": None}), 500
+
+
 @universe_blp.route("/admin/sync", methods=["POST"])
 @login_required
 @admin_required

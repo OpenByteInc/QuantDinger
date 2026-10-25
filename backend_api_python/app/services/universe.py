@@ -22,6 +22,7 @@ SUPPORTED_UNIVERSE_TYPES = frozenset({
 })
 EDITABLE_UNIVERSE_TYPES = frozenset({"manual"})
 MAX_MANUAL_MEMBERS = 5000
+MAX_SYSTEM_MEMBERS = 1200
 _CODE_RE = re.compile(r"[^a-z0-9_-]+")
 
 
@@ -160,8 +161,10 @@ class UniverseService:
                             AND (m.valid_to IS NULL OR m.valid_to > CURRENT_DATE))
                        END AS member_count
                 FROM qd_universes u
-                WHERE (u.is_system = TRUE OR u.user_id = ?)
-                  AND u.status <> 'deprecated'
+                WHERE (
+                    (u.is_system = TRUE AND u.status NOT IN ('hidden', 'deprecated'))
+                    OR (u.user_id = ? AND u.status <> 'deprecated')
+                )
                 ORDER BY u.is_system DESC, u.id ASC
                 """,
                 (int(user_id), int(user_id)),
@@ -210,6 +213,165 @@ class UniverseService:
             db.commit()
             cur.close()
         return self.get_universe(user_id, universe_id)
+
+    def create_system(self, payload: dict) -> dict:
+        payload = payload or {}
+        name = str(payload.get("name") or "").strip()
+        code = normalize_universe_code(payload.get("code") or name)
+        market = str(payload.get("market") or "").strip()
+        universe_type = str(payload.get("universe_type") or payload.get("universeType") or "manual").strip()
+        history_from = parse_as_of(payload.get("history_from") or payload.get("historyFrom"))
+        if not name or len(name) > 160:
+            raise UniverseError("universe.invalidName")
+        if not code or len(code) > 80:
+            raise UniverseError("universe.invalidCode")
+        if market not in VALID_MARKETS:
+            raise UniverseError("universe.invalidMarket")
+        if universe_type not in SUPPORTED_UNIVERSE_TYPES or universe_type == "watchlist":
+            raise UniverseError("universe.createTypeUnsupported")
+        if history_from > date.today():
+            raise UniverseError("universe.invalidHistoryDate")
+        members = normalize_manual_members(market, payload.get("members") or [])
+        if len(members) > MAX_SYSTEM_MEMBERS:
+            raise UniverseError("universe.tooManyMembers")
+        metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+        metadata = {
+            **metadata,
+            "admin_managed": True,
+            "history_mode": "fixed_current_constituents",
+            "snapshot_as_of": date.today().isoformat(),
+        }
+
+        with get_db_connection() as db:
+            cur = db.cursor()
+            cur.execute(
+                "SELECT id FROM qd_universes WHERE is_system = TRUE AND code = ?",
+                (code,),
+            )
+            if cur.fetchone():
+                cur.close()
+                raise UniverseError("universe.codeExists", status_code=409)
+            cur.execute(
+                """
+                INSERT INTO qd_universes
+                  (user_id, code, name, market, universe_type, source, is_system,
+                   status, metadata_json)
+                VALUES (NULL, ?, ?, ?, ?, 'manual', TRUE, 'active', ?)
+                RETURNING id
+                """,
+                (code, name, market, universe_type, json.dumps(metadata, ensure_ascii=False)),
+            )
+            created = cur.fetchone() or {}
+            universe_id = int(created.get("id") or 0)
+            self._replace_system_members(cur, universe_id, members, history_from)
+            db.commit()
+            cur.close()
+        return self.get_system(universe_id)
+
+    def get_system(self, universe_id: int) -> dict:
+        with get_db_connection() as db:
+            universe = self._get_system_universe(db, universe_id)
+            cur = db.cursor()
+            cur.execute(
+                "SELECT MIN(valid_from) AS history_from FROM qd_universe_members WHERE universe_id = ?",
+                (int(universe_id),),
+            )
+            universe = dict(universe, **(cur.fetchone() or {}))
+            cur.close()
+        universe["member_count"] = len(self._resolve_system_members(universe_id))
+        return _serialize_universe(universe)
+
+    def update_system(self, universe_id: int, payload: dict) -> dict:
+        payload = payload or {}
+        with get_db_connection() as db:
+            universe = self._get_system_universe(db, universe_id)
+            name = str(payload.get("name") if "name" in payload else universe.get("name") or "").strip()
+            market = str(payload.get("market") if "market" in payload else universe.get("market") or "").strip()
+            universe_type = str(
+                payload.get("universe_type") or payload.get("universeType")
+                or universe.get("universe_type") or "manual"
+            ).strip()
+            if not name or len(name) > 160:
+                raise UniverseError("universe.invalidName")
+            if market not in VALID_MARKETS:
+                raise UniverseError("universe.invalidMarket")
+            if universe_type not in SUPPORTED_UNIVERSE_TYPES or universe_type == "watchlist":
+                raise UniverseError("universe.createTypeUnsupported")
+
+            members = None
+            history_from = None
+            if "members" in payload:
+                members = normalize_manual_members(market, payload.get("members") or [])
+                if len(members) > MAX_SYSTEM_MEMBERS:
+                    raise UniverseError("universe.tooManyMembers")
+                history_from = parse_as_of(payload.get("history_from") or payload.get("historyFrom"))
+                if history_from > date.today():
+                    raise UniverseError("universe.invalidHistoryDate")
+
+            metadata = _json_value(universe.get("metadata_json"), {})
+            metadata.update({
+                "admin_managed": True,
+                "snapshot_as_of": date.today().isoformat(),
+            })
+            if members is not None:
+                metadata["history_mode"] = "fixed_current_constituents"
+            cur = db.cursor()
+            if members is None:
+                cur.execute(
+                    """
+                    UPDATE qd_universes
+                    SET name = ?, name_i18n_key = '', market = ?, universe_type = ?,
+                        metadata_json = ?, updated_at = NOW()
+                    WHERE id = ? AND is_system = TRUE
+                    """,
+                    (
+                        name, market, universe_type,
+                        json.dumps(metadata, ensure_ascii=False), int(universe_id),
+                    ),
+                )
+            else:
+                cur.execute(
+                    """
+                    UPDATE qd_universes
+                    SET name = ?, name_i18n_key = '', market = ?, universe_type = ?, source = 'manual',
+                        source_ref = '', metadata_json = ?, updated_at = NOW()
+                    WHERE id = ? AND is_system = TRUE
+                    """,
+                    (
+                        name, market, universe_type,
+                        json.dumps(metadata, ensure_ascii=False), int(universe_id),
+                    ),
+                )
+            if members is not None:
+                self._replace_system_members(cur, int(universe_id), members, history_from)
+            db.commit()
+            cur.close()
+        return self.get_system(universe_id)
+
+    def set_system_visibility(self, universe_id: int, visible: bool) -> dict:
+        with get_db_connection() as db:
+            universe = self._get_system_universe(db, universe_id)
+            cur = db.cursor()
+            cur.execute(
+                "UPDATE qd_universes SET status = ?, updated_at = NOW() WHERE id = ? AND is_system = TRUE",
+                ("active" if visible else "hidden", int(universe_id)),
+            )
+            db.commit()
+            cur.close()
+        return {
+            "id": int(universe_id),
+            "code": str(universe.get("code") or ""),
+            "status": "active" if visible else "hidden",
+        }
+
+    def delete_system(self, universe_id: int) -> dict:
+        with get_db_connection() as db:
+            universe = self._get_system_universe(db, universe_id)
+            cur = db.cursor()
+            cur.execute("DELETE FROM qd_universes WHERE id = ? AND is_system = TRUE", (int(universe_id),))
+            db.commit()
+            cur.close()
+        return {"id": int(universe_id), "code": str(universe.get("code") or "")}
 
     def clone_system(self, user_id: int, universe_id: int, *, name: str = "") -> dict:
         with get_db_connection() as db:
@@ -381,6 +543,29 @@ class UniverseService:
             cur.close()
         return [_serialize_member(row) for row in rows]
 
+    def _resolve_system_members(self, universe_id: int, *, as_of: Any = None) -> list[dict]:
+        as_of_date = parse_as_of(as_of)
+        with get_db_connection() as db:
+            self._get_system_universe(db, universe_id)
+            cur = db.cursor()
+            cur.execute(
+                """
+                SELECT market, symbol, name, exchange_id, market_type,
+                       instrument_id, settle_currency,
+                       member_weight AS weight, member_rank AS rank,
+                       valid_from, valid_to, source_version, metadata_json AS metadata
+                FROM qd_universe_members
+                WHERE universe_id = ?
+                  AND valid_from <= ?
+                  AND (valid_to IS NULL OR valid_to > ?)
+                ORDER BY market, symbol, exchange_id, market_type, instrument_id
+                """,
+                (int(universe_id), as_of_date, as_of_date),
+            )
+            rows = cur.fetchall() or []
+            cur.close()
+        return [_serialize_member(row) for row in rows]
+
     @staticmethod
     def _symbol_master_members(source_ref: str) -> list[dict]:
         parts = str(source_ref or "").split(":")
@@ -517,6 +702,54 @@ class UniverseService:
         if not row:
             raise UniverseError("universe.notFound", status_code=404)
         return row
+
+    @staticmethod
+    def _get_system_universe(db, universe_id: int) -> dict:
+        cur = db.cursor()
+        cur.execute(
+            "SELECT * FROM qd_universes WHERE id = ? AND is_system = TRUE AND status <> 'deprecated'",
+            (int(universe_id),),
+        )
+        row = cur.fetchone()
+        cur.close()
+        if not row:
+            raise UniverseError("universe.notFound", status_code=404)
+        return row
+
+    @staticmethod
+    def _replace_system_members(cur, universe_id: int, members: list[dict], effective_from: date) -> None:
+        cur.execute(
+            "DELETE FROM qd_universe_members WHERE universe_id = ? AND valid_from >= ?",
+            (int(universe_id), effective_from),
+        )
+        cur.execute(
+            """
+            UPDATE qd_universe_members
+            SET valid_to = ?, updated_at = NOW()
+            WHERE universe_id = ?
+              AND valid_from < ?
+              AND (valid_to IS NULL OR valid_to > ?)
+            """,
+            (effective_from, int(universe_id), effective_from, effective_from),
+        )
+        source_version = f"admin:{effective_from.isoformat()}"
+        for member in members:
+            cur.execute(
+                """
+                INSERT INTO qd_universe_members
+                  (universe_id, market, symbol, name, exchange_id, market_type,
+                   instrument_id, settle_currency, valid_from, valid_to,
+                   member_weight, member_rank, source_version, metadata_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)
+                """,
+                (
+                    int(universe_id), member["market"], member["symbol"], member["name"],
+                    member["exchange_id"], member["market_type"], member["instrument_id"],
+                    member["settle_currency"], effective_from, member.get("weight"),
+                    member.get("rank"), source_version,
+                    json.dumps(member.get("metadata") or {}, ensure_ascii=False),
+                ),
+            )
 
     @staticmethod
     def _replace_static_members(cur, universe_id: int, members: list[dict]) -> None:

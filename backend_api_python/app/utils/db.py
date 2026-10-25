@@ -329,6 +329,12 @@ def _apply_init_sql(logger, *, strict: bool = False):
             _apply_migration_component(
                 conn,
                 logger,
+                name="default-cn-hk-universe-members-20261025",
+                path=Path(__file__).resolve().parent.parent.parent / "migrations" / "20261025_default_cn_hk_universe_members.sql",
+            )
+            _apply_migration_component(
+                conn,
+                logger,
                 name="market-symbols-master",
                 path=symbols_sql,
                 baseline_table="qd_market_symbols",

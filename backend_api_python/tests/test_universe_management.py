@@ -1,4 +1,5 @@
 from contextlib import contextmanager
+from datetime import date
 
 import pytest
 
@@ -71,3 +72,30 @@ def test_delete_manual_removes_only_an_owned_editable_universe(monkeypatch):
     assert result == {"id": 42, "code": "personal-42"}
     assert any(sql == "DELETE FROM qd_universes WHERE id = ?" for sql, _ in statements)
     assert connection.committed is True
+
+
+def test_system_member_edit_preserves_history_before_effective_date():
+    statements = []
+
+    class Cursor:
+        def execute(self, sql, params):
+            statements.append((" ".join(sql.split()), params))
+
+    members = normalize_manual_members("USStock", [
+        {"symbol": "AAPL"},
+        {"symbol": "MSFT"},
+    ])
+    effective_from = date(2023, 1, 1)
+
+    UniverseService._replace_system_members(Cursor(), 77, members, effective_from)
+
+    assert statements[0] == (
+        "DELETE FROM qd_universe_members WHERE universe_id = ? AND valid_from >= ?",
+        (77, effective_from),
+    )
+    assert "SET valid_to = ?" in statements[1][0]
+    assert statements[1][1] == (effective_from, 77, effective_from, effective_from)
+    inserts = [item for item in statements if item[0].startswith("INSERT INTO qd_universe_members")]
+    assert len(inserts) == 2
+    assert all(item[1][8] == effective_from for item in inserts)
+    assert all(item[1][11] == "admin:2023-01-01" for item in inserts)
