@@ -1,6 +1,6 @@
 from contextlib import AbstractContextManager
 
-from app.services import pending_order_worker as worker_module
+from app.services.pending_orders import alpaca_sync_persistence as persistence_module
 
 
 class FakeCursor:
@@ -33,8 +33,8 @@ class FakeConnection(AbstractContextManager):
 
 def test_alpaca_fill_snapshot_updates_intent_without_an_undefined_order_id(monkeypatch):
     calls = []
-    monkeypatch.setattr(worker_module, "get_db_connection", lambda: FakeConnection(calls))
-    worker = object.__new__(worker_module.PendingOrderWorker)
+    monkeypatch.setattr(persistence_module, "get_db_connection", lambda: FakeConnection(calls))
+    worker = object.__new__(persistence_module.AlpacaOrderSyncPersistenceMixin)
 
     worker._update_alpaca_sent_order_snapshot(
         order_id=42,
