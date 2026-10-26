@@ -29,6 +29,7 @@ Metadata:
           - RedisTag
           - KafkaTag
           - ComposeUrl
+          - EnvTemplateUrl
     ParameterLabels:
       AllowedCidr:
         default: CIDR allowed to access the web interfaces
@@ -112,6 +113,15 @@ Parameters:
     Description: >-
       Commit-pinned Docker Compose definition. Change only when upgrading to a
       Marketplace release that documents a different revision.
+
+  EnvTemplateUrl:
+    Type: String
+    Default: >-
+      https://raw.githubusercontent.com/OpenByteInc/QuantDinger/b8f58820616cc2b5c1af6b503b367dd2b02f0d5c/.env.example
+    AllowedPattern: ^https://raw\.githubusercontent\.com/OpenByteInc/QuantDinger/[0-9a-f]{40}/\.env\.example$
+    Description: >-
+      Commit-pinned environment template used by the one-time environment
+      synchronization container. Keep this revision aligned with ComposeUrl.
 
 Mappings:
   Marketplace:
@@ -339,6 +349,7 @@ Resources:
 
               INSTALL_DIR=/opt/quantdinger
               ENV_FILE="$INSTALL_DIR/.env"
+              ENV_TEMPLATE_FILE="$INSTALL_DIR/.env.example"
               COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
               BACKUP_DIR="$INSTALL_DIR/backups"
               REGISTRY='${MarketplaceRegistry}'
@@ -479,6 +490,10 @@ Resources:
               curl --fail --location --retry 5 '${ComposeUrl}' --output "$COMPOSE_FILE.new"
               mv "$COMPOSE_FILE.new" "$COMPOSE_FILE"
               chmod 0600 "$COMPOSE_FILE"
+
+              curl --fail --location --retry 5 '${EnvTemplateUrl}' --output "$ENV_TEMPLATE_FILE.new"
+              mv "$ENV_TEMPLATE_FILE.new" "$ENV_TEMPLATE_FILE"
+              chmod 0644 "$ENV_TEMPLATE_FILE"
 
               set_env MARKETPLACE_RELEASE '${ReleaseVersion}'
               set_env BACKEND_IMAGE "$REGISTRY/$REPOSITORY"

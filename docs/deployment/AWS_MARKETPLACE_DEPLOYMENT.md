@@ -77,6 +77,11 @@ disk, so image pulls and application data do not exhaust the operating-system
 volume. The deployment directory is `/opt/quantdinger`; generated secrets are stored in
 `/opt/quantdinger/.env` with owner-only permissions.
 
+The deployment also downloads the commit-pinned `.env.example` that matches
+the Compose definition. The one-time `env-sync` container uses it to add newly
+introduced optional settings without replacing existing values or generated
+secrets.
+
 This is a convenient starter and evaluation topology. For production workloads,
 add HTTPS, monitoring, off-instance backups, recovery testing, and an
 availability design appropriate to your objectives. A single EC2 instance is

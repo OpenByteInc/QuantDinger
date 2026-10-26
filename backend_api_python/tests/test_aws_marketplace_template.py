@@ -16,6 +16,7 @@ def test_marketplace_template_uses_immutable_artifacts() -> None:
     assert ":latest" not in template
     assert "raw.githubusercontent.com/OpenByteInc/QuantDinger/" in template
     assert "[0-9a-f]{40}/docker-compose" in template
+    assert "[0-9a-f]{40}/\\.env\\.example" in template
     for component in ("backend", "frontend", "mobile", "postgres", "redis", "kafka"):
         assert f"2026.10.26-{component}" in template
 
@@ -76,6 +77,14 @@ def test_marketplace_template_keeps_docker_data_on_the_retained_volume() -> None
     assert "CURRENT_DOCKER_ROOT=$(docker info" in template
     assert "docker compose --env-file \"$ENV_FILE\" -f \"$COMPOSE_FILE\" pull --quiet" in template
     assert "Marketplace image pull failed after three attempts" in template
+
+
+def test_marketplace_template_provides_the_env_sync_template() -> None:
+    template = _template_text()
+
+    assert 'ENV_TEMPLATE_FILE="$INSTALL_DIR/.env.example"' in template
+    assert "'${EnvTemplateUrl}' --output \"$ENV_TEMPLATE_FILE.new\"" in template
+    assert 'chmod 0644 "$ENV_TEMPLATE_FILE"' in template
 
 
 def test_marketplace_guide_warns_about_data_deletion_and_aws_costs() -> None:
