@@ -21,6 +21,7 @@ AI-agent access. This documentation describes the current v5 release.
 | Run a backtest | [Backtest Center guide](product/BACKTEST_CENTER.md) | [Strategy API V2 guide](trading/STRATEGY_DEV_GUIDE.md) |
 | Prepare live trading | [Live-trading safety](trading/LIVE_TRADING_SAFETY.md) | [Security and reporting](security/README.md) |
 | Prepare production | [Production hardening](deployment/PRODUCTION_HARDENING.md) | [Observability](deployment/OBSERVABILITY.md) |
+| Deploy from AWS Marketplace | [English](deployment/AWS_MARKETPLACE_DEPLOYMENT.md) | [简体中文](deployment/AWS_MARKETPLACE_DEPLOYMENT_CN.md) |
 | Release or scale runtime workers | [Distributed runtime scaling](deployment/DISTRIBUTED_RUNTIME_SCALING.md) | [V6 capacity plan](architecture/V6_HYPERSCALE_ARCHITECTURE_PLAN.md) |
 | Connect an AI agent | [MCP setup](agent/MCP_SETUP.md) | [Agent Gateway quickstart](agent/AGENT_QUICKSTART.md) |
 | Integrate over HTTP | [Human OpenAPI](api/README.md) | [API conventions](architecture/API_CONVENTIONS.md) |
@@ -99,6 +100,7 @@ ownership or shared state.
 ### Deployment and operations
 
 - [Cloud deployment](deployment/CLOUD_DEPLOYMENT_EN.md)
+- AWS Marketplace: [English](deployment/AWS_MARKETPLACE_DEPLOYMENT.md) / [简体中文](deployment/AWS_MARKETPLACE_DEPLOYMENT_CN.md)
 - [Distributed runtime deployment and scaling](deployment/DISTRIBUTED_RUNTIME_SCALING.md)
 - [分布式运行时部署与扩容](deployment/DISTRIBUTED_RUNTIME_SCALING_CN.md)
 - [Installation troubleshooting](deployment/INSTALL_TROUBLESHOOTING.md)

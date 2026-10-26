@@ -1,0 +1,510 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  QuantDinger single-node deployment for AWS Marketplace. Creates an isolated
+  VPC and an Amazon Linux 2023 EC2 instance, then deploys the complete
+  QuantDinger container stack from AWS Marketplace ECR.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Network access
+        Parameters:
+          - AllowedCidr
+      - Label:
+          default: Compute and storage
+        Parameters:
+          - InstanceType
+          - RootVolumeSize
+          - DataVolumeSize
+      - Label:
+          default: QuantDinger release
+        Parameters:
+          - ReleaseVersion
+          - BackendTag
+          - FrontendTag
+          - MobileTag
+          - PostgresTag
+          - RedisTag
+          - KafkaTag
+          - ComposeUrl
+    ParameterLabels:
+      AllowedCidr:
+        default: CIDR allowed to access the web interfaces
+      RootVolumeSize:
+        default: Encrypted root volume size (GiB)
+
+Parameters:
+  AllowedCidr:
+    Type: String
+    AllowedPattern: ^((25[0-5]|2[0-4][0-9]|[01]?[0-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9]?[0-9])\/(3[0-2]|[12]?[0-9])$
+    ConstraintDescription: Enter a valid IPv4 CIDR such as 203.0.113.10/32.
+    Description: >-
+      Restrict this to your public IP with /32 for evaluation. Do not use
+      0.0.0.0/0 until HTTPS and appropriate network controls are configured.
+
+  InstanceType:
+    Type: String
+    Default: t3.large
+    AllowedValues:
+      - t3.large
+      - t3.xlarge
+      - m6i.large
+      - m6i.xlarge
+    Description: t3.large is the minimum recommended size for the full stack.
+
+  RootVolumeSize:
+    Type: Number
+    Default: 30
+    MinValue: 20
+    MaxValue: 200
+    Description: Encrypted operating system volume size.
+
+  DataVolumeSize:
+    Type: Number
+    Default: 100
+    MinValue: 60
+    MaxValue: 2048
+    Description: >-
+      Persistent encrypted volume for configuration, container data, logs, and
+      backups. CloudFormation retains this volume when the stack is deleted.
+
+  ReleaseVersion:
+    Type: String
+    Default: 2026.10.26
+    AllowedPattern: ^[0-9A-Za-z][0-9A-Za-z._-]{0,63}$
+    Description: Immutable QuantDinger Marketplace release identifier.
+
+  BackendTag:
+    Type: String
+    Default: 2026.10.26-backend
+  FrontendTag:
+    Type: String
+    Default: 2026.10.26-frontend
+  MobileTag:
+    Type: String
+    Default: 2026.10.26-mobile
+  PostgresTag:
+    Type: String
+    Default: 2026.10.26-postgres
+  RedisTag:
+    Type: String
+    Default: 2026.10.26-redis
+  KafkaTag:
+    Type: String
+    Default: 2026.10.26-kafka
+
+  ComposeUrl:
+    Type: String
+    Default: >-
+      https://raw.githubusercontent.com/OpenByteInc/QuantDinger/b8f58820616cc2b5c1af6b503b367dd2b02f0d5c/docker-compose.ghcr.yml
+    AllowedPattern: ^https://raw\.githubusercontent\.com/OpenByteInc/QuantDinger/[0-9a-f]{40}/docker-compose\.ghcr\.yml$
+    Description: >-
+      Commit-pinned Docker Compose definition. Change only when upgrading to a
+      Marketplace release that documents a different revision.
+
+Mappings:
+  Marketplace:
+    Images:
+      Registry: 709825985650.dkr.ecr.us-east-1.amazonaws.com
+      Repository: open-byte/quantdinger-v5
+      Region: us-east-1
+
+Resources:
+  QuantDingerVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.42.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-vpc
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+
+  GatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref QuantDingerVpc
+
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref QuantDingerVpc
+      CidrBlock: 10.42.0.0/24
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-public
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref QuantDingerVpc
+
+  DefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: GatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicRouteAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet
+
+  QuantDingerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: QuantDinger web access; administration uses SSM Session Manager
+      VpcId: !Ref QuantDingerVpc
+      SecurityGroupIngress:
+        - Description: QuantDinger web client
+          IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: !Ref AllowedCidr
+        - Description: QuantDinger mobile web client
+          IpProtocol: tcp
+          FromPort: 8889
+          ToPort: 8889
+          CidrIp: !Ref AllowedCidr
+      SecurityGroupEgress:
+        - Description: Package, image, and API access
+          IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-web
+
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: QuantDingerMarketplaceImagePull
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: GetRegistryToken
+                Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                Resource: '*'
+              - Sid: PullMarketplaceImages
+                Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:BatchGetImage
+                  - ecr:GetDownloadUrlForLayer
+                Resource: arn:aws:ecr:us-east-1:709825985650:repository/open-byte/quantdinger-v5
+              - Sid: StoreGeneratedAdminCredential
+                Effect: Allow
+                Action:
+                  - ssm:AddTagsToResource
+                  - ssm:PutParameter
+                Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/quantdinger/${AWS::StackName}/*
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref InstanceRole
+
+  QuantDingerHost:
+    Type: AWS::EC2::Instance
+    DependsOn:
+      - DefaultRoute
+      - PublicRouteAssociation
+    Properties:
+      ImageId: '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}'
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref InstanceProfile
+      NetworkInterfaces:
+        - AssociatePublicIpAddress: false
+          DeleteOnTermination: true
+          DeviceIndex: '0'
+          GroupSet:
+            - !Ref QuantDingerSecurityGroup
+          SubnetId: !Ref PublicSubnet
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            DeleteOnTermination: true
+            Encrypted: true
+            VolumeSize: !Ref RootVolumeSize
+            VolumeType: gp3
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-host
+        - Key: QuantDingerRelease
+          Value: !Ref ReleaseVersion
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash
+          set -Eeuo pipefail
+          dnf install -y docker curl openssl xfsprogs
+          install -d -m 0755 /usr/local/lib/docker/cli-plugins
+          curl --fail --location --retry 5 \
+            https://github.com/docker/compose/releases/download/v2.40.3/docker-compose-linux-x86_64 \
+            --output /usr/local/lib/docker/cli-plugins/docker-compose
+          chmod 0755 /usr/local/lib/docker/cli-plugins/docker-compose
+          systemctl enable --now docker
+          systemctl enable --now amazon-ssm-agent || true
+          touch /var/tmp/quantdinger-host-ready
+
+  QuantDingerDataVolume:
+    Type: AWS::EC2::Volume
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      AvailabilityZone: !GetAtt PublicSubnet.AvailabilityZone
+      Encrypted: true
+      Size: !Ref DataVolumeSize
+      VolumeType: gp3
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-data
+        - Key: Application
+          Value: QuantDinger
+
+  QuantDingerDataVolumeAttachment:
+    Type: AWS::EC2::VolumeAttachment
+    Properties:
+      Device: /dev/sdf
+      InstanceId: !Ref QuantDingerHost
+      VolumeId: !Ref QuantDingerDataVolume
+
+  QuantDingerElasticIp:
+    Type: AWS::EC2::EIP
+    DependsOn: GatewayAttachment
+    Properties:
+      Domain: vpc
+      InstanceId: !Ref QuantDingerHost
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-public-ip
+
+  DeploymentAssociation:
+    Type: AWS::SSM::Association
+    DependsOn: QuantDingerDataVolumeAttachment
+    Properties:
+      Name: AWS-RunShellScript
+      AssociationName: !Sub ${AWS::StackName}-quantdinger-${ReleaseVersion}
+      ApplyOnlyAtCronInterval: false
+      WaitForSuccessTimeoutSeconds: 3600
+      Targets:
+        - Key: InstanceIds
+          Values:
+            - !Ref QuantDingerHost
+      Parameters:
+        commands:
+          - !Sub
+            - |
+              #!/bin/bash
+              set -Eeuo pipefail
+
+              INSTALL_DIR=/opt/quantdinger
+              ENV_FILE="$INSTALL_DIR/.env"
+              COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
+              BACKUP_DIR="$INSTALL_DIR/backups"
+              REGISTRY='${MarketplaceRegistry}'
+              REPOSITORY='${MarketplaceRepository}'
+              ECR_REGION='${MarketplaceRegion}'
+              DATA_VOLUME_ID='${QuantDingerDataVolume}'
+
+              for attempt in $(seq 1 60); do
+                [ -f /var/tmp/quantdinger-host-ready ] && break
+                sleep 5
+              done
+              [ -f /var/tmp/quantdinger-host-ready ] || { echo 'Host bootstrap did not finish'; exit 1; }
+
+              DATA_VOLUME_TOKEN=$(printf '%s' "$DATA_VOLUME_ID" | tr -d '-')
+              DATA_DEVICE="/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_$DATA_VOLUME_TOKEN"
+              for attempt in $(seq 1 60); do
+                [ -b "$DATA_DEVICE" ] && break
+                [ ! -b /dev/xvdf ] || { DATA_DEVICE=/dev/xvdf; break; }
+                sleep 5
+              done
+              [ -b "$DATA_DEVICE" ] || { echo 'Persistent data volume is not attached'; exit 1; }
+
+              if ! blkid "$DATA_DEVICE" >/dev/null 2>&1; then
+                mkfs.xfs -f "$DATA_DEVICE"
+              fi
+              DATA_UUID=$(blkid -s UUID -o value "$DATA_DEVICE")
+              install -d -m 0700 "$INSTALL_DIR"
+              grep -q "UUID=$DATA_UUID " /etc/fstab \
+                || printf 'UUID=%s /opt/quantdinger xfs defaults,nofail 0 2\n' "$DATA_UUID" >> /etc/fstab
+              mountpoint -q "$INSTALL_DIR" || mount "$INSTALL_DIR"
+
+              install -d -m 0700 "$BACKUP_DIR"
+              cd "$INSTALL_DIR"
+
+              aws ecr get-login-password --region "$ECR_REGION" \
+                | docker login --username AWS --password-stdin "$REGISTRY"
+
+              if [ -f "$ENV_FILE" ] && docker ps --format '{{.Names}}' | grep -qx quantdinger-db; then
+                set -a
+                . "$ENV_FILE"
+                set +a
+                BACKUP_PATH="$BACKUP_DIR/postgres-$(date -u +%Y%m%dT%H%M%SZ).sql.gz"
+                DB_USER=$(grep '^POSTGRES_USER=' "$ENV_FILE" | cut -d= -f2- || true)
+                DB_NAME=$(grep '^POSTGRES_DB=' "$ENV_FILE" | cut -d= -f2- || true)
+                [ -n "$DB_USER" ] || DB_USER=quantdinger
+                [ -n "$DB_NAME" ] || DB_NAME=quantdinger
+                docker exec quantdinger-db pg_dump \
+                  --username "$DB_USER" \
+                  --dbname "$DB_NAME" \
+                  | gzip -9 > "$BACKUP_PATH"
+                chmod 0600 "$BACKUP_PATH"
+                ls -1t "$BACKUP_DIR"/*.sql.gz 2>/dev/null | tail -n +6 | xargs -r rm -f
+              fi
+
+              if [ ! -f "$ENV_FILE" ]; then
+                ADMIN_PASSWORD=$(openssl rand -hex 18)
+                cat > "$ENV_FILE" <<EOF
+              COMPOSE_PROJECT_NAME=quantdinger
+              DEPLOYMENT_MODE=personal
+              POSTGRES_DB=quantdinger
+              POSTGRES_USER=quantdinger
+              POSTGRES_PASSWORD=$(openssl rand -hex 24)
+              SECRET_KEY=$(openssl rand -hex 32)
+              CREDENTIAL_ENCRYPTION_KEY=$(openssl rand -hex 32)
+              ADMIN_USER=admin
+              ADMIN_PASSWORD=$ADMIN_PASSWORD
+              ADMIN_EMAIL=
+              FRONTEND_HOST=0.0.0.0
+              FRONTEND_PORT=80
+              MOBILE_HOST=0.0.0.0
+              MOBILE_PORT=8889
+              BACKEND_PORT=127.0.0.1:5000
+              DB_PORT=127.0.0.1:5432
+              REDIS_BIND=127.0.0.1:6379
+              KAFKA_PORT=127.0.0.1:29092
+              EOF
+                chmod 0600 "$ENV_FILE"
+                aws ssm put-parameter \
+                  --name '/quantdinger/${AWS::StackName}/admin-password' \
+                  --description 'Generated QuantDinger administrator password' \
+                  --type SecureString \
+                  --value "$ADMIN_PASSWORD" \
+                  --overwrite \
+                  --region '${AWS::Region}' >/dev/null
+                aws ssm add-tags-to-resource \
+                  --resource-type Parameter \
+                  --resource-id '/quantdinger/${AWS::StackName}/admin-password' \
+                  --tags Key=Application,Value=QuantDinger Key=Stack,Value='${AWS::StackName}' \
+                  --region '${AWS::Region}' || true
+              fi
+
+              set_env() {
+                key="$1"
+                value="$2"
+                if grep -q "^$key=" "$ENV_FILE"; then
+                  sed -i "s|^$key=.*|$key=$value|" "$ENV_FILE"
+                else
+                  printf '%s=%s\n' "$key" "$value" >> "$ENV_FILE"
+                fi
+              }
+
+              cp -a "$ENV_FILE" "$ENV_FILE.previous" || true
+              [ ! -f "$COMPOSE_FILE" ] || cp -a "$COMPOSE_FILE" "$COMPOSE_FILE.previous"
+
+              curl --fail --location --retry 5 '${ComposeUrl}' --output "$COMPOSE_FILE.new"
+              mv "$COMPOSE_FILE.new" "$COMPOSE_FILE"
+              chmod 0600 "$COMPOSE_FILE"
+
+              set_env MARKETPLACE_RELEASE '${ReleaseVersion}'
+              set_env BACKEND_IMAGE "$REGISTRY/$REPOSITORY"
+              set_env BACKEND_TAG '${BackendTag}'
+              set_env FRONTEND_IMAGE "$REGISTRY/$REPOSITORY"
+              set_env FRONTEND_TAG '${FrontendTag}'
+              set_env MOBILE_IMAGE "$REGISTRY/$REPOSITORY"
+              set_env MOBILE_TAG '${MobileTag}'
+              set_env POSTGRES_IMAGE "$REGISTRY/$REPOSITORY:${PostgresTag}"
+              set_env REDIS_IMAGE "$REGISTRY/$REPOSITORY:${RedisTag}"
+              set_env KAFKA_IMAGE "$REGISTRY/$REPOSITORY:${KafkaTag}"
+              chmod 0600 "$ENV_FILE"
+
+              docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" config --quiet
+              docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" pull
+              docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --remove-orphans
+
+              healthy=0
+              for attempt in $(seq 1 90); do
+                if curl --fail --silent http://127.0.0.1:5000/api/health >/dev/null \
+                  && curl --fail --silent http://127.0.0.1/health >/dev/null \
+                  && curl --fail --silent http://127.0.0.1:8889/health >/dev/null; then
+                  healthy=1
+                  break
+                fi
+                sleep 10
+              done
+              if [ "$healthy" -ne 1 ]; then
+                docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" ps
+                docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" logs --no-color --tail=200 migration backend
+                exit 1
+              fi
+
+              printf '%s\n' '${ReleaseVersion}' > "$INSTALL_DIR/CURRENT_RELEASE"
+              chmod 0600 "$INSTALL_DIR/CURRENT_RELEASE"
+              docker image prune -f >/dev/null || true
+            - MarketplaceRegistry: !FindInMap [Marketplace, Images, Registry]
+              MarketplaceRepository: !FindInMap [Marketplace, Images, Repository]
+              MarketplaceRegion: !FindInMap [Marketplace, Images, Region]
+
+Outputs:
+  WebUrl:
+    Description: QuantDinger desktop web client. Configure HTTPS before broad public access.
+    Value: !Sub http://${QuantDingerElasticIp}
+
+  MobileWebUrl:
+    Description: QuantDinger mobile web client.
+    Value: !Sub http://${QuantDingerElasticIp}:8889
+
+  PublicIp:
+    Description: Stable public IPv4 address allocated to the QuantDinger host.
+    Value: !Ref QuantDingerElasticIp
+
+  InstanceId:
+    Description: Use AWS Systems Manager Session Manager for administration; SSH is not exposed.
+    Value: !Ref QuantDingerHost
+
+  AdminUser:
+    Value: admin
+
+  AdminPasswordParameter:
+    Description: >-
+      Retrieve this SecureString from Systems Manager Parameter Store with
+      permission to call ssm:GetParameter and kms:Decrypt.
+    Value: !Sub /quantdinger/${AWS::StackName}/admin-password
+
+  InstalledRelease:
+    Value: !Ref ReleaseVersion
+
+  RetainedDataVolumeId:
+    Description: >-
+      Persistent encrypted data volume. CloudFormation retains it when the
+      stack is deleted; delete it manually only after exporting required data.
+    Value: !Ref QuantDingerDataVolume
+
+  EstimatedMonthlyCostNote:
+    Value: >-
+      QuantDinger software is free. The buyer pays for EC2, EBS, public IPv4,
+      data transfer, and any optional AWS services used by this stack.

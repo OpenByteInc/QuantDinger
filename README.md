@@ -380,6 +380,10 @@ PostgreSQL migration guidance, see
 [Installation troubleshooting](docs/deployment/INSTALL_TROUBLESHOOTING.md) and the
 [cloud deployment guide](docs/deployment/CLOUD_DEPLOYMENT_EN.md).
 
+For the free AWS Marketplace single-node delivery option, including first
+launch, upgrades, backup, rollback, and cost notes, see the
+[AWS Marketplace deployment guide](docs/deployment/AWS_MARKETPLACE_DEPLOYMENT.md).
+
 ## Production deployment
 
 Validate secrets before starting a production stack:
@@ -747,6 +751,7 @@ The maintained documentation index is available at [`docs/README.md`](docs/READM
 | Indicator development | [Indicator guide](docs/trading/INDICATOR_DEV_GUIDE.md) |
 | MCP and agents | [Agent documentation](docs/agent/README.md) |
 | Cloud deployment | [Cloud deployment](docs/deployment/CLOUD_DEPLOYMENT_EN.md) |
+| AWS Marketplace | [One-click deployment and upgrade](docs/deployment/AWS_MARKETPLACE_DEPLOYMENT.md) |
 | Installation problems | [Troubleshooting](docs/deployment/INSTALL_TROUBLESHOOTING.md) |
 
 ## Contributing

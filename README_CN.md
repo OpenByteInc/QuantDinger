@@ -339,6 +339,9 @@ docker compose ps
 [安装故障排查](docs/deployment/INSTALL_TROUBLESHOOTING_CN.md)和
 [云部署指南](docs/deployment/CLOUD_DEPLOYMENT_CN.md)。
 
+如需使用免费的 AWS Marketplace 单机交付方案，以及查看首次部署、升级、备份、回滚和费用说明，
+请参阅 [AWS Marketplace 一键部署指南](docs/deployment/AWS_MARKETPLACE_DEPLOYMENT_CN.md)。
+
 ## 生产环境部署
 
 启动生产环境服务栈前，先验证密钥：
@@ -674,6 +677,7 @@ Web 与移动端仓库分别发布自己的 GHCR 镜像。只有从源码构建�
 | 指标开发 | [指标指南](docs/trading/INDICATOR_DEV_GUIDE.md) |
 | MCP 与 Agent | [Agent 文档](docs/agent/README.md) |
 | 云部署 | [云部署](docs/deployment/CLOUD_DEPLOYMENT_EN.md) |
+| AWS Marketplace | [一键部署与升级](docs/deployment/AWS_MARKETPLACE_DEPLOYMENT_CN.md) |
 | 安装问题 | [故障排查](docs/deployment/INSTALL_TROUBLESHOOTING.md) |
 
 ## 参与贡献
