@@ -52,6 +52,13 @@ def test_marketplace_bootstrap_keeps_amazon_linux_curl_minimal() -> None:
     assert "command -v curl >/dev/null" in template
 
 
+def test_marketplace_template_uses_a_selectable_supported_availability_zone() -> None:
+    template = _template_text()
+
+    assert "Type: AWS::EC2::AvailabilityZone::Name" in template
+    assert "AvailabilityZone: !Ref AvailabilityZone" in template
+
+
 def test_marketplace_guide_warns_about_data_deletion_and_aws_costs() -> None:
     guide = GUIDE.read_text(encoding="utf-8")
 
