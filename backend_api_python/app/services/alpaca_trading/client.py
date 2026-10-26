@@ -564,7 +564,7 @@ class AlpacaClient:
                 "submitted_at": str(getattr(order, "submitted_at", "") or ""),
                 "filled_at": str(getattr(order, "filled_at", "") or ""),
                 "canceled_at": str(getattr(order, "canceled_at", "") or ""),
-                **self._order_commission_snapshot(order),
+                **self._order_fee_history_snapshot(order),
             }
             failed = status.lower() in ("rejected", "expired")
             return OrderResult(

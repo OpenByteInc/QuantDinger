@@ -324,10 +324,15 @@ def get_trades():
         broker_payment = float(broker.get("broker_activity_payment") or 0.0)
         trading_fees = opening_commission + closing_commission
         net_realized = gross_realized - trading_fees + funding_payment + broker_payment
-        pending_fees = [t for t in processed_rows if paired_grid and execution_fee(t) is None]
+        pending_fees = [
+            trade for trade in processed_rows
+            if str(trade.get("fee_status") or "").strip().lower() == "pending"
+            or (paired_grid and execution_fee(trade) is None)
+        ]
+        pending_fee_ids = {int(trade["id"]) for trade in pending_fees}
         pnl_pending = len({int(t["id"]) for t in processed_rows
                            if t.get("pnl_status") in {"unmatched", "fees_pending"}
-                           or (paired_grid and execution_fee(t) is None)})
+                           or int(t["id"]) in pending_fee_ids})
         cost_summary = {
             "gross_realized_pnl": round(gross_realized, 8) if not any(t.get("pnl_status") == "unmatched" for t in processed_rows) else None,
             "opening_commission": round(opening_commission, 8) if not any(not is_exit_trade_type(t["type"]) for t in pending_fees) else None,

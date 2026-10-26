@@ -4,6 +4,7 @@ import ast
 import inspect
 import json
 import textwrap
+from types import SimpleNamespace
 
 import pytest
 
@@ -86,6 +87,64 @@ def test_live_sent_sync_persists_only_incremental_partial_fill(monkeypatch):
     assert persisted[0]["avg_price"] == pytest.approx(103.0)
     assert snapshots[0]["status"] == "sent"
     assert snapshots[0]["filled"] == pytest.approx(0.75)
+
+
+def test_alpaca_filled_order_backfills_authoritative_zero_fee(monkeypatch):
+    class Broker:
+        def get_order_status(self, order_id):
+            assert order_id == "alpaca-order-41"
+            return SimpleNamespace(
+                status="filled",
+                filled=1.0,
+                avg_price=210.5,
+                raw={
+                    "fee_status": "actual_zero",
+                    "fees_by_ccy": {"USD": 0.0},
+                    "commission": 0.0,
+                    "commission_ccy": "USD",
+                    "commission_quote": 0.0,
+                },
+            )
+
+    row = {
+        "id": 41,
+        "user_id": 7,
+        "strategy_id": 9,
+        "symbol": "AAPL",
+        "signal_type": "open_long",
+        "market_type": "USStock",
+        "exchange_id": "alpaca",
+        "exchange_order_id": "alpaca-order-41",
+        "amount": 1.0,
+        "filled": 1.0,
+        "avg_price": 210.5,
+        "payload_json": '{"strategy_id":9,"strategy_run_id":3,"order_intent_id":5,"symbol":"AAPL","signal_type":"open_long"}',
+    }
+    worker = object.__new__(worker_module.PendingOrderWorker)
+    worker._claim_alpaca_sent_order = lambda order_id: dict(row)
+    snapshots = []
+    worker._update_alpaca_sent_order_snapshot = lambda **kwargs: snapshots.append(kwargs)
+    persisted = []
+    monkeypatch.setattr(worker_module, "AlpacaClient", Broker)
+    monkeypatch.setattr(worker_module, "load_strategy_configs", lambda strategy_id: {
+        "user_id": 7,
+        "exchange_config": {"exchange_id": "alpaca"},
+        "market_category": "USStock",
+    })
+    monkeypatch.setattr(worker_module, "resolve_exchange_config", lambda cfg, user_id: dict(cfg))
+    monkeypatch.setattr(worker_module, "create_client", lambda cfg: Broker())
+    monkeypatch.setattr(worker_module, "dispatch_requested_cancel", lambda *args, **kwargs: None)
+    monkeypatch.setattr(worker_module, "persist_strategy_fill", lambda **kwargs: persisted.append(kwargs) or (None, None))
+    monkeypatch.setattr(worker_module, "append_strategy_log", lambda *args, **kwargs: None)
+
+    worker._sync_one_alpaca_sent_order(row)
+
+    assert persisted[0]["filled"] == 0.0
+    assert persisted[0]["cumulative_fees"] == {"USD": 0.0}
+    assert persisted[0]["cumulative_commission_quote"] == 0.0
+    assert persisted[0]["fee_status"] == "actual_zero"
+    assert snapshots[0]["fee_status"] == "actual_zero"
+    assert snapshots[0]["fee_source"] == "rest"
 
 
 def test_claim_live_sent_order_transitions_the_claimed_row(monkeypatch):

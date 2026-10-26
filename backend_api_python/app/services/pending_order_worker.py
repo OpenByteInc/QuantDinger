@@ -462,9 +462,23 @@ class PendingOrderWorker(
                     """
                     SELECT *
                     FROM pending_orders
-                    WHERE (status = 'sent' OR (status IN ('filled', 'cancelled') AND COALESCE(filled, 0) >
-                          COALESCE((SELECT SUM(t.amount) FROM qd_strategy_trades t
-                                    WHERE t.pending_order_id = pending_orders.id), 0)))
+                    WHERE (
+                            status = 'sent'
+                            OR (status IN ('filled', 'cancelled') AND COALESCE(filled, 0) >
+                                COALESCE((SELECT SUM(t.amount) FROM qd_strategy_trades t
+                                          WHERE t.pending_order_id = pending_orders.id), 0))
+                            OR (
+                                status = 'filled'
+                                AND COALESCE(filled, 0) > 0
+                                AND updated_at < NOW() - (%s * INTERVAL '1 second')
+                                AND EXISTS (
+                                    SELECT 1
+                                    FROM qd_strategy_trades t
+                                    WHERE t.pending_order_id = pending_orders.id
+                                      AND COALESCE(t.fee_status, 'pending') = 'pending'
+                                )
+                            )
+                          )
                       AND LOWER(COALESCE(exchange_id, '')) = 'alpaca'
                       AND (
                             COALESCE(exchange_order_id, '') <> ''
@@ -473,7 +487,7 @@ class PendingOrderWorker(
                     ORDER BY sent_at ASC NULLS FIRST, id ASC
                     LIMIT %s
                     """,
-                    (int(limit),),
+                    (int(self._fee_sync_retry_sec), int(limit)),
                 )
                 rows = cur.fetchall() or []
                 cur.close()
@@ -496,14 +510,28 @@ class PendingOrderWorker(
                         dispatch_note = 'alpaca_fill_sync:syncing',
                         updated_at = NOW()
                     WHERE id = %s
-                      AND (status = 'sent' OR (status IN ('filled', 'cancelled') AND COALESCE(filled, 0) >
-                          COALESCE((SELECT SUM(t.amount) FROM qd_strategy_trades t
-                                    WHERE t.pending_order_id = pending_orders.id), 0)))
+                      AND (
+                            status = 'sent'
+                            OR (status IN ('filled', 'cancelled') AND COALESCE(filled, 0) >
+                                COALESCE((SELECT SUM(t.amount) FROM qd_strategy_trades t
+                                          WHERE t.pending_order_id = pending_orders.id), 0))
+                            OR (
+                                status = 'filled'
+                                AND COALESCE(filled, 0) > 0
+                                AND updated_at < NOW() - (%s * INTERVAL '1 second')
+                                AND EXISTS (
+                                    SELECT 1
+                                    FROM qd_strategy_trades t
+                                    WHERE t.pending_order_id = pending_orders.id
+                                      AND COALESCE(t.fee_status, 'pending') = 'pending'
+                                )
+                            )
+                          )
                       AND LOWER(COALESCE(exchange_id, '')) = 'alpaca'
                       AND COALESCE(exchange_order_id, '') <> ''
                     RETURNING *
                     """,
-                    (int(order_id),),
+                    (int(order_id), int(self._fee_sync_retry_sec)),
                 )
                 row = cur.fetchone()
                 db.commit()
@@ -581,8 +609,28 @@ class PendingOrderWorker(
         previous_filled = float(row.get("filled") or 0.0)
         previous_avg = float(row.get("avg_price") or 0.0)
         raw_json = json.dumps(result.raw or {}, ensure_ascii=False)
+        fee_status = str((result.raw or {}).get("fee_status") or "pending").strip().lower()
+        if fee_status not in {"actual", "actual_zero"}:
+            fee_status = "pending"
+        cumulative_fees = _fee_breakdown_snapshot(result.raw or {})
         cumulative_commission, commission_ccy = _commission_snapshot(result.raw)
         commission_delta = max(0.0, cumulative_commission - _previous_commission(row))
+        cumulative_commission_quote = (result.raw or {}).get("commission_quote")
+        try:
+            cumulative_commission_quote = (
+                float(cumulative_commission_quote)
+                if cumulative_commission_quote is not None
+                else None
+            )
+        except (TypeError, ValueError):
+            cumulative_commission_quote = None
+        if cumulative_commission_quote is None and cumulative_fees:
+            cumulative_commission_quote = fee_breakdown_to_quote(
+                client,
+                symbol=str(payload.get("symbol") or row.get("symbol") or ""),
+                fees=cumulative_fees,
+                fill_price=cumulative_avg,
+            )
 
         delta = cumulative_filled - previous_filled
         if cumulative_filled > ALPACA_FILL_DELTA_EPSILON and cumulative_avg > 0:
@@ -615,8 +663,8 @@ class PendingOrderWorker(
                 filled=float(delta),
                 cumulative_filled=cumulative_filled,
                 cumulative_average_price=cumulative_avg,
-                cumulative_fees={commission_ccy: cumulative_commission} if commission_ccy else {},
-                cumulative_commission_quote=fee_to_quote(client, symbol=str(symbol or ""), fee=cumulative_commission, fee_ccy=commission_ccy, fill_price=cumulative_avg),
+                cumulative_fees=cumulative_fees,
+                cumulative_commission_quote=cumulative_commission_quote,
                 avg_price=float(delta_avg),
                 exchange_config=exchange_config,
                 market_type=market_type_for_client,
@@ -625,6 +673,8 @@ class PendingOrderWorker(
                 commission=commission_delta,
                 commission_ccy=commission_ccy,
                 commission_quote=commission_quote,
+                fee_status=fee_status,
+                fee_source="rest" if fee_status in {"actual", "actual_zero"} else "",
                 close_reason=trade_close_reason_from_payload(payload, str(signal_type or "")),
                 strategy_run_id=int(payload.get("strategy_run_id") or row.get("strategy_run_id") or 0),
                 order_intent_id=int(payload.get("order_intent_id") or row.get("order_intent_id") or 0),
@@ -656,6 +706,8 @@ class PendingOrderWorker(
             avg_price=cumulative_avg,
             exchange_response_json=raw_json,
             final=status in final_statuses,
+            fee_status=fee_status,
+            fee_source="rest" if fee_status in {"actual", "actual_zero"} else "",
         )
 
     def _update_alpaca_sent_order_snapshot(
@@ -668,6 +720,8 @@ class PendingOrderWorker(
         avg_price: float,
         exchange_response_json: str,
         final: bool,
+        fee_status: str = "pending",
+        fee_source: str = "",
     ) -> None:
         with get_db_connection() as db:
             cur = db.cursor()
@@ -679,6 +733,14 @@ class PendingOrderWorker(
                     dispatch_note = %s,
                     filled = %s,
                     avg_price = %s,
+                    fee_status = CASE
+                        WHEN %s IN ('actual', 'actual_zero') THEN %s
+                        ELSE fee_status
+                    END,
+                    fee_source = CASE
+                        WHEN %s IN ('actual', 'actual_zero') THEN %s
+                        ELSE fee_source
+                    END,
                     exchange_response_json = %s,
                     executed_at = CASE WHEN %s THEN NOW() ELSE executed_at END,
                     updated_at = NOW()
@@ -691,6 +753,10 @@ class PendingOrderWorker(
                     f"alpaca_fill_sync:{exchange_status or 'unknown'}",
                     float(filled or 0.0),
                     float(avg_price or 0.0),
+                    str(fee_status or "pending"),
+                    str(fee_status or "pending"),
+                    str(fee_status or "pending"),
+                    str(fee_source or ""),
                     str(exchange_response_json or ""),
                     bool(final and float(filled or 0.0) > 0),
                     int(order_id),

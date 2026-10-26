@@ -390,6 +390,35 @@ def test_order_status_can_recover_by_client_order_id():
     client.get_order_status.assert_called_once_with("recovered-order")
 
 
+def test_filled_equity_order_status_confirms_zero_commission():
+    trading = MagicMock()
+    trading.get_order_by_id.return_value = SimpleNamespace(
+        id="filled-equity-order",
+        symbol="AAPL",
+        side=SimpleNamespace(value="buy"),
+        qty="1",
+        filled_qty="1",
+        filled_avg_price="210.5",
+        status=SimpleNamespace(value="filled"),
+        asset_class=SimpleNamespace(value="us_equity"),
+        commission=0,
+        submitted_at="2026-10-26T13:35:00Z",
+        filled_at="2026-10-26T13:35:01Z",
+        canceled_at=None,
+    )
+    client = AlpacaClient(AlpacaConfig(api_key="PKtest", secret_key="secret", paper=True))
+    client._trading_client = trading
+    client._account_id = "account-1"
+
+    result = client.get_order_status("filled-equity-order")
+
+    assert result.success is True
+    assert result.raw["commission_quote"] == 0.0
+    assert result.raw["commission_ccy"] == "USD"
+    assert result.raw["fees_by_ccy"] == {"USD": 0.0}
+    assert result.raw["fee_status"] == "actual_zero"
+
+
 @patch("app.services.alpaca_trading.client._ensure_alpaca")
 def test_recent_orders_include_filled_orders_by_default(mock_ensure):
     request_factory = MagicMock()
