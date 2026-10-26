@@ -93,7 +93,7 @@
       </picture>
     </a>
     &nbsp;&nbsp;&nbsp;&nbsp;
-    <a href="https://aws.amazon.com/" title="Amazon Web Services — cloud infrastructure sponsor">
+    <a href="https://aws.amazon.com/marketplace/pp/prodview-ywy4zb5wnsari" title="Deploy QuantDinger on AWS Marketplace">
       <picture>
         <source media="(prefers-color-scheme: dark)" srcset="https://a0.awsstatic.com/libra-css/images/logos/aws_smile-header-desktop-en-white_59x35.png">
         <img src="https://upload.wikimedia.org/wikipedia/commons/9/93/Amazon_Web_Services_Logo.svg" alt="Amazon Web Services" width="70">
@@ -858,7 +858,7 @@ QuantDinger's continued development and open-source community are supported by:
       <sub>AI inference sponsor</sub>
     </td>
     <td align="center" width="50%">
-      <a href="https://aws.amazon.com/">
+      <a href="https://aws.amazon.com/marketplace/pp/prodview-ywy4zb5wnsari">
         <picture>
           <source media="(prefers-color-scheme: dark)" srcset="https://a0.awsstatic.com/libra-css/images/logos/aws_smile-header-desktop-en-white_59x35.png">
           <img src="https://upload.wikimedia.org/wikipedia/commons/9/93/Amazon_Web_Services_Logo.svg" alt="Amazon Web Services" width="100">
