@@ -6,8 +6,7 @@
     </picture>
   </a>
 
-  <h1>QuantDinger</h1>
-  <p><strong>开源 AI 交易操作系统</strong></p>
+  <p><strong>QuantDinger - 开源 AI 量化研究平台</strong></p>
   <p>在一套可自行托管的系统中，将交易想法转化为 Python 策略、回测、模拟交易、实盘执行与监控。</p>
   <p><strong>QuantDinger 是 Open Byte Inc. 旗下产品。</strong></p>
   <p><em>AI 投研 → 策略代码 → 回测 → 模拟/实盘执行 → 监控</em></p>

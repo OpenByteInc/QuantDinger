@@ -6,8 +6,7 @@
     </picture>
   </a>
 
-  <h1>QuantDinger</h1>
-  <p><strong>Open-source AI Trading OS</strong></p>
+  <p><strong>QuantDinger - Open-Source AI Quant Research Platform</strong></p>
   <p>Turn trading ideas into Python strategies, backtests, paper trading, live execution, and monitoring — all in one self-hosted stack.</p>
   <p><strong>QuantDinger is a product of Open Byte Inc.</strong></p>
   <p><em>AI research → Strategy code → Backtest → Paper/Live execution → Monitoring</em></p>
