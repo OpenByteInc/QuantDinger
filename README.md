@@ -89,21 +89,21 @@
     <a href="https://www.atlascloud.ai/?utm_source=github&utm_medium=link&utm_campaign=quantdinger" title="Atlas Cloud — AI inference sponsor">
       <picture>
         <source media="(prefers-color-scheme: dark)" srcset="https://www.atlascloud.ai/logo-white.svg">
-        <img src="https://www.atlascloud.ai/logo.svg" alt="Atlas Cloud" width="142">
+        <img src="https://www.atlascloud.ai/logo.svg" alt="Atlas Cloud" width="134" align="middle">
       </picture>
     </a>
     &nbsp;&nbsp;&nbsp;&nbsp;
     <a href="https://aws.amazon.com/marketplace/pp/prodview-ywy4zb5wnsari" title="Deploy QuantDinger on AWS Marketplace">
       <picture>
         <source media="(prefers-color-scheme: dark)" srcset="https://a0.awsstatic.com/libra-css/images/logos/aws_smile-header-desktop-en-white_59x35.png">
-        <img src="https://upload.wikimedia.org/wikipedia/commons/9/93/Amazon_Web_Services_Logo.svg" alt="Amazon Web Services" width="70">
+        <img src="https://upload.wikimedia.org/wikipedia/commons/9/93/Amazon_Web_Services_Logo.svg" alt="Amazon Web Services" width="54" align="middle">
       </picture>
     </a>
     &nbsp;&nbsp;&nbsp;&nbsp;
     <a href="https://openai.com/" title="OpenAI — open-source development tooling support">
       <picture>
         <source media="(prefers-color-scheme: dark)" srcset="docs/badges/openai-wordmark-white.svg">
-        <img src="docs/badges/openai-wordmark-black.svg" alt="OpenAI" width="96">
+        <img src="docs/badges/openai-wordmark-black.svg" alt="OpenAI" width="150" align="middle">
       </picture>
     </a>
   </p>
@@ -860,7 +860,7 @@ QuantDinger's continued development and open-source community are supported by:
       <a href="https://www.atlascloud.ai/?utm_source=github&utm_medium=link&utm_campaign=quantdinger">
         <picture>
           <source media="(prefers-color-scheme: dark)" srcset="https://www.atlascloud.ai/logo-white.svg">
-          <img src="https://www.atlascloud.ai/logo.svg" alt="Atlas Cloud" width="190">
+          <img src="https://www.atlascloud.ai/logo.svg" alt="Atlas Cloud" width="176" align="middle">
         </picture>
       </a>
       <br><br>
@@ -872,7 +872,7 @@ QuantDinger's continued development and open-source community are supported by:
       <a href="https://aws.amazon.com/marketplace/pp/prodview-ywy4zb5wnsari">
         <picture>
           <source media="(prefers-color-scheme: dark)" srcset="https://a0.awsstatic.com/libra-css/images/logos/aws_smile-header-desktop-en-white_59x35.png">
-          <img src="https://upload.wikimedia.org/wikipedia/commons/9/93/Amazon_Web_Services_Logo.svg" alt="Amazon Web Services" width="100">
+          <img src="https://upload.wikimedia.org/wikipedia/commons/9/93/Amazon_Web_Services_Logo.svg" alt="Amazon Web Services" width="72" align="middle">
         </picture>
       </a>
       <br><br>
@@ -884,7 +884,7 @@ QuantDinger's continued development and open-source community are supported by:
       <a href="https://openai.com/">
         <picture>
           <source media="(prefers-color-scheme: dark)" srcset="docs/badges/openai-wordmark-white.svg">
-          <img src="docs/badges/openai-wordmark-black.svg" alt="OpenAI" width="130">
+          <img src="docs/badges/openai-wordmark-black.svg" alt="OpenAI" width="220" align="middle">
         </picture>
       </a>
       <br><br>
