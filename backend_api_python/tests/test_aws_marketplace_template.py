@@ -13,6 +13,7 @@ def _template_text() -> str:
 def test_marketplace_template_uses_immutable_artifacts() -> None:
     template = _template_text()
 
+    assert "ReleaseVersion:\n    Type: String\n    Default: 2026.10.27" in template
     assert ":latest" not in template
     assert "raw.githubusercontent.com/OpenByteInc/QuantDinger/" in template
     assert "[0-9a-f]{40}/docker-compose" in template

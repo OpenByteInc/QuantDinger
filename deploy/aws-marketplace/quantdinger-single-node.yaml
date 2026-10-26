@@ -82,7 +82,7 @@ Parameters:
 
   ReleaseVersion:
     Type: String
-    Default: 2026.10.26
+    Default: 2026.10.27
     AllowedPattern: ^[0-9A-Za-z][0-9A-Za-z._-]{0,63}$
     Description: Immutable QuantDinger Marketplace release identifier.
 
