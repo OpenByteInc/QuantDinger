@@ -59,6 +59,25 @@ def test_marketplace_template_uses_a_selectable_supported_availability_zone() ->
     assert "AvailabilityZone: !Ref AvailabilityZone" in template
 
 
+def test_marketplace_template_waits_for_a_healthy_application() -> None:
+    template = _template_text()
+
+    assert "Type: AWS::CloudFormation::WaitConditionHandle" in template
+    assert "Type: AWS::CloudFormation::WaitCondition" in template
+    assert "signal_stack SUCCESS" in template
+    assert "signal_stack FAILURE" in template
+    assert "DeploymentSignalUrl: !Ref DeploymentWaitHandle" in template
+
+
+def test_marketplace_template_keeps_docker_data_on_the_retained_volume() -> None:
+    template = _template_text()
+
+    assert 'DOCKER_DATA_DIR="$INSTALL_DIR/docker-data"' in template
+    assert "CURRENT_DOCKER_ROOT=$(docker info" in template
+    assert "docker compose --env-file \"$ENV_FILE\" -f \"$COMPOSE_FILE\" pull --quiet" in template
+    assert "Marketplace image pull failed after three attempts" in template
+
+
 def test_marketplace_guide_warns_about_data_deletion_and_aws_costs() -> None:
     guide = GUIDE.read_text(encoding="utf-8")
 

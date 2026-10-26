@@ -35,7 +35,10 @@ live workers, or larger market-data workloads.
    the instance type, system volume size, and persistent data volume size.
 4. Acknowledge that CloudFormation creates an IAM role, then create the stack.
 5. Wait for the stack status to become `CREATE_COMPLETE`. Initial image pulls
-   and database migration can take 10-30 minutes.
+   and database migration can take 10-30 minutes. The template does not report
+   `CREATE_COMPLETE` until the backend, desktop client, and mobile client have
+   all passed their health checks. A failed installation therefore rolls the
+   stack back instead of presenting a false success state.
 
 The stack outputs contain:
 
@@ -66,10 +69,12 @@ a security group, an IAM instance role, and one Amazon Linux 2023 x86_64 EC2
 instance. SSH is not exposed. Use AWS Systems Manager Session Manager for shell
 access.
 
-Application configuration, PostgreSQL data, Kafka data, and local backups are
-stored on a separate encrypted EBS data volume. CloudFormation retains this
-volume if the stack or EC2 instance is replaced. The deployment directory is
-`/opt/quantdinger`; generated secrets are stored in
+Application configuration, Docker images and named volumes, PostgreSQL data,
+Kafka data, and local backups are stored on a separate encrypted EBS data
+volume. CloudFormation retains this volume if the stack or EC2 instance is
+replaced. Docker uses `/opt/quantdinger/docker-data` rather than the EC2 root
+disk, so image pulls and application data do not exhaust the operating-system
+volume. The deployment directory is `/opt/quantdinger`; generated secrets are stored in
 `/opt/quantdinger/.env` with owner-only permissions.
 
 This is a convenient starter and evaluation topology. For production workloads,

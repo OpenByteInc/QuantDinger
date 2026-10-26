@@ -313,6 +313,9 @@ Resources:
         - Key: Name
           Value: !Sub ${AWS::StackName}-public-ip
 
+  DeploymentWaitHandle:
+    Type: AWS::CloudFormation::WaitConditionHandle
+
   DeploymentAssociation:
     Type: AWS::SSM::Association
     DependsOn: QuantDingerDataVolumeAttachment
@@ -326,6 +329,8 @@ Resources:
           Values:
             - !Ref QuantDingerHost
       Parameters:
+        executionTimeout:
+          - '3600'
         commands:
           - !Sub
             - |
@@ -340,6 +345,29 @@ Resources:
               REPOSITORY='${MarketplaceRepository}'
               ECR_REGION='${MarketplaceRegion}'
               DATA_VOLUME_ID='${QuantDingerDataVolume}'
+              SIGNAL_URL='${DeploymentSignalUrl}'
+              deployment_succeeded=0
+
+              signal_stack() {
+                status="$1"
+                reason="$2"
+                payload=$(printf '{"Status":"%s","Reason":"%s","UniqueId":"quantdinger-deployment","Data":"%s"}' \
+                  "$status" "$reason" "$status")
+                curl --fail --silent --show-error \
+                  --request PUT \
+                  --header 'Content-Type:' \
+                  --data-binary "$payload" \
+                  "$SIGNAL_URL" >/dev/null
+              }
+
+              signal_failure_on_exit() {
+                rc=$?
+                if [ "$deployment_succeeded" -ne 1 ]; then
+                  set +e
+                  signal_stack FAILURE "QuantDinger deployment failed with exit code $rc"
+                fi
+              }
+              trap signal_failure_on_exit EXIT
 
               for attempt in $(seq 1 60); do
                 [ -f /var/tmp/quantdinger-host-ready ] && break
@@ -364,6 +392,16 @@ Resources:
               grep -q "UUID=$DATA_UUID " /etc/fstab \
                 || printf 'UUID=%s /opt/quantdinger xfs defaults,nofail 0 2\n' "$DATA_UUID" >> /etc/fstab
               mountpoint -q "$INSTALL_DIR" || mount "$INSTALL_DIR"
+
+              DOCKER_DATA_DIR="$INSTALL_DIR/docker-data"
+              install -d -m 0711 "$DOCKER_DATA_DIR"
+              CURRENT_DOCKER_ROOT=$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || true)
+              if [ "$CURRENT_DOCKER_ROOT" != "$DOCKER_DATA_DIR" ]; then
+                systemctl stop docker
+                install -d -m 0755 /etc/docker
+                printf '{"data-root":"%s"}\n' "$DOCKER_DATA_DIR" > /etc/docker/daemon.json
+                systemctl start docker
+              fi
 
               install -d -m 0700 "$BACKUP_DIR"
               cd "$INSTALL_DIR"
@@ -455,7 +493,15 @@ Resources:
               chmod 0600 "$ENV_FILE"
 
               docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" config --quiet
-              docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" pull
+              pulled=0
+              for attempt in 1 2 3; do
+                if docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" pull --quiet; then
+                  pulled=1
+                  break
+                fi
+                sleep $((attempt * 15))
+              done
+              [ "$pulled" -eq 1 ] || { echo 'Marketplace image pull failed after three attempts'; exit 1; }
               docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --remove-orphans
 
               healthy=0
@@ -477,9 +523,21 @@ Resources:
               printf '%s\n' '${ReleaseVersion}' > "$INSTALL_DIR/CURRENT_RELEASE"
               chmod 0600 "$INSTALL_DIR/CURRENT_RELEASE"
               docker image prune -f >/dev/null || true
+              signal_stack SUCCESS 'QuantDinger deployment completed and passed health checks'
+              deployment_succeeded=1
+              trap - EXIT
             - MarketplaceRegistry: !FindInMap [Marketplace, Images, Registry]
               MarketplaceRepository: !FindInMap [Marketplace, Images, Repository]
               MarketplaceRegion: !FindInMap [Marketplace, Images, Region]
+              DeploymentSignalUrl: !Ref DeploymentWaitHandle
+
+  DeploymentWaitCondition:
+    Type: AWS::CloudFormation::WaitCondition
+    DependsOn: DeploymentAssociation
+    Properties:
+      Handle: !Ref DeploymentWaitHandle
+      Timeout: '3600'
+      Count: 1
 
 Outputs:
   WebUrl:
