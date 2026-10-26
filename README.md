@@ -69,8 +69,8 @@
     <a href="https://www.bestpractices.dev/projects/15860"><img src="https://www.bestpractices.dev/projects/15860/badge" alt="OpenSSF Best Practices"></a>
     <a href="https://sonarcloud.io/summary/new_code?id=OpenByteInc_QuantDinger"><img src="https://sonarcloud.io/api/project_badges/measure?project=OpenByteInc_QuantDinger&metric=alert_status" alt="SonarQube Cloud Quality Gate"></a>
     <a href="https://api.reuse.software/info/github.com/OpenByteInc/QuantDinger"><img src="https://api.reuse.software/badge/github.com/OpenByteInc/QuantDinger" alt="REUSE status"></a>
-    <a href="docs/compliance/OPENCHAIN_ISO_5230_SELF_ASSESSMENT.md"><img src="https://img.shields.io/badge/OpenChain_ISO%2FIEC_5230-self--assessed-0B6B53?style=flat-square" alt="OpenChain ISO/IEC 5230 self-assessed"></a>
-    <a href="docs/compliance/OPENCHAIN_ISO_18974_SELF_ASSESSMENT.md"><img src="https://img.shields.io/badge/OpenChain_ISO%2FIEC_18974-self--assessed-0B6B53?style=flat-square" alt="OpenChain ISO/IEC 18974 self-assessed"></a>
+    <a href="docs/compliance/OPENCHAIN_ISO_5230_SELF_ASSESSMENT.md" title="Open Byte Inc. OpenChain ISO/IEC 5230 self-certified conformant program"><img src="docs/badges/openchain-iso-5230-conformance.png" alt="OpenChain ISO/IEC 5230 conformant program" height="46"></a>
+    <a href="docs/compliance/OPENCHAIN_ISO_18974_SELF_ASSESSMENT.md" title="Open Byte Inc. OpenChain ISO/IEC 18974 self-certified conformant program"><img src="docs/badges/openchain-iso-18974-conformance.png" alt="OpenChain ISO/IEC 18974 conformant program" height="46"></a>
     <img src="docs/badges/python-3.12.svg" alt="Python 3.12">
     <img src="https://img.shields.io/badge/PostgreSQL-18-4169E1?style=flat-square&logo=postgresql&logoColor=white" alt="PostgreSQL 18">
     <img src="https://img.shields.io/badge/Redis-8-DC382D?style=flat-square&logo=redis&logoColor=white" alt="Redis 8">
@@ -97,6 +97,13 @@
       <picture>
         <source media="(prefers-color-scheme: dark)" srcset="https://a0.awsstatic.com/libra-css/images/logos/aws_smile-header-desktop-en-white_59x35.png">
         <img src="https://upload.wikimedia.org/wikipedia/commons/9/93/Amazon_Web_Services_Logo.svg" alt="Amazon Web Services" width="70">
+      </picture>
+    </a>
+    &nbsp;&nbsp;&nbsp;&nbsp;
+    <a href="https://openai.com/" title="OpenAI — open-source development tooling support">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="docs/badges/openai-wordmark-white.svg">
+        <img src="docs/badges/openai-wordmark-black.svg" alt="OpenAI" width="96">
       </picture>
     </a>
   </p>
@@ -783,6 +790,10 @@ and the process for claiming scoped contributor work.
 ## License and commercial terms
 
 - Backend source code is licensed under [Apache License 2.0](LICENSE).
+- This repository passes automated REUSE checks. Open Byte Inc. has completed
+  [OpenChain ISO/IEC 5230 and ISO/IEC 18974 online self-certification and maintains conformance evidence](docs/compliance/README.md).
+  Conformance applies to the defined management-program scope; it is not an
+  independent third-party certification of the QuantDinger software.
 - QuantDinger is a product of **Open Byte Inc**. The name, logo, product
   identity, and commercial licensing are managed separately from the code license.
 - Web frontend source is published in
@@ -845,7 +856,7 @@ QuantDinger's continued development and open-source community are supported by:
 
 <table>
   <tr>
-    <td align="center" width="50%">
+    <td align="center" width="33.33%">
       <a href="https://www.atlascloud.ai/?utm_source=github&utm_medium=link&utm_campaign=quantdinger">
         <picture>
           <source media="(prefers-color-scheme: dark)" srcset="https://www.atlascloud.ai/logo-white.svg">
@@ -857,7 +868,7 @@ QuantDinger's continued development and open-source community are supported by:
       <br>
       <sub>AI inference sponsor</sub>
     </td>
-    <td align="center" width="50%">
+    <td align="center" width="33.33%">
       <a href="https://aws.amazon.com/marketplace/pp/prodview-ywy4zb5wnsari">
         <picture>
           <source media="(prefers-color-scheme: dark)" srcset="https://a0.awsstatic.com/libra-css/images/logos/aws_smile-header-desktop-en-white_59x35.png">
@@ -869,12 +880,27 @@ QuantDinger's continued development and open-source community are supported by:
       <br>
       <sub>Cloud infrastructure sponsor</sub>
     </td>
+    <td align="center" width="33.33%">
+      <a href="https://openai.com/">
+        <picture>
+          <source media="(prefers-color-scheme: dark)" srcset="docs/badges/openai-wordmark-white.svg">
+          <img src="docs/badges/openai-wordmark-black.svg" alt="OpenAI" width="130">
+        </picture>
+      </a>
+      <br><br>
+      <strong>OpenAI</strong>
+      <br>
+      <sub>Open-source development tooling sponsor</sub>
+    </td>
   </tr>
 </table>
 
 We are grateful to [Atlas Cloud](https://www.atlascloud.ai/?utm_source=github&utm_medium=link&utm_campaign=quantdinger) for supporting AI
-model inference and to [Amazon Web Services](https://aws.amazon.com/) for
-supporting the cloud infrastructure that helps QuantDinger serve its community.
+model inference, to [Amazon Web Services](https://aws.amazon.com/) for cloud
+infrastructure support, and to [OpenAI](https://openai.com/) for open-source
+development tooling support that helps QuantDinger serve its community.
+
+<sub>OpenAI and the OpenAI logo are trademarks of OpenAI. Their inclusion acknowledges program and tooling support and does not imply product certification or endorsement.</sub>
 
 ## Acknowledgements
 

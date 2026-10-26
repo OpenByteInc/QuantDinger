@@ -7,7 +7,7 @@
 | Scope | Defined in [`README.md`](README.md) |
 | Checklist basis | OpenChain ISO/IEC 5230 Self-Certification Checklist, Generation 2, Version 1, 2025-08-18 |
 | Assessment date | 2026-10-25 |
-| Assessment status | Self-assessed; effective when the Project Lead approves and merges the adoption change |
+| Assessment status | Self-certified conformant; OpenChain online self-certification completed |
 | Review interval | At least every 18 months |
 
 OpenChain conformance is a statement about the scoped organizational program,
@@ -56,9 +56,10 @@ solely responsible for this self-assessment.
 ## Result
 
 All checklist requirements are mapped to documented controls and evidence.
-Approval and merge by the Project Lead adopts the program, records the initial
-participant acknowledgement, and makes this self-assessment effective. Public
-listing with OpenChain is optional and is a separate organizational submission.
+Project Lead approval and merge adopted the program and recorded the initial
+participant acknowledgement. Open Byte Inc. subsequently completed the
+OpenChain online self-certification. This remains an organizational
+self-certification rather than an independent third-party certification.
 
 ## Source and attribution
 

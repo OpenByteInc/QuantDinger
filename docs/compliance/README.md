@@ -8,11 +8,11 @@ program that governs the QuantDinger supplied software defined below.
 | Framework | Status | Evidence |
 | --- | --- | --- |
 | REUSE Specification | Enforced | [`REUSE.toml`](../../REUSE.toml), [`LICENSES/`](../../LICENSES), and the [REUSE CI workflow](../../.github/workflows/reuse.yml) |
-| OpenChain ISO/IEC 5230:2020 | Self-assessed | [Self-assessment](OPENCHAIN_ISO_5230_SELF_ASSESSMENT.md) and [license compliance procedure](LICENSE_COMPLIANCE_PROCEDURE.md) |
-| OpenChain ISO/IEC 18974:2023 | Self-assessed | [Self-assessment](OPENCHAIN_ISO_18974_SELF_ASSESSMENT.md) and [security assurance procedure](SECURITY_ASSURANCE_PROCEDURE.md) |
+| OpenChain ISO/IEC 5230:2020 | Self-certified conformant | [Self-certification evidence](OPENCHAIN_ISO_5230_SELF_ASSESSMENT.md) and [license compliance procedure](LICENSE_COMPLIANCE_PROCEDURE.md) |
+| OpenChain ISO/IEC 18974:2023 | Self-certified conformant | [Self-certification evidence](OPENCHAIN_ISO_18974_SELF_ASSESSMENT.md) and [security assurance procedure](SECURITY_ASSURANCE_PROCEDURE.md) |
 
-The OpenChain statements describe a **self-assessed management program**, not
-an independent certification of the QuantDinger software. Open Byte Inc. is
+The OpenChain statements describe a **self-certified conformant management
+program**, not an independent certification of the QuantDinger software. Open Byte Inc. is
 responsible for the accuracy of those statements. Approval and merge of the
 adoption change by the Project Lead records management adoption, participant
 acknowledgement, and the effective date of the assessments.

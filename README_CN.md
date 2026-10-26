@@ -65,8 +65,8 @@
     <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg?style=flat-square" alt="Apache 2.0"></a>
     <a href="https://sonarcloud.io/summary/new_code?id=OpenByteInc_QuantDinger"><img src="https://sonarcloud.io/api/project_badges/measure?project=OpenByteInc_QuantDinger&metric=alert_status" alt="SonarQube Cloud Quality Gate"></a>
     <a href="https://api.reuse.software/info/github.com/OpenByteInc/QuantDinger"><img src="https://api.reuse.software/badge/github.com/OpenByteInc/QuantDinger" alt="REUSE status"></a>
-    <a href="docs/compliance/OPENCHAIN_ISO_5230_SELF_ASSESSMENT.md"><img src="https://img.shields.io/badge/OpenChain_ISO%2FIEC_5230-self--assessed-0B6B53?style=flat-square" alt="OpenChain ISO/IEC 5230 自评"></a>
-    <a href="docs/compliance/OPENCHAIN_ISO_18974_SELF_ASSESSMENT.md"><img src="https://img.shields.io/badge/OpenChain_ISO%2FIEC_18974-self--assessed-0B6B53?style=flat-square" alt="OpenChain ISO/IEC 18974 自评"></a>
+    <a href="docs/compliance/OPENCHAIN_ISO_5230_SELF_ASSESSMENT.md" title="Open Byte Inc. OpenChain ISO/IEC 5230 自我认证符合性项目"><img src="docs/badges/openchain-iso-5230-conformance.png" alt="OpenChain ISO/IEC 5230 符合性项目" height="46"></a>
+    <a href="docs/compliance/OPENCHAIN_ISO_18974_SELF_ASSESSMENT.md" title="Open Byte Inc. OpenChain ISO/IEC 18974 自我认证符合性项目"><img src="docs/badges/openchain-iso-18974-conformance.png" alt="OpenChain ISO/IEC 18974 符合性项目" height="46"></a>
     <img src="docs/badges/python-3.12.svg" alt="Python 3.12">
     <img src="https://img.shields.io/badge/PostgreSQL-18-4169E1?style=flat-square&logo=postgresql&logoColor=white" alt="PostgreSQL 18">
     <img src="https://img.shields.io/badge/Redis-8-DC382D?style=flat-square&logo=redis&logoColor=white" alt="Redis 8">
@@ -93,6 +93,13 @@
       <picture>
         <source media="(prefers-color-scheme: dark)" srcset="https://a0.awsstatic.com/libra-css/images/logos/aws_smile-header-desktop-en-white_59x35.png">
         <img src="https://upload.wikimedia.org/wikipedia/commons/9/93/Amazon_Web_Services_Logo.svg" alt="Amazon Web Services" width="70">
+      </picture>
+    </a>
+    &nbsp;&nbsp;&nbsp;&nbsp;
+    <a href="https://openai.com/" title="OpenAI — 开源开发工具支持">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="docs/badges/openai-wordmark-white.svg">
+        <img src="docs/badges/openai-wordmark-black.svg" alt="OpenAI" width="96">
       </picture>
     </a>
   </p>
@@ -705,9 +712,9 @@ Web 与移动端仓库分别发布自己的 GHCR 镜像。只有从源码构建�
 ## 许可证与商业条款
 
 - 后端源码采用 [Apache License 2.0](LICENSE) 许可证。
-- 本仓库通过 REUSE 自动检查，并为限定范围的公开发布物维护
-  [OpenChain ISO/IEC 5230 与 ISO/IEC 18974 自评及证据](docs/compliance/README.md)。
-  这些是 Open Byte Inc. 对管理流程的自评，不是第三方产品认证。
+- 本仓库通过 REUSE 自动检查；Open Byte Inc. 已完成
+  [OpenChain ISO/IEC 5230 与 ISO/IEC 18974 在线自我认证，并维护符合性证据](docs/compliance/README.md)。
+  认证对象是限定范围内的管理流程，不是对 QuantDinger 软件的第三方产品认证。
 - QuantDinger 是 **Open Byte Inc** 旗下产品。名称、Logo、产品标识和商业许可与代码许可证分开管理。
 - Web 前端源码发布在
   [QuantDinger Frontend](https://github.com/OpenByteInc/QuantDinger-Vue)，采用其独立的源码可用许可证。
@@ -757,7 +764,7 @@ QuantDinger 的持续开发和开源社区得到以下机构支持：
 
 <table>
   <tr>
-    <td align="center" width="50%">
+    <td align="center" width="33.33%">
       <a href="https://www.atlascloud.ai/?utm_source=github&utm_medium=link&utm_campaign=quantdinger">
         <picture>
           <source media="(prefers-color-scheme: dark)" srcset="https://www.atlascloud.ai/logo-white.svg">
@@ -769,7 +776,7 @@ QuantDinger 的持续开发和开源社区得到以下机构支持：
       <br>
       <sub>AI 推理赞助商</sub>
     </td>
-    <td align="center" width="50%">
+    <td align="center" width="33.33%">
       <a href="https://aws.amazon.com/marketplace/pp/prodview-ywy4zb5wnsari">
         <picture>
           <source media="(prefers-color-scheme: dark)" srcset="https://a0.awsstatic.com/libra-css/images/logos/aws_smile-header-desktop-en-white_59x35.png">
@@ -781,12 +788,26 @@ QuantDinger 的持续开发和开源社区得到以下机构支持：
       <br>
       <sub>云基础设施赞助商</sub>
     </td>
+    <td align="center" width="33.33%">
+      <a href="https://openai.com/">
+        <picture>
+          <source media="(prefers-color-scheme: dark)" srcset="docs/badges/openai-wordmark-white.svg">
+          <img src="docs/badges/openai-wordmark-black.svg" alt="OpenAI" width="130">
+        </picture>
+      </a>
+      <br><br>
+      <strong>OpenAI</strong>
+      <br>
+      <sub>开源开发工具赞助商</sub>
+    </td>
   </tr>
 </table>
 
 感谢 [Atlas Cloud](https://www.atlascloud.ai/?utm_source=github&utm_medium=link&utm_campaign=quantdinger)
-支持 AI 模型推理，也感谢 [Amazon Web Services](https://aws.amazon.com/) 提供云基础设施支持，
-帮助 QuantDinger 服务社区。
+支持 AI 模型推理，感谢 [Amazon Web Services](https://aws.amazon.com/) 提供云基础设施支持，
+也感谢 [OpenAI](https://openai.com/) 提供开源开发工具支持，帮助 QuantDinger 服务社区。
+
+<sub>OpenAI 与 OpenAI Logo 是 OpenAI 的商标。此处展示用于说明项目与工具支持，不代表 OpenAI 对 QuantDinger 的产品认证或背书。</sub>
 
 ## 致谢
 
