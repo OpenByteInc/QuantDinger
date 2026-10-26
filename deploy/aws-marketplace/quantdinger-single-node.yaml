@@ -259,7 +259,8 @@ Resources:
         Fn::Base64: |
           #!/bin/bash
           set -Eeuo pipefail
-          dnf install -y docker curl openssl xfsprogs
+          dnf install -y docker openssl xfsprogs
+          command -v curl >/dev/null || { echo 'curl is unavailable on this Amazon Linux image'; exit 1; }
           install -d -m 0755 /usr/local/lib/docker/cli-plugins
           curl --fail --location --retry 5 \
             https://github.com/docker/compose/releases/download/v2.40.3/docker-compose-linux-x86_64 \

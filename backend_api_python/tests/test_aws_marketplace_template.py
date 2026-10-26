@@ -45,6 +45,13 @@ def test_marketplace_template_generates_secrets_and_backs_up_before_update() -> 
     assert "BACKUP_PATH=" in template
 
 
+def test_marketplace_bootstrap_keeps_amazon_linux_curl_minimal() -> None:
+    template = _template_text()
+
+    assert "dnf install -y docker curl" not in template
+    assert "command -v curl >/dev/null" in template
+
+
 def test_marketplace_guide_warns_about_data_deletion_and_aws_costs() -> None:
     guide = GUIDE.read_text(encoding="utf-8")
 
