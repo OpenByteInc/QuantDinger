@@ -47,6 +47,8 @@
     ·
     <a href="https://www.quantdinger.com"><strong>官方网站</strong></a>
     ·
+    <a href="https://aws.amazon.com/marketplace/pp/prodview-ywy4zb5wnsari"><strong>AWS Marketplace 一键部署</strong></a>
+    ·
     <a href="#观看-quantdinger-实际运行"><strong>视频演示</strong></a>
     ·
     <a href="mailto:support@quantdinger.com"><strong>官方支持邮箱</strong></a>
@@ -224,6 +226,18 @@ flowchart TB
 [分布式运行时部署与扩容指南](docs/deployment/DISTRIBUTED_RUNTIME_SCALING_CN.md)。
 
 ## 快速开始
+
+### 最快的云端部署方式：AWS Marketplace
+
+<p align="center">
+  <a href="https://aws.amazon.com/marketplace/pp/prodview-ywy4zb5wnsari"><img src="https://img.shields.io/badge/AWS%20Marketplace-%E9%83%A8%E7%BD%B2%20QuantDinger-FF9900?style=for-the-badge&logo=amazonaws&logoColor=white" alt="通过 AWS Marketplace 部署 QuantDinger"></a>
+</p>
+
+可从公开的 [AWS Marketplace 产品页](https://aws.amazon.com/marketplace/pp/prodview-ywy4zb5wnsari)
+快速启动免费的 QuantDinger 软件。Marketplace 交付方案通过 CloudFormation 创建单机容器服务栈
+及其所需的 AWS 基础设施。QuantDinger 软件本身不收费，但用户仍需承担正常的 AWS 基础设施费用。
+首次登录、备份、升级、回滚和费用说明请参阅
+[AWS Marketplace 一键部署指南](docs/deployment/AWS_MARKETPLACE_DEPLOYMENT_CN.md)。
 
 ### 方案 A：预构建镜像
 

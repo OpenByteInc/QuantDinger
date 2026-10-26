@@ -47,6 +47,8 @@
     ·
     <a href="https://www.quantdinger.com"><strong>Website</strong></a>
     ·
+    <a href="https://aws.amazon.com/marketplace/pp/prodview-ywy4zb5wnsari"><strong>Deploy on AWS Marketplace</strong></a>
+    ·
     <a href="#watch-quantdinger-in-action"><strong>Video Demo</strong></a>
     ·
     <a href="mailto:support@quantdinger.com"><strong>Official Support Email</strong></a>
@@ -244,6 +246,20 @@ Use the [distributed runtime deployment and scaling guide](docs/deployment/DISTR
 before changing replica counts or moving the stack to multiple hosts.
 
 ## Quick start
+
+### Fastest cloud deployment: AWS Marketplace
+
+<p align="center">
+  <a href="https://aws.amazon.com/marketplace/pp/prodview-ywy4zb5wnsari"><img src="https://img.shields.io/badge/AWS%20Marketplace-Deploy%20QuantDinger-FF9900?style=for-the-badge&logo=amazonaws&logoColor=white" alt="Deploy QuantDinger from AWS Marketplace"></a>
+</p>
+
+Launch the free QuantDinger software from its public
+[AWS Marketplace product page](https://aws.amazon.com/marketplace/pp/prodview-ywy4zb5wnsari).
+The Marketplace delivery option provisions the single-node container stack and
+its required AWS infrastructure through CloudFormation. QuantDinger has no
+software fee; normal AWS infrastructure charges still apply. See the
+[deployment and upgrade guide](docs/deployment/AWS_MARKETPLACE_DEPLOYMENT.md)
+for first login, backups, upgrades, rollback, and cost notes.
 
 ### Option A: prebuilt images
 
