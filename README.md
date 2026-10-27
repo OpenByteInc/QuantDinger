@@ -108,7 +108,7 @@
   </p>
   <p>
     <a href="https://www.nvidia.com/en-us/startups/" title="Open Byte Inc. has joined NVIDIA Inception">
-      <img src="docs/badges/nvidia-inception-member.png" alt="NVIDIA Inception Program" width="88" align="middle">
+      <img src="docs/badges/nvidia-inception-member.png" alt="NVIDIA Inception Program" width="108" align="middle">
     </a>
     &nbsp;&nbsp;
     <strong>Open Byte Inc. has joined NVIDIA Inception.</strong>
