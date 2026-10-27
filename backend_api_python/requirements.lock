@@ -69,7 +69,7 @@ markdown-it-py==4.2.0
 markupsafe==3.0.3
 marshmallow==4.3.1
 mdurl==0.1.2
-msgpack==1.2.1
+msgpack==1.2.3
 multidict==6.9.1
 multitasking==0.0.13
 nest-asyncio==1.6.0

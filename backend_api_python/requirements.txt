@@ -46,6 +46,8 @@ confluent-kafka>=2.16.0,<3
 # Celery 5.6 / Kombu 5.6 currently require redis-py <6.5. This client remains
 # compatible with the Redis 8 server used by the production stack.
 redis>=6.4.0,<6.5
+# CVE-2026-114613; 1.2.3+
+msgpack>=1.2.3,<2
 # Durable background jobs and periodic maintenance
 celery[redis]>=5.6.3,<6
 # Production WSGI server
