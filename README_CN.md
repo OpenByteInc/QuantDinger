@@ -79,6 +79,14 @@
     <a href="https://github.com/orgs/OpenByteInc/projects/1/views/4"><img src="https://img.shields.io/github/issues/OpenByteInc/QuantDinger/ready%20for%20contributors?style=flat-square&label=Ready%20tasks&color=0E8A16" alt="Tasks ready for contributors"></a>
   </p>
 
+  <p><sub>生态计划成员</sub></p>
+  <p>
+    <a href="https://www.nvidia.com/en-us/startups/" title="Open Byte Inc. 已加入 NVIDIA Inception">
+      <img src="docs/badges/nvidia-inception-member.png" alt="NVIDIA Inception 会员徽章" width="210">
+    </a>
+  </p>
+  <p><sub>Open Byte Inc. 已加入 NVIDIA Inception。</sub></p>
+
   <p><sub>赞助支持</sub></p>
   <p>
     <a href="https://www.atlascloud.ai/?utm_source=github&utm_medium=link&utm_campaign=quantdinger" title="Atlas Cloud — AI inference sponsor">
