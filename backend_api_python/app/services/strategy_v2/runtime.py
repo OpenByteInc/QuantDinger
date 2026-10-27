@@ -25,6 +25,8 @@ from app.services.backtest.metrics import (
     calculate_calmar_ratio,
     calculate_downside_risk,
     calculate_drawdown_recovery,
+    calculate_omega_ratio,
+    calculate_tail_risk,
 )
 from app.services.instrument_rules import (
     InstrumentRules,
@@ -2098,6 +2100,8 @@ class StrategyV2BacktestRunner:
             max_drawdown,
             available=annualized_return_available,
         )
+        tail_risk = calculate_tail_risk(returns)
+        omega_ratio = calculate_omega_ratio(returns)
         attribution = self._attribution(initial)
         ledger_occurrences = sum(
             max(1, int(item.get("occurrenceCount") or 1))
@@ -2163,6 +2167,16 @@ class StrategyV2BacktestRunner:
             "sharpeRatio": sharpe_ratio,
             "sortinoRatio": downside_metrics["sortinoRatio"],
             "calmarRatio": calmar_ratio,
+            "omegaRatio": omega_ratio,
+            "valueAtRisk95": tail_risk["valueAtRisk95"],
+            "valueAtRisk99": tail_risk["valueAtRisk99"],
+            "cvar95": tail_risk["cvar95"],
+            "cvar99": tail_risk["cvar99"],
+            "parametricVaR95": tail_risk["parametricVaR95"],
+            "parametricVaR99": tail_risk["parametricVaR99"],
+            "tailRatio": tail_risk["tailRatio"],
+            "skewness": tail_risk["skewness"],
+            "kurtosis": tail_risk["kurtosis"],
             "downsideDeviation": downside_metrics["downsideDeviation"],
             "annualizedDownsideDeviation": downside_metrics["annualizedDownsideDeviation"],
             "maxDrawdownDurationDays": drawdown_details["maxDrawdownDurationDays"],

@@ -15,6 +15,8 @@ from app.services.backtest.metrics import (
     calculate_dual_beta,
     calculate_information_ratio,
     calculate_m_squared,
+    calculate_omega_ratio,
+    calculate_tail_risk,
 )
 
 
@@ -935,3 +937,162 @@ def test_calculate_benchmark_relative_metrics_includes_m2_dual_beta_and_batting(
     assert result["battingStatus"] == "available"
     assert result["battingAverage"] is not None
     assert result["outperformancePeriods"] > 0
+
+
+
+def test_calculate_omega_ratio_known_values():
+    # Returns with known gains and losses at threshold 0.0:
+    # Gains: 0.02 + 0.03 + 0.01 = 0.06
+    # Losses: |-0.01| + |-0.02| = 0.03
+    # Omega = 0.06 / 0.03 = 2.0
+    returns = [0.02, -0.01, 0.03, -0.02, 0.01]
+    omega = calculate_omega_ratio(returns)
+    assert omega == pytest.approx(2.0)
+
+
+def test_calculate_omega_ratio_custom_threshold():
+    # Returns at threshold 0.01:
+    # 0.02 - 0.01 = +0.01
+    # -0.01 - 0.01 = -0.02
+    # 0.03 - 0.01 = +0.02
+    # -0.02 - 0.01 = -0.03
+    # 0.01 - 0.01 = 0.0
+    # Gains = 0.01 + 0.02 = 0.03
+    # Losses = 0.02 + 0.03 = 0.05
+    # Omega = 0.03 / 0.05 = 0.6
+    returns = [0.02, -0.01, 0.03, -0.02, 0.01]
+    omega = calculate_omega_ratio(returns, threshold=0.01)
+    assert omega == pytest.approx(0.6)
+
+
+def test_calculate_omega_ratio_edge_cases():
+    # Empty returns
+    assert calculate_omega_ratio([]) is None
+
+    # All positive returns (infinite payoff -> None)
+    assert calculate_omega_ratio([0.02, 0.03, 0.01]) is None
+
+    # All negative returns (zero gains -> 0.0)
+    assert calculate_omega_ratio([-0.02, -0.01]) == pytest.approx(0.0)
+
+    # All zero returns -> 0.0
+    assert calculate_omega_ratio([0.0, 0.0]) == pytest.approx(0.0)
+
+    # Invalid non-finite threshold
+    with pytest.raises(ValueError, match="threshold must be a finite number"):
+        calculate_omega_ratio([0.01, -0.01], threshold=float("nan"))
+    with pytest.raises(ValueError, match="threshold must be a finite number"):
+        calculate_omega_ratio([0.01, -0.01], threshold=float("inf"))
+
+    # Pandas Series with None / NaN values filtered
+    series_with_nan = pd.Series([0.02, None, -0.01, float("nan"), 0.03])
+    # Gains: 0.02 + 0.03 = 0.05, Losses: 0.01, Omega = 5.0
+    assert calculate_omega_ratio(series_with_nan) == pytest.approx(5.0)
+
+
+def test_calculate_tail_risk_known_values():
+    import statistics
+
+    returns = [-0.05, -0.04, -0.02, -0.01, 0.01, 0.02, 0.03, 0.04, 0.05, 0.06]
+    result = calculate_tail_risk(returns)
+
+    assert result["status"] == "available"
+    assert result["observations"] == 10
+
+    # Quantile at 0.05 is -0.0455 -> Historical VaR95 = 0.0455
+    assert result["valueAtRisk95"] == pytest.approx(0.0455)
+
+    # Only -0.05 <= -0.0455 -> CVaR95 = 0.05
+    assert result["cvar95"] == pytest.approx(0.05)
+    assert result["cvar95"] >= result["valueAtRisk95"]
+
+    # Quantile at 0.01 is -0.0491 -> Historical VaR99 = 0.0491
+    assert result["valueAtRisk99"] == pytest.approx(0.0491)
+    assert result["cvar99"] == pytest.approx(0.05)
+    assert result["cvar99"] >= result["valueAtRisk99"]
+
+    # Quantile at 0.95 is 0.0555 -> Tail Ratio = 0.0555 / 0.0455
+    expected_tail_ratio = 0.0555 / 0.0455
+    assert result["tailRatio"] == pytest.approx(expected_tail_ratio)
+
+    # Parametric Gaussian VaR: z * sigma - mu
+    series = pd.Series(returns)
+    z95 = statistics.NormalDist().inv_cdf(0.95)
+    expected_param_var95 = z95 * float(series.std(ddof=1)) - float(series.mean())
+    assert result["parametricVaR95"] == pytest.approx(expected_param_var95)
+
+    z99 = statistics.NormalDist().inv_cdf(0.99)
+    expected_param_var99 = z99 * float(series.std(ddof=1)) - float(series.mean())
+    assert result["parametricVaR99"] == pytest.approx(expected_param_var99)
+
+    # Skewness and excess kurtosis
+    assert result["skewness"] == pytest.approx(float(series.skew()))
+    assert result["kurtosis"] == pytest.approx(float(series.kurt()))
+
+
+def test_calculate_tail_risk_insufficient_history_and_edge_cases():
+    # Empty
+    empty_res = calculate_tail_risk([])
+    assert empty_res["status"] == "insufficient_history"
+    assert empty_res["observations"] == 0
+    assert empty_res["valueAtRisk95"] is None
+    assert empty_res["cvar95"] is None
+    assert empty_res["tailRatio"] is None
+    assert empty_res["skewness"] is None
+    assert empty_res["kurtosis"] is None
+
+    # Single observation
+    single_res = calculate_tail_risk([-0.03])
+    assert single_res["status"] == "available"
+    assert single_res["observations"] == 1
+    assert single_res["valueAtRisk95"] == pytest.approx(0.03)
+    assert single_res["cvar95"] == pytest.approx(0.03)
+    assert single_res["tailRatio"] == pytest.approx(1.0)
+    assert single_res["parametricVaR95"] is None
+    assert single_res["skewness"] is None
+    assert single_res["kurtosis"] is None
+
+    # Flat returns (variance zero)
+    flat_res = calculate_tail_risk([0.0, 0.0, 0.0, 0.0, 0.0])
+    assert flat_res["status"] == "available"
+    assert flat_res["observations"] == 5
+    assert flat_res["valueAtRisk95"] == pytest.approx(0.0)
+    assert flat_res["cvar95"] == pytest.approx(0.0)
+    assert flat_res["parametricVaR95"] == pytest.approx(0.0)
+    assert flat_res["tailRatio"] is None  # Denominator zero
+    assert flat_res["skewness"] == pytest.approx(0.0)
+    assert flat_res["kurtosis"] == pytest.approx(0.0)
+
+
+def test_calculate_tail_risk_custom_confidence_and_validation():
+    returns = [-0.04, -0.02, 0.01, 0.02, 0.03, 0.04]
+    custom_res = calculate_tail_risk(returns, confidence_levels=(0.90, 0.99))
+    assert "valueAtRisk90" in custom_res
+    assert "cvar90" in custom_res
+    assert "parametricVaR90" in custom_res
+    assert "valueAtRisk99" in custom_res
+    assert "cvar99" in custom_res
+
+    # Validation: invalid confidences
+    with pytest.raises(ValueError, match="confidence level"):
+        calculate_tail_risk(returns, confidence_levels=(0.0,))
+    with pytest.raises(ValueError, match="confidence level"):
+        calculate_tail_risk(returns, confidence_levels=(1.0,))
+    with pytest.raises(ValueError, match="confidence level"):
+        calculate_tail_risk(returns, confidence_levels=(-0.5,))
+    with pytest.raises(ValueError, match="confidence level"):
+        calculate_tail_risk(returns, confidence_levels=(float("nan"),))
+
+
+def test_calculate_tail_risk_with_series_and_list():
+    raw_list = [-0.03, 0.01, -0.02, 0.04, 0.02, -0.01]
+    series = pd.Series(raw_list, index=pd.date_range("2026-01-01", periods=6))
+
+    res_list = calculate_tail_risk(raw_list)
+    res_series = calculate_tail_risk(series)
+
+    assert res_list["valueAtRisk95"] == pytest.approx(res_series["valueAtRisk95"])
+    assert res_list["cvar95"] == pytest.approx(res_series["cvar95"])
+    assert res_list["tailRatio"] == pytest.approx(res_series["tailRatio"])
+    assert res_list["skewness"] == pytest.approx(res_series["skewness"])
+    assert res_list["kurtosis"] == pytest.approx(res_series["kurtosis"])

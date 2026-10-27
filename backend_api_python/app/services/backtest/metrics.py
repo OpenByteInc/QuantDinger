@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import statistics
 from collections.abc import Iterable, Sequence
 from typing import Any
 
@@ -23,6 +24,8 @@ __all__ = [
     "calculate_dual_beta",
     "calculate_information_ratio",
     "calculate_m_squared",
+    "calculate_omega_ratio",
+    "calculate_tail_risk",
 ]
 
 
@@ -742,6 +745,161 @@ def calculate_calmar_ratio(
     if ann_ret <= 0:
         return 0.0
     return None
+
+
+def calculate_omega_ratio(
+    returns: pd.Series | Iterable[float],
+    *,
+    threshold: float = 0.0,
+) -> float | None:
+    """Calculate the Omega Ratio for a series of periodic returns.
+
+    The Omega Ratio is a performance metric that evaluates the probability-weighted
+    ratio of gains versus losses relative to a target threshold L (default 0.0):
+        Omega(L) = sum(max(R_t - L, 0)) / sum(max(L - R_t, 0))
+
+    Parameters:
+        returns: Periodic return series or sequence of floats.
+        threshold: Return benchmark threshold L (default 0.0).
+
+    Returns:
+        float | None: Omega ratio, or None if no observations, or if downside losses
+            are zero with positive upside gains (infinite payoff). Returns 0.0 if
+            both gains and losses are zero.
+    """
+    target = float(threshold)
+    if not math.isfinite(target):
+        raise ValueError("threshold must be a finite number")
+
+    if isinstance(returns, pd.Series):
+        clean_returns = returns.loc[
+            returns.apply(lambda x: x is not None and math.isfinite(float(x)))
+        ].astype("float64")
+    else:
+        clean_returns = pd.Series(
+            [float(x) for x in returns if x is not None and math.isfinite(float(x))],
+            dtype="float64",
+        )
+
+    if clean_returns.empty:
+        return None
+
+    excess = clean_returns - target
+    gains = float(excess.loc[excess > 0.0].sum())
+    losses = float((-excess.loc[excess < 0.0]).sum())
+
+    if losses > 1e-15:
+        return float(gains / losses)
+    if gains > 1e-15:
+        return None
+    return 0.0
+
+
+def calculate_tail_risk(
+    returns: pd.Series | Iterable[float],
+    *,
+    confidence_levels: Sequence[float] = (0.95, 0.99),
+) -> dict[str, Any]:
+    """Calculate tail risk and distribution analytics for return series.
+
+    Metrics computed:
+      - Historical Value at Risk (VaR): VaR_alpha = -Quantile(R, 1 - alpha)
+      - Historical Conditional Value at Risk (CVaR / Expected Shortfall):
+        CVaR_alpha = -E[R | R <= -VaR_alpha]
+      - Parametric Gaussian VaR: ParametricVaR_alpha = z_alpha * sigma - mu
+      - Tail Ratio: |Quantile(R, 0.95)| / |Quantile(R, 0.05)|
+      - Skewness: Fisher-Pearson sample skewness g1
+      - Kurtosis: Fisher excess kurtosis g2 (0 for normal distribution)
+
+    Parameters:
+        returns: Periodic return series or sequence of floats.
+        confidence_levels: Sequence of confidence thresholds (e.g. 0.95, 0.99).
+            Each must satisfy 0 < confidence < 1.
+
+    Returns:
+        dict containing:
+            - status: "available" or "insufficient_history"
+            - valueAtRisk95: Historical VaR at 95% confidence (or None)
+            - valueAtRisk99: Historical VaR at 99% confidence (or None)
+            - cvar95: Historical CVaR at 95% confidence (or None)
+            - cvar99: Historical CVaR at 99% confidence (or None)
+            - parametricVaR95: Parametric Gaussian VaR at 95% (or None)
+            - parametricVaR99: Parametric Gaussian VaR at 99% (or None)
+            - tailRatio: Ratio of 95th percentile to absolute 5th percentile (or None)
+            - skewness: Return skewness (or None)
+            - kurtosis: Return excess kurtosis (or None)
+            - observations: Count of valid return observations
+    """
+    validated_confidences: list[float] = []
+    for level in confidence_levels:
+        c = float(level)
+        if not math.isfinite(c) or c <= 0.0 or c >= 1.0:
+            raise ValueError(f"confidence level must be a finite float strictly between 0 and 1, got {level}")
+        validated_confidences.append(c)
+
+    if isinstance(returns, pd.Series):
+        clean_returns = returns.loc[
+            returns.apply(lambda x: x is not None and math.isfinite(float(x)))
+        ].astype("float64")
+    else:
+        clean_returns = pd.Series(
+            [float(x) for x in returns if x is not None and math.isfinite(float(x))],
+            dtype="float64",
+        )
+
+    observations = int(len(clean_returns))
+    result: dict[str, Any] = {
+        "status": "insufficient_history",
+        "valueAtRisk95": None,
+        "valueAtRisk99": None,
+        "cvar95": None,
+        "cvar99": None,
+        "parametricVaR95": None,
+        "parametricVaR99": None,
+        "tailRatio": None,
+        "skewness": None,
+        "kurtosis": None,
+        "observations": observations,
+    }
+    if observations == 0:
+        return result
+
+    result["status"] = "available"
+    q95 = float(clean_returns.quantile(0.95))
+    q05 = float(clean_returns.quantile(0.05))
+    if abs(q05) > 1e-15:
+        result["tailRatio"] = float(abs(q95) / abs(q05))
+    else:
+        result["tailRatio"] = None
+
+    if observations >= 3:
+        raw_skew = float(clean_returns.skew())
+        result["skewness"] = raw_skew if math.isfinite(raw_skew) else None
+    if observations >= 4:
+        raw_kurt = float(clean_returns.kurt())
+        result["kurtosis"] = raw_kurt if math.isfinite(raw_kurt) else None
+
+    mean_ret = float(clean_returns.mean())
+    sample_std = float(clean_returns.std(ddof=1)) if observations >= 2 else 0.0
+    normal_dist = statistics.NormalDist()
+
+    for c in validated_confidences:
+        suffix = f"{int(round(c * 100))}" if math.isclose(c * 100, round(c * 100), abs_tol=1e-5) else f"{c * 100:.1f}"
+        q_loss = float(clean_returns.quantile(1.0 - c))
+        var_hist = -q_loss
+        tail = clean_returns.loc[clean_returns <= q_loss + 1e-15]
+        cvar_hist = -float(tail.mean()) if not tail.empty else var_hist
+        if observations >= 2 and math.isfinite(sample_std):
+            z_score = normal_dist.inv_cdf(c)
+            param_var = float(z_score * sample_std - mean_ret)
+        else:
+            param_var = None
+
+        result[f"valueAtRisk{suffix}"] = var_hist
+        result[f"cvar{suffix}"] = cvar_hist
+        result[f"parametricVaR{suffix}"] = param_var
+
+    return result
 
 
 def calculate_drawdown_recovery(

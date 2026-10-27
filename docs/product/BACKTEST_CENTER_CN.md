@@ -69,6 +69,24 @@
   - `maxDrawdownRecovered`：布尔值，指示最大回撤阶段是否在回测区间内实现完全恢复。
   - `recoveryFactor`：净利润总额除以最大回撤实际金额（$\text{净利润} / (\text{最大回撤峰值资金} - \text{最大回撤谷底资金})$）。
 
+### 尾部风险与非正态分布指标
+
+Strategy API V2 还在回测主结果中提供了尾部风险与非正态收益分布指标：
+
+- **在险价值（Value at Risk, VaR）**：95% 与 99% 置信度下的历史最大可能亏损阈值：
+  $$\text{VaR}_\alpha = - \text{Quantile}(R, 1 - \alpha)$$
+  在结果字典中以 `valueAtRisk95` 和 `valueAtRisk99` 返回。同时以 `parametricVaR95` 与 `parametricVaR99` 提供高斯参数化估计（$z_\alpha \cdot \sigma - \mu$）。
+- **条件在险价值（Conditional VaR / 预期亏损 Expected Shortfall）**：损失超过 VaR 门槛时的条件期望损失：
+  $$\text{CVaR}_\alpha = - \mathbb{E}[R \mid R \le - \text{VaR}_\alpha]$$
+  在结果字典中以 `cvar95` 和 `cvar99` 返回。满足次可加性（Coherent Risk Measure），能有效度量超越 VaR 阈值的极端黑天鹅尾部风险。
+- **欧米茄比率（Omega Ratio）**：门槛收益率（默认 0.0）之上的累积概率加权收益与门槛之下的累积概率加权亏损的比值：
+  $$\Omega(L) = \frac{\sum_{t=1}^T \max(R_t - L, 0)}{\sum_{t=1}^T \max(L - R_t, 0)}$$
+  在结果字典中以 `omegaRatio` 返回。与夏普比率不同，欧米茄比率无需假设正态分布，天然涵盖了偏度与峰度等高阶矩信息。无下行亏损时安全返回 `null`。
+- **尾部比率（Tail Ratio）**：右侧 95% 分位数上行收益与左侧 5% 分位数绝对损失的比率：
+  $$\text{Tail Ratio} = \frac{|\text{Quantile}(R, 0.95)|}{|\text{Quantile}(R, 0.05)|}$$
+  在结果字典中以 `tailRatio` 返回。大于 1.0 表示极端上行盈利能力优于极端下行尾部风险。
+- **偏度与超额峰度（Skewness & Kurtosis）**：样本 Fisher-Pearson 偏度（`skewness`）与样本 Fisher 超额峰度（`kurtosis`，正态分布为 0），用于量化收益率分布的不对称性与厚尾肥尾程度。
+
 ## 常见误判
 
 - 零成交可能来自数据缺失、预热不足或条件无法满足。
