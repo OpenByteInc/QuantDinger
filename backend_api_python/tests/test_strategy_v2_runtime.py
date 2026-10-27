@@ -1709,8 +1709,12 @@ def handle_data(context, data):
     assert "tailRatio" in result
     assert "skewness" in result
     assert "kurtosis" in result
+    assert result["tailRiskStatus"] == "insufficient_history"
+    assert result["tailRiskObservations"] == 3
+    assert result["tailRiskUnit"] == "return_fraction"
+    assert result["valueAtRisk95Status"] == "insufficient_history"
+    assert result["valueAtRisk99Status"] == "insufficient_history"
     assert result["omegaRatio"] is not None
-    assert result["valueAtRisk95"] is not None
-    assert result["cvar95"] is not None
-    assert result["cvar95"] >= result["valueAtRisk95"]
-    assert result["tailRatio"] is not None
+    assert result["valueAtRisk95"] is None
+    assert result["cvar95"] is None
+    assert result["tailRatio"] is None

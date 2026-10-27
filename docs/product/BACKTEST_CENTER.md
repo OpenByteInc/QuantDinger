@@ -121,6 +121,8 @@ Strategy API V2 also calculates tail risk and non-normal distribution metrics on
   Reported via `tailRatio`. Values greater than 1.0 indicate favorable positive tail skewness relative to extreme downside tail risk.
 - **Skewness & Kurtosis:** Sample Fisher-Pearson skewness (`skewness`, $g_1$) and sample Fisher excess kurtosis (`kurtosis`, $g_2$, zero for Gaussian distribution) characterizing asymmetry and tail heaviness.
 
+Tail-risk loss values use raw return fractions (`tailRiskUnit: "return_fraction"`), so `0.025` means `2.5%`. Historical 95% estimates require at least 20 valid return observations, while 99% estimates require at least 100. Metrics that do not meet their threshold return `null`; `valueAtRisk95Status` and `valueAtRisk99Status` identify availability. The aggregate `tailRiskStatus` is `insufficient_history`, `partial`, or `available`, and `tailRiskObservations` reports the sample size. VaR and CVaR are loss magnitudes and are floored at zero when the sampled returns contain no loss at the requested quantile.
+
 ## Common misreadings
 
 - Zero executions may mean missing data, insufficient warmup, or unreachable conditions.

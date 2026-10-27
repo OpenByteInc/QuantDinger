@@ -818,7 +818,8 @@ def calculate_tail_risk(
 
     Returns:
         dict containing:
-            - status: "available" or "insufficient_history"
+            - status: "available", "partial", or "insufficient_history"
+            - unit: "return_fraction"
             - valueAtRisk95: Historical VaR at 95% confidence (or None)
             - valueAtRisk99: Historical VaR at 99% confidence (or None)
             - cvar95: Historical CVaR at 95% confidence (or None)
@@ -850,8 +851,11 @@ def calculate_tail_risk(
     observations = int(len(clean_returns))
     result: dict[str, Any] = {
         "status": "insufficient_history",
+        "unit": "return_fraction",
         "valueAtRisk95": None,
         "valueAtRisk99": None,
+        "valueAtRisk95Status": "insufficient_history",
+        "valueAtRisk99Status": "insufficient_history",
         "cvar95": None,
         "cvar99": None,
         "parametricVaR95": None,
@@ -864,13 +868,23 @@ def calculate_tail_risk(
     if observations == 0:
         return result
 
-    result["status"] = "available"
-    q95 = float(clean_returns.quantile(0.95))
-    q05 = float(clean_returns.quantile(0.05))
-    if abs(q05) > 1e-15:
-        result["tailRatio"] = float(abs(q95) / abs(q05))
-    else:
-        result["tailRatio"] = None
+    minimum_observations = {
+        c: max(2, int(math.ceil((1.0 / (1.0 - c)) - 1e-12)))
+        for c in validated_confidences
+    }
+    available_levels = [
+        c for c in validated_confidences if observations >= minimum_observations[c]
+    ]
+    if len(available_levels) == len(validated_confidences):
+        result["status"] = "available"
+    elif available_levels:
+        result["status"] = "partial"
+
+    if observations >= 20:
+        q95 = float(clean_returns.quantile(0.95))
+        q05 = float(clean_returns.quantile(0.05))
+        if abs(q05) > 1e-15:
+            result["tailRatio"] = float(abs(q95) / abs(q05))
 
     if observations >= 3:
         raw_skew = float(clean_returns.skew())
@@ -885,13 +899,22 @@ def calculate_tail_risk(
 
     for c in validated_confidences:
         suffix = f"{int(round(c * 100))}" if math.isclose(c * 100, round(c * 100), abs_tol=1e-5) else f"{c * 100:.1f}"
+        metric_status = (
+            "available"
+            if observations >= minimum_observations[c]
+            else "insufficient_history"
+        )
+        result[f"valueAtRisk{suffix}Status"] = metric_status
+        if metric_status != "available":
+            continue
+
         q_loss = float(clean_returns.quantile(1.0 - c))
-        var_hist = -q_loss
+        var_hist = max(0.0, -q_loss)
         tail = clean_returns.loc[clean_returns <= q_loss + 1e-15]
-        cvar_hist = -float(tail.mean()) if not tail.empty else var_hist
+        cvar_hist = max(0.0, -float(tail.mean())) if not tail.empty else var_hist
         if observations >= 2 and math.isfinite(sample_std):
             z_score = normal_dist.inv_cdf(c)
-            param_var = float(z_score * sample_std - mean_ret)
+            param_var = max(0.0, float(z_score * sample_std - mean_ret))
         else:
             param_var = None
 

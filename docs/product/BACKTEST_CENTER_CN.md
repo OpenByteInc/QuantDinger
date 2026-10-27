@@ -87,6 +87,8 @@ Strategy API V2 还在回测主结果中提供了尾部风险与非正态收益�
   在结果字典中以 `tailRatio` 返回。大于 1.0 表示极端上行盈利能力优于极端下行尾部风险。
 - **偏度与超额峰度（Skewness & Kurtosis）**：样本 Fisher-Pearson 偏度（`skewness`）与样本 Fisher 超额峰度（`kurtosis`，正态分布为 0），用于量化收益率分布的不对称性与厚尾肥尾程度。
 
+尾部风险损失值使用原始收益率小数（`tailRiskUnit: "return_fraction"`），例如 `0.025` 表示 `2.5%`。历史 95% 估计至少需要 20 个有效收益观察值，99% 估计至少需要 100 个；样本不足时对应指标返回 `null`，并通过 `valueAtRisk95Status`、`valueAtRisk99Status` 标明可用性。汇总字段 `tailRiskStatus` 取值为 `insufficient_history`、`partial` 或 `available`，`tailRiskObservations` 返回样本数。当指定分位数没有亏损时，VaR 与 CVaR 作为亏损幅度以 0 为下限。
+
 ## 常见误判
 
 - 零成交可能来自数据缺失、预热不足或条件无法满足。

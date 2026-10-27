@@ -993,36 +993,39 @@ def test_calculate_omega_ratio_edge_cases():
 def test_calculate_tail_risk_known_values():
     import statistics
 
-    returns = [-0.05, -0.04, -0.02, -0.01, 0.01, 0.02, 0.03, 0.04, 0.05, 0.06]
+    returns = [-0.05, -0.04, -0.02, -0.01, 0.01, 0.02, 0.03, 0.04, 0.05, 0.06] * 10
     result = calculate_tail_risk(returns)
 
     assert result["status"] == "available"
-    assert result["observations"] == 10
+    assert result["unit"] == "return_fraction"
+    assert result["observations"] == 100
+    assert result["valueAtRisk95Status"] == "available"
+    assert result["valueAtRisk99Status"] == "available"
 
-    # Quantile at 0.05 is -0.0455 -> Historical VaR95 = 0.0455
-    assert result["valueAtRisk95"] == pytest.approx(0.0455)
+    series = pd.Series(returns)
+    q05 = float(series.quantile(0.05))
+    q01 = float(series.quantile(0.01))
+    assert result["valueAtRisk95"] == pytest.approx(max(0.0, -q05))
 
-    # Only -0.05 <= -0.0455 -> CVaR95 = 0.05
-    assert result["cvar95"] == pytest.approx(0.05)
+    expected_cvar95 = max(0.0, -float(series.loc[series <= q05 + 1e-15].mean()))
+    assert result["cvar95"] == pytest.approx(expected_cvar95)
     assert result["cvar95"] >= result["valueAtRisk95"]
 
-    # Quantile at 0.01 is -0.0491 -> Historical VaR99 = 0.0491
-    assert result["valueAtRisk99"] == pytest.approx(0.0491)
-    assert result["cvar99"] == pytest.approx(0.05)
+    expected_cvar99 = max(0.0, -float(series.loc[series <= q01 + 1e-15].mean()))
+    assert result["valueAtRisk99"] == pytest.approx(max(0.0, -q01))
+    assert result["cvar99"] == pytest.approx(expected_cvar99)
     assert result["cvar99"] >= result["valueAtRisk99"]
 
-    # Quantile at 0.95 is 0.0555 -> Tail Ratio = 0.0555 / 0.0455
-    expected_tail_ratio = 0.0555 / 0.0455
+    expected_tail_ratio = abs(float(series.quantile(0.95))) / abs(q05)
     assert result["tailRatio"] == pytest.approx(expected_tail_ratio)
 
     # Parametric Gaussian VaR: z * sigma - mu
-    series = pd.Series(returns)
     z95 = statistics.NormalDist().inv_cdf(0.95)
-    expected_param_var95 = z95 * float(series.std(ddof=1)) - float(series.mean())
+    expected_param_var95 = max(0.0, z95 * float(series.std(ddof=1)) - float(series.mean()))
     assert result["parametricVaR95"] == pytest.approx(expected_param_var95)
 
     z99 = statistics.NormalDist().inv_cdf(0.99)
-    expected_param_var99 = z99 * float(series.std(ddof=1)) - float(series.mean())
+    expected_param_var99 = max(0.0, z99 * float(series.std(ddof=1)) - float(series.mean()))
     assert result["parametricVaR99"] == pytest.approx(expected_param_var99)
 
     # Skewness and excess kurtosis
@@ -1041,37 +1044,50 @@ def test_calculate_tail_risk_insufficient_history_and_edge_cases():
     assert empty_res["skewness"] is None
     assert empty_res["kurtosis"] is None
 
-    # Single observation
+    # Single observation cannot support empirical tail estimates.
     single_res = calculate_tail_risk([-0.03])
-    assert single_res["status"] == "available"
+    assert single_res["status"] == "insufficient_history"
     assert single_res["observations"] == 1
-    assert single_res["valueAtRisk95"] == pytest.approx(0.03)
-    assert single_res["cvar95"] == pytest.approx(0.03)
-    assert single_res["tailRatio"] == pytest.approx(1.0)
+    assert single_res["valueAtRisk95"] is None
+    assert single_res["cvar95"] is None
+    assert single_res["tailRatio"] is None
     assert single_res["parametricVaR95"] is None
     assert single_res["skewness"] is None
     assert single_res["kurtosis"] is None
 
     # Flat returns (variance zero)
     flat_res = calculate_tail_risk([0.0, 0.0, 0.0, 0.0, 0.0])
-    assert flat_res["status"] == "available"
+    assert flat_res["status"] == "insufficient_history"
     assert flat_res["observations"] == 5
-    assert flat_res["valueAtRisk95"] == pytest.approx(0.0)
-    assert flat_res["cvar95"] == pytest.approx(0.0)
-    assert flat_res["parametricVaR95"] == pytest.approx(0.0)
+    assert flat_res["valueAtRisk95"] is None
+    assert flat_res["cvar95"] is None
+    assert flat_res["parametricVaR95"] is None
     assert flat_res["tailRatio"] is None  # Denominator zero
     assert flat_res["skewness"] == pytest.approx(0.0)
     assert flat_res["kurtosis"] == pytest.approx(0.0)
 
+    partial_res = calculate_tail_risk([float(i) / 100 for i in range(-10, 10)])
+    assert partial_res["status"] == "partial"
+    assert partial_res["valueAtRisk95Status"] == "available"
+    assert partial_res["valueAtRisk99Status"] == "insufficient_history"
+    assert partial_res["valueAtRisk95"] is not None
+    assert partial_res["valueAtRisk99"] is None
+
+    positive_res = calculate_tail_risk([float(i) / 10000 for i in range(1, 101)])
+    assert positive_res["valueAtRisk95"] == pytest.approx(0.0)
+    assert positive_res["cvar95"] == pytest.approx(0.0)
+
 
 def test_calculate_tail_risk_custom_confidence_and_validation():
-    returns = [-0.04, -0.02, 0.01, 0.02, 0.03, 0.04]
+    returns = [-0.04, -0.02, 0.01, 0.02, 0.03] * 2
     custom_res = calculate_tail_risk(returns, confidence_levels=(0.90, 0.99))
     assert "valueAtRisk90" in custom_res
     assert "cvar90" in custom_res
     assert "parametricVaR90" in custom_res
     assert "valueAtRisk99" in custom_res
     assert "cvar99" in custom_res
+    assert custom_res["valueAtRisk90Status"] == "available"
+    assert custom_res["valueAtRisk99Status"] == "insufficient_history"
 
     # Validation: invalid confidences
     with pytest.raises(ValueError, match="confidence level"):
@@ -1085,8 +1101,8 @@ def test_calculate_tail_risk_custom_confidence_and_validation():
 
 
 def test_calculate_tail_risk_with_series_and_list():
-    raw_list = [-0.03, 0.01, -0.02, 0.04, 0.02, -0.01]
-    series = pd.Series(raw_list, index=pd.date_range("2026-01-01", periods=6))
+    raw_list = [-0.03, 0.01, -0.02, 0.04, 0.02, -0.01] * 4
+    series = pd.Series(raw_list, index=pd.date_range("2026-01-01", periods=len(raw_list)))
 
     res_list = calculate_tail_risk(raw_list)
     res_series = calculate_tail_risk(series)
