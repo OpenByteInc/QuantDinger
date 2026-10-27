@@ -20,6 +20,7 @@ AI-agent access. This documentation describes the current v5 release.
 | Use AI research | [AI Research guide](product/AI_RESEARCH.md) | [Strategy workflow](product/STRATEGY_WORKFLOW.md) |
 | Run a backtest | [Backtest Center guide](product/BACKTEST_CENTER.md) | [Strategy API V2 guide](trading/STRATEGY_DEV_GUIDE.md) |
 | Prepare live trading | [Live-trading safety](trading/LIVE_TRADING_SAFETY.md) | [Security and reporting](security/README.md) |
+| Reconcile Alpaca execution fees | [English](trading/ALPACA_FEE_RECONCILIATION.md) | [简体中文](trading/ALPACA_FEE_RECONCILIATION_CN.md) |
 | Prepare production | [Production hardening](deployment/PRODUCTION_HARDENING.md) | [Observability](deployment/OBSERVABILITY.md) |
 | Deploy from AWS Marketplace | [English](deployment/AWS_MARKETPLACE_DEPLOYMENT.md) | [简体中文](deployment/AWS_MARKETPLACE_DEPLOYMENT_CN.md) |
 | Release or scale runtime workers | [Distributed runtime scaling](deployment/DISTRIBUTED_RUNTIME_SCALING.md) | [V6 capacity plan](architecture/V6_HYPERSCALE_ARCHITECTURE_PLAN.md) |
@@ -125,6 +126,7 @@ ownership or shared state.
 - [Strategy API V2 development](trading/STRATEGY_DEV_GUIDE.md)
 - [Chart indicator development](trading/INDICATOR_DEV_GUIDE.md)
 - [Interactive Brokers](trading/IBKR_TRADING_GUIDE_EN.md)
+- Alpaca execution-fee reconciliation: [English](trading/ALPACA_FEE_RECONCILIATION.md) / [简体中文](trading/ALPACA_FEE_RECONCILIATION_CN.md)
 - [Live-trading safety](trading/LIVE_TRADING_SAFETY.md)
 - [Public universes and point-in-time fundamentals (Chinese)](trading/PUBLIC_UNIVERSE_AND_FUNDAMENTALS_CN.md)
 - [Fundamental-data preparation operations (Chinese)](strategies/FUNDAMENTAL_DATA_PREPARATION_CN.md)
