@@ -1699,3 +1699,22 @@ def handle_data(context, data):
     assert result["recoveryFactor"] == pytest.approx((125.0 - 100.0) / (120.0 - 90.0))
     assert result["sortinoRatio"] is not None
     assert result["calmarRatio"] is not None
+    assert "omegaRatio" in result
+    assert "valueAtRisk95" in result
+    assert "valueAtRisk99" in result
+    assert "cvar95" in result
+    assert "cvar99" in result
+    assert "parametricVaR95" in result
+    assert "parametricVaR99" in result
+    assert "tailRatio" in result
+    assert "skewness" in result
+    assert "kurtosis" in result
+    assert result["tailRiskStatus"] == "insufficient_history"
+    assert result["tailRiskObservations"] == 3
+    assert result["tailRiskUnit"] == "return_fraction"
+    assert result["valueAtRisk95Status"] == "insufficient_history"
+    assert result["valueAtRisk99Status"] == "insufficient_history"
+    assert result["omegaRatio"] is not None
+    assert result["valueAtRisk95"] is None
+    assert result["cvar95"] is None
+    assert result["tailRatio"] is None

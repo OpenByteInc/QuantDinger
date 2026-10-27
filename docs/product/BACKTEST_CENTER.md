@@ -103,6 +103,26 @@ calculate downside risk and drawdown lifecycle metrics in the primary result:
   - `recoveryFactor`: Total net profit divided by maximum drawdown dollar loss:
     $$\text{Recovery Factor} = \frac{\text{Final Equity} - \text{Initial Capital}}{\text{Max Drawdown Peak Equity} - \text{Max Drawdown Trough Equity}}$$
 
+### Tail risk and distribution analytics
+
+Strategy API V2 also calculates tail risk and non-normal distribution metrics on return series:
+
+- **Value at Risk (VaR):** Historical loss threshold at 95% and 99% confidence levels:
+  $$\text{VaR}_\alpha = - \text{Quantile}(R, 1 - \alpha)$$
+  Reported via `valueAtRisk95` and `valueAtRisk99`. Also available as Gaussian parametric estimates via `parametricVaR95` and `parametricVaR99` ($z_\alpha \cdot \sigma - \mu$).
+- **Conditional Value at Risk (CVaR / Expected Shortfall):** Probability-weighted expected loss conditioned on exceeding the VaR cutoff:
+  $$\text{CVaR}_\alpha = - \mathbb{E}[R \mid R \le - \text{VaR}_\alpha]$$
+  Reported via `cvar95` and `cvar99`. Provides a coherent, sub-additive measure of catastrophe risk in extreme tail events.
+- **Omega Ratio:** Ratio of probability-weighted gains to probability-weighted losses relative to a benchmark threshold (default 0.0):
+  $$\Omega(L) = \frac{\sum_{t=1}^T \max(R_t - L, 0)}{\sum_{t=1}^T \max(L - R_t, 0)}$$
+  Reported via `omegaRatio`. Unlike Sharpe Ratio, Omega Ratio implicitly considers all higher moments (skewness, kurtosis) without assuming a normal return distribution. Safely returns `null` when no downside losses occurred.
+- **Tail Ratio:** Measure of return distribution asymmetry between the upper and lower tails:
+  $$\text{Tail Ratio} = \frac{|\text{Quantile}(R, 0.95)|}{|\text{Quantile}(R, 0.05)|}$$
+  Reported via `tailRatio`. Values greater than 1.0 indicate favorable positive tail skewness relative to extreme downside tail risk.
+- **Skewness & Kurtosis:** Sample Fisher-Pearson skewness (`skewness`, $g_1$) and sample Fisher excess kurtosis (`kurtosis`, $g_2$, zero for Gaussian distribution) characterizing asymmetry and tail heaviness.
+
+Tail-risk loss values use raw return fractions (`tailRiskUnit: "return_fraction"`), so `0.025` means `2.5%`. Historical 95% estimates require at least 20 valid return observations, while 99% estimates require at least 100. Metrics that do not meet their threshold return `null`; `valueAtRisk95Status` and `valueAtRisk99Status` identify availability. The aggregate `tailRiskStatus` is `insufficient_history`, `partial`, or `available`, and `tailRiskObservations` reports the sample size. VaR and CVaR are loss magnitudes and are floored at zero when the sampled returns contain no loss at the requested quantile.
+
 ## Common misreadings
 
 - Zero executions may mean missing data, insufficient warmup, or unreachable conditions.
