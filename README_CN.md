@@ -456,7 +456,7 @@ docker compose \
 | 策略 | Strategy API V2 交易意图、仓位计算、风险控制、回测和实盘运行时。 |
 | 加密货币 | Binance、OKX、Bitget、Bybit、Gate、HTX 及可扩展适配器。 |
 | 传统券商 | IBKR 和 Alpaca 工作流。 |
-| AI 提供商 | OpenRouter、OpenAI 兼容 API、Google、DeepSeek、Grok、MiniMax 和自定义端点。 |
+| AI 提供商 | OpenRouter、OpenAI 兼容 API、Google、DeepSeek、Grok、MiniMax、88API 和自定义端点。 |
 | 自动化 | Human API、Agent Gateway、MCP Server、Celery 任务、调度和通知。 |
 
 建议从[指标开发指南](docs/trading/INDICATOR_DEV_GUIDE.md)、
