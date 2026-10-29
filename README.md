@@ -133,6 +133,8 @@
   <a href="https://youtu.be/y9EiCZSaIt0">
     <img src="docs/screenshots/quantdinger-youtube-overview.png" alt="Watch the latest QuantDinger overview on YouTube" width="800">
   </a>
+  <br>
+  <strong><a href="https://youtu.be/y9EiCZSaIt0">▶ Watch the latest QuantDinger product tour on YouTube</a></strong>
 </p>
 
 ## What QuantDinger is
