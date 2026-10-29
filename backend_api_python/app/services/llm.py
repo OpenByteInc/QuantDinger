@@ -25,6 +25,12 @@ def _output_token_param(base_url: str) -> str:
     the old name; other OpenAI-compatible providers still expect max_tokens."""
     return "max_completion_tokens" if "api.openai.com" in (base_url or "").lower() else "max_tokens"
 
+
+def _sampling_params(model: str, temperature: float) -> dict:
+    """Current Claude models reject temperature with a 400 (and the Anthropic API
+    drops sampling params for every model), so only send it to other models."""
+    return {} if "claude" in (model or "").lower() else {"temperature": temperature}
+
 RETRYABLE_LLM_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504, 529}
 RETRYABLE_LLM_ERROR_TYPES = {
     "premature_eof",
@@ -468,7 +474,7 @@ class LLMService:
         data = {
             "model": model,
             "messages": messages,
-            "temperature": temperature,
+            **_sampling_params(model, temperature),
             _output_token_param(base_url): self.get_max_tokens(),
         }
         
@@ -830,7 +836,7 @@ class LLMService:
         kwargs = {
             "model": model,
             "messages": messages,
-            "temperature": temperature,
+            **_sampling_params(model, temperature),
             "max_tokens": self.get_max_tokens(),
             "timeout": timeout,
             "drop_params": True,
@@ -951,7 +957,7 @@ class LLMService:
         data = {
             "model": model,
             "messages": messages,
-            "temperature": temperature,
+            **_sampling_params(model, temperature),
             _output_token_param(base_url): self.get_max_tokens(),
             "stream": True,
         }
