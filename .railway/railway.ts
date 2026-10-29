@@ -2,13 +2,15 @@
 //
 // Secrets (SECRET_KEY, CREDENTIAL_ENCRYPTION_KEY, ADMIN_*, MCP_AUTH_TOKEN) are
 // Railway shared variables set outside source control and referenced through
-// `ctx.shared`. Services built from local source have no repo; deploy them with
-//   railway up backend_api_python --path-as-root --service <name>
+// `ctx.shared`. Backend services build from GitHub `main` on every push that
+// touches backend_api_python/. mcp stays unconnected until its Agent token
+// exists; deploy it with
 //   railway up mcp_server --path-as-root --service mcp
 // Compose-only helpers are intentionally absent: `migration` and `kafka-init`
 // run as the backend pre-deploy command, and `env-sync` only edits a local .env.
 import {
   defineRailway,
+  github,
   group,
   image,
   postgres,
@@ -27,6 +29,13 @@ const ENTRYPOINT = "/usr/local/bin/docker-entrypoint.sh";
 // Pinned to what Railway provisions so plans stay drift-free.
 const VOLUME = { region: REGION, sizeMB: 50000 };
 const KAFKA_BOOTSTRAP = "${{Kafka.RAILWAY_PRIVATE_DOMAIN}}:9092";
+
+// Deploy on push to main without waiting for CI (checkSuites off). Watch paths
+// match from the repo root even with a root directory, so pushes elsewhere skip.
+const fromRepo = (dir: string) => ({
+  source: github("logic-panda/xqnt.ai", { branch: "main", rootDirectory: `/${dir}`, checkSuites: false }),
+  build: { builder: "DOCKERFILE" as const, dockerfilePath: "Dockerfile", watchPatterns: [`/${dir}/**`] },
+});
 
 // Per-replica caps. Railway bills actual usage; caps only bound a runaway
 // process. Sized at several times the measured idle footprint.
@@ -144,7 +153,7 @@ export default defineRailway((ctx) => {
     extra: Record<string, unknown> = {},
   ) =>
     service(name, {
-      build: { builder: "DOCKERFILE", dockerfilePath: "Dockerfile" },
+      ...fromRepo("backend_api_python"),
       ...(command ? { start: `${ENTRYPOINT} ${command}` } : {}),
       ...placement,
       deploy: size(cpu, memoryGB),
