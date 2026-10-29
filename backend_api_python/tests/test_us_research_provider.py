@@ -95,7 +95,8 @@ def test_yahoo_research_labels_consensus_options_and_short_interest_scope():
     assert result["analyst_expectations"]["target_price_median_usd"] == 240
     assert result["options"]["put_call_volume_ratio"] == 200 / 300
     assert result["options"]["nearest_atm_implied_volatility_pct"] == pytest.approx(21)
-    assert result["options"]["scope"] == "nearest_expiry_snapshot"
+    assert result["options"]["scope"] == "bounded_multi_expiry_surface_summary"
+    assert result["options"]["expiry_count"] == 1
     assert result["short_interest"]["short_percent_of_float_pct"] == 1.25
     assert result["short_interest"]["scope"] == "reported_short_interest_not_daily_short_volume"
     assert [item["name"] for item in result["ownership"]["top_institutional_holders"]] == ["Fund A", "Fund B"]
@@ -103,6 +104,56 @@ def test_yahoo_research_labels_consensus_options_and_short_interest_scope():
     assert result["ownership"]["top_holders_reported_pct"] == 13.3
     assert result["ownership"]["other_shareholders_pct"] == 86.7
     assert result["ownership"]["scope"] == "latest_available_reported_institutional_holders_not_realtime_ownership"
+
+
+def test_alpha_vantage_transcript_is_bounded_and_aggregated(monkeypatch):
+    monkeypatch.setenv("ALPHA_VANTAGE_API_KEY", "test-key")
+
+    def fake_get(_url, **kwargs):
+        assert kwargs["params"]["function"] == "EARNINGS_CALL_TRANSCRIPT"
+        return FakeResponse({
+            "quarter": kwargs["params"]["quarter"],
+            "fiscal_date": "2026-09-30",
+            "transcript": [
+                {"speaker": "CEO", "title": "Chief Executive Officer", "content": "Demand remained strong.", "sentiment": "0.7"},
+                {"speaker": "Analyst", "title": "Analyst", "content": "What are the margin risks?", "sentiment": "-0.4"},
+            ],
+        })
+
+    result = us_research.fetch_alpha_vantage_transcript("AAPL", http_get=fake_get)
+
+    assert result["turn_count"] == 2
+    assert result["average_turn_sentiment"] == pytest.approx(0.15)
+    assert len(result["notable_segments"]) == 2
+    assert result["scope"] == "provider_transcript_sentiment_and_bounded_excerpts"
+
+
+def test_finra_short_volume_is_not_labelled_short_interest():
+    rows = [
+        {
+            "tradeReportDate": "2026-10-28",
+            "securitiesInformationProcessorSymbolIdentifier": "AAPL",
+            "shortParQuantity": 60,
+            "shortExemptParQuantity": 3,
+            "totalParQuantity": 240,
+            "reportingFacilityCode": "NQTRF",
+        },
+        {
+            "tradeReportDate": "2026-10-28",
+            "securitiesInformationProcessorSymbolIdentifier": "AAPL",
+            "shortParQuantity": 40,
+            "shortExemptParQuantity": 2,
+            "totalParQuantity": 160,
+            "reportingFacilityCode": "NYTRF",
+        },
+    ]
+    result = us_research.fetch_finra_short_volume(
+        "AAPL", http_post=lambda *args, **kwargs: FakeResponse(rows)
+    )
+
+    assert result["short_volume_ratio_pct"] == 25
+    assert result["reporting_facility_count"] == 2
+    assert "not_short_interest" in result["scope"]
 
 
 def test_yahoo_ownership_lookup_does_not_require_quote_or_options_data():

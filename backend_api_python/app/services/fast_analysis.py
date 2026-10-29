@@ -22,6 +22,7 @@ from app.professional_report import build_professional_report
 from app.professional_report.llm_contract import validate_llm_analysis
 from app.professional_report.snapshot import build_evidence_snapshot
 from app.professional_report.prompt import build_professional_analysis_prompt
+from app.data_sources.factory import DataSourceFactory
 
 logger = get_logger(__name__)
 
@@ -40,6 +41,11 @@ class FastAnalysisService(FastAnalysisScoringMixin):
         self.llm_service = LLMService()
         self.data_collector = get_market_data_collector()
         self._memory_db = None  # Lazy init
+
+    @staticmethod
+    def _normalize_analysis_market(market: str) -> str:
+        """Return the canonical market value required by report contracts."""
+        return DataSourceFactory.normalize_market(market or "")
     
     # ==================== Data Collection Layer ====================
     
@@ -526,6 +532,36 @@ class FastAnalysisService(FastAnalysisScoringMixin):
         return selected
 
     @staticmethod
+    def _replace_failed_llm_narrative(
+        analysis: Dict[str, Any],
+        trend_outlook_summary: str,
+        market_factor_summary: str = "",
+    ) -> bool:
+        """Replace provider-error copy with deterministic analysis already computed locally."""
+        summary = str(analysis.get("summary") or "").strip()
+        report = str(analysis.get("report") or "").strip()
+        failure_markers = ("analysis failed", "failed to parse")
+        if not any(
+            value.lower().startswith(failure_markers)
+            for value in (summary, report)
+            if value
+        ):
+            return False
+
+        deterministic_summary = str(
+            trend_outlook_summary or market_factor_summary or ""
+        ).strip()
+        analysis["summary"] = deterministic_summary
+        analysis["key_reasons"] = [
+            value
+            for value in (trend_outlook_summary, market_factor_summary)
+            if str(value or "").strip()
+        ]
+        analysis["risks"] = []
+        analysis["_llm_fallback_used"] = True
+        return True
+
+    @staticmethod
     def _attach_professional_report(
         result: Dict[str, Any],
         data: Dict[str, Any],
@@ -577,8 +613,9 @@ class FastAnalysisService(FastAnalysisScoringMixin):
             )
             result["professional_report_error"] = str(exc)
 
-    def analyze(self, market: str, symbol: str, language: str = 'en-US', 
-                model: str = None, timeframe: str = "1D", user_id: int = None) -> Dict[str, Any]:
+    def analyze(self, market: str, symbol: str, language: str = 'en-US',
+                model: str = None, timeframe: str = "1D", user_id: int = None,
+                research_mode: str = "research") -> Dict[str, Any]:
         """
         Run fast single-call analysis.
         
@@ -593,6 +630,7 @@ class FastAnalysisService(FastAnalysisScoringMixin):
         Returns:
             Complete analysis result with actionable recommendations.
         """
+        market = self._normalize_analysis_market(market)
         start_time = time.time()
         # Get default model if not specified
         if not model:
@@ -605,6 +643,7 @@ class FastAnalysisService(FastAnalysisScoringMixin):
             "language": language,
             "model": model,  # Include model in result from the start
             "timeframe": timeframe,
+            "research_mode": research_mode,
             "analysis_time_ms": 0,
             "error": None,
         }
@@ -652,6 +691,7 @@ class FastAnalysisService(FastAnalysisScoringMixin):
                 include_macro=True,
                 include_news=True,
             )
+            primary_data["research_mode"] = research_mode
 
             # Collect extra timeframes for objective consensus (technical-only for cost)
             objective_by_tf: Dict[str, Dict[str, Any]] = {}
@@ -945,6 +985,11 @@ class FastAnalysisService(FastAnalysisScoringMixin):
                 },
             }
             trend_outlook_summary = build_trend_outlook_summary(trend_outlook, language)
+            self._replace_failed_llm_narrative(
+                analysis,
+                trend_outlook_summary,
+                crypto_factor_summary,
+            )
 
             # Consensus confidence:
             consensus_conf = int(max(40, min(98, 50 + consensus_abs * 0.35)))

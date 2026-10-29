@@ -58,7 +58,7 @@ def test_mixed_market_portfolio_remains_signal_only():
         )
 
 
-@pytest.mark.parametrize("exchange_id", ["alpaca", "ibkr"])
+@pytest.mark.parametrize("exchange_id", ["alpaca", "ibkr", "tiger", "webull"])
 def test_us_stock_live_execution_accepts_configured_stock_brokers(exchange_id):
     StrategyV2DeploymentService._validate_execution_account(
         ("USStock",),
@@ -73,6 +73,20 @@ def test_signal_mode_does_not_require_a_live_credential():
         "",
         "signal",
     )
+
+
+def test_hk_stock_live_execution_accepts_tiger_only():
+    StrategyV2DeploymentService._validate_execution_account(
+        ("HKStock",),
+        "tiger",
+        "live",
+    )
+    with pytest.raises(StrategyV2ContractError, match="strategyV2.stockCredentialRequired"):
+        StrategyV2DeploymentService._validate_execution_account(
+            ("HKStock",),
+            "webull",
+            "live",
+        )
 
 
 def _stock_live_strategy(exchange_id="alpaca"):

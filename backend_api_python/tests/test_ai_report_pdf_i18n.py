@@ -1,14 +1,13 @@
 import pytest
 
 from app.services.ai_report_pdf import (
+    _display_report_code,
     _format_evidence_observation,
     _format_evidence_provider,
     _professional_pdf_projection,
     _report_pdf_labels,
     build_ai_report_pdf,
 )
-
-
 def test_pdf_evidence_values_use_financial_units_without_metadata_currency_leaks():
     assert _format_evidence_observation({
         "metric": "financial.latest_quarter.balance_sheet.total_assets",
@@ -122,6 +121,133 @@ def test_professional_pdf_renders_bias_action_and_watch_only_candidate():
 
     assert pdf.startswith(b"%PDF")
     assert len(pdf) > 1_000
+
+
+def test_professional_pdf_includes_latest_chart_research_and_risk_contract():
+    bars = [
+        {
+            "timestamp": f"2026-10-{day:02d}T00:00:00Z",
+            "open": 99 + day,
+            "high": 102 + day,
+            "low": 98 + day,
+            "close": 101 + day,
+            "volume": 1_000_000 + day * 10_000,
+        }
+        for day in range(1, 9)
+    ]
+    pdf = build_ai_report_pdf(
+        {
+            "schema_version": "professional_report_v1",
+            "report_id": "latest-pdf-contract",
+            "generated_at": "2026-10-29T15:56:30Z",
+            "as_of": "2026-10-29T15:54:57Z",
+            "instrument": {
+                "market": "USStock",
+                "symbol": "MSFT",
+                "canonical_symbol": "MSFT",
+                "name": "Microsoft",
+                "quote_currency": "USD",
+            },
+            "decision_profile": {
+                "decision": "HOLD",
+                "market_bias": "BULLISH",
+                "confidence": 68,
+            },
+            "executive_summary": "The trend is constructive, but the entry still needs confirmation.",
+            "data_quality": {
+                "overall_score": 91,
+                "coverage_ratio": 0.9,
+                "freshness_ratio": 0.95,
+                "conflict_ratio": 0.05,
+            },
+            "price_chart": {
+                "timeframe": "1D",
+                "bars": bars,
+                "moving_average_periods": [2, 3, 5],
+                "support": 101,
+                "resistance": 110,
+            },
+            "research_intelligence": {
+                "workflow_id": "equity_deep_dive_v1",
+                "readiness_posture": "conditional",
+                "available_capabilities": ["price_history", "financials"],
+                "missing_required_capabilities": ["filings"],
+                "missing_optional_capabilities": ["options_surface"],
+                "performance": {
+                    "sample_bars": 8,
+                    "period_return_pct": 6.93,
+                    "realized_volatility_per_bar_pct": 0.14,
+                    "max_drawdown_pct": -1.2,
+                },
+                "calculation_audit": [{
+                    "metric": "period_return_pct",
+                    "formula": "(last_close / first_close - 1) * 100",
+                    "inputs": {"first_close": 102, "last_close": 109},
+                }],
+                "research_brief": {
+                    "core_thesis": {
+                        "text": "Trend and earnings evidence remain supportive.",
+                        "evidence_refs": ["ev_price"],
+                    },
+                    "variant_view": {
+                        "text": "Valuation leaves limited room for execution misses.",
+                        "evidence_refs": ["ev_valuation"],
+                    },
+                    "catalysts": [{
+                        "text": "Next earnings release",
+                        "evidence_refs": ["ev_earnings"],
+                    }],
+                    "watch_items": [{
+                        "kind": "scenario",
+                        "text": "Close above resistance",
+                        "invalidation": "Close below support",
+                    }],
+                },
+            },
+            "risk_plan": {
+                "decision": "HOLD",
+                "recommended_position_pct": 0,
+                "risk_budget_pct": 1,
+                "warnings": ["no_directional_position"],
+                "candidate_setup": {
+                    "direction": "BUY",
+                    "entry_price": 110,
+                    "stop_loss": 101,
+                    "take_profit": 128,
+                    "net_risk_reward": 1.9,
+                    "estimated_roundtrip_cost_bps": 10,
+                    "warnings": [],
+                },
+            },
+            "dimensions": [],
+            "scenarios": [{
+                "case": "bull",
+                "probability": 0.35,
+                "target_price": 128,
+                "currency": "USD",
+                "trigger": "Close above resistance",
+                "invalidation": 101,
+            }],
+            "claims": [],
+            "evidence_snapshot": {"observations": []},
+        },
+        language="en-US",
+    )
+
+    assert pdf.startswith(b"%PDF")
+    assert len(pdf) > 5_000
+
+
+@pytest.mark.parametrize(
+    ("language", "expected"),
+    (
+        ("en-US", "No directional position"),
+        ("zh-CN", "当前无方向性仓位"),
+        ("zh-TW", "目前無方向性部位"),
+    ),
+)
+def test_professional_pdf_internal_codes_are_human_readable(language, expected):
+    assert _display_report_code("no_directional_position", language) == expected
 
 
 SUPPORTED_LANGUAGES = (

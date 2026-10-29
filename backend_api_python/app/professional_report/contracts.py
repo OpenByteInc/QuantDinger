@@ -15,7 +15,7 @@ from typing import Any, Literal
 from pydantic import AliasChoices, AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
-Market = Literal["USStock", "HKStock", "Crypto"]
+Market = Literal["USStock", "HKStock", "Crypto", "Forex", "Futures"]
 Decision = Literal["BUY", "SELL", "HOLD"]
 MarketBias = Literal["BULLISH", "BEARISH", "NEUTRAL"]
 ConclusionStrength = Literal["none", "low", "medium", "high"]
@@ -55,6 +55,9 @@ class InstrumentIdentity(_ContractModel):
             "us_equity": "USStock",
             "hk_equity": "HKStock",
             "crypto": "Crypto",
+            "forex": "Forex",
+            "fx": "Forex",
+            "futures": "Futures",
         }
         return aliases.get(str(value), str(value))
 
@@ -307,6 +310,35 @@ class _AnalysisDimension(_ContractModel):
     missing_data: list[str] = Field(default_factory=list)
 
 
+class PriceBar(_ContractModel):
+    """One report-safe OHLCV observation used by the compact price chart."""
+
+    timestamp: str = Field(min_length=1)
+    open: float = Field(gt=0)
+    high: float = Field(gt=0)
+    low: float = Field(gt=0)
+    close: float = Field(gt=0)
+    volume: float | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def validate_ohlc_geometry(self) -> "PriceBar":
+        if self.high < max(self.open, self.close) or self.low > min(self.open, self.close):
+            raise ValueError("bar high/low must contain open and close")
+        if self.high < self.low:
+            raise ValueError("bar high must be greater than or equal to bar low")
+        return self
+
+
+class PriceChart(_ContractModel):
+    """Bounded chart payload derived from the same candles used by the report."""
+
+    timeframe: str = "1D"
+    bars: list[PriceBar] = Field(default_factory=list, max_length=60)
+    moving_average_periods: list[int] = Field(default_factory=lambda: [5, 10, 20])
+    support: float | None = Field(default=None, gt=0)
+    resistance: float | None = Field(default=None, gt=0)
+
+
 class ProfessionalReportV1(_ContractModel):
     """Top-level V1 report artifact with fully traceable evidence references."""
 
@@ -325,7 +357,9 @@ class ProfessionalReportV1(_ContractModel):
     claims: list[EvidenceClaim] = Field(default_factory=list)
     scenarios: list[ScenarioCase] = Field(default_factory=list)
     risk_plan: RiskPlan | None = None
+    price_chart: PriceChart | None = None
     market_features: dict[str, Any] = Field(default_factory=dict)
+    research_intelligence: dict[str, Any] = Field(default_factory=dict)
     provider_options: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
     methodology: dict[str, Any] = Field(default_factory=dict)

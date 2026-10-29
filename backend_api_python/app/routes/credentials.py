@@ -28,6 +28,7 @@ from app.services.live_trading.factory import (
     validate_exchange_environment,
 )
 from app.services.live_trading.capabilities import supported_crypto_exchange_ids
+from app.utils.trading_venue_visibility import is_trading_venue_enabled
 
 logger = get_logger(__name__)
 
@@ -89,7 +90,10 @@ def list_credentials():
         items = []
         for row in rows:
             item = dict(row or {})
-            if str(item.get('exchange_id') or '').strip().lower() not in {*CRYPTO_EXCHANGES, 'ibkr', 'alpaca'}:
+            exchange_id = str(item.get('exchange_id') or '').strip().lower()
+            if exchange_id not in {*CRYPTO_EXCHANGES, 'ibkr', 'alpaca', 'tiger', 'webull'}:
+                continue
+            if not is_trading_venue_enabled(exchange_id):
                 continue
             item['enable_demo_trading'] = False
             item['environment'] = 'live'

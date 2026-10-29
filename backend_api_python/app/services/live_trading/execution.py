@@ -3,7 +3,7 @@ Translate a strategy signal into a direct-exchange order call.
 
 Supports:
 - Crypto exchanges: Binance, OKX, Bitget, Bybit, Gate, HTX
-- Traditional brokers: Interactive Brokers (IBKR) and Alpaca
+- Traditional brokers: Interactive Brokers, Alpaca, Tiger Brokers, and Webull
 """
 
 from __future__ import annotations
@@ -122,6 +122,33 @@ def place_order_from_signal(
 
     cfg = exchange_config if isinstance(exchange_config, dict) else {}
     mt = normalize_order_market_type(market_type or cfg.get("market_type") or "swap")
+
+    from app.services.openapi_brokers import TigerClient, WebullClient
+    if isinstance(client, (TigerClient, WebullClient)):
+        broker_id = "tiger" if isinstance(client, TigerClient) else "webull"
+        market_category = str(
+            cfg.get("market_category") or cfg.get("market_type") or market_type or "USStock"
+        ).strip()
+        result = client.place_market_order(
+            symbol=symbol,
+            side=side,
+            quantity=qty,
+            market_type=market_category,
+            client_order_id=client_order_id or "",
+        )
+        if not result.success:
+            raise LiveTradingError(result.message or f"{broker_id} order placement failed")
+        return LiveOrderResult(
+            exchange_id=broker_id,
+            exchange_order_id=str(result.order_id or ""),
+            filled=result.filled,
+            avg_price=result.avg_price,
+            raw={
+                "status": result.status,
+                "message": result.message,
+                "raw": result.raw,
+            },
+        )
 
     if mt == "spot":
         from app.services.live_trading.spot_sizing import (

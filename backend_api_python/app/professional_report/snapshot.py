@@ -13,6 +13,8 @@ _MARKET_DEFAULTS = {
     "USStock": {"currency": "USD", "timezone": "America/New_York", "asset_type": "equity"},
     "HKStock": {"currency": "HKD", "timezone": "Asia/Hong_Kong", "asset_type": "equity"},
     "Crypto": {"currency": None, "timezone": "UTC", "asset_type": "crypto"},
+    "Forex": {"currency": None, "timezone": "UTC", "asset_type": "forex"},
+    "Futures": {"currency": "USD", "timezone": "America/New_York", "asset_type": "futures"},
 }
 
 
@@ -113,6 +115,16 @@ def _instrument(payload: Mapping[str, Any]) -> dict[str, Any]:
         crypto_meta = payload.get("crypto_instrument") or {}
         venue = crypto_meta.get("venue") or payload.get("exchange_id") or venue
         market_type = crypto_meta.get("market_type") or market_type
+    base_currency = None
+    if market == "Forex":
+        normalized = symbol.upper().replace("/", "").replace("-", "").replace("=X", "")
+        if len(normalized) == 6:
+            base_currency = normalized[:3]
+    product_type = {
+        "Crypto": market_type,
+        "Forex": "spot_fx",
+        "Futures": "futures_contract",
+    }.get(market, "equity")
     return {
         "market": market,
         "symbol": symbol,
@@ -121,7 +133,8 @@ def _instrument(payload: Mapping[str, Any]) -> dict[str, Any]:
         "asset_type": defaults.get("asset_type") or market.lower(),
         "exchange": venue,
         "venue": venue,
-        "product_type": market_type if market == "Crypto" else "equity",
+        "product_type": product_type,
+        "base_currency": base_currency,
         "quote_currency": _quote_currency(market, symbol),
         "timezone": defaults.get("timezone") or "UTC",
         "identity_verified": identity.get("verified"),
@@ -178,6 +191,7 @@ class _ObservationCollector:
             "macro": 604_800,
             "news": 1_209_600,
             "crypto": 172_800,
+            "positioning": 864_000,
             "quality": 172_800,
         }.get(category, 86_400)
         clean_value = _jsonable(value)
@@ -340,6 +354,7 @@ def build_evidence_snapshot(payload: Mapping[str, Any]) -> dict[str, Any]:
         "analyst_expectations": ("expectations.analyst", "analyst_provider"),
         "options": ("options.snapshot", "options_provider"),
         "short_interest": ("short_interest.snapshot", "short_data_provider"),
+        "short_volume": ("short_volume.snapshot", "finra_public"),
         "insider_activity": ("insider_activity.snapshot", "filing_provider"),
         "hkex_announcements": ("filings.hkex", "hkex_public"),
         "southbound_flow": ("southbound_flow.snapshot", "hkex_public"),
@@ -347,6 +362,11 @@ def build_evidence_snapshot(payload: Mapping[str, Any]) -> dict[str, Any]:
         "ccass": ("ccass.snapshot", "hkex_public"),
         "ah_premium": ("ah_premium.snapshot", "market_provider"),
         "hk_security_profile": ("security_profile.hk", "eastmoney_hk"),
+        "ownership": ("ownership.snapshot", "ownership_provider"),
+        "earnings_transcript": ("earnings.transcript", "transcript_provider"),
+        "forex_drivers": ("forex.drivers", "macro_provider"),
+        "futures_curve": ("futures.curve", "market_provider"),
+        "futures_positioning": ("futures.positioning", "cftc"),
     }
     for payload_key, (metric, default_source) in equity_datasets.items():
         value = payload.get(payload_key)
@@ -358,7 +378,7 @@ def build_evidence_snapshot(payload: Mapping[str, Any]) -> dict[str, Any]:
         collector.add(
             metric,
             evidence_value,
-            category="fundamental",
+            category=("positioning" if payload_key == "futures_positioning" else "macro" if payload_key == "forex_drivers" else "market" if payload_key == "futures_curve" else "fundamental"),
             source=metadata.get("source") or metadata.get("provider") or default_source,
             source_url=metadata.get("url") or metadata.get("source_url"),
             as_of=metadata.get("as_of") or metadata.get("published_at") or metadata.get("date"),
@@ -443,6 +463,14 @@ def build_evidence_snapshot(payload: Mapping[str, Any]) -> dict[str, Any]:
             "quote.price", "ohlcv.latest_bar", "indicator.rsi.value",
             "indicator.moving_averages.trend", "crypto.volume_24h",
             "crypto.funding_rate", "crypto.open_interest",
+        ],
+        "Forex": [
+            "quote.price", "ohlcv.latest_bar", "indicator.rsi.value",
+            "indicator.moving_averages.trend",
+        ],
+        "Futures": [
+            "quote.price", "ohlcv.latest_bar", "indicator.rsi.value",
+            "indicator.moving_averages.trend",
         ],
     }
     return {

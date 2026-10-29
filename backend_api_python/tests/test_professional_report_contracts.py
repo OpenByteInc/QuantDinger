@@ -22,12 +22,26 @@ NOW = datetime(2026, 9, 7, 10, tzinfo=UTC)
 
 
 def instrument(market: str = "USStock") -> InstrumentIdentity:
+    symbols = {
+        "USStock": "aapl",
+        "HKStock": "00700",
+        "Crypto": "btc/usdt",
+        "Forex": "eurusd",
+        "Futures": "gc",
+    }
+    currencies = {
+        "USStock": "usd",
+        "HKStock": "hkd",
+        "Crypto": "usdt",
+        "Forex": "usd",
+        "Futures": "usd",
+    }
     return InstrumentIdentity(
         market=market,
-        symbol="aapl" if market == "USStock" else "btc/usdt",
-        canonical_symbol="aapl" if market == "USStock" else "btc-usdt",
+        symbol=symbols[market],
+        canonical_symbol=symbols[market],
         exchange="nasdaq" if market == "USStock" else "binance",
-        quote_currency="usd" if market == "USStock" else "usdt",
+        quote_currency=currencies[market],
         timezone="America/New_York" if market == "USStock" else "UTC",
     )
 
@@ -108,11 +122,11 @@ def test_snapshot_rejects_duplicate_evidence_ids():
         )
 
 
-@pytest.mark.parametrize("market", ["USStock", "HKStock", "Crypto"])
-def test_contract_supports_the_three_v1_markets(market: str):
+@pytest.mark.parametrize("market", ["USStock", "HKStock", "Crypto", "Forex", "Futures"])
+def test_contract_supports_professional_report_markets(market: str):
     identity = instrument(market)
     assert identity.market == market
-    assert identity.quote_currency in {"USD", "USDT"}
+    assert identity.quote_currency in {"USD", "HKD", "USDT"}
 
 
 def test_candidate_setup_is_explicitly_watch_only():

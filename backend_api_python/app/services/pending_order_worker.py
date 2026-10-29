@@ -462,13 +462,14 @@ class PendingOrderWorker(
 
         sc = load_strategy_configs(strategy_id)
         exchange_config = resolve_exchange_config(sc.get("exchange_config") or {}, user_id=int(sc.get("user_id") or 1))
-        if str(exchange_config.get("exchange_id") or "").strip().lower() != "alpaca":
+        exchange_id = str(exchange_config.get("exchange_id") or row.get("exchange_id") or "").strip().lower()
+        if exchange_id not in {"alpaca", "tiger", "webull"}:
             return
 
         try:
             client = create_client(exchange_config)
         except Exception as e:
-            logger.warning("Alpaca fill sync create_client failed: pending_id=%s err=%s", order_id, e)
+            logger.warning("Broker fill sync create_client failed: exchange=%s pending_id=%s err=%s", exchange_id, order_id, e)
             return
 
         global AlpacaClient
@@ -478,7 +479,9 @@ class PendingOrderWorker(
                 AlpacaClient = _AlpacaClient
             except Exception:
                 AlpacaClient = None
-        if AlpacaClient is None or not isinstance(client, AlpacaClient):
+        from app.services.openapi_brokers import TigerClient, WebullClient
+        supported = (TigerClient, WebullClient)
+        if not isinstance(client, supported) and (AlpacaClient is None or not isinstance(client, AlpacaClient)):
             return
 
         dispatch_requested_cancel(client, row, payload, exchange_config)
@@ -491,7 +494,7 @@ class PendingOrderWorker(
             exchange_order_id = str(result.order_id)
             self._bind_reconciled_exchange_order_id(
                 order_id=order_id,
-                exchange_id="alpaca",
+                exchange_id=exchange_id,
                 market_type=str(row.get("market_type") or "USStock"),
                 client_order_id=client_order_id,
                 exchange_order_id=exchange_order_id,
@@ -541,7 +544,7 @@ class PendingOrderWorker(
                 or (sc.get("trading_config") or {}).get("market_category")
                 or "USStock"
             )
-            market_type_for_client = "crypto" if market_category.lower() in ("crypto", "cryptocurrency") else "USStock"
+            market_type_for_client = "crypto" if market_category.lower() in ("crypto", "cryptocurrency") else market_category
             from app.services.live_trading.fee_quote import fee_to_quote
             commission_quote = fee_to_quote(
                 client,
@@ -563,7 +566,7 @@ class PendingOrderWorker(
                 exchange_config=exchange_config,
                 market_type=market_type_for_client,
                 order_id=order_id,
-                fill_source="worker_alpaca_fill_sync",
+                fill_source=f"worker_{exchange_id}_fill_sync",
                 commission=commission_delta,
                 commission_ccy=commission_ccy,
                 commission_quote=commission_quote,
@@ -572,7 +575,7 @@ class PendingOrderWorker(
                 close_reason=trade_close_reason_from_payload(payload, str(signal_type or "")),
                 strategy_run_id=int(payload.get("strategy_run_id") or row.get("strategy_run_id") or 0),
                 order_intent_id=int(payload.get("order_intent_id") or row.get("order_intent_id") or 0),
-                exchange_id="alpaca",
+                exchange_id=exchange_id,
                 exchange_order_id=str(exchange_order_id or ""),
                 raw_fill=result.raw or {},
             )
@@ -580,7 +583,7 @@ class PendingOrderWorker(
             append_strategy_log(
                 strategy_id,
                 "trade",
-                f"Alpaca fill synced: {signal_type} {symbol} filled={delta:.6f} @ {delta_avg:.6f}{_pstr}",
+                f"Broker fill synced: {signal_type} {symbol} filled={delta:.6f} @ {delta_avg:.6f}{_pstr} (exchange={exchange_id})",
             )
 
         final_statuses = {"filled", "canceled", "cancelled", "rejected", "expired"}
@@ -1574,6 +1577,43 @@ class PendingOrderWorker(
         except Exception:
             return ""
 
+    def _execute_stock_broker_order(
+        self,
+        *,
+        order_id: int,
+        order_row: Dict[str, Any],
+        payload: Dict[str, Any],
+        client: Any,
+        ctx: Any,
+        exchange_id: str,
+        notify,
+        console,
+    ) -> None:
+        client_order_id = make_client_order_id(
+            exchange_id=exchange_id,
+            strategy_id=ctx.strategy_id,
+            order_id=order_id,
+        )
+        self._execute_alpaca_order(
+            order_id=order_id,
+            order_row=order_row,
+            payload=payload,
+            client=client,
+            strategy_id=ctx.strategy_id,
+            exchange_config=ctx.exchange_config,
+            market_category=ctx.market_category,
+            exchange_id=exchange_id,
+            client_order_id=client_order_id,
+            prepare_submission=self._broker_submission_preparer(
+                order_id=order_id,
+                exchange_id=exchange_id,
+                market_type=ctx.market_type,
+                client_order_id=client_order_id,
+            ),
+            _notify_live_best_effort=notify,
+            _console_print=console,
+        )
+
     def _execute_live_order(self, *, order_id: int, order_row: Dict[str, Any], payload: Dict[str, Any]) -> None:
         """
         Execute a pending order using direct exchange REST clients.
@@ -1681,25 +1721,22 @@ class PendingOrderWorker(
             except ImportError:
                 pass
 
+        from app.services.openapi_brokers import TigerClient, WebullClient
+        stock_broker_id = ""
         if AlpacaClient is not None and isinstance(client, AlpacaClient):
-            broker_client_oid = make_client_order_id(
-                exchange_id="alpaca", strategy_id=strategy_id, order_id=order_id,
-            )
-            self._execute_alpaca_order(
+            stock_broker_id = "alpaca"
+        elif isinstance(client, (TigerClient, WebullClient)):
+            stock_broker_id = exchange_id
+        if stock_broker_id:
+            self._execute_stock_broker_order(
                 order_id=order_id,
                 order_row=order_row,
                 payload=payload,
                 client=client,
-                strategy_id=strategy_id,
-                exchange_config=exchange_config,
-                market_category=market_category,
-                client_order_id=broker_client_oid,
-                prepare_submission=self._broker_submission_preparer(
-                    order_id=order_id, exchange_id="alpaca", market_type=market_type,
-                    client_order_id=broker_client_oid,
-                ),
-                _notify_live_best_effort=_notify_live_best_effort,
-                _console_print=_console_print,
+                ctx=ctx,
+                exchange_id=stock_broker_id,
+                notify=_notify_live_best_effort,
+                console=_console_print,
             )
             return
 
@@ -2590,6 +2627,7 @@ class PendingOrderWorker(
         strategy_id: int,
         exchange_config: Dict[str, Any],
         market_category: str,
+        exchange_id: str = "alpaca",
         client_order_id: str = "",
         _notify_live_best_effort,
         _console_print,
@@ -2618,8 +2656,9 @@ class PendingOrderWorker(
 
         # Decide stock vs crypto leg of the Alpaca account based on the
         # strategy's market_category (USStock by default).
+        broker_name = str(exchange_id or "alpaca").strip().lower()
         mc = (market_category or "USStock").strip()
-        market_type_for_client = "crypto" if mc.lower() in ("crypto", "cryptocurrency") else "USStock"
+        market_type_for_client = "crypto" if mc.lower() in ("crypto", "cryptocurrency") else mc
         if market_type_for_client == "crypto" and "short" in sig:
             self._mark_failed(order_id=order_id, error="alpaca_crypto_short_not_supported")
             _notify_live_best_effort(status="failed", error="alpaca_crypto_short_not_supported")
@@ -2635,7 +2674,7 @@ class PendingOrderWorker(
                 entry_price=protection_ref,
             )
             protection_kwargs = {}
-            if market_type_for_client == "USStock" and _stock_protection(payload, exchange_config, amount, stop_price, take_price):
+            if broker_name == "alpaca" and market_type_for_client == "USStock" and _stock_protection(payload, exchange_config, amount, stop_price, take_price):
                 protection_kwargs = {
                     "stop_loss_price": stop_price,
                     "take_profit_price": take_price,
@@ -2696,8 +2735,8 @@ class PendingOrderWorker(
 
             self._mark_sent(
                 order_id=order_id,
-                note="alpaca_order_sent",
-                exchange_id="alpaca",
+                note=f"{broker_name}_order_sent",
+                exchange_id=broker_name,
                 exchange_order_id=exchange_order_id,
                 exchange_response_json=json.dumps(result.raw or {}, ensure_ascii=False),
                 filled=filled,
@@ -2722,14 +2761,14 @@ class PendingOrderWorker(
                         exchange_config=exchange_config,
                         market_type=str(market_type_for_client or "USStock"),
                         order_id=int(order_id),
-                        fill_source="worker_alpaca",
+                        fill_source=f"worker_{broker_name}",
                         commission=commission,
                         commission_ccy=commission_ccy,
                         commission_quote=commission_quote,
                         close_reason=trade_close_reason_from_payload(payload, str(signal_type)),
                         strategy_run_id=int(payload.get("strategy_run_id") or order_row.get("strategy_run_id") or 0),
                         order_intent_id=int(payload.get("order_intent_id") or order_row.get("order_intent_id") or 0),
-                        exchange_id="alpaca",
+                        exchange_id=broker_name,
                         exchange_order_id=str(exchange_order_id or ""),
                         fee_status="actual" if abs(float(commission or 0.0)) > 1e-18 else "pending",
                         fee_source="rest" if abs(float(commission or 0.0)) > 1e-18 else "",
@@ -2739,7 +2778,7 @@ class PendingOrderWorker(
                     _pstr = f", profit={profit:.4f}" if profit is not None else ""
                     append_strategy_log(
                         strategy_id, "trade",
-                        f"Trade executed: {signal_type} {symbol} filled={filled:.6f} @ {avg_price:.6f}{_pstr} (exchange=alpaca)",
+                        f"Trade executed: {signal_type} {symbol} filled={filled:.6f} @ {avg_price:.6f}{_pstr} (exchange={broker_name})",
                     )
                 else:
                     append_strategy_log(
@@ -2751,7 +2790,7 @@ class PendingOrderWorker(
 
             _notify_live_best_effort(
                 status="sent",
-                exchange_id="alpaca",
+                exchange_id=broker_name,
                 exchange_order_id=exchange_order_id,
                 price_hint=avg_price,
                 amount_hint=filled,

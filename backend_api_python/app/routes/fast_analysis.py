@@ -97,6 +97,7 @@ def analyze():
         language = data.get('language', 'en-US')
         model = data.get('model')
         timeframe = data.get('timeframe', '1D')
+        research_mode = str(data.get('research_mode') or 'research').strip().lower()
         async_submit = bool(data.get('async_submit', False))
         response_contract = str(data.get('response_contract') or 'legacy').strip().lower()
         
@@ -196,7 +197,7 @@ def analyze():
 
             start_async_analysis_task(
                 int(pending_id), market, symbol, language, model, timeframe,
-                int(user_id), inflight_key, int(credits_charged or 0),
+                int(user_id), inflight_key, int(credits_charged or 0), research_mode,
             )
             # worker owns inflight release
             inflight_key = None
@@ -222,7 +223,8 @@ def analyze():
             language=language,
             model=model,
             timeframe=timeframe,
-            user_id=user_id
+            user_id=user_id,
+            research_mode=research_mode,
         )
 
         if response_contract == 'professional_report_v1':

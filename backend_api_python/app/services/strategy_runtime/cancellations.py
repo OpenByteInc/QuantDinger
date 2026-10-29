@@ -75,7 +75,7 @@ def dispatch_requested_cancel(client, row, payload, exchange_config):
         return
     try:
         exchange = str(exchange_config.get('exchange_id') or row.get('exchange_id') or '').lower()
-        if exchange in {'alpaca', 'ibkr'}:
+        if exchange in {'alpaca', 'ibkr', 'tiger', 'webull'}:
             client.cancel_order(str(row['exchange_order_id']))
         else:
             from app.services.pending_orders.live_order_phases import cancel_live_limit_order

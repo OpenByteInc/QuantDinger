@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Iterable, Mapping
 
 
-SUPPORTED_MARKETS = frozenset({"USStock", "HKStock", "Crypto"})
+SUPPORTED_MARKETS = frozenset({"USStock", "HKStock", "Crypto", "Forex", "Futures"})
 SUPPORTED_TIERS = frozenset({"community", "professional"})
 SUPPORTED_COST_LEVELS = frozenset({"free", "low", "medium", "high", "enterprise"})
 SUPPORTED_INTEGRATION_STATUSES = frozenset({"active", "planned"})
@@ -87,10 +87,10 @@ PROVIDER_CATALOG: tuple[ProviderSpec, ...] = (
         key="yahoo_finance",
         name="Yahoo Finance",
         tier="community",
-        markets=frozenset({"USStock", "HKStock"}),
+        markets=frozenset({"USStock", "HKStock", "Forex", "Futures"}),
         capabilities=frozenset({
             "market_data", "corporate_actions", "fundamentals", "options",
-            "analyst_estimates", "short_data",
+            "analyst_estimates", "short_data", "ownership",
         }),
         keyless=True,
         cost_level="free",
@@ -117,7 +117,7 @@ PROVIDER_CATALOG: tuple[ProviderSpec, ...] = (
         key="twelve_data",
         name="Twelve Data",
         tier="community",
-        markets=frozenset({"USStock", "HKStock"}),
+        markets=frozenset({"USStock", "HKStock", "Forex", "Futures"}),
         capabilities=frozenset({"market_data", "fundamentals"}),
         api_env_keys=("TWELVE_DATA_API_KEY",),
         cost_level="low",
@@ -130,11 +130,23 @@ PROVIDER_CATALOG: tuple[ProviderSpec, ...] = (
         name="Alpha Vantage",
         tier="community",
         markets=frozenset({"USStock"}),
-        capabilities=frozenset({"market_data", "fundamentals", "news"}),
+        capabilities=frozenset({"market_data", "fundamentals", "news", "earnings_transcripts"}),
         api_env_keys=("ALPHA_VANTAGE_API_KEY",),
         cost_level="free",
         license_warning="Free access is rate-limited; verify commercial display and redistribution terms.",
         default_priority=30,
+        integration_status="active",
+    ),
+    ProviderSpec(
+        key="cftc_cot",
+        name="CFTC Commitments of Traders",
+        tier="community",
+        markets=frozenset({"Futures"}),
+        capabilities=frozenset({"positioning"}),
+        keyless=True,
+        cost_level="free",
+        license_warning="Weekly public positioning is delayed and must not be presented as real-time order flow.",
+        default_priority=5,
         integration_status="active",
     ),
     ProviderSpec(
@@ -156,7 +168,7 @@ PROVIDER_CATALOG: tuple[ProviderSpec, ...] = (
         key="fred",
         name="FRED / ALFRED",
         tier="community",
-        markets=frozenset({"USStock"}),
+        markets=frozenset({"USStock", "Forex", "Futures"}),
         capabilities=frozenset({"macro"}),
         api_env_keys=("FRED_API_KEY",),
         cost_level="free",
@@ -180,6 +192,7 @@ PROVIDER_CATALOG: tuple[ProviderSpec, ...] = (
             "interest, and are described by FINRA as free for non-commercial use."
         ),
         default_priority=10,
+        integration_status="active",
     ),
     ProviderSpec(
         key="hkex_public",
