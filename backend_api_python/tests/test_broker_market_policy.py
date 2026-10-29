@@ -49,6 +49,8 @@ class TestHelpers:
         assert is_compatible_credential("alpaca", "Crypto") is False
         assert is_compatible_credential("alpaca", "USStock") is True
         assert is_compatible_credential("binance", "Crypto") is True
+        assert is_compatible_credential("tiger", "HKStock") is True
+        assert is_compatible_credential("webull", "USStock") is True
 
     def test_is_compatible_credential_mismatch(self):
         assert is_compatible_credential("ibkr", "Crypto") is False
@@ -69,6 +71,7 @@ class TestHelpers:
         # Traditional stock brokers remain spot-only for US equities.
         assert allowed_market_types("alpaca", "USStock") == {"spot"}
         assert allowed_market_types("ibkr", "USStock") == {"spot"}
+        assert allowed_market_types("tiger", "HKStock") == {"spot"}
 
     def test_allowed_market_types_invalid_combo(self):
         # Returns empty set rather than raising — caller decides how to react.
@@ -80,12 +83,16 @@ class TestHelpers:
         assert allowed_bot_types("Forex") == set()
         # USStock: no grid (overnight gaps), no martingale.
         assert allowed_bot_types("USStock") == {"dca", "trend"}
+        assert allowed_bot_types("HKStock") == {"dca", "trend"}
 
     def test_list_supported_brokers_for_market(self):
         usstock_brokers = list_supported_brokers_for_market("USStock")
         assert "ibkr" in usstock_brokers
         assert "alpaca" in usstock_brokers
+        assert "tiger" in usstock_brokers
+        assert "webull" in usstock_brokers
         assert "binance" not in usstock_brokers
+        assert list_supported_brokers_for_market("HKStock") == {"tiger"}
         assert list_supported_brokers_for_market("Forex") == set()
 
 
@@ -111,6 +118,9 @@ class TestValidateLegalCombos:
         ("htx", "Crypto", "spot", "long"),
         # IBKR US stocks
         ("ibkr", "USStock", "spot", "long"),
+        ("tiger", "USStock", "spot", "long"),
+        ("tiger", "HKStock", "spot", "long"),
+        ("webull", "USStock", "spot", "long"),
     ])
     def test_valid_strategy_combo_raises_nothing(
         self, exchange_id, market_category, market_type, trade_direction
@@ -344,7 +354,7 @@ class TestToDictSnapshot:
         assert bm["alpaca"] == {"USStock": ["spot"]}
 
     def test_long_only_brokers_serialized(self):
-        assert sorted(to_dict()["long_only_brokers"]) == ["alpaca", "ibkr"]
+        assert sorted(to_dict()["long_only_brokers"]) == ["alpaca", "ibkr", "tiger", "webull"]
 
     def test_bot_type_markets_serialized(self):
         bot_markets = to_dict()["bot_type_markets"]
@@ -352,7 +362,7 @@ class TestToDictSnapshot:
         assert sorted(bot_markets["martingale"]) == ["Crypto"]
 
     def test_live_market_categories_serialized(self):
-        assert sorted(to_dict()["live_market_categories"]) == ["Crypto", "USStock"]
+        assert sorted(to_dict()["live_market_categories"]) == ["Crypto", "HKStock", "USStock"]
 
     def test_matrix_internal_consistency(self):
         # Every long-only broker must be present in BROKER_MARKETS.

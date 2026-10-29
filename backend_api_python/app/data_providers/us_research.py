@@ -18,6 +18,7 @@ from typing import Any, Callable, Mapping
 import requests
 
 from app.data_providers import get_cached, set_cached
+from app.config import APIKeys
 from app.utils.logger import get_logger
 
 
@@ -28,6 +29,8 @@ _SEC_TICKERS_TTL_SECONDS = 86_400
 _SEC_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 _SEC_SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
 _NASDAQ_OWNERSHIP_URL = "https://api.nasdaq.com/api/company/{symbol}/institutional-holdings"
+_ALPHA_VANTAGE_URL = "https://www.alphavantage.co/query"
+_FINRA_SHORT_VOLUME_URL = "https://api.finra.org/data/group/otcMarket/name/regShoDaily"
 _SEC_USER_AGENT = os.getenv(
     "SEC_USER_AGENT",
     "QuantDinger/5.0 open-source-research support@quantdinger.com",
@@ -221,6 +224,143 @@ def _nearest_atm_iv(calls: Any, puts: Any, spot: float | None) -> float | None:
     return sum(nearest) / len(nearest) * 100
 
 
+def _option_expiry_summary(calls: Any, puts: Any, spot: float | None, expiry: str) -> dict[str, Any]:
+    call_volume = _frame_total(calls, "volume")
+    put_volume = _frame_total(puts, "volume")
+    call_oi = _frame_total(calls, "openInterest")
+    put_oi = _frame_total(puts, "openInterest")
+    return _compact({
+        "expiry": expiry,
+        "call_volume": call_volume,
+        "put_volume": put_volume,
+        "put_call_volume_ratio": put_volume / call_volume if put_volume is not None and call_volume else None,
+        "call_open_interest": call_oi,
+        "put_open_interest": put_oi,
+        "put_call_open_interest_ratio": put_oi / call_oi if put_oi is not None and call_oi else None,
+        "nearest_atm_implied_volatility_pct": _nearest_atm_iv(calls, puts, spot),
+    }, keep={"expiry"})
+
+
+def fetch_alpha_vantage_transcript(
+    symbol: str,
+    *,
+    http_get: Callable[..., Any] = requests.get,
+    timeout: float = 6.0,
+) -> dict[str, Any]:
+    """Fetch and compress the latest available earnings transcript."""
+    api_key = APIKeys.ALPHA_VANTAGE_API_KEY
+    if not api_key:
+        return {}
+    now = datetime.now(timezone.utc)
+    quarter_number = (now.month - 1) // 3 + 1
+    candidates = [(now.year, quarter_number - 1), (now.year, quarter_number - 2)]
+    normalized_candidates = []
+    for year, quarter in candidates:
+        while quarter <= 0:
+            year -= 1
+            quarter += 4
+        normalized_candidates.append(f"{year}Q{quarter}")
+    for quarter in normalized_candidates:
+        response = http_get(
+            _ALPHA_VANTAGE_URL,
+            params={
+                "function": "EARNINGS_CALL_TRANSCRIPT",
+                "symbol": _symbol(symbol),
+                "quarter": quarter,
+                "apikey": api_key,
+            },
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        payload = response.json() or {}
+        turns = payload.get("transcript") or []
+        if not isinstance(turns, list) or not turns:
+            continue
+        normalized: list[dict[str, Any]] = []
+        sentiments: list[float] = []
+        for item in turns:
+            if not isinstance(item, Mapping):
+                continue
+            sentiment = _number(item.get("sentiment"))
+            if sentiment is not None:
+                sentiments.append(sentiment)
+            content = str(item.get("content") or "").strip()
+            normalized.append({
+                "speaker": str(item.get("speaker") or "").strip() or None,
+                "title": str(item.get("title") or "").strip() or None,
+                "sentiment": sentiment,
+                "excerpt": content[:280] if content else None,
+            })
+        notable = sorted(
+            normalized,
+            key=lambda item: abs(item.get("sentiment") or 0),
+            reverse=True,
+        )[:8]
+        return {
+            "quarter": payload.get("quarter") or quarter,
+            "fiscal_date": payload.get("fiscal_date") or payload.get("date"),
+            "turn_count": len(normalized),
+            "average_turn_sentiment": sum(sentiments) / len(sentiments) if sentiments else None,
+            "notable_segments": notable,
+            "scope": "provider_transcript_sentiment_and_bounded_excerpts",
+            "source": "alpha_vantage",
+            "source_url": "https://www.alphavantage.co/documentation/#earnings-call-transcript",
+            "as_of": payload.get("fiscal_date") or payload.get("date") or _utc_now(),
+        }
+    return {}
+
+
+def fetch_finra_short_volume(
+    symbol: str,
+    *,
+    http_post: Callable[..., Any] = requests.post,
+    timeout: float = 6.0,
+) -> dict[str, Any]:
+    """Fetch and aggregate the latest official FINRA short-volume rows."""
+    ticker = _symbol(symbol)
+    response = http_post(
+        _FINRA_SHORT_VOLUME_URL,
+        json={
+            "limit": 5000,
+            "fields": [
+                "tradeReportDate", "securitiesInformationProcessorSymbolIdentifier",
+                "shortParQuantity", "shortExemptParQuantity", "totalParQuantity",
+                "reportingFacilityCode", "marketCode",
+            ],
+            "compareFilters": [{
+                "compareType": "equal",
+                "fieldName": "securitiesInformationProcessorSymbolIdentifier",
+                "fieldValue": ticker,
+            }],
+        },
+        headers={"User-Agent": _BROWSER_USER_AGENT, "Accept": "application/json"},
+        timeout=timeout,
+    )
+    response.raise_for_status()
+    rows = response.json() or []
+    if not isinstance(rows, list) or not rows:
+        return {}
+    dates = [str(row.get("tradeReportDate") or "") for row in rows if isinstance(row, Mapping)]
+    latest_date = max((value for value in dates if value), default="")
+    latest_rows = [row for row in rows if str(row.get("tradeReportDate") or "") == latest_date]
+    short_volume = sum(_number(row.get("shortParQuantity")) or 0 for row in latest_rows)
+    exempt_volume = sum(_number(row.get("shortExemptParQuantity")) or 0 for row in latest_rows)
+    total_volume = sum(_number(row.get("totalParQuantity")) or 0 for row in latest_rows)
+    if not latest_rows or total_volume <= 0:
+        return {}
+    return {
+        "short_volume": short_volume,
+        "short_exempt_volume": exempt_volume,
+        "total_reported_volume": total_volume,
+        "short_volume_ratio_pct": short_volume / total_volume * 100,
+        "reporting_facility_count": len({row.get("reportingFacilityCode") for row in latest_rows if row.get("reportingFacilityCode")}),
+        "scope": "finra_consolidated_short_volume_not_short_interest_or_directional_shorting",
+        "source": "finra_public",
+        "source_url": _FINRA_SHORT_VOLUME_URL,
+        "as_of": latest_date,
+    }
+
+
 def _row_value(row: Any, *keys: str) -> Any:
     for key in keys:
         try:
@@ -342,6 +482,7 @@ def fetch_nasdaq_us_ownership(
     symbol: str,
     *,
     http_get: Callable[..., Any] = requests.get,
+    http_post: Callable[..., Any] = requests.post,
     timeout: float = 12.0,
 ) -> dict[str, Any]:
     ticker_symbol = _symbol(symbol)
@@ -514,29 +655,31 @@ def fetch_yahoo_us_research(symbol: str, *, yf_client: Any = None) -> dict[str, 
     options: dict[str, Any] = {}
     expiries = list(getattr(ticker, "options", ()) or ())
     if expiries:
-        expiry = str(expiries[0])
-        chain = ticker.option_chain(expiry)
-        calls = getattr(chain, "calls", None)
-        puts = getattr(chain, "puts", None)
-        call_volume = _frame_total(calls, "volume")
-        put_volume = _frame_total(puts, "volume")
-        call_oi = _frame_total(calls, "openInterest")
-        put_oi = _frame_total(puts, "openInterest")
         spot = _number(info.get("currentPrice") or info.get("regularMarketPrice"))
+        surface = []
+        for expiry_value in expiries[:4]:
+            expiry = str(expiry_value)
+            try:
+                chain = ticker.option_chain(expiry)
+            except Exception as exc:
+                logger.debug("Yahoo option expiry unavailable for %s/%s: %s", ticker_symbol, expiry, exc)
+                continue
+            surface.append(_option_expiry_summary(
+                getattr(chain, "calls", None),
+                getattr(chain, "puts", None),
+                spot,
+                expiry,
+            ))
+        nearest = surface[0] if surface else {}
         options = _compact({
-            "expiry": expiry,
-            "call_volume": call_volume,
-            "put_volume": put_volume,
-            "put_call_volume_ratio": put_volume / call_volume if put_volume is not None and call_volume else None,
-            "call_open_interest": call_oi,
-            "put_open_interest": put_oi,
-            "put_call_open_interest_ratio": put_oi / call_oi if put_oi is not None and call_oi else None,
-            "nearest_atm_implied_volatility_pct": _nearest_atm_iv(calls, puts, spot),
-            "scope": "nearest_expiry_snapshot",
+            **nearest,
+            "expiries": surface,
+            "expiry_count": len(surface),
+            "scope": "bounded_multi_expiry_surface_summary",
             "source": "yahoo_finance",
             "source_url": f"{source_url}/options",
             "as_of": as_of,
-        }, keep={"scope", "source", "source_url", "as_of", "expiry"})
+        }, keep={"scope", "source", "source_url", "as_of", "expiry", "expiries"})
 
     ownership = _ticker_ownership(ticker, ticker_symbol)
 
@@ -562,12 +705,13 @@ def collect_us_research(
     *,
     timeout: float | None = None,
     http_get: Callable[..., Any] = requests.get,
+    http_post: Callable[..., Any] = requests.post,
     yf_client: Any = None,
 ) -> dict[str, Any]:
     ticker = _symbol(symbol)
     # Bump when normalized semantics change so an upgrade never serves an old
     # snapshot with values that the current contract would reject.
-    cache_key = f"us_research:{ticker}:v3"
+    cache_key = f"us_research:{ticker}:v4"
     cached = get_cached(cache_key, _CACHE_TTL_SECONDS)
     if isinstance(cached, dict):
         return cached
@@ -575,8 +719,10 @@ def collect_us_research(
     jobs: dict[str, Callable[[], dict[str, Any]]] = {
         "sec_edgar": lambda: fetch_sec_research(ticker, http_get=http_get, timeout=min(6.0, deadline)),
         "yahoo_research": lambda: fetch_yahoo_us_research(ticker, yf_client=yf_client),
+        "finra_short_volume": lambda: {"short_volume": fetch_finra_short_volume(ticker, http_post=http_post)},
+        "alpha_vantage_transcript": lambda: {"earnings_transcript": fetch_alpha_vantage_transcript(ticker, http_get=http_get)},
     }
-    executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="us-research")
+    executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="us-research")
     futures = {executor.submit(job): key for key, job in jobs.items()}
     result: dict[str, Any] = {}
     errors: dict[str, str] = {}
@@ -600,7 +746,10 @@ def collect_us_research(
                 future.cancel()
     finally:
         executor.shutdown(wait=False, cancel_futures=True)
-    supported = ("sec_filings", "insider_activity", "analyst_expectations", "options", "short_interest", "ownership")
+    supported = (
+        "sec_filings", "insider_activity", "analyst_expectations", "options",
+        "short_interest", "short_volume", "ownership", "earnings_transcript",
+    )
     available = [key for key in supported if result.get(key)]
     result["_provider_status"] = {
         "attempted": sorted(jobs),
@@ -618,6 +767,8 @@ __all__ = [
     "collect_us_ownership",
     "collect_us_research",
     "fetch_nasdaq_us_ownership",
+    "fetch_alpha_vantage_transcript",
+    "fetch_finra_short_volume",
     "fetch_sec_research",
     "fetch_yahoo_us_ownership",
     "fetch_yahoo_us_research",

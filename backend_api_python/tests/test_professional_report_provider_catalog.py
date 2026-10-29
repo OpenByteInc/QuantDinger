@@ -15,7 +15,7 @@ from app.professional_report.providers import (
 
 
 def test_catalog_only_contains_supported_markets_and_two_tiers():
-    assert SUPPORTED_MARKETS == {"USStock", "HKStock", "Crypto"}
+    assert SUPPORTED_MARKETS == {"USStock", "HKStock", "Crypto", "Forex", "Futures"}
     assert SUPPORTED_TIERS == {"community", "professional"}
     assert {provider.tier for provider in PROVIDER_CATALOG} == SUPPORTED_TIERS
     assert set().union(*(provider.markets for provider in PROVIDER_CATALOG)) == SUPPORTED_MARKETS
@@ -61,7 +61,7 @@ def test_catalog_distinguishes_active_adapters_from_planned_sources():
     assert {
         "yahoo_finance", "finnhub", "twelve_data", "alpha_vantage",
         "fred", "sec_edgar", "gate_public", "okx_public", "native_crypto_public",
-        "coingecko", "coinglass", "cryptoquant",
+        "coingecko", "coinglass", "cryptoquant", "cftc_cot",
     }.issubset(active)
     assert "hkex_data_marketplace" not in active
 

@@ -19,6 +19,7 @@ from app.utils.local_brokers import (
     local_desktop_brokers_allowed,
 )
 from app.services.ibkr_trading import IBKRClient, IBKRConfig
+from app.utils.trading_venue_visibility import is_trading_venue_enabled
 
 logger = get_logger(__name__)
 
@@ -26,6 +27,12 @@ ibkr_blp = Blueprint('ibkr', __name__)
 
 # Per-user client cache keyed by (user_id, 'ibkr')
 _sessions = BrokerSessionRegistry('ibkr')
+
+
+@ibkr_blp.before_request
+def _require_ibkr_enabled():
+    if not is_trading_venue_enabled('ibkr'):
+        return jsonify({"success": False, "error": "brokerAccounts.tradingVenueDisabled"}), 403
 
 
 def _placeholder_status():

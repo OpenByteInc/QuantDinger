@@ -38,6 +38,26 @@ _MARKET_RULES = {
         "Never combine incompatible venues, products, windows or units. Explicitly disclose missing "
         "derivatives, flow and on-chain inputs."
     ),
+    "Forex": (
+        "For FX, reason in base-versus-quote terms. Separate spot momentum from policy-rate and "
+        "yield differentials, identify which currency each macro observation supports, and never "
+        "infer carry from missing rate data. State missing central-bank, positioning and event-risk inputs."
+    ),
+    "Futures": (
+        "For futures, distinguish a continuous front-contract history from an expiry term structure. "
+        "Name the contract/root, report date and CFTC participant group. Weekly CFTC positioning is "
+        "not real-time order flow. Do not claim contango, backwardation, roll yield, inventory pressure "
+        "or seasonality unless the corresponding evidence is supplied."
+    ),
+}
+
+_MODE_RULES = {
+    "research": "Build a balanced investment thesis, variant view, catalysts, counterarguments and falsifiers.",
+    "diagnosis": "Diagnose the observed move with competing explanations. Distinguish confirmed causes from hypotheses and list the next evidence needed.",
+    "technical": "Prioritize trend, momentum, volatility, levels and invalidation. Do not manufacture a fundamental explanation.",
+    "plan": "Prioritize bull, bear and stay-out triggers, execution geometry, invalidation and risk budget.",
+    "news": "Prioritize the event timeline, confirmed facts, asset-specific transmission mechanism and evidence of whether the event is priced in.",
+    "macro": "Prioritize macro regime, transmission channels, relative value, policy path and event risk.",
 }
 
 
@@ -80,6 +100,7 @@ def build_professional_analysis_prompt(
     snapshot = build_evidence_snapshot(data)
     instrument = snapshot.get("instrument") or {}
     market = str(instrument.get("market") or data.get("market") or "")
+    research_mode = str(data.get("research_mode") or "research").strip().lower()
     symbol = str(instrument.get("canonical_symbol") or data.get("symbol") or "")
     currency = str(instrument.get("quote_currency") or "USD")
     indicators = data.get("indicators") or {}
@@ -117,6 +138,20 @@ EVIDENCE AND SAFETY CONTRACT
 
 MARKET CONTRACT
 - {_MARKET_RULES.get(market, 'Explicitly disclose all decision-relevant missing inputs.')}
+
+RESEARCH WORKFLOW
+- mode={research_mode}
+- {_MODE_RULES.get(research_mode, _MODE_RULES['research'])}
+
+RESEARCH AND VALUATION DISCIPLINE
+- Lead with the decision-relevant essence, then present the strongest opposing view and explicit falsifiers.
+- Keep reported facts, provider estimates, management guidance and model assumptions visibly separate.
+- When guidance, consensus and a base-case model disagree, identify and reconcile the gap instead of silently choosing one.
+- Never describe current assets as cash or net cash. Net cash requires cash and cash equivalents minus debt and debt-like obligations.
+- EV/EBIT requires enterprise value. Do not divide market capitalization by EBIT and label the result EV/EBIT.
+- In sum-of-the-parts work, do not mix enterprise values and equity values without an explicit bridge, and do not double count cash, debt or shared costs.
+- A claim that expectations are priced in requires supplied market-implied evidence or a clearly labelled sensitivity; an arbitrary multiple is not proof.
+- Prefer ranges and sensitivity analysis to false precision. If a required valuation input is absent, state that the valuation cannot be completed.
 
 DECISION CONTRACT
 - BUY needs confirmed bullish evidence; oversold RSI alone is insufficient.

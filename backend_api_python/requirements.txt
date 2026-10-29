@@ -70,3 +70,5 @@ ib_insync>=0.9.86
 # SerpAPI - Google/Bing search scraper (free 100 requests/month)
 # google-search-results>=2.4.0
 alpaca-py>=0.44.0
+# Official Tiger Brokers OpenAPI SDK.
+tigeropen==3.7.2

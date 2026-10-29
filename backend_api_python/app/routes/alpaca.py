@@ -19,6 +19,7 @@ from app.utils.broker_session import BrokerSessionRegistry
 from app.utils.credential_crypto import decrypt_credential_blob, encrypt_credential_blob
 from app.utils.db import get_db_connection
 from app.services.alpaca_trading import AlpacaClient, AlpacaConfig
+from app.utils.trading_venue_visibility import is_trading_venue_enabled
 
 logger = get_logger(__name__)
 
@@ -26,6 +27,12 @@ alpaca_blp = Blueprint('alpaca', __name__)
 
 # Clients are isolated by authenticated user and saved credential id.
 _sessions = BrokerSessionRegistry('alpaca')
+
+
+@alpaca_blp.before_request
+def _require_alpaca_enabled():
+    if not is_trading_venue_enabled('alpaca'):
+        return jsonify({"success": False, "error": "brokerAccounts.tradingVenueDisabled"}), 403
 
 
 def _placeholder_status():

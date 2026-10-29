@@ -160,7 +160,13 @@ class MarketDataCollector:
             "analyst_expectations": {},
             "options": {},
             "short_interest": {},
+            "short_volume": {},
             "insider_activity": {},
+            "ownership": {},
+            "earnings_transcript": {},
+            "forex_drivers": {},
+            "futures_curve": {},
+            "futures_positioning": {},
             "_meta": {
                 "success_items": [],
                 "failed_items": [],
@@ -183,6 +189,8 @@ class MarketDataCollector:
                     core_futures[executor.submit(self._get_hk_research, symbol)] = "hk_research"
             elif market == 'Crypto':
                 core_futures[executor.submit(self._get_crypto_info, symbol)] = "fundamental"
+            elif market in {'Forex', 'Futures'}:
+                core_futures[executor.submit(self._get_cross_asset_research, market, symbol)] = "cross_asset_research"
             
             completed_futures = set()
 
@@ -192,22 +200,30 @@ class MarketDataCollector:
                 try:
                     result = future.result()
                     if result:
-                        if key in {"us_research", "hk_research"}:
+                        if key in {"us_research", "hk_research", "cross_asset_research"}:
                             research_keys = (
                                 (
                                     "sec_filings", "analyst_expectations", "options",
-                                    "short_interest", "insider_activity",
+                                    "short_interest", "short_volume", "insider_activity", "ownership",
+                                    "earnings_transcript",
                                 )
-                                if key == "us_research" else
+                                if key == "us_research" else (
                                 (
                                     "hk_security_profile", "southbound_flow",
                                     "analyst_expectations", "hk_macro",
+                                )
+                                if key == "hk_research" else
+                                ("forex_drivers", "futures_curve", "futures_positioning")
                                 )
                             )
                             for research_key in research_keys:
                                 if result.get(research_key):
                                     data[research_key] = result[research_key]
-                            status_key = "us_provider_status" if key == "us_research" else "hk_provider_status"
+                            status_key = (
+                                "us_provider_status" if key == "us_research" else
+                                "hk_provider_status" if key == "hk_research" else
+                                "research_provider_status"
+                            )
                             data["_meta"][status_key] = result.get("_provider_status") or {}
                         else:
                             data[key] = result
@@ -332,6 +348,16 @@ class MarketDataCollector:
             return collect_hk_research(symbol)
         except Exception as exc:
             logger.info("HK research enrichment unavailable for %s: %s", symbol, exc)
+            return {}
+
+    def _get_cross_asset_research(self, market: str, symbol: str) -> Dict[str, Any]:
+        """Collect bounded FX or futures research enrichment."""
+        try:
+            from app.data_providers.cross_asset_research import collect_cross_asset_research
+
+            return collect_cross_asset_research(market, symbol)
+        except Exception as exc:
+            logger.info("Cross-asset research unavailable for %s:%s: %s", market, symbol, exc)
             return {}
     
     

@@ -17,6 +17,11 @@ from app.services.settings.env_file import read_env_file, write_env_file
 from app.utils.redaction import redact_secrets
 from app.services.settings.runtime import reload_runtime_env, refresh_runtime_services
 from app.services.settings.capabilities import get_feature_flags
+from app.utils.trading_venue_visibility import (
+    TRADING_VENUE_IDS,
+    enabled_trading_venues,
+    trading_venue_options,
+)
 
 logger = get_logger(__name__)
 
@@ -868,6 +873,15 @@ CONFIG_SCHEMA = {
                 'options': market_options(),
                 'description': 'Markets exposed to research, strategy, market data, Agent API, and live-trading entry points. Saved as ENABLED_MARKETS in .env for backward compatibility. Empty = whitelist disabled and legacy SHOW_* flags apply.'
             },
+            {
+                'key': 'ENABLED_TRADING_VENUES',
+                'label': 'Enabled Brokers and Exchanges',
+                'type': 'venue_multiselect',
+                'default': ','.join(TRADING_VENUE_IDS),
+                'options': trading_venue_options(),
+                'required': False,
+                'description': 'Brokers and exchanges exposed to account management, quick trading, strategy deployment, and order execution. An empty selection disables every live trading venue.'
+            },
         ]
     },
 
@@ -923,6 +937,38 @@ CONFIG_SCHEMA = {
                 'type': 'boolean',
                 'default': 'True',
                 'description': 'Keep enabled for free Finnhub plans. When enabled, paid-only Finnhub endpoints such as Economic Calendar and Social Sentiment are not called.'
+            },
+            {
+                'key': 'ALPHA_VANTAGE_API_KEY',
+                'label': 'Alpha Vantage API Key',
+                'type': 'password',
+                'required': False,
+                'link': 'https://www.alphavantage.co/support/#api-key',
+                'link_text': 'settings.link.getApiKey',
+                'description': 'settings.desc.ALPHA_VANTAGE_API_KEY'
+            },
+            {
+                'key': 'ALPHA_VANTAGE_BASE_URL',
+                'label': 'Alpha Vantage Base URL',
+                'type': 'text',
+                'default': 'https://www.alphavantage.co/query',
+                'link': 'https://www.alphavantage.co/documentation/',
+                'link_text': 'settings.link.viewDocs',
+                'description': 'settings.desc.ALPHA_VANTAGE_BASE_URL'
+            },
+            {
+                'key': 'ALPHA_VANTAGE_TIMEOUT',
+                'label': 'Alpha Vantage Timeout (sec)',
+                'type': 'number',
+                'default': '12',
+                'description': 'settings.desc.ALPHA_VANTAGE_TIMEOUT'
+            },
+            {
+                'key': 'ALPHA_VANTAGE_NEWS_LIMIT',
+                'label': 'Alpha Vantage News Limit',
+                'type': 'number',
+                'default': '20',
+                'description': 'settings.desc.ALPHA_VANTAGE_NEWS_LIMIT'
             },
             {
                 'key': 'TRADING_ECONOMICS_CLIENT',
@@ -1226,38 +1272,6 @@ CONFIG_SCHEMA = {
                 'type': 'number',
                 'default': '10',
                 'description': 'Default maximum GDELT article count used by fallback news/event search.'
-            },
-            {
-                'key': 'ALPHA_VANTAGE_API_KEY',
-                'label': 'Alpha Vantage API Key',
-                'type': 'password',
-                'required': False,
-                'link': 'https://www.alphavantage.co/support/#api-key',
-                'link_text': 'settings.link.getApiKey',
-                'description': 'Optional low-cost company news and sentiment source using Alpha Vantage NEWS_SENTIMENT.'
-            },
-            {
-                'key': 'ALPHA_VANTAGE_BASE_URL',
-                'label': 'Alpha Vantage Base URL',
-                'type': 'text',
-                'default': 'https://www.alphavantage.co/query',
-                'link': 'https://www.alphavantage.co/documentation/',
-                'link_text': 'settings.link.viewDocs',
-                'description': 'Alpha Vantage API endpoint for NEWS_SENTIMENT and related market-data functions.'
-            },
-            {
-                'key': 'ALPHA_VANTAGE_TIMEOUT',
-                'label': 'Alpha Vantage Timeout (sec)',
-                'type': 'number',
-                'default': '12',
-                'description': 'Timeout for Alpha Vantage company news and sentiment requests.'
-            },
-            {
-                'key': 'ALPHA_VANTAGE_NEWS_LIMIT',
-                'label': 'Alpha Vantage News Limit',
-                'type': 'number',
-                'default': '20',
-                'description': 'Maximum NEWS_SENTIMENT feed items requested per company-news lookup.'
             },
         ]
     },
@@ -2089,11 +2103,13 @@ def get_settings_schema():
 def get_public_config():
     """Return non-sensitive config values needed by frontend widgets."""
     from app.config.data_sources import CryptoPublicConfig
-    feature_flags = get_feature_flags(read_env_file())
+    env_values = read_env_file()
+    feature_flags = get_feature_flags(env_values)
     return jsonify({
         'code': 1,
         'data': {
             'crypto_public_default_exchange': (CryptoPublicConfig.DEFAULT_EXCHANGE or 'binance').lower(),
+            'enabled_trading_venues': sorted(enabled_trading_venues(env_values)),
             **feature_flags,
         }
     })

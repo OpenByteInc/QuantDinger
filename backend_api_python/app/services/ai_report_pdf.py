@@ -1,6 +1,7 @@
 """PDF rendering for AI Copilot research reports."""
 
 import json
+import math
 import re
 from datetime import datetime, timezone
 from io import BytesIO
@@ -379,8 +380,107 @@ def _market_bias_labels(language: str = "") -> dict[str, str]:
         "en": {"BULLISH": "Bullish", "BEARISH": "Bearish", "NEUTRAL": "Neutral"},
         "zh-CN": {"BULLISH": "偏多", "BEARISH": "偏空", "NEUTRAL": "中性"},
         "zh-TW": {"BULLISH": "偏多", "BEARISH": "偏空", "NEUTRAL": "中性"},
+        "ja": {"BULLISH": "強気", "BEARISH": "弱気", "NEUTRAL": "中立"},
+        "ko": {"BULLISH": "강세", "BEARISH": "약세", "NEUTRAL": "중립"},
+        "de": {"BULLISH": "Bullisch", "BEARISH": "Bärisch", "NEUTRAL": "Neutral"},
+        "fr": {"BULLISH": "Haussier", "BEARISH": "Baissier", "NEUTRAL": "Neutre"},
+        "ru": {"BULLISH": "Бычий", "BEARISH": "Медвежий", "NEUTRAL": "Нейтральный"},
+        "ar": {"BULLISH": "صعودي", "BEARISH": "هبوطي", "NEUTRAL": "محايد"},
+        "th": {"BULLISH": "ขาขึ้น", "BEARISH": "ขาลง", "NEUTRAL": "เป็นกลาง"},
+        "vi": {"BULLISH": "Tăng giá", "BEARISH": "Giảm giá", "NEUTRAL": "Trung lập"},
     }
     return labels.get(_language_key(language), labels["en"])
+
+
+def _display_report_code(value: Any, language: str = "") -> str:
+    """Turn internal report codes into readable PDF copy."""
+    token = _evidence_token(value)
+    if not token:
+        return ""
+    labels = {
+        "en": {
+            "no_directional_position": "No directional position",
+            "risk_reward_below_one": "Risk/reward is below 1.0",
+            "insufficient_data": "Insufficient data",
+            "decision_ready": "Decision-ready evidence",
+            "conditional": "Conditional - review data gaps",
+            "insufficient": "Insufficient evidence",
+            "available": "Available",
+            "bull": "Bull",
+            "base": "Base",
+            "bear": "Bear",
+            "thesis": "Thesis",
+            "risk": "Risk",
+            "catalyst": "Catalyst",
+            "counter_argument": "Counter-argument",
+        },
+        "zh-CN": {
+            "no_directional_position": "当前无方向性仓位",
+            "risk_reward_below_one": "风险收益比低于 1.0",
+            "insufficient_data": "数据不足",
+            "decision_ready": "证据可支持决策",
+            "conditional": "有条件可用，需检查数据缺口",
+            "insufficient": "证据不足",
+            "available": "可用",
+            "bull": "乐观",
+            "base": "基准",
+            "bear": "悲观",
+            "thesis": "核心论点",
+            "risk": "风险",
+            "catalyst": "催化剂",
+            "counter_argument": "反方观点",
+            "equity_deep_dive_v1": "美股深度投研 v1",
+            "hk_equity_deep_dive_v1": "港股深度投研 v1",
+            "crypto_market_structure_v1": "加密市场结构研究 v1",
+            "fx_macro_relative_value_v1": "外汇宏观相对价值研究 v1",
+            "futures_curve_positioning_v1": "期货曲线与持仓研究 v1",
+            "price_history": "历史行情",
+            "financials": "财务数据",
+            "filings": "监管文件",
+            "issuer_disclosures": "发行人公告",
+            "analyst_expectations": "分析师预期",
+            "options_surface": "期权波动率曲面",
+            "short_interest": "空头持仓",
+            "short_volume": "卖空成交量",
+            "ownership": "持仓结构",
+            "earnings_transcript": "业绩会纪要",
+            "southbound_holdings": "南向持仓",
+            "short_selling": "卖空数据",
+            "ccass": "CCASS 持仓",
+            "spot_market": "现货市场",
+            "funding": "资金费率",
+            "open_interest": "未平仓量",
+            "liquidations": "清算数据",
+            "basis": "基差",
+            "onchain_flows": "链上资金流",
+            "pair_identity": "货币对属性",
+            "policy_rates": "政策利率",
+            "yield_differential": "利差",
+            "positioning": "持仓定位",
+            "event_calendar": "事件日历",
+            "contract_identity": "合约属性",
+            "term_structure": "期限结构",
+            "cftc_positioning": "CFTC 持仓",
+            "inventory": "库存",
+            "seasonality": "季节性",
+            "period_return_pct": "样本区间收益",
+            "realized_volatility_per_bar_pct": "单周期实现波动率",
+            "max_drawdown_pct": "样本最大回撤",
+        },
+        "zh-TW": {
+            "no_directional_position": "目前無方向性部位",
+            "risk_reward_below_one": "風險收益比低於 1.0",
+            "insufficient_data": "資料不足",
+            "decision_ready": "證據可支持決策",
+            "conditional": "有條件可用，需檢查資料缺口",
+            "insufficient": "證據不足",
+            "available": "可用",
+        },
+    }
+    return labels.get(_language_key(language), labels["en"]).get(
+        token,
+        token.replace("_", " ").strip().capitalize(),
+    )
 
 
 def _report_pdf_labels(language: str = "") -> dict[str, str]:
@@ -666,9 +766,9 @@ def _build_professional_report_pdf(report: dict, target: dict | None, language: 
     from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
     from reportlab.lib.units import mm
     from reportlab.platypus import (
+        Flowable,
         KeepTogether,
         LongTable,
-        PageBreak,
         Paragraph,
         SimpleDocTemplate,
         Spacer,
@@ -763,6 +863,29 @@ def _build_professional_report_pdf(report: dict, target: dict | None, language: 
         "position": "建议仓位上限" if is_zh else "Position cap",
         "risk_budget": "账户风险预算" if is_zh else "Risk budget",
         "cost": "预估往返成本" if is_zh else "Est. round-trip cost",
+        "price_chart": "价格走势与关键价位" if is_zh else "Price action and key levels",
+        "chart_bars": "真实 K 线" if is_zh else "real bars",
+        "chart_note": "图表使用本报告同一批 OHLCV 快照生成，不会在导出时重新获取行情。" if is_zh else "Rendered from the same OHLCV snapshot as this report; export does not refetch market data.",
+        "support": "支撑" if is_zh else "Support",
+        "resistance": "阻力" if is_zh else "Resistance",
+        "research_brief": "投研决策简报" if is_zh else "Decision brief",
+        "core_thesis": "核心判断" if is_zh else "Core thesis",
+        "variant_view": "预期差与最强反方观点" if is_zh else "Variant view and strongest challenge",
+        "monitoring": "后续观察清单" if is_zh else "What to monitor next",
+        "catalyst": "催化剂" if is_zh else "Catalyst",
+        "falsifier": "证伪条件" if is_zh else "Falsifier",
+        "research_audit": "投研流程与计算审计" if is_zh else "Research workflow and calculation audit",
+        "workflow": "分析工作流" if is_zh else "Workflow",
+        "readiness": "研究就绪度" if is_zh else "Research readiness",
+        "available_capabilities": "可用能力" if is_zh else "Available capabilities",
+        "missing_capabilities": "缺失能力" if is_zh else "Missing capabilities",
+        "period_return": "样本区间收益" if is_zh else "Sample-period return",
+        "realized_volatility": "单周期实现波动率" if is_zh else "Per-bar realized volatility",
+        "max_drawdown": "样本最大回撤" if is_zh else "Sample max drawdown",
+        "sample_bars": "样本 K 线数" if is_zh else "Sample bars",
+        "calculation": "计算项" if is_zh else "Calculation",
+        "formula": "公式" if is_zh else "Formula",
+        "inputs": "输入" if is_zh else "Inputs",
         "claims": "核心论据与反方证据" if is_zh else "Thesis, risks and counter-evidence",
         "evidence": "证据附录" if is_zh else "Evidence appendix",
         "metric": "指标" if is_zh else "Metric",
@@ -775,6 +898,70 @@ def _build_professional_report_pdf(report: dict, target: dict | None, language: 
         "disclaimer": "AI 辅助研究，仅供参考，不构成投资建议。请独立核验数据并评估风险。" if is_zh else "AI-assisted research only. Not investment advice. Verify data and assess risk independently.",
         "page": "第 {page} 页" if is_zh else "Page {page}",
     }
+    generic_copy = _report_pdf_labels(language)
+    copy.update({
+        "title": generic_copy["title"],
+        "subtitle": generic_copy["subtitle"],
+        "generated": generic_copy["generated"],
+        "confidence": generic_copy["confidence"],
+        "summary": generic_copy["summary"],
+        "risk": generic_copy["plan"],
+        "entry": generic_copy["entry"],
+        "stop": generic_copy["stop_loss"],
+        "take": generic_copy["take_profit"],
+        "rr": generic_copy["risk_reward"],
+        "disclaimer": generic_copy["disclaimer"],
+    })
+    localized_section_keys = (
+        "as_of", "tier", "market_bias", "trade_action", "quality", "dimensions",
+        "scenarios", "cost", "price_chart", "research_brief", "research_audit",
+        "evidence", "limitations", "method", "readiness", "workflow",
+        "available_capabilities", "missing_capabilities",
+    )
+    localized_sections = {
+        "ja": (
+            "データ基準時点", "データ階層", "市場バイアス", "取引アクション", "データ品質監査", "多面的分析",
+            "シナリオとトリガー", "推定往復コスト", "値動きと主要水準", "投資判断ブリーフ", "調査プロセスと計算監査",
+            "証拠付録", "データ不足と制約", "手法とバージョン", "調査準備度", "分析ワークフロー", "利用可能な機能", "不足している機能",
+        ),
+        "ko": (
+            "데이터 기준 시각", "데이터 등급", "시장 방향", "거래 행동", "데이터 품질 감사", "다차원 분석",
+            "시나리오와 조건", "예상 왕복 비용", "가격 흐름과 주요 구간", "투자 판단 요약", "리서치 절차 및 계산 감사",
+            "근거 부록", "데이터 공백과 제한", "방법론과 버전", "리서치 준비도", "분석 워크플로", "사용 가능한 기능", "누락된 기능",
+        ),
+        "de": (
+            "Datenstand", "Datenstufe", "Marktausrichtung", "Handelsaktion", "Datenqualitätsprüfung", "Mehrdimensionale Analyse",
+            "Szenarien und Auslöser", "Geschätzte Roundtrip-Kosten", "Kursverlauf und Schlüsselniveaus", "Entscheidungsbriefing", "Research-Workflow und Berechnungsprüfung",
+            "Evidenzanhang", "Datenlücken und Einschränkungen", "Methodik und Versionen", "Research-Bereitschaft", "Analyse-Workflow", "Verfügbare Fähigkeiten", "Fehlende Fähigkeiten",
+        ),
+        "fr": (
+            "Données arrêtées au", "Niveau de données", "Biais de marché", "Action de trading", "Audit de qualité des données", "Analyse multidimensionnelle",
+            "Scénarios et déclencheurs", "Coût aller-retour estimé", "Évolution du prix et niveaux clés", "Note de décision", "Processus de recherche et audit des calculs",
+            "Annexe des preuves", "Lacunes et limites des données", "Méthodologie et versions", "État de préparation", "Processus d'analyse", "Capacités disponibles", "Capacités manquantes",
+        ),
+        "ru": (
+            "Данные на момент", "Уровень данных", "Рыночный уклон", "Торговое действие", "Аудит качества данных", "Многомерный анализ",
+            "Сценарии и триггеры", "Расчётные полные издержки", "Динамика цены и ключевые уровни", "Краткое решение", "Процесс исследования и аудит расчётов",
+            "Приложение с доказательствами", "Пробелы и ограничения данных", "Методика и версии", "Готовность исследования", "Процесс анализа", "Доступные возможности", "Недостающие возможности",
+        ),
+        "ar": (
+            "البيانات حتى", "فئة البيانات", "اتجاه السوق", "إجراء التداول", "تدقيق جودة البيانات", "تحليل متعدد الأبعاد",
+            "السيناريوهات والمحفزات", "تكلفة الذهاب والعودة المقدرة", "حركة السعر والمستويات الرئيسية", "موجز القرار", "سير البحث وتدقيق الحسابات",
+            "ملحق الأدلة", "فجوات البيانات والقيود", "المنهجية والإصدارات", "جاهزية البحث", "سير التحليل", "الإمكانات المتاحة", "الإمكانات المفقودة",
+        ),
+        "th": (
+            "ข้อมูล ณ เวลา", "ระดับข้อมูล", "มุมมองตลาด", "การดำเนินการซื้อขาย", "การตรวจสอบคุณภาพข้อมูล", "การวิเคราะห์หลายมิติ",
+            "สถานการณ์และเงื่อนไขกระตุ้น", "ต้นทุนไปกลับโดยประมาณ", "การเคลื่อนไหวราคาและระดับสำคัญ", "สรุปเพื่อการตัดสินใจ", "ขั้นตอนวิจัยและการตรวจสอบการคำนวณ",
+            "ภาคผนวกหลักฐาน", "ช่องว่างและข้อจำกัดของข้อมูล", "วิธีการและเวอร์ชัน", "ความพร้อมของงานวิจัย", "ขั้นตอนการวิเคราะห์", "ความสามารถที่ใช้ได้", "ความสามารถที่ขาดหาย",
+        ),
+        "vi": (
+            "Dữ liệu đến", "Cấp dữ liệu", "Xu hướng thị trường", "Hành động giao dịch", "Kiểm định chất lượng dữ liệu", "Phân tích đa chiều",
+            "Kịch bản và điều kiện kích hoạt", "Chi phí khứ hồi ước tính", "Diễn biến giá và các mức quan trọng", "Tóm tắt quyết định", "Quy trình nghiên cứu và kiểm định tính toán",
+            "Phụ lục bằng chứng", "Khoảng trống và giới hạn dữ liệu", "Phương pháp và phiên bản", "Mức sẵn sàng nghiên cứu", "Quy trình phân tích", "Khả năng hiện có", "Khả năng còn thiếu",
+        ),
+    }
+    if lang in localized_sections:
+        copy.update(dict(zip(localized_section_keys, localized_sections[lang])))
 
     def esc(value: Any) -> str:
         text = _plain_text(value).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -818,7 +1005,13 @@ def _build_professional_report_pdf(report: dict, target: dict | None, language: 
             "crypto_market_structure": "加密市场结构",
         }.get(key, key.replace("_", " "))
 
-    def section(title: str, note: str = "") -> list[Any]:
+    def section(
+        title: str,
+        note: str = "",
+        *,
+        top_space: float = 7 * mm,
+        bottom_space: float = 3 * mm,
+    ) -> list[Any]:
         heading = Table(
             [[[para(title, section_style), para(note, muted)]]],
             colWidths=[content_width],
@@ -830,7 +1023,7 @@ def _build_professional_report_pdf(report: dict, target: dict | None, language: 
             ("TOPPADDING", (0, 0), (-1, -1), 1),
             ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
         ]))
-        return [Spacer(1, 7 * mm), heading, Spacer(1, 3 * mm)]
+        return [Spacer(1, top_space), heading, Spacer(1, bottom_space)]
 
     def metric_cards(items: list[tuple[str, str]], columns: int = 3) -> Table:
         cells = []
@@ -851,6 +1044,148 @@ def _build_professional_report_pdf(report: dict, target: dict | None, language: 
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ]))
         return table
+
+    class CandlestickChart(Flowable):
+        def __init__(self, chart: dict[str, Any], width: float, height: float = 67 * mm) -> None:
+            super().__init__()
+            self.chart = chart
+            self.width = width
+            self.height = height
+
+        @staticmethod
+        def _safe_number(value: Any) -> float | None:
+            try:
+                result = float(value)
+            except (TypeError, ValueError):
+                return None
+            return result if math.isfinite(result) else None
+
+        def draw(self) -> None:
+            canvas = self.canv
+            bars = [item for item in self.chart.get("bars") or [] if isinstance(item, dict)]
+            if not bars:
+                return
+            plot_left = 7
+            plot_right = self.width - 48
+            volume_bottom = 20
+            volume_height = 25
+            price_bottom = volume_bottom + volume_height + 9
+            price_top = self.height - 10
+            prices = [
+                value
+                for item in bars
+                for value in (
+                    self._safe_number(item.get("low")),
+                    self._safe_number(item.get("high")),
+                )
+                if value is not None
+            ]
+            for key in ("support", "resistance"):
+                level = self._safe_number(self.chart.get(key))
+                if level is not None:
+                    prices.append(level)
+            if not prices:
+                return
+            low = min(prices)
+            high = max(prices)
+            padding = max((high - low) * 0.08, abs(high) * 0.002, 1e-9)
+            low -= padding
+            high += padding
+            span = max(high - low, 1e-9)
+            step = (plot_right - plot_left) / max(len(bars), 1)
+            candle_width = max(1.2, min(5.2, step * 0.58))
+            max_volume = max((self._safe_number(item.get("volume")) or 0.0 for item in bars), default=0.0)
+
+            def x_at(index: int) -> float:
+                return plot_left + step * (index + 0.5)
+
+            def y_at(value: float) -> float:
+                return price_bottom + (value - low) / span * (price_top - price_bottom)
+
+            canvas.saveState()
+            canvas.setFillColor(colors.white)
+            canvas.setStrokeColor(palette["line"])
+            canvas.roundRect(0, 0, self.width, self.height, 5, fill=1, stroke=1)
+            canvas.setFont("Helvetica", 6.3)
+            for index in range(5):
+                ratio = index / 4
+                y = price_bottom + ratio * (price_top - price_bottom)
+                price = low + ratio * span
+                canvas.setStrokeColor(colors.HexColor("#E8EDF2"))
+                canvas.setLineWidth(0.35)
+                canvas.line(plot_left, y, plot_right, y)
+                canvas.setFillColor(palette["muted"])
+                canvas.drawRightString(self.width - 5, y - 2, f"{price:,.4f}".rstrip("0").rstrip("."))
+
+            for key, color in (("support", palette["blue"]), ("resistance", palette["amber"])):
+                level = self._safe_number(self.chart.get(key))
+                if level is None:
+                    continue
+                canvas.setStrokeColor(color)
+                canvas.setDash(3, 2)
+                canvas.setLineWidth(0.7)
+                canvas.line(plot_left, y_at(level), plot_right, y_at(level))
+                canvas.setDash()
+
+            for index, item in enumerate(bars):
+                open_price = self._safe_number(item.get("open"))
+                high_price = self._safe_number(item.get("high"))
+                low_price = self._safe_number(item.get("low"))
+                close_price = self._safe_number(item.get("close"))
+                if None in (open_price, high_price, low_price, close_price):
+                    continue
+                rising = close_price >= open_price
+                color = colors.HexColor("#16A085") if rising else colors.HexColor("#E05A5A")
+                x = x_at(index)
+                canvas.setStrokeColor(color)
+                canvas.setFillColor(color)
+                canvas.setLineWidth(0.65)
+                canvas.line(x, y_at(low_price), x, y_at(high_price))
+                body_y = min(y_at(open_price), y_at(close_price))
+                body_height = max(abs(y_at(close_price) - y_at(open_price)), 0.8)
+                canvas.rect(x - candle_width / 2, body_y, candle_width, body_height, fill=1, stroke=1)
+                volume = self._safe_number(item.get("volume")) or 0.0
+                if max_volume > 0 and volume > 0:
+                    canvas.setFillColor(colors.Color(color.red, color.green, color.blue, alpha=0.35))
+                    canvas.rect(
+                        x - candle_width / 2,
+                        volume_bottom,
+                        candle_width,
+                        volume / max_volume * volume_height,
+                        fill=1,
+                        stroke=0,
+                    )
+
+            closes = [self._safe_number(item.get("close")) for item in bars]
+            ma_colors = [palette["blue"], palette["amber"], colors.HexColor("#8B5CF6")]
+            for ma_index, period_value in enumerate(self.chart.get("moving_average_periods") or []):
+                try:
+                    period = int(period_value)
+                except (TypeError, ValueError):
+                    continue
+                if period <= 1:
+                    continue
+                points: list[tuple[float, float]] = []
+                for index in range(period - 1, len(closes)):
+                    window = closes[index - period + 1:index + 1]
+                    if any(value is None for value in window):
+                        continue
+                    average = sum(value for value in window if value is not None) / period
+                    points.append((x_at(index), y_at(average)))
+                if len(points) < 2:
+                    continue
+                canvas.setStrokeColor(ma_colors[ma_index % len(ma_colors)])
+                canvas.setLineWidth(0.75)
+                for start, end in zip(points, points[1:]):
+                    canvas.line(start[0], start[1], end[0], end[1])
+
+            first_time = str(bars[0].get("timestamp") or "")[:10]
+            last_time = str(bars[-1].get("timestamp") or "")[:10]
+            canvas.setFillColor(palette["muted"])
+            canvas.setFont("Helvetica", 6.3)
+            canvas.drawString(plot_left, 7, first_time)
+            canvas.drawRightString(plot_right, 7, last_time)
+            canvas.restoreState()
 
     def draw_page(canvas: Any, document: Any) -> None:
         canvas.saveState()
@@ -875,9 +1210,12 @@ def _build_professional_report_pdf(report: dict, target: dict | None, language: 
     scenarios = [item for item in (report.get("scenarios") or []) if isinstance(item, dict)]
     claims = [item for item in (report.get("claims") or []) if isinstance(item, dict)]
     evidence = [item for item in ((report.get("evidence_snapshot") or {}).get("observations") or []) if isinstance(item, dict)]
+    price_chart = report.get("price_chart") or {}
+    research_intelligence = report.get("research_intelligence") or {}
     symbol = instrument.get("canonical_symbol") or instrument.get("symbol") or target.get("symbol") or "—"
     market = instrument.get("market") or target.get("market") or "—"
     name = instrument.get("name") or symbol
+    quote_currency = str(instrument.get("quote_currency") or "").upper()
     outlook = str(decision.get("decision") or "HOLD").upper()
     outlook_display = _outlook_labels(language).get(outlook, outlook)
     market_bias = _report_market_bias(decision, dimensions)
@@ -895,7 +1233,7 @@ def _build_professional_report_pdf(report: dict, target: dict | None, language: 
     hero = Table([
         [
             [para("QUANTDINGER", subtitle_style), para(copy["title"], title_style), para(copy["subtitle"], subtitle_style)],
-            [para(copy["market_bias"], subtitle_style), para(bias_display, ParagraphStyle("ProOutlook", parent=title_style, fontSize=18, leading=22, textColor=outlook_color)), para(f"{copy['trade_action']}  {outlook_display}<br/>{copy['confidence']}  {pct(decision.get('confidence'))}", subtitle_style)],
+            [para(copy["market_bias"], subtitle_style), para(bias_display, ParagraphStyle("ProOutlook", parent=title_style, fontSize=18, leading=22, textColor=outlook_color)), para(f"{copy['trade_action']}  {outlook_display}\n{copy['confidence']}  {pct(decision.get('confidence'))}", subtitle_style)],
         ]
     ], colWidths=[content_width * 0.69, content_width * 0.31])
     hero.setStyle(TableStyle([
@@ -933,6 +1271,72 @@ def _build_professional_report_pdf(report: dict, target: dict | None, language: 
     ]))
     story.append(summary_box)
 
+    chart_bars = [item for item in (price_chart.get("bars") or []) if isinstance(item, dict)]
+    if chart_bars:
+        timeframe = str(price_chart.get("timeframe") or "1D")
+        chart_note = f"{len(chart_bars)} {timeframe} {copy['chart_bars']} · {copy['chart_note']}"
+        story.extend(section(copy["price_chart"], chart_note))
+        legend_items = [f"MA{item}" for item in (price_chart.get("moving_average_periods") or [])]
+        if price_chart.get("support") is not None:
+            legend_items.append(f"{copy['support']} {number(price_chart.get('support'), 4)}")
+        if price_chart.get("resistance") is not None:
+            legend_items.append(f"{copy['resistance']} {number(price_chart.get('resistance'), 4)}")
+        story.extend([
+            para(" · ".join(legend_items), muted),
+            Spacer(1, 1.5 * mm),
+            CandlestickChart(price_chart, content_width),
+        ])
+
+    research_brief = research_intelligence.get("research_brief") or {}
+    brief_items = [
+        (copy["core_thesis"], research_brief.get("core_thesis")),
+        (copy["variant_view"], research_brief.get("variant_view")),
+    ]
+    monitoring_items = [
+        *[dict(item, _kind="catalyst") for item in research_brief.get("catalysts") or [] if isinstance(item, dict)],
+        *[dict(item, _kind=str(item.get("kind") or "scenario")) for item in research_brief.get("watch_items") or [] if isinstance(item, dict)],
+    ]
+    if any(isinstance(item, dict) and item.get("text") for _, item in brief_items) or monitoring_items:
+        story.extend(section(copy["research_brief"]))
+        for label, item in brief_items:
+            if not isinstance(item, dict) or not item.get("text"):
+                continue
+            refs = ", ".join(map(str, item.get("evidence_refs") or []))
+            brief_table = Table([
+                [para(label, card_title_style)],
+                [para(item.get("text"), body)],
+                [para(f"{copy['evidence_id']}: {refs or '—'}", muted)],
+            ], colWidths=[content_width])
+            brief_table.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, -1), palette["blue_soft"] if label == copy["core_thesis"] else palette["amber_soft"]),
+                ("BOX", (0, 0), (-1, -1), 0.6, palette["line"]),
+                ("LEFTPADDING", (0, 0), (-1, -1), 10), ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+                ("TOPPADDING", (0, 0), (-1, -1), 5), ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+            ]))
+            story.extend([KeepTogether([brief_table]), Spacer(1, 2 * mm)])
+        if monitoring_items:
+            monitor_rows = []
+            for item in monitoring_items[:10]:
+                kind = copy["catalyst"] if item.get("_kind") == "catalyst" else copy["falsifier"]
+                details = str(item.get("text") or "")
+                if item.get("invalidation") not in (None, ""):
+                    details = f"{details} · {copy['invalidation']}: {item.get('invalidation')}"
+                monitor_rows.append([para(kind, table_head), para(details, table_body)])
+            monitor_table = Table(monitor_rows, colWidths=[content_width * 0.16, content_width * 0.84])
+            monitor_table.setStyle(TableStyle([
+                ("ROWBACKGROUNDS", (0, 0), (-1, -1), [colors.white, palette["soft"]]),
+                ("BOX", (0, 0), (-1, -1), 0.5, palette["line"]),
+                ("INNERGRID", (0, 0), (-1, -1), 0.3, palette["line"]),
+                ("LEFTPADDING", (0, 0), (-1, -1), 7), ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+                ("TOPPADDING", (0, 0), (-1, -1), 5), ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ]))
+            story.append(KeepTogether([
+                para(copy["monitoring"], card_title_style),
+                Spacer(1, 1.2 * mm),
+                monitor_table,
+            ]))
+
     story.extend(section(copy["quality"], f"{copy['quality_score']}: {number(overall_quality, 0, '%') if overall_quality is not None else '—'}"))
     story.append(metric_cards([
         (copy["coverage"], pct(quality.get("coverage_ratio"), ratio=True)),
@@ -942,6 +1346,63 @@ def _build_professional_report_pdf(report: dict, target: dict | None, language: 
         (copy["as_of"], short_timestamp(report.get("as_of"))),
         (copy["tier"], str(report.get("data_tier") or "community")),
     ]))
+
+    if research_intelligence:
+        performance = research_intelligence.get("performance") or {}
+        story.extend(section(copy["research_audit"]))
+        story.append(metric_cards([
+            (copy["workflow"], _display_report_code(research_intelligence.get("workflow_id"), language) or "—"),
+            (copy["readiness"], _display_report_code(research_intelligence.get("readiness_posture"), language) or "—"),
+            (copy["sample_bars"], number(performance.get("sample_bars"), 0)),
+            (copy["period_return"], number(performance.get("period_return_pct"), 2, "%")),
+            (copy["realized_volatility"], number(performance.get("realized_volatility_per_bar_pct"), 2, "%")),
+            (copy["max_drawdown"], number(performance.get("max_drawdown_pct"), 2, "%")),
+        ]))
+        available = [_display_report_code(item, language) for item in research_intelligence.get("available_capabilities") or []]
+        missing_caps = [
+            _display_report_code(item, language)
+            for item in [
+                *(research_intelligence.get("missing_required_capabilities") or []),
+                *(research_intelligence.get("missing_optional_capabilities") or []),
+            ]
+        ]
+        if available or missing_caps:
+            story.append(Spacer(1, 2 * mm))
+            capability_rows = []
+            if available:
+                capability_rows.append([para(copy["available_capabilities"], table_head), para(" · ".join(available), table_body)])
+            if missing_caps:
+                capability_rows.append([para(copy["missing_capabilities"], table_head), para(" · ".join(missing_caps), table_body)])
+            capability_table = Table(capability_rows, colWidths=[content_width * 0.20, content_width * 0.80])
+            capability_table.setStyle(TableStyle([
+                ("ROWBACKGROUNDS", (0, 0), (-1, -1), [palette["green_soft"], palette["amber_soft"]]),
+                ("BOX", (0, 0), (-1, -1), 0.5, palette["line"]),
+                ("LEFTPADDING", (0, 0), (-1, -1), 7), ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+                ("TOPPADDING", (0, 0), (-1, -1), 5), ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ]))
+            story.append(capability_table)
+        audit = [item for item in research_intelligence.get("calculation_audit") or [] if isinstance(item, dict)]
+        if audit:
+            story.append(Spacer(1, 2 * mm))
+            audit_rows = [[para(copy[key], table_head_light) for key in ("calculation", "formula", "inputs")]]
+            for item in audit:
+                audit_rows.append([
+                    para(_display_report_code(item.get("metric"), language), table_body),
+                    para(item.get("formula") or "—", table_body),
+                    para(json.dumps(item.get("inputs") or {}, ensure_ascii=False, separators=(", ", ": ")), table_body),
+                ])
+            audit_table = Table(audit_rows, colWidths=[content_width * 0.24, content_width * 0.40, content_width * 0.36], repeatRows=1)
+            audit_table.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), palette["navy2"]),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, palette["soft"]]),
+                ("BOX", (0, 0), (-1, -1), 0.5, palette["line"]),
+                ("INNERGRID", (0, 0), (-1, -1), 0.3, palette["line"]),
+                ("LEFTPADDING", (0, 0), (-1, -1), 5), ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+                ("TOPPADDING", (0, 0), (-1, -1), 5), ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ]))
+            story.append(audit_table)
 
     if dimensions:
         story.extend(section(copy["dimensions"]))
@@ -965,15 +1426,18 @@ def _build_professional_report_pdf(report: dict, target: dict | None, language: 
             story.extend([KeepTogether([card]), Spacer(1, 2.2 * mm)])
 
     if scenarios:
-        story.extend(section(copy["scenarios"]))
         scenario_rows = [[para(copy[k], table_head_light) for k in ("scenario", "probability", "target", "trigger", "invalidation")]]
         for item in scenarios:
             trigger = item.get("trigger") or item.get("triggers") or item.get("thesis") or "—"
             invalidation = item.get("invalidation") or "—"
+            scenario_currency = str(item.get("currency") or quote_currency).upper()
+            target_value = number(item.get("target_price"), 2, f" {scenario_currency}" if scenario_currency else "")
+            if isinstance(invalidation, (int, float)):
+                invalidation = number(invalidation, 2, f" {scenario_currency}" if scenario_currency else "")
             scenario_rows.append([
-                para(str(item.get("case") or "—").upper(), table_body),
+                para(_display_report_code(item.get("case") or "—", language), table_body),
                 para(pct(item.get("probability"), ratio=True), table_body),
-                para(number(item.get("target_price"), 2), table_body),
+                para(target_value, table_body),
                 para(trigger, table_body),
                 para(invalidation, table_body),
             ])
@@ -985,22 +1449,27 @@ def _build_professional_report_pdf(report: dict, target: dict | None, language: 
             ("LEFTPADDING", (0, 0), (-1, -1), 6), ("RIGHTPADDING", (0, 0), (-1, -1), 6),
             ("TOPPADDING", (0, 0), (-1, -1), 6), ("BOTTOMPADDING", (0, 0), (-1, -1), 6), ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ]))
-        story.append(scenarios_table)
+        story.append(KeepTogether([*section(copy["scenarios"]), scenarios_table]))
 
     if risk:
         candidate = risk.get("candidate_setup") or {}
         displayed_risk = candidate or risk
         story.extend(section(copy["candidate_risk"] if candidate else copy["risk"]))
+        price_suffix = f" {quote_currency}" if quote_currency else ""
         story.append(metric_cards([
-            (copy["entry"], number(displayed_risk.get("entry_price"))),
-            (copy["stop"], number(displayed_risk.get("stop_loss"))),
-            (copy["take"], number(displayed_risk.get("take_profit"))),
+            (copy["entry"], number(displayed_risk.get("entry_price"), 2, price_suffix)),
+            (copy["stop"], number(displayed_risk.get("stop_loss"), 2, price_suffix)),
+            (copy["take"], number(displayed_risk.get("take_profit"), 2, price_suffix)),
             (copy["rr"], number(displayed_risk.get("net_risk_reward"))),
             (copy["position"], number(risk.get("recommended_position_pct"), 1, "%")),
             (copy["risk_budget"], number(risk.get("risk_budget_pct"), 1, "%")),
+            (copy["cost"], number(displayed_risk.get("estimated_roundtrip_cost_bps"), 2, " bps")),
         ]))
-        warnings = [str(item) for item in [*(risk.get("warnings") or []), *(candidate.get("warnings") or [])]]
-        invalidations = [str(item) for item in (risk.get("invalidation_conditions") or [])]
+        warnings = [
+            _display_report_code(item, language)
+            for item in [*(risk.get("warnings") or []), *(candidate.get("warnings") or [])]
+        ]
+        invalidations = [_display_report_code(item, language) for item in (risk.get("invalidation_conditions") or [])]
         if warnings or invalidations:
             story.append(Spacer(1, 2 * mm))
             warning_box = Table([[para(" · ".join(warnings + invalidations), muted)]], colWidths=[content_width])
@@ -1014,7 +1483,7 @@ def _build_professional_report_pdf(report: dict, target: dict | None, language: 
     if claims:
         story.extend(section(copy["claims"]))
         for item in claims:
-            kind = str(item.get("kind") or "claim").replace("_", " ").upper()
+            kind = _display_report_code(item.get("kind") or "claim", language)
             refs = ", ".join(map(str, item.get("evidence_refs") or []))
             claim_table = Table([
                 [para(kind, ParagraphStyle("ClaimKind", parent=table_head, textColor=palette["blue"])), para(item.get("text") or "—", body)],
@@ -1034,18 +1503,20 @@ def _build_professional_report_pdf(report: dict, target: dict | None, language: 
     if missing or warnings:
         story.extend(section(copy["limitations"]))
         for item in missing + warnings:
-            story.append(para(f"• {item}", body))
+            story.append(para(f"• {_display_report_code(item, language)}", body))
 
     if evidence:
-        story.extend([PageBreak(), *section(copy["evidence"], f"{len(evidence)} observations")])
+        story.extend(section(copy["evidence"], f"{len(evidence)} observations"))
         evidence_rows = [[para(copy[key], table_head_light) for key in ("metric", "observed", "provider", "timestamp", "evidence_id")]]
         for item in evidence:
+            metric_label = re.sub(r"([._:/-])", r"\1 ", str(item.get("metric") or "—"))
+            evidence_label = re.sub(r"([._:/-])", r"\1 ", str(item.get("evidence_id") or "—"))
             evidence_rows.append([
-                para(item.get("metric") or "—", table_body),
+                para(metric_label, table_body),
                 para(_format_evidence_observation(item, is_zh=is_zh), table_body),
                 para(_format_evidence_provider(item.get("source")), table_body),
                 para(short_timestamp(item.get("as_of")), table_body),
-                para(item.get("evidence_id") or "—", muted),
+                para(evidence_label, muted),
             ])
         evidence_table = LongTable(evidence_rows, colWidths=[content_width * x for x in (0.25, 0.22, 0.16, 0.19, 0.18)], repeatRows=1)
         evidence_table.setStyle(TableStyle([
@@ -1065,10 +1536,12 @@ def _build_professional_report_pdf(report: dict, target: dict | None, language: 
         f"Scoring: {report.get('scoring_version') or methodology.get('scoring_version') or '—'}",
         f"Builder: {methodology.get('report_builder_version') or '—'}",
     ]
-    story.extend(section(copy["method"]))
-    story.append(para(" · ".join(versions), muted))
-    story.append(Spacer(1, 4 * mm))
-    story.append(para(copy["disclaimer"], ParagraphStyle("FinalDisclaimer", parent=body, fontSize=8, leading=12, textColor=palette["muted"], alignment=TA_CENTER)))
+    story.append(KeepTogether([
+        Spacer(1, 1 * mm),
+        para(f"{copy['method']}: {' · '.join(versions)}", muted),
+        Spacer(1, 1 * mm),
+        para(copy["disclaimer"], ParagraphStyle("FinalDisclaimer", parent=body, fontSize=8, leading=12, textColor=palette["muted"], alignment=TA_CENTER)),
+    ]))
 
     doc.build(story, onFirstPage=draw_page, onLaterPages=draw_page)
     return buffer.getvalue()

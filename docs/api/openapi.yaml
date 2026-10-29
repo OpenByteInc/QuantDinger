@@ -2807,6 +2807,117 @@ paths:
       operationId: getApiUniversesAdminOverview
       summary: Get Api Universes Admin Overview
       x-visibility: internal
+  /api/universes/admin/system:
+    post:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - Universe
+      operationId: postApiUniversesAdminSystem
+      summary: Post Api Universes Admin System
+      x-visibility: internal
+  /api/universes/admin/system/{universe_id}:
+    put:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - Universe
+      operationId: putApiUniversesAdminSystemUniverseId
+      summary: Put Api Universes Admin System Universe Id
+      parameters:
+      - name: universe_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      x-visibility: internal
+    parameters:
+    - in: path
+      name: universe_id
+      required: true
+      schema:
+        type: integer
+        minimum: 0
+    delete:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - Universe
+      operationId: deleteApiUniversesAdminSystemUniverseId
+      summary: Delete Api Universes Admin System Universe Id
+      parameters:
+      - name: universe_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      x-visibility: internal
+  /api/universes/admin/system/{universe_id}/visibility:
+    put:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - Universe
+      operationId: putApiUniversesAdminSystemUniverseIdVisibility
+      summary: Put Api Universes Admin System Universe Id Visibility
+      parameters:
+      - name: universe_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      x-visibility: internal
+    parameters:
+    - in: path
+      name: universe_id
+      required: true
+      schema:
+        type: integer
+        minimum: 0
   /api/universes/admin/sync:
     post:
       responses:
@@ -6978,6 +7089,347 @@ paths:
     parameters:
     - in: path
       name: symbol
+      required: true
+      schema:
+        type: string
+        minLength: 1
+  /api/{broker}/accounts:
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - Account
+      operationId: getApiBrokerAccounts
+      summary: Get Api Broker Accounts
+      parameters:
+      - name: broker
+        in: path
+        required: true
+        schema:
+          type: string
+      x-visibility: internal
+    parameters:
+    - in: path
+      name: broker
+      required: true
+      schema:
+        type: string
+        minLength: 1
+  /api/{broker}/status:
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - Account
+      operationId: getApiBrokerStatus
+      summary: Get Api Broker Status
+      parameters:
+      - name: broker
+        in: path
+        required: true
+        schema:
+          type: string
+      x-visibility: internal
+    parameters:
+    - in: path
+      name: broker
+      required: true
+      schema:
+        type: string
+        minLength: 1
+  /api/{broker}/connect:
+    post:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - Account
+      operationId: postApiBrokerConnect
+      summary: Post Api Broker Connect
+      parameters:
+      - name: broker
+        in: path
+        required: true
+        schema:
+          type: string
+      x-visibility: internal
+    parameters:
+    - in: path
+      name: broker
+      required: true
+      schema:
+        type: string
+        minLength: 1
+  /api/{broker}/disconnect:
+    post:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - Account
+      operationId: postApiBrokerDisconnect
+      summary: Post Api Broker Disconnect
+      parameters:
+      - name: broker
+        in: path
+        required: true
+        schema:
+          type: string
+      x-visibility: internal
+    parameters:
+    - in: path
+      name: broker
+      required: true
+      schema:
+        type: string
+        minLength: 1
+  /api/{broker}/account:
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - Account
+      operationId: getApiBrokerAccount
+      summary: Get Api Broker Account
+      parameters:
+      - name: broker
+        in: path
+        required: true
+        schema:
+          type: string
+      x-visibility: internal
+    parameters:
+    - in: path
+      name: broker
+      required: true
+      schema:
+        type: string
+        minLength: 1
+  /api/{broker}/positions:
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - Account
+      operationId: getApiBrokerPositions
+      summary: Get Api Broker Positions
+      parameters:
+      - name: broker
+        in: path
+        required: true
+        schema:
+          type: string
+      x-visibility: internal
+    parameters:
+    - in: path
+      name: broker
+      required: true
+      schema:
+        type: string
+        minLength: 1
+  /api/{broker}/orders:
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - Account
+      operationId: getApiBrokerOrders
+      summary: Get Api Broker Orders
+      parameters:
+      - name: broker
+        in: path
+        required: true
+        schema:
+          type: string
+      x-visibility: internal
+    parameters:
+    - in: path
+      name: broker
+      required: true
+      schema:
+        type: string
+        minLength: 1
+  /api/{broker}/fills:
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - Account
+      operationId: getApiBrokerFills
+      summary: Get Api Broker Fills
+      parameters:
+      - name: broker
+        in: path
+        required: true
+        schema:
+          type: string
+      x-visibility: internal
+    parameters:
+    - in: path
+      name: broker
+      required: true
+      schema:
+        type: string
+        minLength: 1
+  /api/{broker}/order:
+    post:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - Account
+      operationId: postApiBrokerOrder
+      summary: Post Api Broker Order
+      parameters:
+      - name: broker
+        in: path
+        required: true
+        schema:
+          type: string
+      x-visibility: internal
+    parameters:
+    - in: path
+      name: broker
+      required: true
+      schema:
+        type: string
+        minLength: 1
+  /api/{broker}/order/{order_id}:
+    delete:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - Account
+      operationId: deleteApiBrokerOrderOrderId
+      summary: Delete Api Broker Order Order Id
+      parameters:
+      - name: broker
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: order_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      x-visibility: internal
+    parameters:
+    - in: path
+      name: broker
+      required: true
+      schema:
+        type: string
+        minLength: 1
+    - in: path
+      name: order_id
       required: true
       schema:
         type: string

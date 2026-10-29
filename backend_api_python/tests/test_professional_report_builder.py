@@ -109,6 +109,82 @@ def test_professional_builder_produces_valid_contract_for_supported_markets(mark
     assert "\u00e2\u20ac\u201d" not in report["executive_summary"]
     assert "\ufffd" not in report["executive_summary"]
     assert report["data_quality"]["coverage_ratio"] == 1
+    assert report["price_chart"]["bars"][0]["close"] == 100
+    assert report["price_chart"]["support"] == 95
+    assert report["price_chart"]["resistance"] == 110
+
+
+@pytest.mark.parametrize(
+    ("market", "symbol", "enrichment", "expected_dimension"),
+    [
+        (
+            "Forex",
+            "EURUSD",
+            {
+                "forex_drivers": {
+                    "base_currency": "EUR",
+                    "quote_currency": "USD",
+                    "policy_rates": {
+                        "EUR": {"value_pct": 2.0, "series_id": "ECBDFR"},
+                        "USD": {"value_pct": 4.5, "series_id": "FEDFUNDS"},
+                    },
+                    "policy_rate_differential_pct": -2.5,
+                    "source": "fred",
+                }
+            },
+            "fx_relative_value",
+        ),
+        (
+            "Futures",
+            "GC",
+            {
+                "futures_curve": {
+                    "contracts": [{"contract": "GCZ26.CMX", "price": 2700}],
+                    "curve_state": "contango",
+                    "scope": "nearby_expiry_settlement_proxy",
+                    "source": "yahoo_finance",
+                },
+                "futures_positioning": {
+                    "participant_group": "money_manager",
+                    "net_contracts": 108000,
+                    "scope": "weekly_cftc_commitments_of_traders",
+                    "source": "cftc",
+                },
+            },
+            "futures_curve_positioning",
+        ),
+    ],
+)
+def test_professional_builder_supports_cross_asset_research(
+    market, symbol, enrichment, expected_dimension
+):
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    payload = {
+        "market": market,
+        "symbol": symbol,
+        "timeframe": "1D",
+        "collected_at": now,
+        "price": {"price": 100, "source": "test_quote"},
+        "kline": [
+            {"timestamp": now, "open": 98, "high": 101, "low": 97, "close": 99, "volume": 100},
+            {"timestamp": now, "open": 99, "high": 102, "low": 98, "close": 100, "volume": 110},
+        ],
+        "indicators": {
+            "rsi": {"value": 55},
+            "moving_averages": {"trend": "uptrend"},
+            "levels": {"support": 95, "resistance": 110},
+            "trading_levels": {"suggested_stop_loss": 95, "suggested_take_profit": 110},
+        },
+        "_meta": {"success_items": ["price", "kline", "indicators"], "failed_items": []},
+        **enrichment,
+    }
+    report = build_professional_report(payload, _analysis(payload))
+
+    assert report["contract_validation"]["valid"] is True
+    assert report["instrument"]["market"] == market
+    assert any(item["key"] == expected_dimension for item in report["dimensions"])
+    assert report["research_intelligence"]["workflow_id"]
+    assert report["research_intelligence"]["calculation_audit"]
 
 
 def test_missing_required_equity_data_blocks_directional_recommendation():
@@ -458,3 +534,6 @@ def test_prompt_is_market_specific_grounded_and_injection_resistant(market, mark
     assert "Prediction Market" not in system + user
     assert "HIGHEST PRIORITY" not in system + user
     assert "ev_" in user
+    assert "Never describe current assets as cash or net cash" in system
+    assert "EV/EBIT requires enterprise value" in system
+    assert "do not mix enterprise values and equity values" in system

@@ -154,6 +154,11 @@ def build_equity_features(
             "latest_annual": latest_annual,
         },
         "market_specific": market_specific,
+        "supplementary": {
+            key: payload.get(key) or {}
+            for key in ("short_volume", "ownership", "earnings_transcript")
+            if payload.get(key)
+        } if market == "USStock" else {},
         "applicability": applicable if market == "HKStock" else {},
         "missing_capabilities": missing,
         "warnings": warnings,

@@ -11,7 +11,8 @@ This guide defines the minimum checks before moving from backtest or signal mode
 | Exchange tokenized equities | OKX, Bybit, Bitget Reality | catalog and regional availability required; long-only |
 | Exchange equity perpetuals | Binance, OKX, Bitget, Bybit, Gate | derivative exposure; exact native contract and swap rules required |
 | Binance bStocks | Binance | exact catalog pair, spot semantics, and no leverage |
-| USStock | Alpaca, IBKR | current broker strategy policy is long-only |
+| USStock | Alpaca, IBKR, Futu/Moomoo OpenD, Webull OpenAPI | current broker strategy policy is long-only |
+| HKStock | Futu/Moomoo OpenD | current broker strategy policy is long-only |
 | Other parsed markets | none | data or backtest support does not imply live support |
 
 HTX equity products are rejected until authoritative metadata and an execution contract are available. Mixed-market live deployment is unsupported. See [Section 18 of the Strategy API V2 guide](STRATEGY_DEV_GUIDE.md#18-deployment-and-live-boundaries) for canonical identifiers and the full boundary.

@@ -18,6 +18,7 @@ from app.services.strategy_direction import (
     normalize_direction_mode,
 )
 from app.utils.db import get_db_connection
+from app.utils.trading_venue_visibility import is_trading_venue_enabled
 
 from .contract import PLATFORM_MAX_LEVERAGE, StrategyV2ContractError, compile_strategy_v2
 
@@ -443,10 +444,14 @@ class StrategyV2DeploymentService:
         market = next(iter(market_set), "")
         if market == "Crypto" and exchange_id not in supported_crypto_exchange_ids():
             raise StrategyV2ContractError("strategyV2.cryptoCredentialRequired")
-        if market == "USStock" and exchange_id not in {"alpaca", "ibkr"}:
+        if market == "USStock" and exchange_id not in {"alpaca", "ibkr", "tiger", "webull"}:
             raise StrategyV2ContractError("strategyV2.stockCredentialRequired")
-        if market not in {"Crypto", "USStock"}:
+        if market == "HKStock" and exchange_id != "tiger":
+            raise StrategyV2ContractError("strategyV2.stockCredentialRequired")
+        if market not in {"Crypto", "USStock", "HKStock"}:
             raise StrategyV2ContractError("strategyV2.liveMarketUnsupported")
+        if not is_trading_venue_enabled(exchange_id):
+            raise StrategyV2ContractError("strategyV2.tradingVenueDisabled")
 
     @staticmethod
     def _validate_manifest_products(

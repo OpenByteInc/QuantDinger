@@ -61,7 +61,7 @@ def ensure_alpaca_settled(*, user_id, credential_id, order_id=0, symbol=""):
         raise ValueError("positionOwnership.ordersPending")
 
 
-def guarded_alpaca_quantity(*, client, strategy_id, user_id, credential_id, symbol, signal_type, amount, order_id):
+def guarded_alpaca_quantity(*, client, strategy_id, user_id, credential_id, symbol, signal_type, amount, order_id, exchange_id="alpaca"):
     """Return a safe submission quantity; caller must hold the account lock."""
     amount = _quantity(amount)
     if amount <= 0:
@@ -88,7 +88,7 @@ def guarded_alpaca_quantity(*, client, strategy_id, user_id, credential_id, symb
         account[side] += abs(qty)
     allocations = list_strategy_allocations_for_account(
         user_id=user_id, credential_id=credential_id, market_type="spot",
-        allowed_symbols={symbol}, exchange_id="alpaca",
+        allowed_symbols={symbol}, exchange_id=exchange_id,
     )
     signal = str(signal_type or "").lower()
     side = "short" if "short" in signal else "long"
@@ -104,7 +104,7 @@ def guarded_alpaca_quantity(*, client, strategy_id, user_id, credential_id, symb
         if int(row.get("strategy_id") or 0) == int(strategy_id):
             own += qty
     ownership = evaluate_and_record_ownership(
-        user_id=user_id, credential_id=credential_id, exchange_id="alpaca",
+        user_id=user_id, credential_id=credential_id, exchange_id=exchange_id,
         market_type="spot", symbol=symbol, side=side,
         account_qty=account[side], strategy_qty=total,
     )
@@ -130,6 +130,7 @@ def execute_guarded_alpaca_order(worker, **kwargs):
     order_id = int(kwargs["order_id"])
     payload = kwargs["payload"]
     signal = str(payload.get("signal_type") or kwargs["order_row"].get("signal_type") or "").lower()
+    exchange_id = str(kwargs.pop("exchange_id", "alpaca") or "alpaca").strip().lower()
     market = str(kwargs.get("market_category") or "USStock").strip().lower()
     if market in {"crypto", "cryptocurrency"} and "short" in signal:
         reason = "alpaca_crypto_short_not_supported"
@@ -149,18 +150,18 @@ def execute_guarded_alpaca_order(worker, **kwargs):
                 symbol=payload.get("symbol") or row.get("symbol"),
                 signal_type=payload.get("signal_type") or row.get("signal_type"),
                 amount=payload.get("amount") or row.get("amount") or 0,
-                order_id=order_id,
+                order_id=order_id, exchange_id=exchange_id,
             )
             if callable(prepare_submission):
                 prepare_submission()
-            worker._execute_alpaca_order_locked(**{**kwargs, "payload": payload})
+            worker._execute_alpaca_order_locked(**{**kwargs, "payload": payload, "exchange_id": exchange_id})
     except Exception as exc:
         reason = str(exc)
         if reason in {"positionOwnership.accountBusy", "positionOwnership.ordersPending"}:
             worker._mark_deferred(order_id, reason)
         else:
             if not reason.startswith("positionOwnership."):
-                logger.exception("Alpaca ownership check failed: pending_id=%s", order_id)
+                logger.exception("Broker ownership check failed: exchange=%s pending_id=%s", exchange_id, order_id)
                 reason = "positionOwnership.snapshotUnavailable"
             worker._mark_failed(order_id=order_id, error=reason)
             kwargs["_notify_live_best_effort"](status="failed", error=reason)

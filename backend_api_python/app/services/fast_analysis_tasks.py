@@ -97,6 +97,7 @@ def run_async_analysis_task(
     user_id: int,
     inflight_key: str,
     credits_charged: int = 0,
+    research_mode: str = "research",
 ) -> None:
     """Execute analysis in a background worker and finalize pending history."""
     try:
@@ -112,6 +113,7 @@ def run_async_analysis_task(
             model=model,
             timeframe=timeframe,
             user_id=user_id,
+            research_mode=research_mode,
         )
         memory.finalize_pending_task(task_memory_id, result)
         if result.get("error"):
