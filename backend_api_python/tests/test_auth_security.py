@@ -64,13 +64,10 @@ def test_settings_reload_keeps_existing_jwt_valid(monkeypatch):
         token_version=1,
     )
 
-    def fake_load(_path, override=True):
-        assert override is True
-        monkeypatch.setenv("SECRET_KEY", "different-secret-from-settings-file")
-        monkeypatch.setenv("LLM_PROVIDER", "deepseek")
-
-    monkeypatch.setattr(runtime, "load_dotenv", fake_load)
-    runtime.reload_runtime_env()
+    runtime.reload_runtime_env({
+        "SECRET_KEY": "different-secret-from-settings-file",
+        "LLM_PROVIDER": "deepseek",
+    })
     monkeypatch.setattr(auth, "_verify_token_version", lambda *_: True)
     monkeypatch.setattr(
         auth,

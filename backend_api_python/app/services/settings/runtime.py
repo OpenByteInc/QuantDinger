@@ -4,15 +4,15 @@ from __future__ import annotations
 
 import importlib
 import os
+import threading
+import time
+from typing import Dict, Optional
 
-from dotenv import load_dotenv
-
-from app.services.settings.env_file import ENV_FILE_PATH
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-_PROCESS_OWNED_ENV_KEYS = (
+PROCESS_OWNED_ENV_KEYS = (
     # Security roots must remain identical for every worker until the process
     # group is restarted. Rotating either key in just the worker that handled a
     # settings request makes JWTs or encrypted credentials unreadable by the
@@ -43,18 +43,28 @@ _PROCESS_OWNED_ENV_KEYS = (
 )
 
 
-def reload_runtime_env() -> None:
-    """Reload .env files into the current process."""
-    process_owned = {
-        key: os.environ[key]
-        for key in _PROCESS_OWNED_ENV_KEYS
-        if key in os.environ
-    }
+RUNTIME_SETTINGS_POLL_SEC = 10
 
-    load_dotenv(ENV_FILE_PATH, override=True)
-    # Runtime topology belongs to the process supervisor (Docker/systemd), not
-    # to the mutable settings file.
-    os.environ.update(process_owned)
+_sync_lock = threading.Lock()
+_sync_started = False
+
+
+def apply_runtime_settings(values: Dict[str, str]) -> None:
+    """Overlay saved Settings page values onto this process environment."""
+    for key, value in values.items():
+        # Runtime topology and security roots belong to the process supervisor
+        # (Docker/systemd/Railway), not to the mutable settings store.
+        if key not in PROCESS_OWNED_ENV_KEYS:
+            os.environ[key] = value
+
+
+def reload_runtime_env(values: Optional[Dict[str, str]] = None) -> None:
+    """Apply the latest saved settings to the current process."""
+    if values is None:
+        from app.services.settings.store import load_values
+
+        values = load_values()
+    apply_runtime_settings(values)
     try:
         registry = importlib.import_module("app.markets.registry")
         if hasattr(registry, "clear_runtime_env_cache"):
@@ -93,3 +103,54 @@ def refresh_runtime_services() -> None:
                 setattr(module, field_name, None)
         except Exception as exc:
             logger.warning("Singleton reset skipped: %s.%s: %s", module_name, field_name, exc)
+
+
+def start_runtime_settings_sync() -> None:
+    """Apply saved settings now and follow later saves from any process."""
+    global _sync_started
+    from app.services.settings.store import load_snapshot, snapshot_values
+    from app.utils.config_loader import clear_config_cache
+
+    version = 0
+    try:
+        snapshot = load_snapshot()
+        version = int(snapshot["version"])
+        apply_runtime_settings(snapshot_values(snapshot))
+        clear_config_cache()
+    except Exception as exc:
+        logger.warning("Saved runtime settings unavailable at startup: %s", exc)
+
+    with _sync_lock:
+        if _sync_started:
+            return
+        _sync_started = True
+    threading.Thread(
+        target=_follow_runtime_settings,
+        args=(version,),
+        name="runtime-settings-sync",
+        daemon=True,
+    ).start()
+
+
+def sync_runtime_settings(version: int) -> int:
+    """Apply settings saved after ``version``; return the version now applied."""
+    from app.services.settings.store import load_snapshot, snapshot_values
+    from app.utils.config_loader import clear_config_cache
+
+    snapshot = load_snapshot()
+    latest = int(snapshot["version"])
+    if latest != version:
+        clear_config_cache()
+        reload_runtime_env(snapshot_values(snapshot))
+        refresh_runtime_services()
+        logger.info("Runtime settings version %s applied", latest)
+    return latest
+
+
+def _follow_runtime_settings(version: int) -> None:
+    while True:
+        time.sleep(RUNTIME_SETTINGS_POLL_SEC)
+        try:
+            version = sync_runtime_settings(version)
+        except Exception as exc:
+            logger.warning("Runtime settings sync failed: %s", exc)

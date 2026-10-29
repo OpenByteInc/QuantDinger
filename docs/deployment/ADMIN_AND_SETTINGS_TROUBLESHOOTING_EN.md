@@ -31,9 +31,25 @@ QuantDinger never overwrites an administrator whose password has already been
 changed. If another account already uses the requested username, migration stops
 instead of promoting or merging that account.
 
+## Where Settings UI Values Are Stored
+
+The Settings UI saves values to PostgreSQL (`qd_runtime_settings`). Every
+backend, worker, and Celery process applies them at startup and picks up later
+saves within about 10 seconds, without a restart. Saved values survive restarts
+and redeployments, so platforms without a shared host `.env` (for example
+Railway) keep their settings. API keys and other password fields are stored
+encrypted with `CREDENTIAL_ENCRYPTION_KEY`.
+
+The environment file remains the baseline: a value saved in the Settings UI
+overrides the same key from `.env` or the container environment. Process-owned
+keys (`SECRET_KEY`, `CREDENTIAL_ENCRYPTION_KEY`, and process-role or strategy
+topology settings) only take effect at process start, so the Settings UI still
+writes those to `/app/.env` and they require a restart.
+
 ## Settings UI Reports Save Failure
 
-The Settings UI writes `/app/.env` directly. The corresponding host file is:
+A save failure usually means PostgreSQL is unavailable, or a process-owned key
+could not be written to `/app/.env`. The corresponding host file is:
 
 | Deployment | Host file |
 | --- | --- |

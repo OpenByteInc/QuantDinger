@@ -5,7 +5,7 @@ Admin-only endpoints for system configuration management.
 """
 import os
 import re
-from flask import jsonify, request
+from flask import g, jsonify, request
 from app.openapi.blueprint import HumanBlueprint as Blueprint
 from app._version import APP_VERSION
 from app.markets.registry import market_options
@@ -15,7 +15,8 @@ from app.utils.auth import login_required, admin_required
 from app.services.settings.branding import build_brand_config
 from app.services.settings.env_file import read_env_file, write_env_file
 from app.utils.redaction import redact_secrets
-from app.services.settings.runtime import reload_runtime_env, refresh_runtime_services
+from app.services.settings.runtime import PROCESS_OWNED_ENV_KEYS, reload_runtime_env, refresh_runtime_services
+from app.services.settings.store import read_settings, save_values
 from app.services.settings.capabilities import get_feature_flags
 
 logger = get_logger(__name__)
@@ -2065,7 +2066,7 @@ def _effective_schema(env_values=None):
     dotenv file because changing them from a running application cannot be
     applied safely or atomically.
     """
-    values = env_values if env_values is not None else read_env_file()
+    values = env_values if env_values is not None else read_settings()
     schema = _schema_with_advanced_flags()
     if not get_feature_flags(values)['billing_enabled']:
         schema.pop('billing', None)
@@ -2080,7 +2081,7 @@ def get_settings_schema():
     return jsonify({
         'code': 1,
         'msg': 'success',
-        'data': _effective_schema(read_env_file())
+        'data': _effective_schema(read_settings())
     })
 
 
@@ -2089,7 +2090,7 @@ def get_settings_schema():
 def get_public_config():
     """Return non-sensitive config values needed by frontend widgets."""
     from app.config.data_sources import CryptoPublicConfig
-    feature_flags = get_feature_flags(read_env_file())
+    feature_flags = get_feature_flags(read_settings())
     return jsonify({
         'code': 1,
         'data': {
@@ -2122,7 +2123,7 @@ def get_brand_config():
 @admin_required
 def get_settings_values():
     """Return current settings values without exposing stored secrets."""
-    env_values = read_env_file()
+    env_values = read_settings()
     
     schema = _effective_schema(env_values)
     result = {}
@@ -2191,7 +2192,7 @@ def save_settings():
         if not data:
             return jsonify({'code': 0, 'msg': 'Invalid request payload'})
         
-        current_env = read_env_file()
+        current_env = read_settings()
         effective_schema = _effective_schema(current_env)
         
         updates = {}
@@ -2287,9 +2288,23 @@ def save_settings():
                 }
             })
         
-        current_env.update(updates)
-        
-        if write_env_file(current_env):
+        # Saved values live in the database so every process and every
+        # restart sees them. Process-owned keys only take effect at process
+        # start, so they stay in the deployment's dotenv file.
+        secret_keys = {
+            item['key']
+            for group in effective_schema.values()
+            for item in group['items']
+            if item['type'] == 'password'
+        }
+        file_updates = {k: v for k, v in updates.items() if k in PROCESS_OWNED_ENV_KEYS}
+        save_values(
+            {k: v for k, v in updates.items() if k not in file_updates},
+            secret_keys=secret_keys,
+            operator_id=getattr(g, 'user_id', None),
+        )
+
+        if not file_updates or write_env_file({**read_env_file(), **file_updates}):
             restart_keys = sorted(RESTART_REQUIRED_SETTINGS.intersection(updates))
             hot_reload_keys = sorted(set(updates) - set(restart_keys))
 

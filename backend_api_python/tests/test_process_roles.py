@@ -99,13 +99,7 @@ def test_runtime_settings_reload_preserves_process_topology(monkeypatch):
     monkeypatch.setenv("QD_PROCESS_ROLE", "api")
     monkeypatch.setenv("STRATEGY_COMMANDS_ENABLED", "true")
 
-    def fake_load(_path, override=True):
-        assert override is True
-        monkeypatch.setenv("QD_PROCESS_ROLE", "legacy")
-        monkeypatch.setenv("STRATEGY_COMMANDS_ENABLED", "false")
-
-    monkeypatch.setattr(runtime, "load_dotenv", fake_load)
-    runtime.reload_runtime_env()
+    runtime.reload_runtime_env({"QD_PROCESS_ROLE": "legacy", "STRATEGY_COMMANDS_ENABLED": "false"})
 
     assert os.environ["QD_PROCESS_ROLE"] == "api"
     assert os.environ["STRATEGY_COMMANDS_ENABLED"] == "true"
@@ -121,17 +115,11 @@ def test_runtime_settings_reload_preserves_process_security_roots(monkeypatch):
     )
     monkeypatch.setenv("LLM_PROVIDER", "openrouter")
 
-    def fake_load(_path, override=True):
-        assert override is True
-        monkeypatch.setenv("SECRET_KEY", "different-file-jwt-secret")
-        monkeypatch.setenv(
-            "CREDENTIAL_ENCRYPTION_KEY",
-            "different-file-credential-key",
-        )
-        monkeypatch.setenv("LLM_PROVIDER", "deepseek")
-
-    monkeypatch.setattr(runtime, "load_dotenv", fake_load)
-    runtime.reload_runtime_env()
+    runtime.reload_runtime_env({
+        "SECRET_KEY": "different-file-jwt-secret",
+        "CREDENTIAL_ENCRYPTION_KEY": "different-file-credential-key",
+        "LLM_PROVIDER": "deepseek",
+    })
 
     assert os.environ["SECRET_KEY"] == "live-jwt-secret-shared-by-all-workers"
     assert (

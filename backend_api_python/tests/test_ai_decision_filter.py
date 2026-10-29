@@ -295,10 +295,10 @@ def test_llm_is_used_when_jev_is_not_configured(monkeypatch):
 
 
 def test_jev_config_reads_the_latest_persisted_settings(monkeypatch):
-    from app.services.settings import env_file
+    from app.services.settings import store
 
     monkeypatch.setenv("JEV_API_KEY", "stale-process-key")
-    monkeypatch.setattr(env_file, "read_env_file", lambda: {
+    monkeypatch.setattr(store, "read_settings", lambda: {
         "JEV_API_KEY": "saved-key",
         "JEV_BASE_URL": "https://example.test/v1",
         "JEV_MODEL": "saved-model",

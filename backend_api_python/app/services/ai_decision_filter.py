@@ -498,9 +498,9 @@ class AIDecisionFilter:
     def _jev_config() -> dict[str, str]:
         values: dict[str, str] = {}
         try:
-            from app.services.settings.env_file import read_env_file
+            from app.services.settings.store import read_settings
 
-            values = read_env_file()
+            values = read_settings()
         except Exception as exc:
             logger.debug("Jev settings file refresh skipped: %s", exc)
 

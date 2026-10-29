@@ -2853,6 +2853,18 @@ CREATE TABLE IF NOT EXISTS qd_process_leases (
 CREATE INDEX IF NOT EXISTS idx_process_leases_expiry
     ON qd_process_leases(lease_expires_at);
 
+-- Settings page values shared by every process (see app/services/settings/store.py).
+CREATE SEQUENCE IF NOT EXISTS qd_runtime_settings_version_seq;
+
+CREATE TABLE IF NOT EXISTS qd_runtime_settings (
+    setting_key VARCHAR(128) PRIMARY KEY,
+    value TEXT NOT NULL DEFAULT '',
+    is_secret BOOLEAN NOT NULL DEFAULT FALSE,
+    version BIGINT NOT NULL,
+    updated_by INTEGER,
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
 
 CREATE TABLE IF NOT EXISTS qd_account_positions (
     id SERIAL PRIMARY KEY,

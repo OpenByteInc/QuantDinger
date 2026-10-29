@@ -217,6 +217,10 @@ def run_startup_hooks(app: Flask) -> None:
     )
     if skip_hooks:
         return
+    from app.services.settings.runtime import start_runtime_settings_sync
+
+    # Every process role follows Settings page saves, not just the API.
+    start_runtime_settings_sync()
     role = current_process_role()
     if role in {ProcessRole.API, ProcessRole.CELERY}:
         logger.info("No process-local background services for role=%s", role.value)
