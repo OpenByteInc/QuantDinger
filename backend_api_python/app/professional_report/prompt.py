@@ -13,6 +13,7 @@ _LANGUAGE_RULES = {
     "zh-TW": "All narrative text must be in Traditional Chinese.",
     "en-US": "All narrative text must be in English.",
     "ja-JP": "All narrative text must be in Japanese.",
+    "pt-BR": "All narrative text must be in Brazilian Portuguese.",
 }
 
 _MARKET_RULES = {

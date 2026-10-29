@@ -19,11 +19,23 @@ ALERT_MESSAGES: Dict[str, Dict[str, str]] = {
         "pnl_below": "Loss alert: {symbol} P&L {pnl_percent:.1f}% has hit {threshold:.1f}% stop-loss",
         "alert_title": "Price/P&L Alert",
     },
+    "pt-BR": {
+        "price_above": "Alerta de preço: {symbol} preço atual ${current_price:.4f} ultrapassou ${threshold:.4f}",
+        "price_below": "Alerta de preço: {symbol} preço atual ${current_price:.4f} caiu abaixo de ${threshold:.4f}",
+        "pnl_above": "Alerta de lucro: {symbol} L/P {pnl_percent:.1f}% atingiu a meta de {threshold:.1f}%",
+        "pnl_below": "Alerta de perda: {symbol} L/P {pnl_percent:.1f}% atingiu o stop loss de {threshold:.1f}%",
+        "alert_title": "Alerta de Preço/L/P",
+    },
 }
 
 
 def normalize_language(language: str = "en-US") -> str:
-    return "zh-CN" if language and str(language).startswith("zh") else "en-US"
+    lang = str(language or "").lower()
+    if lang.startswith("zh"):
+        return "zh-CN"
+    if lang.startswith("pt"):
+        return "pt-BR"
+    return "en-US"
 
 
 def get_alert_message(alert_type: str, language: str = "en-US", **kwargs: Any) -> str:

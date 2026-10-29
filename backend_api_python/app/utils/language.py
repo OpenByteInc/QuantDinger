@@ -22,6 +22,7 @@ SUPPORTED_LANGS = {
     "fr-FR",
     "de-DE",
     "ru-RU",
+    "pt-BR",
 }
 
 
@@ -46,6 +47,8 @@ def _normalize_lang(raw: Optional[str]) -> Optional[str]:
         return "zh-CN"
     if lower in ("zh-tw", "zh-hant"):
         return "zh-TW"
+    if lower in ("pt", "pt-br"):
+        return "pt-BR"
 
     # Keep canonical casing if already supported
     for lang in SUPPORTED_LANGS:

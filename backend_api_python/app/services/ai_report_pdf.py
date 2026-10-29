@@ -351,7 +351,7 @@ def _language_key(language: str = "") -> str:
         return "zh-TW"
     if lang.startswith("zh"):
         return "zh-CN"
-    for key in ("ja", "ko", "de", "fr", "ru", "ar", "th", "vi"):
+    for key in ("ja", "ko", "de", "fr", "ru", "ar", "th", "vi", "pt"):
         if lang.startswith(key):
             return key
     return "en"
@@ -370,6 +370,7 @@ def _outlook_labels(language: str = "") -> dict[str, str]:
         "ar": {"BUY": "شراء", "SELL": "بيع", "HOLD": "انتظار"},
         "th": {"BUY": "ซื้อ", "SELL": "ขาย", "HOLD": "รอดู"},
         "vi": {"BUY": "Mua", "SELL": "Bán", "HOLD": "Chờ"},
+        "pt": {"BUY": "Comprar", "SELL": "Vender", "HOLD": "Aguardar"},
     }
     return labels.get(_language_key(language), labels["en"])
 
@@ -379,6 +380,7 @@ def _market_bias_labels(language: str = "") -> dict[str, str]:
         "en": {"BULLISH": "Bullish", "BEARISH": "Bearish", "NEUTRAL": "Neutral"},
         "zh-CN": {"BULLISH": "偏多", "BEARISH": "偏空", "NEUTRAL": "中性"},
         "zh-TW": {"BULLISH": "偏多", "BEARISH": "偏空", "NEUTRAL": "中性"},
+        "pt": {"BULLISH": "Altista", "BEARISH": "Baixista", "NEUTRAL": "Neutro"},
     }
     return labels.get(_language_key(language), labels["en"])
 
@@ -605,32 +607,52 @@ def _report_pdf_labels(language: str = "") -> dict[str, str]:
             "rr_warning_text": "Lợi nhuận tiềm năng thấp hơn rủi ro dự kiến. Mục tiêu chốt lời không bị kéo xa một cách giả tạo để che giấu cảnh báo này.",
             "disclaimer": "Báo cáo này do AI tạo cho mục đích nghiên cứu và không phải là lời khuyên đầu tư.",
         },
+        "pt": {
+            "title": "Relatório de Pesquisa IA QuantDinger",
+            "subtitle": "Análise de mercado assistida por IA, apenas para fins de pesquisa",
+            "target": "Ativo analisado",
+            "generated": "Gerado em",
+            "decision": "Perspectiva",
+            "confidence": "Confiança",
+            "summary": "Resumo executivo",
+            "plan": "Plano de trading",
+            "scores": "Pontuações do modelo",
+            "trend": "Perspectiva de tendência",
+            "crypto": "Estrutura do mercado cripto",
+            "details": "Análise detalhada",
+            "reasons": "Principais motivos",
+            "risks": "Observações de risco",
+            "indicators": "Indicadores técnicos",
+            "rr_warning": "Alerta de risco/retorno",
+            "rr_warning_text": "O retorno potencial é menor que o risco planejado. O alvo não foi afastado artificialmente para ocultar este alerta.",
+            "disclaimer": "Este relatório foi gerado por IA apenas para fins de pesquisa e não constitui recomendação de investimento.",
+        },
     }
     labels.update(overrides.get(_language_key(language), {}))
     labels["field_trend"] = {
         "en": "Trend", "zh-CN": "趋势", "zh-TW": "趨勢", "ja": "トレンド", "ko": "추세",
-        "de": "Trend", "fr": "Tendance", "ru": "Тренд", "ar": "الاتجاه", "th": "แนวโน้ม", "vi": "Xu hướng",
+        "de": "Trend", "fr": "Tendance", "ru": "Тренд", "ar": "الاتجاه", "th": "แนวโน้ม", "vi": "Xu hướng", "pt": "Tendência",
     }.get(_language_key(language), "Trend")
     labels["field_direction"] = {
         "en": "Direction", "zh-CN": "方向", "zh-TW": "方向", "ja": "方向", "ko": "방향",
-        "de": "Richtung", "fr": "Direction", "ru": "Направление", "ar": "الاتجاه", "th": "ทิศทาง", "vi": "Hướng",
+        "de": "Richtung", "fr": "Direction", "ru": "Направление", "ar": "الاتجاه", "th": "ทิศทาง", "vi": "Hướng", "pt": "Direção",
     }.get(_language_key(language), "Direction")
     labels["field_score"] = {
         "en": "Score", "zh-CN": "评分", "zh-TW": "評分", "ja": "スコア", "ko": "점수",
-        "de": "Bewertung", "fr": "Score", "ru": "Оценка", "ar": "الدرجة", "th": "คะแนน", "vi": "Điểm",
+        "de": "Bewertung", "fr": "Score", "ru": "Оценка", "ar": "الدرجة", "th": "คะแนน", "vi": "Điểm", "pt": "Pontuação",
     }.get(_language_key(language), "Score")
     labels["field_strength"] = {
         "en": "Strength", "zh-CN": "强度", "zh-TW": "強度", "ja": "強さ", "ko": "강도",
-        "de": "Stärke", "fr": "Force", "ru": "Сила", "ar": "القوة", "th": "ความแข็งแกร่ง", "vi": "Độ mạnh",
+        "de": "Stärke", "fr": "Force", "ru": "Сила", "ar": "القوة", "th": "ความแข็งแกร่ง", "vi": "Độ mạnh", "pt": "Força",
     }.get(_language_key(language), "Strength")
     labels["field_summary"] = labels["summary"]
     labels["field_value"] = {
         "en": "Value", "zh-CN": "数值", "zh-TW": "數值", "ja": "値", "ko": "값",
-        "de": "Wert", "fr": "Valeur", "ru": "Значение", "ar": "القيمة", "th": "ค่า", "vi": "Giá trị",
+        "de": "Wert", "fr": "Valeur", "ru": "Значение", "ar": "القيمة", "th": "ค่า", "vi": "Giá trị", "pt": "Valor",
     }.get(_language_key(language), "Value")
     labels["field_signal"] = {
         "en": "Signal", "zh-CN": "信号", "zh-TW": "訊號", "ja": "シグナル", "ko": "신호",
-        "de": "Signal", "fr": "Signal", "ru": "Сигнал", "ar": "الإشارة", "th": "สัญญาณ", "vi": "Tín hiệu",
+        "de": "Signal", "fr": "Signal", "ru": "Сигнал", "ar": "الإشارة", "th": "สัญญาณ", "vi": "Tín hiệu", "pt": "Sinal",
     }.get(_language_key(language), "Signal")
     extra_labels = {
         "en": ["Current Price", "24h Change", "Entry", "Stop Loss", "Take Profit", "Risk/Reward", "Horizon", "Outlook"],
@@ -644,6 +666,7 @@ def _report_pdf_labels(language: str = "") -> dict[str, str]:
         "ar": ["السعر الحالي", "التغير خلال 24 ساعة", "الدخول", "وقف الخسارة", "جني الأرباح", "المخاطرة/العائد", "الفترة", "التوقعات"],
         "th": ["ราคาปัจจุบัน", "การเปลี่ยนแปลง 24 ชม.", "ราคาเข้า", "จุดตัดขาดทุน", "เป้าหมายกำไร", "ความเสี่ยง/ผลตอบแทน", "กรอบเวลา", "มุมมอง"],
         "vi": ["Giá hiện tại", "Thay đổi 24 giờ", "Điểm vào", "Cắt lỗ", "Chốt lời", "Rủi ro/lợi nhuận", "Khung thời gian", "Nhận định"],
+        "pt": ["Preço atual", "Variação 24h", "Entrada", "Stop loss", "Take profit", "Risco/retorno", "Horizonte", "Perspectiva"],
     }.get(_language_key(language))
     (
         labels["current_price"],

@@ -50,6 +50,7 @@ SUPPORTED_LANGUAGES: Dict[str, str] = {
     'fr-FR': 'French',
     'ja-JP': 'Japanese',
     'ko-KR': 'Korean',
+    'pt-BR': 'Brazilian Portuguese',
     'th-TH': 'Thai',
     'vi-VN': 'Vietnamese',
 }

@@ -52,7 +52,7 @@ def _language_key(language: str = "") -> str:
         return "zh-TW"
     if lang.startswith("zh"):
         return "zh-CN"
-    for key in ("ja", "ko", "de", "fr", "ru", "ar", "th", "vi"):
+    for key in ("ja", "ko", "de", "fr", "ru", "ar", "th", "vi", "pt"):
         if lang.startswith(key):
             return key
     return "en"
@@ -70,6 +70,7 @@ _OUTLOOK_LABELS: Dict[str, Dict[str, str]] = {
     "ar": {"BUY": "إيجابي", "SELL": "سلبي", "HOLD": "محايد"},
     "th": {"BUY": "เชิงบวก", "SELL": "เชิงลบ", "HOLD": "เป็นกลาง"},
     "vi": {"BUY": "Tích cực", "SELL": "Tiêu cực", "HOLD": "Trung lập"},
+    "pt": {"BUY": "Altista", "SELL": "Baixista", "HOLD": "Neutro"},
 }
 
 
@@ -148,6 +149,20 @@ def _monitor_report_texts(language: str = "") -> Dict[str, str]:
         "ar": {"buy": "إيجابي", "sell": "سلبي", "hold": "محايد", "ai_recommendations": "توقعات الذكاء الاصطناعي", "ai_decision": "توقعات الذكاء الاصطناعي"},
         "th": {"buy": "เชิงบวก", "sell": "เชิงลบ", "hold": "เป็นกลาง", "ai_recommendations": "มุมมอง AI", "ai_decision": "มุมมอง AI"},
         "vi": {"buy": "Tích cực", "sell": "Tiêu cực", "hold": "Trung lập", "ai_recommendations": "Nhận định AI", "ai_decision": "Nhận định AI"},
+        "pt": {
+            "title": "Relatório de Análise IA da Carteira", "subtitle": "Gerado pelo motor de análise rápida IA da QuantDinger",
+            "kicker": "Monitor IA agendado", "overview": "Visão geral da carteira", "positions": "Posições",
+            "total_value": "Valor total", "total_cost": "Custo total", "total_pnl": "L/P total", "watchlist": "Lista de observação",
+            "monitor_type": "Tipo de monitor", "latest_price": "Último preço", "not_applicable": "N/D",
+            "ai_recommendations": "Perspectiva IA", "buy": "Altista", "sell": "Baixista", "hold": "Neutro",
+            "position_analysis": "Análise das posições", "current_price": "Atual", "entry_price": "Entrada", "pnl": "L/P",
+            "quantity": "Qtd.", "side": "Lado", "long": "Comprado", "short": "Vendido", "ai_decision": "Perspectiva IA",
+            "confidence": "Confiança", "reasoning": "Resumo", "trader_report": "Análise do trader",
+            "risk_report": "Avaliação de risco", "overview_report": "Visão geral do mercado", "click_expand": "Clique para expandir",
+            "user_focus": "Foco do usuário", "generated_at": "Gerado em",
+            "disclaimer": "Apenas para referência de pesquisa. Não constitui recomendação de investimento.",
+            "analysis_failed": "Falha na análise",
+        },
     }
     texts.update(overrides.get(_language_key(language), {}))
     return texts

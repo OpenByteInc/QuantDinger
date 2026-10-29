@@ -136,6 +136,7 @@ SUPPORTED_LANGUAGES = (
     "ar-SA",
     "th-TH",
     "vi-VN",
+    "pt-BR",
 )
 
 
@@ -209,3 +210,12 @@ def test_report_pdf_renders_for_every_supported_language(language):
 
     assert pdf.startswith(b"%PDF")
     assert len(pdf) > 1_000
+
+
+def test_pt_br_request_language_and_alerts_are_supported():
+    from app.services.portfolio_monitor_i18n import get_alert_title
+    from app.utils.language import _normalize_lang
+
+    assert _normalize_lang("pt-BR,pt;q=0.9") == "pt-BR"
+    assert _normalize_lang("pt") == "pt-BR"
+    assert get_alert_title("pt-BR") == "Alerta de Preço/L/P"

@@ -150,6 +150,7 @@ AGENT_RESPONSE_LANGUAGES = {
     "fr-fr": "French",
     "ja-jp": "Japanese",
     "ko-kr": "Korean",
+    "pt-br": "Brazilian Portuguese",
     "ru-ru": "Russian",
     "th-th": "Thai",
     "vi-vn": "Vietnamese",
