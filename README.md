@@ -130,7 +130,9 @@
 ## Watch QuantDinger in action
 
 <p align="center">
-  <img src="docs/screenshots/quantdinger-v5-2x.gif" alt="QuantDinger product demo at 2× speed" width="800">
+  <a href="https://youtu.be/y9EiCZSaIt0">
+    <img src="docs/screenshots/quantdinger-youtube-overview.png" alt="Watch the latest QuantDinger overview on YouTube" width="800">
+  </a>
 </p>
 
 ## What QuantDinger is
