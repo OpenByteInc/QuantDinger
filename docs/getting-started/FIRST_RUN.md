@@ -4,7 +4,7 @@ This guide connects installation, configuration, and the first validated workflo
 
 ## 1. Start and sign in
 
-Choose Docker or source deployment from the [project documentation](../README.md). Open the web app, sign in with the administrator account created during deployment, and replace any initial password immediately.
+Start with the [installation overview](INSTALLATION.md) and choose Windows, Linux/macOS, cloud, SaaS, or mobile delivery. Open the web app, sign in with the administrator created during deployment, and complete [post-installation setup](POST_INSTALL_SETUP.md) immediately.
 
 If the page, database, or containers fail to start, use [installation troubleshooting](../deployment/INSTALL_TROUBLESHOOTING.md). Complete [production hardening](../deployment/PRODUCTION_HARDENING.md) before exposing the service publicly.
 
@@ -53,4 +53,3 @@ To use QuantDinger from Codex, Cursor, or Claude Code, issue an Agent Token with
 - At least one strategy validates and completes a backtest.
 - A person has reviewed the result range, costs, and limitations.
 - Notification tests pass while live execution remains stopped or in signal mode.
-

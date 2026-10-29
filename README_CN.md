@@ -241,6 +241,10 @@ flowchart TB
 
 ## 快速开始
 
+不确定该选择 Windows、Linux/macOS、云服务器、SaaS 还是移动端？先阅读
+[安装与部署总览](docs/getting-started/INSTALLATION_CN.md)。每条路径都包含安装、验证、升级、
+部署后设置和常见问题。
+
 ### 最快的云端部署方式：AWS Marketplace
 
 <p align="center">
@@ -363,9 +367,19 @@ docker compose ps
 
 基础服务栈不会启动 Prometheus、Grafana 或 Alertmanager，从而保持默认开源安装的轻量化。
 
-有关详细安装路径、Windows 注意事项、中国镜像设置和 PostgreSQL 迁移指导，请参阅
-[安装故障排查](docs/deployment/INSTALL_TROUBLESHOOTING_CN.md)和
-[云部署指南](docs/deployment/CLOUD_DEPLOYMENT_CN.md)。
+有关完整平台步骤，请参阅 [Windows 安装](docs/deployment/WINDOWS_INSTALLATION_CN.md)、
+[Linux 与 macOS 安装](docs/deployment/LINUX_MACOS_INSTALLATION_CN.md)、
+[云部署指南](docs/deployment/CLOUD_DEPLOYMENT_CN.md)、
+[SaaS 部署](docs/deployment/SAAS_DEPLOYMENT_CN.md)和
+[移动端部署](docs/deployment/MOBILE_CLIENT_DEPLOYMENT_CN.md)。安装成功后继续完成
+[部署后首次设置](docs/getting-started/POST_INSTALL_SETUP_CN.md)；异常处理见
+[安装 FAQ](docs/deployment/INSTALLATION_FAQ_CN.md)和
+[安装故障排查](docs/deployment/INSTALL_TROUBLESHOOTING_CN.md)。
+
+首次登录后可直接按[30 分钟上手](docs/getting-started/QUICKSTART_30_MINUTES_CN.md)完成基础配置、AI
+接入、首份研究和回测。生产管理员还应阅读[配置参考](docs/deployment/CONFIGURATION_REFERENCE_CN.md)、
+[备份、恢复与迁移](docs/deployment/BACKUP_RESTORE_MIGRATION_CN.md)以及
+[升级与回滚](docs/deployment/UPGRADE_ROLLBACK_CN.md)。
 
 如需使用免费的 AWS Marketplace 单机交付方案，以及查看首次部署、升级、备份、回滚和费用说明，
 请参阅 [AWS Marketplace 一键部署指南](docs/deployment/AWS_MARKETPLACE_DEPLOYMENT_CN.md)。
@@ -694,6 +708,13 @@ Web 与移动端仓库分别发布自己的 GHCR 镜像。只有从源码构建�
 
 | 主题 | 文档 |
 | --- | --- |
+| 安装与平台选择 | [安装总览](docs/getting-started/INSTALLATION_CN.md) |
+| 30 分钟上手 | [首次完整流程](docs/getting-started/QUICKSTART_30_MINUTES_CN.md) |
+| 系统配置 | [配置参考](docs/deployment/CONFIGURATION_REFERENCE_CN.md) |
+| 外部服务 | [券商、数据源与 AI 接入](docs/deployment/INTEGRATION_GUIDE_CN.md) |
+| 备份与迁移 | [备份、恢复与迁移](docs/deployment/BACKUP_RESTORE_MIGRATION_CN.md) |
+| 升级与回滚 | [升级与回滚](docs/deployment/UPGRADE_ROLLBACK_CN.md) |
+| 故障诊断 | [错误知识库](docs/deployment/ERROR_KNOWLEDGE_BASE_CN.md) |
 | 贡献者架构 | [系统架构](docs/architecture/ARCHITECTURE.md) |
 | 模块所有权 | [模块边界](docs/architecture/MODULE_BOUNDARIES.md) |
 | 进程与任务所有权 | [进程职责](docs/architecture/PROCESS_ROLES_AND_TASKS.md) |
@@ -707,6 +728,7 @@ Web 与移动端仓库分别发布自己的 GHCR 镜像。只有从源码构建�
 | 云部署 | [云部署](docs/deployment/CLOUD_DEPLOYMENT_EN.md) |
 | AWS Marketplace | [一键部署与升级](docs/deployment/AWS_MARKETPLACE_DEPLOYMENT_CN.md) |
 | 安装问题 | [故障排查](docs/deployment/INSTALL_TROUBLESHOOTING.md) |
+| 文档维护 | [文档维护规范](docs/architecture/DOCUMENTATION_MAINTENANCE_CN.md) |
 
 ## 参与贡献
 

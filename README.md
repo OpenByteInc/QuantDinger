@@ -263,6 +263,11 @@ before changing replica counts or moving the stack to multiple hosts.
 
 ## Quick start
 
+If you are unsure whether to choose Windows, Linux/macOS, a cloud server, SaaS,
+or a mobile client, start with the
+[installation and deployment overview](docs/getting-started/INSTALLATION.md).
+Each path covers installation, verification, upgrades, post-install setup, and troubleshooting.
+
 ### Fastest cloud deployment: AWS Marketplace
 
 <p align="center">
@@ -407,10 +412,22 @@ docker compose ps
 The base stack does not start Prometheus, Grafana, or Alertmanager. This keeps
 the default open-source installation smaller.
 
-For detailed installation paths, Windows notes, China mirror settings, and
-PostgreSQL migration guidance, see
-[Installation troubleshooting](docs/deployment/INSTALL_TROUBLESHOOTING.md) and the
-[cloud deployment guide](docs/deployment/CLOUD_DEPLOYMENT_EN.md).
+For complete platform instructions, see [Windows](docs/deployment/WINDOWS_INSTALLATION.md),
+[Linux and macOS](docs/deployment/LINUX_MACOS_INSTALLATION.md),
+[cloud](docs/deployment/CLOUD_DEPLOYMENT_EN.md),
+[SaaS](docs/deployment/SAAS_DEPLOYMENT.md), and
+[mobile client deployment](docs/deployment/MOBILE_CLIENT_DEPLOYMENT.md). Continue with
+[post-installation setup](docs/getting-started/POST_INSTALL_SETUP.md); use the
+[installation FAQ](docs/deployment/INSTALLATION_FAQ.md) and
+[installation troubleshooting](docs/deployment/INSTALL_TROUBLESHOOTING.md) when needed.
+
+After the first login, follow the
+[30-minute quickstart](docs/getting-started/QUICKSTART_30_MINUTES.md) to configure
+the core system and produce a first research result and backtest. Production
+administrators should also read the
+[configuration reference](docs/deployment/CONFIGURATION_REFERENCE.md),
+[backup, restore, and migration guide](docs/deployment/BACKUP_RESTORE_MIGRATION.md),
+and [upgrade and rollback guide](docs/deployment/UPGRADE_ROLLBACK.md).
 
 For the free AWS Marketplace single-node delivery option, including first
 launch, upgrades, backup, rollback, and cost notes, see the
@@ -772,6 +789,13 @@ The maintained documentation index is available at [`docs/README.md`](docs/READM
 
 | Topic | Document |
 | --- | --- |
+| Installation and platform choice | [Installation overview](docs/getting-started/INSTALLATION.md) |
+| 30-minute quickstart | [First complete workflow](docs/getting-started/QUICKSTART_30_MINUTES.md) |
+| System configuration | [Configuration reference](docs/deployment/CONFIGURATION_REFERENCE.md) |
+| External services | [Broker, data, and AI integrations](docs/deployment/INTEGRATION_GUIDE.md) |
+| Backup and migration | [Backup, restore, and migration](docs/deployment/BACKUP_RESTORE_MIGRATION.md) |
+| Upgrade and rollback | [Upgrade and rollback](docs/deployment/UPGRADE_ROLLBACK.md) |
+| Incident diagnosis | [Error knowledge base](docs/deployment/ERROR_KNOWLEDGE_BASE.md) |
 | Contributor architecture | [Architecture](docs/architecture/ARCHITECTURE.md) |
 | Module ownership | [Module boundaries](docs/architecture/MODULE_BOUNDARIES.md) |
 | Process and task ownership | [Process roles](docs/architecture/PROCESS_ROLES_AND_TASKS.md) |
@@ -785,6 +809,7 @@ The maintained documentation index is available at [`docs/README.md`](docs/READM
 | Cloud deployment | [Cloud deployment](docs/deployment/CLOUD_DEPLOYMENT_EN.md) |
 | AWS Marketplace | [One-click deployment and upgrade](docs/deployment/AWS_MARKETPLACE_DEPLOYMENT.md) |
 | Installation problems | [Troubleshooting](docs/deployment/INSTALL_TROUBLESHOOTING.md) |
+| Documentation maintenance | [Documentation standard](docs/architecture/DOCUMENTATION_MAINTENANCE.md) |
 
 ## Contributing
 

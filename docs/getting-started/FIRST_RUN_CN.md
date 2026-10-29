@@ -4,7 +4,7 @@
 
 ## 1. 启动并登录
 
-按照[中文项目文档](../../README_CN.md)选择 Docker 或源码部署。首次打开 Web 页面后，用部署时设置的管理员账号登录，并立即更换初始密码。
+先从[安装与部署总览](INSTALLATION_CN.md)选择 Windows、Linux/macOS、云服务器、SaaS 或移动端路径。首次打开 Web 页面后，用部署时设置的管理员账号登录，并按[部署后首次设置](POST_INSTALL_SETUP_CN.md)立即完成管理员安全和基础配置。
 
 如果页面、数据库或容器无法启动，先查看[安装排障](../deployment/INSTALL_TROUBLESHOOTING_CN.md)。面向公网部署前完成[生产加固](../deployment/PRODUCTION_HARDENING_CN.md)。
 

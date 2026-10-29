@@ -16,12 +16,16 @@ AI-agent access. This documentation describes the current v5 release.
 
 | Goal | Start here | Continue with |
 | --- | --- | --- |
-| First use | [First-run guide](getting-started/FIRST_RUN.md) | [Installation troubleshooting](deployment/INSTALL_TROUBLESHOOTING.md) |
+| Install or deploy | [Installation overview](getting-started/INSTALLATION.md) | [Post-installation setup](getting-started/POST_INSTALL_SETUP.md) |
+| First use | [30-minute quickstart](getting-started/QUICKSTART_30_MINUTES.md) | [First-run guide](getting-started/FIRST_RUN.md) |
+| Configure integrations | [Configuration reference](deployment/CONFIGURATION_REFERENCE.md) | [Broker, data, and AI integrations](deployment/INTEGRATION_GUIDE.md) |
 | Use AI research | [AI Research guide](product/AI_RESEARCH.md) | [Strategy workflow](product/STRATEGY_WORKFLOW.md) |
 | Run a backtest | [Backtest Center guide](product/BACKTEST_CENTER.md) | [Strategy API V2 guide](trading/STRATEGY_DEV_GUIDE.md) |
 | Prepare live trading | [Live-trading safety](trading/LIVE_TRADING_SAFETY.md) | [Security and reporting](security/README.md) |
 | Reconcile Alpaca execution fees | [English](trading/ALPACA_FEE_RECONCILIATION.md) | [简体中文](trading/ALPACA_FEE_RECONCILIATION_CN.md) |
 | Prepare production | [Production hardening](deployment/PRODUCTION_HARDENING.md) | [Observability](deployment/OBSERVABILITY.md) |
+| Upgrade or move an instance | [Upgrade and rollback](deployment/UPGRADE_ROLLBACK.md) | [Backup, restore, and migration](deployment/BACKUP_RESTORE_MIGRATION.md) |
+| Diagnose a problem | [Error knowledge base](deployment/ERROR_KNOWLEDGE_BASE.md) | [Installation troubleshooting](deployment/INSTALL_TROUBLESHOOTING.md) |
 | Deploy from AWS Marketplace | [English](deployment/AWS_MARKETPLACE_DEPLOYMENT.md) | [简体中文](deployment/AWS_MARKETPLACE_DEPLOYMENT_CN.md) |
 | Release or scale runtime workers | [Distributed runtime scaling](deployment/DISTRIBUTED_RUNTIME_SCALING.md) | [V6 capacity plan](architecture/V6_HYPERSCALE_ARCHITECTURE_PLAN.md) |
 | Connect an AI agent | [MCP setup](agent/MCP_SETUP.md) | [Agent Gateway quickstart](agent/AGENT_QUICKSTART.md) |
@@ -29,6 +33,9 @@ AI-agent access. This documentation describes the current v5 release.
 | Extend the backend | [Architecture overview](architecture/README.md) | [Extension guide](architecture/EXTENSION_GUIDE.md) |
 
 ## Five-minute installation
+
+For Windows, Linux/macOS, cloud, SaaS, and mobile-specific instructions, use the
+[installation overview](getting-started/INSTALLATION.md).
 
 Prerequisites: Docker with Compose v2. The installer asks for an administrator
 account, generates the required secrets, writes the deployment environment, and
@@ -84,6 +91,9 @@ ownership or shared state.
 
 ### Getting started and product guides
 
+- [Installation and deployment overview](getting-started/INSTALLATION.md)
+- [30-minute quickstart](getting-started/QUICKSTART_30_MINUTES.md)
+- [Post-installation setup](getting-started/POST_INSTALL_SETUP.md)
 - [First run with QuantDinger](getting-started/FIRST_RUN.md)
 - [AI Research guide](product/AI_RESEARCH.md)
 - [From strategy idea to operation](product/STRATEGY_WORKFLOW.md)
@@ -100,11 +110,22 @@ ownership or shared state.
 
 ### Deployment and operations
 
+- [Windows installation](deployment/WINDOWS_INSTALLATION.md)
+- [Linux and macOS installation](deployment/LINUX_MACOS_INSTALLATION.md)
 - [Cloud deployment](deployment/CLOUD_DEPLOYMENT_EN.md)
+- [SaaS deployment](deployment/SAAS_DEPLOYMENT.md)
+- [Mobile client deployment](deployment/MOBILE_CLIENT_DEPLOYMENT.md)
+- [Configuration reference](deployment/CONFIGURATION_REFERENCE.md)
+- [Broker, data, and AI integrations](deployment/INTEGRATION_GUIDE.md)
+- [Compatibility matrix](deployment/COMPATIBILITY_MATRIX.md)
+- [Backup, restore, and migration](deployment/BACKUP_RESTORE_MIGRATION.md)
+- [Upgrade and rollback](deployment/UPGRADE_ROLLBACK.md)
+- [Error knowledge base](deployment/ERROR_KNOWLEDGE_BASE.md)
 - AWS Marketplace: [English](deployment/AWS_MARKETPLACE_DEPLOYMENT.md) / [简体中文](deployment/AWS_MARKETPLACE_DEPLOYMENT_CN.md)
 - [Distributed runtime deployment and scaling](deployment/DISTRIBUTED_RUNTIME_SCALING.md)
 - [分布式运行时部署与扩容](deployment/DISTRIBUTED_RUNTIME_SCALING_CN.md)
 - [Installation troubleshooting](deployment/INSTALL_TROUBLESHOOTING.md)
+- [Installation FAQ](deployment/INSTALLATION_FAQ.md)
 - [Production hardening](deployment/PRODUCTION_HARDENING.md)
 - [Observability](deployment/OBSERVABILITY.md)
 - [Multi-user operation](deployment/MULTI_USER_SETUP.md)
@@ -120,6 +141,7 @@ ownership or shared state.
 - [Concurrency model](architecture/CONCURRENCY_MODEL.md)
 - [Process and task ownership](architecture/PROCESS_ROLES_AND_TASKS.md)
 - [V6 hyperscale architecture plan](architecture/V6_HYPERSCALE_ARCHITECTURE_PLAN.md)
+- [Documentation maintenance standard](architecture/DOCUMENTATION_MAINTENANCE.md)
 
 ### Trading and research
 
@@ -150,6 +172,8 @@ to the paired page. Machine-readable schemas, identifiers, environment variable
 names, and code remain in their canonical English form.
 
 The repository `docs/` directory is the source of truth. Update the relevant
-index and counterpart language page when a contract or workflow changes. Do not
+index and counterpart language page when a contract or workflow changes. Follow
+the [documentation maintenance standard](architecture/DOCUMENTATION_MAINTENANCE.md)
+for page structure, screenshots, release review, and definition of done. Do not
 publish planning notes, completed roadmaps, or temporary audits as product
 documentation.
