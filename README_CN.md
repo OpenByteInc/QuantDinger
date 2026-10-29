@@ -124,6 +124,8 @@
   <a href="https://youtu.be/y9EiCZSaIt0">
     <img src="docs/screenshots/quantdinger-youtube-overview.png" alt="在 YouTube 观看最新 QuantDinger 介绍视频" width="800">
   </a>
+  <br>
+  <strong><a href="https://youtu.be/y9EiCZSaIt0">▶ 在 YouTube 观看最新 QuantDinger 产品介绍</a></strong>
 </p>
 
 ## QuantDinger 是什么
