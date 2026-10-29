@@ -1001,3 +1001,31 @@ def test_model_fallback_flag_is_false_when_primary_model_answers(monkeypatch):
     assert out == "generated code"
     assert service.last_model_used == "deepseek/deepseek-v4.1-flash"
     assert service.model_fallback_used is False
+
+
+def test_openai_endpoint_uses_max_completion_tokens(monkeypatch):
+    captured = []
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {"choices": [{"message": {"content": "{}"}}]}
+
+        def iter_lines(self, decode_unicode=False):
+            return [b"data: [DONE]"]
+
+        def close(self):
+            return None
+
+    service = LLMService(provider="openai")
+    monkeypatch.setattr(service, "get_max_tokens", lambda: 16384)
+    monkeypatch.setattr(service, "_llm_post", lambda url, **kwargs: captured.append(kwargs["json_payload"]) or FakeResponse())
+
+    args = ([{"role": "user", "content": "hi"}], "gpt-6-luna", 0.7, "key", "https://api.openai.com/v1", 30)
+    service._call_openai_compatible(*args)
+    list(service._stream_openai_compatible(*args))
+
+    for payload in captured:
+        assert payload["max_completion_tokens"] == 16384
+        assert "max_tokens" not in payload

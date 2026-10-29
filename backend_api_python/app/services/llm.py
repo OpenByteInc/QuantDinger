@@ -19,6 +19,12 @@ logger = get_logger(__name__)
 
 DEFAULT_MAX_TOKENS = 16_384
 
+
+def _output_token_param(base_url: str) -> str:
+    """OpenAI replaced max_tokens with max_completion_tokens and newer models reject
+    the old name; other OpenAI-compatible providers still expect max_tokens."""
+    return "max_completion_tokens" if "api.openai.com" in (base_url or "").lower() else "max_tokens"
+
 RETRYABLE_LLM_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504, 529}
 RETRYABLE_LLM_ERROR_TYPES = {
     "premature_eof",
@@ -463,7 +469,7 @@ class LLMService:
             "model": model,
             "messages": messages,
             "temperature": temperature,
-            "max_tokens": self.get_max_tokens(),
+            _output_token_param(base_url): self.get_max_tokens(),
         }
         
         # AtlasCloud documents the OpenAI-compatible ChatCompletion shape, but
@@ -946,7 +952,7 @@ class LLMService:
             "model": model,
             "messages": messages,
             "temperature": temperature,
-            "max_tokens": self.get_max_tokens(),
+            _output_token_param(base_url): self.get_max_tokens(),
             "stream": True,
         }
         response = self._llm_post(url, headers=headers, json_payload=data, timeout=timeout, stream=True)
