@@ -121,7 +121,9 @@
 ## 观看 QuantDinger 实际运行
 
 <p align="center">
-  <img src="docs/screenshots/quantdinger-v5-2x.gif" alt="QuantDinger 产品演示，2 倍速" width="800">
+  <a href="https://youtu.be/y9EiCZSaIt0">
+    <img src="docs/screenshots/quantdinger-youtube-overview.png" alt="在 YouTube 观看最新 QuantDinger 介绍视频" width="800">
+  </a>
 </p>
 
 ## QuantDinger 是什么
