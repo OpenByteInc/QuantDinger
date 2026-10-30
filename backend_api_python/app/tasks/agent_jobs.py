@@ -36,6 +36,23 @@ def _execute(kind: str, payload: dict, on_progress):
     raise ValueError(f"Unsupported durable agent job kind: {kind}")
 
 
+_INTERRUPTED_ERRORS = {"strategy_evolution": "strategyEvolution.workerInterrupted"}
+
+
+def _fail_interrupted_job(job_id: str, kind: str) -> None:
+    from app.utils import agent_jobs
+
+    error = _INTERRUPTED_ERRORS.get(kind, "WORKER_INTERRUPTED")
+    if agent_jobs._set_failure(job_id, error):
+        agent_jobs._publish_progress(
+            job_id,
+            {"phase": "failed", "error": error, "ts": time.time()},
+            terminal=True,
+        )
+    else:
+        agent_jobs._publish_terminal_state(job_id)
+
+
 @celery_app.task(name="quantdinger.tasks.agent_job", acks_late=True)
 def execute_agent_job(job_id: str) -> None:
     from app.utils import agent_jobs
@@ -51,6 +68,10 @@ def execute_agent_job(job_id: str) -> None:
         raise ValueError(f"Unsupported durable agent job kind: {kind}")
 
     if not agent_jobs._set_status(job_id, "running", started_at=datetime.utcnow()):
+        if row.get("status") == "running":
+            # Redelivered while marked running: the broker visibility timeout exceeds the
+            # hard time limit, so the previous attempt died (OOM, SIGKILL, redeploy).
+            _fail_interrupted_job(job_id, kind)
         return
     agent_jobs._publish_progress(job_id, {"phase": "running", "ts": time.time()})
     try:

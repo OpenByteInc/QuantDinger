@@ -102,3 +102,26 @@ def test_stream_picks_up_live_event():
     assert len(events) == 1
     assert events[0]["data"]["hello"] == "world"
     assert events[0]["terminal"] is True
+
+
+@pytest.mark.parametrize(
+    ("kind", "expected_error"),
+    [("strategy_evolution", "strategyEvolution.workerInterrupted"), ("backtest", "WORKER_INTERRUPTED")],
+)
+def test_redelivered_running_job_is_failed_not_left_running(monkeypatch, kind, expected_error):
+    """A worker killed mid-job (OOM/SIGKILL) gets the task redelivered while the row is
+    still 'running'; the job must be failed instead of silently stuck forever."""
+    from app.tasks import agent_jobs as agent_job_tasks
+
+    failures = []
+    monkeypatch.setattr(agent_jobs, "get_job_for_worker", lambda *_: {"status": "running", "kind": kind})
+    monkeypatch.setattr(agent_jobs, "_set_status", lambda *a, **kw: False)
+    monkeypatch.setattr(agent_jobs, "_set_failure", lambda job_id, error: failures.append((job_id, error)) or True)
+    monkeypatch.setattr(agent_job_tasks, "_execute", lambda *a: pytest.fail("must not re-run a dead job"))
+
+    agent_job_tasks.execute_agent_job.run("job-1")
+
+    assert failures == [("job-1", expected_error)]
+    buf, _ = agent_jobs._job_buffer("job-1")
+    assert buf[-1]["terminal"] is True
+    assert buf[-1]["data"]["error"] == expected_error
