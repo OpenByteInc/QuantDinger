@@ -101,8 +101,8 @@ pygments==2.20.0
 pyjwt==2.15.1
 pyluach==2.3.0
 pyotp==2.10.0
-pyasn1==0.6.4
-pypdf==6.21.2
+pyasn1==0.6.5
+pypdf==6.21.4
 pysocks==1.7.1
 python-dateutil==2.9.0.post0
 python-dotenv==1.2.4
