@@ -533,7 +533,7 @@ not include credentials, account data, or exploitable details in public issues.
 | Strategies | Strategy API V2 intents, sizing, risk, backtests, and live runtime. |
 | Crypto | Binance, OKX, Bitget, Bybit, Gate, HTX, and adapter extensions. |
 | Traditional brokers | IBKR and Alpaca workflows. |
-| AI providers | OpenRouter, OpenAI-compatible APIs, Google, DeepSeek, Grok, MiniMax, and custom endpoints. |
+| AI providers | OpenRouter, OpenAI-compatible APIs, Google, DeepSeek, Grok, MiniMax, 88API, and custom endpoints. |
 | Automation | Human API, Agent Gateway, MCP server, Celery jobs, schedules, and notifications. |
 
 Start with the [Indicator guide](docs/trading/INDICATOR_DEV_GUIDE.md),

@@ -104,7 +104,7 @@ ADVANCED_KEYS = {
     'AI_CODE_GEN_MODEL', 'LLM_PROXY_URL', 'LLM_USE_SYSTEM_PROXY',
     'JEV_BASE_URL', 'JEV_MODEL', 'JEV_TIMEOUT_SECONDS', 'JEV_MIN_CONFIDENCE', 'AI_DECISION_TIMEOUT_SECONDS',
     'SEC_EDGAR_USER_AGENT',
-    'OPENAI_BASE_URL', 'DEEPSEEK_BASE_URL', 'GROK_BASE_URL', 'ATLASCLOUD_BASE_URL', 'MINIMAX_BASE_URL',
+    'OPENAI_BASE_URL', 'DEEPSEEK_BASE_URL', 'GROK_BASE_URL', 'ATLASCLOUD_BASE_URL', 'MINIMAX_BASE_URL', 'API88_BASE_URL',
     # Trading internals
     'ORDER_MODE', 'MAKER_WAIT_SEC',
     'FINNHUB_API_KEY', 'FINNHUB_FREE_ONLY',
@@ -473,6 +473,7 @@ CONFIG_SCHEMA = {
                     {'value': 'custom', 'label': 'Custom API (OpenAI-compatible)'},
                     {'value': 'minimax', 'label': 'MiniMax'},
                     {'value': 'litellm', 'label': 'LiteLLM (100+ providers)'},
+                    {'value': 'api88', 'label': '88API (Multi-model gateway)'},
                 ],
                 'description': 'Select your preferred LLM provider'
             },
@@ -724,6 +725,35 @@ CONFIG_SCHEMA = {
                 'default': '',
                 'description': 'Optional. Override provider base URL (e.g. Azure endpoint)',
                 'group': 'litellm'
+            },
+            # 88API
+            {
+                'key': 'API88_API_KEY',
+                'label': '88API API Key',
+                'type': 'password',
+                'required': False,
+                'link': 'https://88api.ai/console/token',
+                'link_text': 'settings.link.getApiKey',
+                'description': '88API API key. One key calls GPT, Claude, Gemini, DeepSeek, Grok, MiniMax and more through an OpenAI-compatible endpoint.',
+                'group': 'api88'
+            },
+            {
+                'key': 'API88_MODEL',
+                'label': '88API Model',
+                'type': 'text',
+                'default': 'claude-sonnet-5-5',
+                'link': 'https://88api.ai/pricing',
+                'link_text': 'settings.link.viewModels',
+                'description': '88API model ID without provider prefix, e.g. claude-sonnet-5-5, gpt-5.5, gemini-2.5-pro, deepseek-v4-pro. The API key group must include the model.',
+                'group': 'api88'
+            },
+            {
+                'key': 'API88_BASE_URL',
+                'label': '88API Base URL',
+                'type': 'text',
+                'default': 'https://88api.ai/v1',
+                'description': '88API OpenAI-compatible API endpoint. Must include /v1.',
+                'group': 'api88'
             },
             # Common settings
             {

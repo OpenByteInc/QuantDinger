@@ -202,6 +202,16 @@ class MetaAPIKeys(type):
         from app.utils.config_loader import load_addon_config
         val = load_addon_config().get('litellm', {}).get('api_key')
         return val if val else ''
+
+    @property
+    def API88_API_KEY(cls):
+        """88API API key"""
+        env_val = os.getenv('API88_API_KEY', '').strip()
+        if env_val:
+            return env_val
+        from app.utils.config_loader import load_addon_config
+        val = load_addon_config().get('api88', {}).get('api_key')
+        return val if val else ''
     
     @property
     def TAVILY_API_KEYS(cls):

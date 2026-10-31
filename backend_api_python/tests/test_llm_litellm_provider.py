@@ -107,6 +107,144 @@ def test_atlascloud_openai_compatible_call_skips_response_format(monkeypatch):
     assert "response_format" not in captured["json"]
 
 
+def test_api88_env_mapping(monkeypatch):
+    monkeypatch.setenv("API88_API_KEY", "api88-key")
+    monkeypatch.setenv("API88_MODEL", "claude-sonnet-5-5")
+    monkeypatch.setenv("API88_BASE_URL", "https://88api.ai/v1")
+    _reset_config_cache()
+
+    cfg = load_addon_config()
+
+    assert cfg["api88"]["api_key"] == "api88-key"
+    assert cfg["api88"]["model"] == "claude-sonnet-5-5"
+    assert cfg["api88"]["base_url"] == "https://88api.ai/v1"
+
+
+def test_api88_provider_defaults_and_model_prefix(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "api88")
+    monkeypatch.setenv("API88_API_KEY", "api88-key")
+    monkeypatch.delenv("API88_MODEL", raising=False)
+    monkeypatch.delenv("API88_BASE_URL", raising=False)
+    _reset_config_cache()
+
+    service = LLMService()
+
+    assert service.provider == LLMProvider.API88
+    assert service.get_api_key() == "api88-key"
+    assert service.get_default_model() == "claude-sonnet-5-5"
+    assert service.get_base_url() == "https://88api.ai/v1"
+    assert (
+        service._normalize_model_for_provider("api88/gpt-5.5", LLMProvider.API88)
+        == "gpt-5.5"
+    )
+    assert (
+        service._normalize_model_for_provider("88api/claude-haiku-5-5", LLMProvider.API88)
+        == "claude-haiku-5-5"
+    )
+    assert (
+        service._normalize_model_for_provider("claude-opus-5-5", LLMProvider.API88)
+        == "claude-opus-5-5"
+    )
+    assert service._detect_provider_from_model("88api/claude-sonnet-5-5") == LLMProvider.API88
+
+
+def test_api88_base_url_env_override(monkeypatch):
+    monkeypatch.setenv("API88_BASE_URL", "https://88api.example/v1/")
+    _reset_config_cache()
+
+    assert LLMService().get_base_url(LLMProvider.API88) == "https://88api.example/v1"
+
+
+def test_api88_is_auto_detected_when_it_is_the_only_configured_key(monkeypatch):
+    monkeypatch.delenv("LLM_PROVIDER", raising=False)
+    _reset_config_cache()
+    service = LLMService()
+    monkeypatch.setattr(
+        service,
+        "get_api_key",
+        lambda provider=None: "api88-key" if provider == LLMProvider.API88 else "",
+    )
+
+    assert service.provider == LLMProvider.API88
+
+
+def test_default_provider_stays_openrouter_without_any_key(monkeypatch):
+    monkeypatch.delenv("LLM_PROVIDER", raising=False)
+    _reset_config_cache()
+    service = LLMService()
+    monkeypatch.setattr(service, "get_api_key", lambda provider=None: "")
+
+    assert service.provider == LLMProvider.OPENROUTER
+
+
+@pytest.mark.parametrize(
+    "model, expects_json_mode",
+    [
+        ("gpt-5.5", True),
+        # Anthropic rejects response_format json_object behind 88API.
+        ("claude-sonnet-5-5", False),
+    ],
+)
+def test_api88_openai_compatible_call(monkeypatch, model, expects_json_mode):
+    captured = {}
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {"choices": [{"message": {"content": "{\"ok\": true}"}}]}
+
+    def fake_post(url, headers, json, timeout):
+        captured.update({"url": url, "headers": headers, "json": json})
+        return FakeResponse()
+
+    monkeypatch.setattr("app.services.llm.requests.post", fake_post)
+    service = LLMService(provider="api88")
+
+    out = service._call_openai_compatible(
+        [{"role": "user", "content": "hello"}],
+        model,
+        0.7,
+        "api88-key",
+        "https://88api.ai/v1",
+        30,
+        use_json_mode=True,
+    )
+
+    assert out == "{\"ok\": true}"
+    assert captured["url"] == "https://88api.ai/v1/chat/completions"
+    assert captured["headers"]["Authorization"] == "Bearer api88-key"
+    assert captured["json"]["model"] == model
+    assert ("response_format" in captured["json"]) is expects_json_mode
+
+
+def test_api88_http_error_names_the_provider(monkeypatch):
+    class FakeResponse:
+        status_code = 400
+        headers = {}
+        text = ""
+
+        def json(self):
+            return {"error": {"message": "model not found"}}
+
+    service = LLMService(provider="api88")
+    monkeypatch.setattr(service, "_llm_post", lambda *args, **kwargs: FakeResponse())
+
+    with pytest.raises(LLMAPIError) as exc_info:
+        service._call_openai_compatible(
+            [{"role": "user", "content": "hello"}],
+            "claude-sonnet-5-5",
+            0.4,
+            "api88-key",
+            "https://88api.ai/v1",
+            30,
+            use_json_mode=False,
+        )
+
+    assert "88API API 400" in str(exc_info.value)
+    assert "model=claude-sonnet-5-5" in str(exc_info.value)
+
+
 def test_google_gemini_uses_uniform_max_tokens(monkeypatch):
     captured = {}
 
