@@ -30,7 +30,7 @@ def fresh_module(monkeypatch):
 
 
 def test_mcp_tool_registry_complete(fresh_module):
-    assert len(fresh_module.MCP_TOOL_NAMES) == 58
+    assert len(fresh_module.MCP_TOOL_NAMES) == 59
     # Every exported name should correspond to a registered @mcp.tool function.
     for name in fresh_module.MCP_TOOL_NAMES:
         assert hasattr(fresh_module, name), f"missing tool function: {name}"

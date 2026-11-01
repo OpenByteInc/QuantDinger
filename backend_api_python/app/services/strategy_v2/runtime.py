@@ -21,6 +21,7 @@ from app.services.factors import (
     get_factor,
     is_talib_available,
 )
+from app.services.custom_factors import compute_custom_factor
 from app.services.backtest.metrics import (
     calculate_calmar_ratio,
     calculate_downside_risk,
@@ -229,11 +230,13 @@ class StrategyRuntimeContext:
         portal: MultiAssetDataPortal,
         portfolio: PortfolioState,
         params: Mapping[str, Any] | None = None,
+        custom_factor_resolver=None,
     ) -> None:
         self.portal = portal
         self.data = StrategyDataView(portal)
         self.portfolio = portfolio
         self.params = dict(params or {})
+        self.custom_factor_resolver = custom_factor_resolver
         self.current_dt: pd.Timestamp | None = None
         self.previous_trading_date: pd.Timestamp | None = None
         self._orders: list[OrderIntent] = []
@@ -528,6 +531,14 @@ class StrategyRuntimeContext:
         )
         frame = self.portal.visible_frame(target, frequency=frequency)
         factor_id = str(name or "").strip()
+        if factor_id.lower().startswith("custom:"):
+            if self.custom_factor_resolver is None:
+                raise FactorError("factor.customNotFound")
+            return compute_custom_factor(
+                self.custom_factor_resolver(factor_id),
+                frame,
+                params,
+            )
         return compute_catalog_factor(factor_id, frame, params)
 
     def get_factors(self, symbols: object, names: object, **params: Any) -> pd.DataFrame:
@@ -1777,6 +1788,7 @@ class StrategyV2BacktestRunner:
         slippage: float = 0.0005,
         universe_resolver=None,
         instrument_rules: InstrumentRulesSnapshot | Mapping[str, InstrumentRules | Mapping[str, Any]] | None = None,
+        custom_factor_resolver=None,
     ) -> None:
         self.program: CompiledStrategyV2 = compile_strategy_v2(code)
         requested_leverage = max(1.0, float(leverage or 1.0)) if leverage_enabled else 1.0
@@ -1805,6 +1817,7 @@ class StrategyV2BacktestRunner:
             portal=self.portal,
             portfolio=self.broker.portfolio,
             params=runtime_params,
+            custom_factor_resolver=custom_factor_resolver,
         )
         self.logs: list[str] = []
         self._order_status_cursor = 0

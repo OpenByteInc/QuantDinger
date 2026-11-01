@@ -158,6 +158,12 @@ and deployment remain under the operator's control.
 
 ### Strategy evolution and signal-only virtual accounts
 
+- **Factor Lab** loads one point-in-time universe panel once and benchmarks up
+  to 40 registered technical, fundamental, TA-Lib, or Qlib factors. It uses a
+  time-ordered holdout, out-of-sample IC retention, Benjamini-Hochberg
+  false-discovery control, cost-aware scoring, factor-life-cycle labels, and
+  cross-factor IC correlation. The same workflow is available from the web UI,
+  Human API, Agent Gateway, and MCP.
 - **Strategy evolution** searches declared tunable parameters with random,
   grid, or TPE optimization, using bar-count walk-forward validation and a final
   blind holdout. Jobs run asynchronously with per-strategy history, automatic

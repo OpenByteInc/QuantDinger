@@ -634,6 +634,7 @@ _MCP_EXTENSION_ROUTES = {
     "list_universe_members": "/api/agent/v1/research/universes/{universe_id}/members",
     "list_factors": "/api/agent/v1/research/factors",
     "get_factor": "/api/agent/v1/research/factors/{factor_id}",
+    "submit_factor_benchmark": "/api/agent/v1/research/factor-benchmarks",
     "list_watchlist": "/api/agent/v1/research/watchlist",
     "add_watchlist": "/api/agent/v1/research/watchlist",
     "remove_watchlist": "/api/agent/v1/research/watchlist",
@@ -657,6 +658,7 @@ _MCP_EXTENSION_WRITES = {
     "link_indicator_config",
     "add_watchlist",
     "remove_watchlist",
+    "submit_factor_benchmark",
     "create_signal_alert",
     "update_signal_alert",
     "set_signal_alert_status",
@@ -670,7 +672,7 @@ MCP_AGENT_TOOLS = MCP_AGENT_TOOLS + tuple(
             "research" if name in {
                 "list_universes", "get_universe", "list_universe_members",
                 "list_factors", "get_factor", "list_watchlist", "add_watchlist",
-                "remove_watchlist",
+                "remove_watchlist", "submit_factor_benchmark",
             }
             else "notifications" if "signal_alert" in name
             else "jobs" if name == "cancel_job"

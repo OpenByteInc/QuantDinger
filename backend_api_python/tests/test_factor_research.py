@@ -5,6 +5,72 @@ from app.services.factors import compute_factor, list_factors
 from app.services.strategy_v2.factor_research import FactorResearchEngine
 
 
+@pytest.mark.parametrize("direction", [1.0, -1.0])
+def test_factor_research_rank_ic_sign_uses_next_open_forward_return(direction):
+    index = pd.date_range("2026-01-01", periods=8, freq="B")
+    frames = {}
+    for offset, symbol in enumerate(["A", "B", "C", "D", "E", "F"], start=1):
+        open_prices = [
+            100.0 * (1.0 + direction * offset * 0.005 * day)
+            for day in range(len(index))
+        ]
+        close_prices = [
+            100.0 * (1.0 - direction * offset * 0.005 * day)
+            for day in range(len(index))
+        ]
+        frames[symbol] = pd.DataFrame({
+            "open": open_prices,
+            "close": close_prices,
+            "signal": [float(offset)] * len(index),
+        }, index=index)
+
+    result = FactorResearchEngine().run(
+        frames=frames,
+        factor_id="signal",
+        start_date=index[0],
+        end_date=index[-1],
+        groups=3,
+        holding_period=1,
+        commission=0.0,
+        slippage=0.0,
+    )
+
+    assert result["rankIc"] == pytest.approx(direction)
+    assert result["icSeries"][0]["value"] == pytest.approx(direction)
+
+
+def test_factor_research_evaluates_custom_formula_point_in_time():
+    index = pd.date_range("2025-01-01", periods=90, freq="B")
+    frames = {}
+    for offset, symbol in enumerate(["A", "B", "C", "D", "E", "F"], start=1):
+        prices = [100.0 + day * offset * 0.1 for day in range(len(index))]
+        frames[symbol] = pd.DataFrame({
+            "open": prices,
+            "high": [value + 1.0 for value in prices],
+            "low": [value - 1.0 for value in prices],
+            "close": prices,
+            "volume": [1000.0 + offset] * len(index),
+        }, index=index)
+
+    result = FactorResearchEngine().run(
+        frames=frames,
+        factor_id="custom:1",
+        factor_params={"lookback": 20},
+        custom_factor={
+            "expression": "momentum(period=lookback)",
+            "default_params": {"lookback": 20},
+        },
+        start_date=index[30],
+        end_date=index[-1],
+        groups=3,
+        holding_period=5,
+    )
+
+    assert result["factorId"] == "custom:1"
+    assert result["rankIc"] > 0
+    assert result["coverage"] == pytest.approx(1.0)
+
+
 def test_factor_research_returns_ic_groups_costs_and_stability():
     index = pd.date_range("2025-01-01", periods=90, freq="B")
     frames = {}

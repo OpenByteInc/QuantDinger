@@ -24,6 +24,8 @@ from app.services.backtest_limits import (
     validate_backtest_range,
 )
 from app.services.fundamental_data import get_fundamental_data_service
+from app.services.factors import FactorError
+from app.services.custom_factors import get_custom_factor
 from app.services.instrument_rules import InstrumentRulesProvider, get_instrument_rules_provider
 from app.services.market.instrument_products import PRODUCT_CRYPTO
 from app.services.market.product_catalog import get_catalog_product
@@ -31,6 +33,7 @@ from app.services.universe import UniverseService, get_universe_service
 from app.utils.logger import get_logger
 
 from .contract import StrategyV2ContractError, compile_strategy_v2
+from .factor_benchmark import FactorBenchmarkEngine
 from .factor_research import FactorResearchEngine
 from .frequencies import SUPPORTED_SUBSCRIPTION_FREQUENCIES, normalize_frequency, periods_per_year
 from .instruments import instrument_key_from_metadata
@@ -123,10 +126,20 @@ class StrategyV2BacktestService:
                 f"strategyV2.factorResearchUniverseTooSmall:{minimum_symbols}"
             )
         frequency = manifest.driving_frequency
+        custom_factor = (
+            get_custom_factor(user_id, factor_id)
+            if str(factor_id).lower().startswith("custom:")
+            else None
+        )
+        factor_warmup = (
+            int(custom_factor.get("default_warmup_bars") or 1)
+            if custom_factor
+            else FactorResearchEngine.warmup_bars(factor_id, factor_params)
+        )
         warmup_bars = max(
             40,
             manifest.warmup_bars,
-            FactorResearchEngine.warmup_bars(factor_id, factor_params),
+            factor_warmup,
         )
         fetch_start = start_date - timedelta(days=_warmup_calendar_days(frequency, warmup_bars, candidates))
         _enforce_backtest_range(
@@ -144,7 +157,11 @@ class StrategyV2BacktestService:
             raise StrategyV2ContractError(
                 f"strategyV2.factorResearchUsableUniverseTooSmall:{minimum_symbols}"
             )
-        factor_fundamental_fields = FactorResearchEngine.required_fields(factor_id)
+        factor_fundamental_fields = (
+            set(custom_factor.get("required_fields") or [])
+            if custom_factor
+            else FactorResearchEngine.required_fields(factor_id)
+        )
         if manifest.fundamental_dependencies or factor_fundamental_fields:
             enricher = self.fundamental_enricher or get_fundamental_data_service().enrich_panel
             frames = enricher(frames, candidates)
@@ -164,6 +181,7 @@ class StrategyV2BacktestService:
                 frequency,
                 {str(item.get("market") or "") for item in candidates},
             ),
+            custom_factor=custom_factor,
         )
         result.update({
             "manifest": manifest.metadata(),
@@ -215,9 +233,19 @@ class StrategyV2BacktestService:
             raise StrategyV2ContractError(
                 f"strategyV2.factorResearchUniverseTooSmall:{minimum_symbols}"
             )
+        custom_factor = (
+            get_custom_factor(user_id, factor_id)
+            if str(factor_id).lower().startswith("custom:")
+            else None
+        )
+        factor_warmup = (
+            int(custom_factor.get("default_warmup_bars") or 1)
+            if custom_factor
+            else FactorResearchEngine.warmup_bars(factor_id, factor_params)
+        )
         warmup_bars = max(
             40,
-            FactorResearchEngine.warmup_bars(factor_id, factor_params),
+            factor_warmup,
         )
         fetch_start = start_date - timedelta(
             days=_warmup_calendar_days(normalized_frequency, warmup_bars, candidates)
@@ -242,7 +270,12 @@ class StrategyV2BacktestService:
             raise StrategyV2ContractError(
                 f"strategyV2.factorResearchUsableUniverseTooSmall:{minimum_symbols}"
             )
-        if FactorResearchEngine.required_fields(factor_id):
+        required_fields = (
+            set(custom_factor.get("required_fields") or [])
+            if custom_factor
+            else FactorResearchEngine.required_fields(factor_id)
+        )
+        if required_fields - {"open", "high", "low", "close", "volume", "amount"}:
             enricher = self.fundamental_enricher or get_fundamental_data_service().enrich_panel
             frames = enricher(frames, candidates)
 
@@ -281,6 +314,7 @@ class StrategyV2BacktestService:
             neutralize_industry=neutralize_industry,
             members=candidates,
             annualization_periods=periods_per_year(normalized_frequency, set(markets)),
+            custom_factor=custom_factor,
         )
         result.update({
             "researchMode": "universe",
@@ -293,6 +327,211 @@ class StrategyV2BacktestService:
             "symbolsSkipped": skipped,
         })
         return result
+
+    def benchmark_universe_factors(
+        self,
+        *,
+        user_id: int,
+        universe_id: int,
+        frequency: str,
+        start_date: datetime,
+        end_date: datetime,
+        factors: list[dict[str, Any]],
+        groups: int = 5,
+        holding_period: int = 5,
+        commission: float = 0.0005,
+        slippage: float = 0.0005,
+        neutralize_industry: bool = False,
+        train_fraction: float = 0.6,
+        false_discovery_rate: float = 0.1,
+        minimum_oos_observations: int = 5,
+        minimum_abs_oos_ic: float = 0.02,
+        minimum_coverage: float = 0.5,
+    ) -> dict[str, Any]:
+        normalized_frequency = normalize_frequency(frequency)
+        if normalized_frequency not in SUPPORTED_SUBSCRIPTION_FREQUENCIES:
+            raise StrategyV2ContractError(
+                f"strategyV2.unsupportedFrequency:{normalized_frequency}"
+            )
+        maximum_factors = max(
+            2,
+            int(os.getenv("FACTOR_BENCHMARK_MAX_FACTORS", "40") or 40),
+        )
+        normalized_factors: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for item in factors or []:
+            if not isinstance(item, dict):
+                continue
+            factor_id = str(item.get("factorId") or "").strip().lower()
+            if not factor_id or factor_id in seen:
+                continue
+            seen.add(factor_id)
+            normalized_factors.append({
+                "factorId": factor_id,
+                "factorParams": (
+                    dict(item.get("factorParams") or {})
+                    if isinstance(item.get("factorParams"), dict)
+                    else {}
+                ),
+            })
+        if len(normalized_factors) < 2:
+            raise StrategyV2ContractError("strategyV2.factorBenchmarkMinimumFactors:2")
+        if len(normalized_factors) > maximum_factors:
+            raise StrategyV2ContractError(
+                f"strategyV2.factorBenchmarkTooManyFactors:{maximum_factors}"
+            )
+
+        universe = self.universe_service.get_universe(user_id, int(universe_id))
+        validate_universe_history(universe, start_date)
+        candidates = self.universe_service.candidate_members(
+            user_id,
+            int(universe_id),
+            start=start_date.date(),
+            end=end_date.date(),
+        )
+        limit = strategy_universe_symbol_limit(normalized_frequency)
+        if len(candidates) > limit:
+            raise StrategyV2ContractError("strategyV2.universeTooLarge")
+        candidates = [{**item, "key": _member_key(item)} for item in candidates]
+        _attach_catalog_products(candidates)
+        if len(candidates) < 3:
+            raise StrategyV2ContractError("strategyV2.factorResearchUniverseTooSmall:3")
+
+        custom_factors = {
+            item["factorId"]: get_custom_factor(user_id, item["factorId"])
+            for item in normalized_factors
+            if item["factorId"].startswith("custom:")
+        }
+        warmup_bars = max(
+            40,
+            *[
+                int(custom_factors[item["factorId"]].get("default_warmup_bars") or 1)
+                if item["factorId"] in custom_factors
+                else FactorResearchEngine.warmup_bars(item["factorId"], item["factorParams"])
+                for item in normalized_factors
+            ],
+        )
+        fetch_start = start_date - timedelta(
+            days=_warmup_calendar_days(
+                normalized_frequency, warmup_bars, candidates
+            )
+        )
+        _enforce_backtest_range(
+            candidates=candidates,
+            timeframe=normalized_frequency,
+            start_date=start_date,
+            end_date=end_date,
+            warmup_bars=warmup_bars,
+            fetch_start=fetch_start,
+        )
+        frames, skipped = self.fetch_frames(
+            candidates,
+            normalized_frequency,
+            fetch_start,
+            end_date,
+        )
+        if len(frames) < 3:
+            raise StrategyV2ContractError(
+                "strategyV2.factorResearchUsableUniverseTooSmall:3"
+            )
+        benchmark_required_fields = set().union(*[
+            set(custom_factors[item["factorId"]].get("required_fields") or [])
+            if item["factorId"] in custom_factors
+            else FactorResearchEngine.required_fields(item["factorId"])
+            for item in normalized_factors
+        ])
+        if benchmark_required_fields - {"open", "high", "low", "close", "volume", "amount"}:
+            enricher = (
+                self.fundamental_enricher
+                or get_fundamental_data_service().enrich_panel
+            )
+            frames = enricher(frames, candidates)
+
+        markets = sorted({
+            str(item.get("market") or "")
+            for item in candidates
+            if item.get("market")
+        })
+        annualization = periods_per_year(normalized_frequency, set(markets))
+        results: list[dict[str, Any]] = []
+        errors: list[dict[str, str]] = []
+        for item in normalized_factors:
+            try:
+                results.append(FactorResearchEngine().run(
+                    frames=frames,
+                    factor_id=item["factorId"],
+                    factor_params=item["factorParams"],
+                    start_date=start_date,
+                    end_date=end_date,
+                    groups=groups,
+                    holding_period=holding_period,
+                    commission=commission,
+                    slippage=slippage,
+                    neutralize_industry=neutralize_industry,
+                    members=candidates,
+                    annualization_periods=annualization,
+                    include_factor_correlation=False,
+                    custom_factor=custom_factors.get(item["factorId"]),
+                ))
+            except (FactorError, ValueError) as exc:
+                errors.append({"factorId": item["factorId"], "error": str(exc)})
+        if not results:
+            raise StrategyV2ContractError("strategyV2.factorBenchmarkNoSuccessfulFactors")
+
+        benchmark = FactorBenchmarkEngine().run(
+            results,
+            train_fraction=train_fraction,
+            false_discovery_rate=false_discovery_rate,
+            minimum_oos_observations=minimum_oos_observations,
+            minimum_abs_oos_ic=minimum_abs_oos_ic,
+            minimum_coverage=minimum_coverage,
+            holding_period=holding_period,
+        )
+        universe_metadata = {
+            "id": int(universe_id),
+            "code": str(universe.get("code") or ""),
+            "name": str(universe.get("name") or ""),
+            "nameI18nKey": str(universe.get("name_i18n_key") or ""),
+            "market": str(universe.get("market") or ""),
+            "memberCount": len(candidates),
+            "historyFrom": universe.get("history_from"),
+        }
+        manifest = {
+            "strategyType": "factor_benchmark",
+            "primaryFrequency": normalized_frequency,
+            "drivingFrequency": normalized_frequency,
+            "frequencies": [normalized_frequency],
+            "markets": markets,
+            "universe": {
+                "kind": "managed",
+                "reference": f"UNIVERSE:{universe.get('code') or universe_id}",
+                "instruments": [],
+            },
+        }
+        benchmark.update({
+            "researchMode": "benchmark",
+            "manifest": manifest,
+            "universeId": int(universe_id),
+            "universe": universe_metadata,
+            "frequency": normalized_frequency,
+            "symbolsRequested": len(candidates),
+            "symbolsUsed": len(frames),
+            "symbolsSkipped": skipped,
+            "factorResults": results,
+            "errors": errors,
+            "executionAssumptions": {
+                "holdingPeriod": max(1, int(holding_period)),
+                "groups": max(2, min(10, int(groups))),
+                "commission": float(commission),
+                "slippage": float(slippage),
+                "neutralized": bool(neutralize_industry),
+            },
+        })
+        benchmark["summary"].update({
+            "requestedFactorCount": len(normalized_factors),
+            "failedFactorCount": len(errors),
+        })
+        return benchmark
 
     def run(
         self,
@@ -324,6 +563,16 @@ class StrategyV2BacktestService:
         emit("preparing", 5)
         program = compile_strategy_v2(code)
         manifest = program.manifest
+        custom_factor_cache = {
+            str(reference).lower(): get_custom_factor(user_id, reference)
+            for reference in manifest.factor_dependencies
+            if str(reference).lower().startswith("custom:")
+        }
+        custom_warmup_bars = max(
+            [int(item.get("default_warmup_bars") or 1) for item in custom_factor_cache.values()],
+            default=0,
+        )
+        effective_warmup_bars = max(manifest.warmup_bars, custom_warmup_bars)
         if end_date <= start_date:
             raise StrategyV2ContractError("strategyV2.invalidDateRange")
         if initial_capital <= 0:
@@ -344,7 +593,7 @@ class StrategyV2BacktestService:
         _validate_product_frequencies(instrument_products, manifest.frequencies)
         fetch_starts = {
             item: start_date
-            - timedelta(days=_warmup_calendar_days(item, manifest.warmup_bars, candidates))
+            - timedelta(days=_warmup_calendar_days(item, effective_warmup_bars, candidates))
             for item in manifest.frequencies
         }
         for item in manifest.frequencies:
@@ -353,7 +602,7 @@ class StrategyV2BacktestService:
                 timeframe=item,
                 start_date=start_date,
                 end_date=end_date,
-                warmup_bars=manifest.warmup_bars,
+                warmup_bars=effective_warmup_bars,
                 fetch_start=fetch_starts[item],
             )
         data_at = perf_counter()
@@ -373,11 +622,11 @@ class StrategyV2BacktestService:
         if not frames:
             raise StrategyV2ContractError("strategyV2.noMarketData")
         if manifest.universe.kind == "static":
-            validate_warmup(frequency_frames, manifest.warmup_bars, start_date, candidates)
+            validate_warmup(frequency_frames, effective_warmup_bars, start_date, candidates)
         else:
             shortfalls = warmup_shortfalls(
                 frequency_frames,
-                manifest.warmup_bars,
+                effective_warmup_bars,
                 start_date,
                 candidates,
             )
@@ -387,7 +636,7 @@ class StrategyV2BacktestService:
                 if not remaining_symbols:
                     validate_warmup(
                         frequency_frames,
-                        manifest.warmup_bars,
+                        effective_warmup_bars,
                         start_date,
                         candidates,
                     )
@@ -402,7 +651,14 @@ class StrategyV2BacktestService:
                     "requiredBars": item["required"],
                 } for item in shortfalls)
                 frames = frequency_frames.get(frequency, {})
-        if manifest.fundamental_dependencies:
+        custom_required_fields = set().union(*[
+            set(item.get("required_fields") or [])
+            for item in custom_factor_cache.values()
+        ]) if custom_factor_cache else set()
+        custom_fundamental_fields = custom_required_fields - {
+            "open", "high", "low", "close", "volume", "amount"
+        }
+        if manifest.fundamental_dependencies or custom_fundamental_fields:
             enricher = self.fundamental_enricher or get_fundamental_data_service().enrich_panel
             frames = enricher(frames, candidates)
             frequency_frames[frequency] = frames
@@ -410,7 +666,7 @@ class StrategyV2BacktestService:
                 required = {
                     _normalize_field(item)
                     for item in manifest.fundamental_dependencies
-                }
+                } | {_normalize_field(item) for item in custom_fundamental_fields}
                 fundamental_gaps = fundamental_shortfalls(frames, required)
                 if fundamental_gaps:
                     excluded_fields: dict[str, set[str]] = {}
@@ -475,6 +731,7 @@ class StrategyV2BacktestService:
             slippage=slippage,
             universe_resolver=resolve_universe,
             instrument_rules=rules_snapshot,
+            custom_factor_resolver=lambda factor_id: custom_factor_cache[str(factor_id).lower()],
         )
         result = runner.run(start_date=start_date, end_date=end_date)
         report_at = perf_counter()

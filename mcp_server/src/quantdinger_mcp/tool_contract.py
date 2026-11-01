@@ -21,6 +21,7 @@ WRITE_TOOLS = {
     "compile_strategy_code": False,
     "restore_strategy_source_version": True,
     "submit_backtest": False,
+    "submit_factor_benchmark": False,
     "cancel_open_paper_orders": True,
     "add_watchlist": True,
     "remove_watchlist": True,
