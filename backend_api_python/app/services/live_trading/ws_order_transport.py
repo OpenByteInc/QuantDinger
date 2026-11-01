@@ -22,6 +22,7 @@ from typing import Any, Callable, Dict, Optional, Tuple
 from urllib.parse import urlencode, urlparse
 
 from app.services.live_trading.base import LiveTradingError, _get_requests_verify
+from app.utils.security_fingerprint import opaque_fingerprint
 
 logger = logging.getLogger(__name__)
 
@@ -286,7 +287,7 @@ _pool: "OrderedDict[str, _PersistentRpcSocket]" = OrderedDict()
 
 
 def _pool_key(venue: str, url: str, api_key: str, qualifier: str = "") -> str:
-    digest = hashlib.sha256(f"{url}|{api_key}|{qualifier}".encode("utf-8")).hexdigest()
+    digest = opaque_fingerprint(url, api_key, qualifier, namespace="ws-order-pool")
     return f"{venue}:{digest}"
 
 

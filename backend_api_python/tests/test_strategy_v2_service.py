@@ -776,6 +776,68 @@ def test_universe_factor_research_does_not_compile_or_execute_strategy_code():
     assert result["manifest"]["strategyType"] == "factor_research"
 
 
+def test_factor_benchmark_reuses_one_market_panel_for_multiple_factors():
+    symbols = ["A", "B", "C", "D", "E", "F"]
+    fetches = []
+
+    class ResearchUniverse:
+        @staticmethod
+        def get_universe(_user_id, universe_id):
+            return {
+                "id": universe_id,
+                "code": "research-pool",
+                "name": "Research Pool",
+                "market": "USStock",
+                "member_count": len(symbols),
+                "history_from": "2020-01-01",
+            }
+
+        @staticmethod
+        def candidate_members(_user_id, _universe_id, *, start, end):
+            assert start <= end
+            return [{"market": "USStock", "symbol": symbol} for symbol in symbols]
+
+    index = pd.bdate_range("2025-01-01", periods=180)
+
+    def frame_fetcher(_market, symbol, *_args, **_kwargs):
+        fetches.append(symbol)
+        offset = symbols.index(symbol)
+        prices = [
+            100 + offset * 2 + day * (0.08 + offset * 0.025) + (day % 7) * offset * 0.02
+            for day in range(len(index))
+        ]
+        return pd.DataFrame({"open": prices, "close": prices}, index=index)
+
+    service = StrategyV2BacktestService(
+        repository=_Repository(),
+        universe_service=ResearchUniverse(),
+        frame_fetcher=frame_fetcher,
+    )
+    result = service.benchmark_universe_factors(
+        user_id=1,
+        universe_id=17,
+        frequency="1d",
+        start_date=datetime(2025, 3, 1),
+        end_date=datetime(2025, 8, 29, 23, 59),
+        factors=[
+            {"factorId": "momentum_20"},
+            {"factorId": "reversal_5"},
+        ],
+        groups=3,
+        holding_period=5,
+        minimum_oos_observations=3,
+    )
+
+    assert sorted(fetches) == symbols
+    assert result["researchMode"] == "benchmark"
+    assert result["summary"]["factorCount"] == 2
+    assert result["summary"]["requestedFactorCount"] == 2
+    assert result["summary"]["failedFactorCount"] == 0
+    assert len(result["rankings"]) == 2
+    assert result["correlation"]["factors"] == ["momentum_20", "reversal_5"]
+    assert result["errors"] == []
+
+
 def test_factor_research_rejects_portfolios_smaller_than_group_count():
     code = """
 def initialize(context):

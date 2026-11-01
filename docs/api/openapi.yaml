@@ -2283,6 +2283,69 @@ paths:
       operationId: getApiBacktestFactorResearchHistory
       summary: Get Api Backtest Factor Research History
       x-visibility: internal
+  /api/backtest/factor-benchmark:
+    post:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - Strategy
+      summary: Benchmark multiple factors with out-of-sample validation
+      description: Loads a managed universe once, evaluates multiple factors, applies
+        out-of-sample validation and Benjamini-Hochberg false-discovery control, then
+        persists every successful factor run.
+      operationId: postApiBacktestFactorBenchmark
+      x-visibility: internal
+  /api/backtest/factor-benchmark/history:
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - Strategy
+      operationId: getApiBacktestFactorBenchmarkHistory
+      summary: Get Api Backtest Factor Benchmark History
+      x-visibility: internal
+  /api/backtest/factor-benchmark/get:
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - Strategy
+      operationId: getApiBacktestFactorBenchmarkGet
+      summary: Get Api Backtest Factor Benchmark Get
+      x-visibility: internal
   /api/backtest/factor-research/get:
     get:
       responses:
@@ -3140,6 +3203,79 @@ paths:
       schema:
         type: string
         minLength: 1
+  /api/factors/custom/validate:
+    post:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - Factor
+      operationId: postApiFactorsCustomValidate
+      summary: Post Api Factors Custom Validate
+      x-visibility: internal
+  /api/factors/custom:
+    post:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - Factor
+      operationId: postApiFactorsCustom
+      summary: Post Api Factors Custom
+      x-visibility: internal
+  /api/factors/custom/{factor_id}:
+    delete:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - Factor
+      operationId: deleteApiFactorsCustomFactorId
+      summary: Delete Api Factors Custom Factor Id
+      parameters:
+      - name: factor_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      x-visibility: internal
+    parameters:
+    - in: path
+      name: factor_id
+      required: true
+      schema:
+        type: integer
+        minimum: 0
   /api/factors/research:
     post:
       responses:
@@ -8843,6 +8979,27 @@ paths:
       schema:
         type: integer
         minimum: 0
+  /api/quick-trade/order-book:
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      summary: Return a normalized public order-book snapshot for a supported crypto
+        venue.
+      tags:
+      - QuickTrade
+      operationId: getApiQuickTradeOrderBook
+      x-visibility: private
   /api/quick-trade/place-order:
     post:
       responses:

@@ -17,6 +17,7 @@ from app.services.factors import (
     get_factor,
     get_factor_metadata,
 )
+from app.services.custom_factors import CustomFactorError, compute_custom_factor
 
 
 class FactorResearchEngine:
@@ -93,6 +94,8 @@ class FactorResearchEngine:
         neutralize_industry: bool = False,
         members: Sequence[Mapping[str, Any]] | None = None,
         annualization_periods: float = 252.0,
+        include_factor_correlation: bool = True,
+        custom_factor: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         requested_groups = max(2, min(10, int(groups or 5)))
         holding_period = max(1, int(holding_period or 5))
@@ -118,6 +121,7 @@ class FactorResearchEngine:
             close,
             normalized_factor_params,
             research_dates,
+            custom_factor=custom_factor,
         )
         entry = open_price.shift(-1)
         exit_price = open_price.shift(-(holding_period + 1))
@@ -312,13 +316,18 @@ class FactorResearchEngine:
             "effectiveGroups": effective_groups,
             "sampleDiagnostics": sample_diagnostics,
             "pointInTimeUniverseApplied": self._has_dated_membership(members or ()),
-            "factorCorrelation": self._factor_correlation(
-                prepared,
-                close,
-                membership,
-                research_dates,
-                factor_name,
-                normalized_factor_params,
+            "factorCorrelation": (
+                self._factor_correlation(
+                    prepared,
+                    close,
+                    membership,
+                    research_dates,
+                    factor_name,
+                    normalized_factor_params,
+                    custom_factor,
+                )
+                if include_factor_correlation
+                else {"factors": [], "matrix": [], "observations": []}
             ),
             "stability": {
                 "firstHalfIc": float(first_half.mean()) if not first_half.empty else 0.0,
@@ -374,7 +383,30 @@ class FactorResearchEngine:
         close: pd.DataFrame,
         params: Mapping[str, Any] | None = None,
         timestamps: Sequence[pd.Timestamp] | None = None,
+        custom_factor: Mapping[str, Any] | None = None,
     ) -> pd.DataFrame:
+        if custom_factor is not None:
+            result = pd.DataFrame(index=close.index, columns=close.columns, dtype=float)
+            requested = close.index if timestamps is None else pd.Index(timestamps)
+            requested = requested.intersection(close.index, sort=False)
+            for timestamp in requested:
+                for symbol, frame in frames.items():
+                    if symbol not in result.columns or frame.empty or frame.index[0] > timestamp:
+                        continue
+                    try:
+                        result.at[timestamp, symbol] = compute_custom_factor(
+                            custom_factor,
+                            frame.loc[frame.index <= timestamp],
+                            params,
+                        )
+                    except CustomFactorError as exc:
+                        if exc.code not in {
+                            "factor.noData",
+                            "factor.missingFields",
+                            "factor.customComputeFailed",
+                        }:
+                            raise
+            return result
         if factor_id.startswith("qlib:"):
             return self._catalog_factor_panel(
                 frames,
@@ -591,6 +623,7 @@ class FactorResearchEngine:
         research_dates: Sequence[pd.Timestamp],
         selected_factor: str,
         selected_params: Mapping[str, Any] | None = None,
+        custom_factor: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         names = list(dict.fromkeys((selected_factor, *self._CORRELATION_FACTORS)))
         panels: dict[str, pd.DataFrame] = {}
@@ -601,6 +634,7 @@ class FactorResearchEngine:
                 close,
                 selected_params if name == selected_factor else None,
                 research_dates,
+                custom_factor=custom_factor if name == selected_factor else None,
             )
             visible = panel.reindex(index=research_dates)
             if int(visible.notna().sum().sum()) >= 3:

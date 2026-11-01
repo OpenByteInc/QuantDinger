@@ -47,6 +47,7 @@ Never place an agent token in prompts, logs, screenshots, source control, or MCP
 | `list_strategy_source_versions`, `restore_strategy_source_version` | R/W | Source history and explicitly confirmed restore |
 | `create_strategy`, `update_strategy`, `list_strategies`, `get_strategy` | R/W | Strategy API V2 deployments |
 | `submit_backtest` | B | Strategy API V2 backtest job |
+| `submit_factor_benchmark` | B | Multi-factor out-of-sample benchmark job with false-discovery control |
 | `list_jobs`, `get_job`, `wait_for_job`, `stream_job_until_done`, `cancel_job` | R/B | Bounded jobs and confirmed cancellation |
 | `runtime_overview`, `stop_strategy` | R/T | Runtime inspection and confirmed stop |
 | Broker account, strategy position/trade, and quick-trade observation tools | R | Secret-free execution observations |

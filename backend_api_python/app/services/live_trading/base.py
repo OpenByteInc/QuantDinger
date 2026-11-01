@@ -117,6 +117,16 @@ def _get_proxies() -> Optional[Dict[str, str]]:
     return _proxies_value
 
 
+def get_live_trading_requests_verify() -> Union[bool, str]:
+    """Expose the shared TLS verification policy to read-only exchange services."""
+    return _get_requests_verify()
+
+
+def get_live_trading_proxies() -> Optional[Dict[str, str]]:
+    """Expose the shared exchange proxy policy to read-only exchange services."""
+    return _get_proxies()
+
+
 def cancel_all_algo_orders_enabled() -> bool:
     """Whether this process may cancel *all* algo orders on an OKX instrument/account.
 

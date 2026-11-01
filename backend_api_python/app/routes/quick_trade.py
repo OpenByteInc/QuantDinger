@@ -11,6 +11,7 @@ Endpoints:
   GET  /api/quick-trade/balance          - Get available balance
   GET  /api/quick-trade/position         - Get current position for symbol
   GET  /api/quick-trade/history          - Get quick trade history
+  GET  /api/quick-trade/order-book       - Get a public crypto order-book snapshot
 """
 
 from __future__ import annotations
@@ -80,6 +81,7 @@ from app.services.quick_trade.order_safety import (
     serialized_quick_trade_close, serialized_quick_trade_order,
     verify_full_market_close,
 )
+from app.services.quick_trade.orderbook import OrderBookError, fetch_order_book
 from app.services.pending_orders.order_quantities import exchange_quantity_snapshot
 from app.services.quick_trade.spot_positions import (
     enrich_spot_positions as _enrich_spot_positions_impl,
@@ -92,6 +94,37 @@ logger = get_logger(__name__)
 quick_trade_blp = Blueprint('quick_trade', __name__)
 quick_trade_blp.before_request(open_quick_trade_transport)
 quick_trade_blp.teardown_request(close_quick_trade_transport)
+
+
+@quick_trade_blp.route('/order-book', methods=['GET'])
+@login_required
+def get_order_book():
+    """Return a normalized public order-book snapshot for a supported crypto venue."""
+    exchange_id = str(request.args.get('exchange_id') or '').strip().lower()
+    symbol = str(request.args.get('symbol') or '').strip()
+    market_type = str(request.args.get('market_type') or 'swap').strip().lower()
+    try:
+        limit = int(request.args.get('limit') or 25)
+    except (TypeError, ValueError):
+        limit = 25
+    if not exchange_id or not symbol:
+        return jsonify({"code": 0, "msg": "quickTrade.selectSymbol"}), 400
+    if not is_supported_crypto_exchange(exchange_id):
+        return jsonify({"code": 0, "msg": "quickTrade.unsupportedMarket"}), 400
+    try:
+        snapshot = fetch_order_book(
+            g.quick_trade_session,
+            exchange_id=exchange_id,
+            symbol=symbol,
+            market_type=market_type,
+            limit=limit,
+        )
+        return jsonify({"code": 1, "msg": "success", "data": snapshot})
+    except (OrderBookError, ValueError):
+        return jsonify({"code": 0, "msg": "quickTrade.orderFailed"}), 400
+    except Exception as exc:
+        logger.warning("quick-trade order book failed exchange=%s symbol=%s: %s", exchange_id, symbol, exc)
+        return jsonify({"code": 0, "msg": "quickTrade.errorHints.networkError"}), 502
 
 def _reject_quick_trade_if_desktop_broker(exchange_id: str):
     """Quick Trade is USDT-centric and only wired to crypto exchange clients."""

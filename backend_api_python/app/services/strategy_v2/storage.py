@@ -709,6 +709,7 @@ class FactorResearchRepository:
         *,
         user_id: int,
         source_id: int | None = None,
+        research_type: str = "all",
         limit: int = 50,
         offset: int = 0,
     ) -> list[dict[str, Any]]:
@@ -717,6 +718,10 @@ class FactorResearchRepository:
         if source_id is not None:
             where.append("source_id = ?")
             params.append(int(source_id))
+        if research_type == "single":
+            where.append("research_mode <> 'benchmark'")
+        elif research_type == "benchmark":
+            where.append("research_mode = 'benchmark'")
         with get_db_connection() as db:
             cur = db.cursor()
             cur.execute(
@@ -737,6 +742,41 @@ class FactorResearchRepository:
             rows = cur.fetchall() or []
             cur.close()
         return [self._hydrate_summary(row) for row in rows]
+
+    def list_benchmark_runs(
+        self,
+        *,
+        user_id: int,
+        benchmark_id: str | None = None,
+        limit: int = 1000,
+    ) -> list[dict[str, Any]]:
+        with get_db_connection() as db:
+            cur = db.cursor()
+            cur.execute(
+                """
+                SELECT id, user_id, source_id, source_name, universe_id, universe_name,
+                       research_mode, market, timeframe, start_date,
+                       end_date, factor_id, groups_count, holding_period, commission, slippage,
+                       neutralize_industry, universe_size, manifest_json, code_hash, result_json,
+                       status, created_at
+                FROM qd_factor_research_runs
+                WHERE user_id = ? AND research_mode = 'benchmark'
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (int(user_id), max(1, min(5000, int(limit)))),
+            )
+            rows = cur.fetchall() or []
+            cur.close()
+        hydrated = [self._hydrate(row, include_result=True) for row in rows]
+        if not benchmark_id:
+            return hydrated
+        target = str(benchmark_id)
+        return [
+            item
+            for item in hydrated
+            if str((item.get("result") or {}).get("benchmarkId") or "") == target
+        ]
 
     def get_run(self, *, user_id: int, run_id: int) -> Optional[dict[str, Any]]:
         with get_db_connection() as db:

@@ -570,6 +570,56 @@
         "responses": { "200": { "description": "OK" }, "404": { "description": "Not found" } }
       }
     },
+    "/api/agent/v1/research/factor-benchmarks": {
+      "post": {
+        "summary": "Submit a multi-factor out-of-sample benchmark job",
+        "description": "Evaluates multiple registered factors on one point-in-time universe, ranks out-of-sample evidence, and controls false discoveries with Benjamini-Hochberg correction.",
+        "x-scope-class": "B",
+        "parameters": [
+          { "in": "header", "name": "Idempotency-Key", "required": true, "schema": { "type": "string", "maxLength": 120 } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["universeId", "factors", "startDate", "endDate"],
+                "properties": {
+                  "universeId": { "type": "integer", "minimum": 1 },
+                  "factors": {
+                    "type": "array",
+                    "minItems": 2,
+                    "maxItems": 40,
+                    "items": {
+                      "type": "object",
+                      "required": ["factorId"],
+                      "properties": {
+                        "factorId": { "type": "string" },
+                        "factorParams": { "type": "object" }
+                      }
+                    }
+                  },
+                  "startDate": { "type": "string", "format": "date" },
+                  "endDate": { "type": "string", "format": "date" },
+                  "frequency": { "type": "string", "default": "1d" },
+                  "groups": { "type": "integer", "minimum": 2, "maximum": 10 },
+                  "holdingPeriod": { "type": "integer", "minimum": 1 },
+                  "trainFraction": { "type": "number", "minimum": 0.5, "maximum": 0.8 },
+                  "falseDiscoveryRate": { "type": "number", "minimum": 0.001, "maximum": 0.5 },
+                  "minimumAbsOosIc": { "type": "number", "minimum": 0 }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": { "description": "Queued" },
+          "400": { "description": "Invalid benchmark request" },
+          "403": { "description": "Token allowlist denied the universe" }
+        }
+      }
+    },
     "/api/agent/v1/research/watchlist": {
       "get": {
         "summary": "List tenant watchlist",
