@@ -66,13 +66,19 @@ def _scenario_frame(frequency: str, warmup_bars: int) -> pd.DataFrame:
         closes.append(max(100.0, 2500.0 + primary + secondary + regime))
     opens = [closes[0], *closes[:-1]]
     spreads = [24.0 + 8.0 * (1.0 + math.sin(offset / 8.0)) for offset in range(count)]
+    # Constant volume would zero every relative-volume and volume z-score path.
+    # Volume oscillates and expands with the bar's move, so regime breaks spike.
+    volumes = [
+        1_000_000.0 * (1.0 + 0.5 * math.sin(offset / 3.7)) + 20_000.0 * abs(close - open_)
+        for offset, (open_, close) in enumerate(zip(opens, closes))
+    ]
     return pd.DataFrame(
         {
             "open": opens,
             "high": [max(open_, close) + spread for open_, close, spread in zip(opens, closes, spreads)],
             "low": [min(open_, close) - spread for open_, close, spread in zip(opens, closes, spreads)],
             "close": closes,
-            "volume": [1_000_000.0] * count,
+            "volume": volumes,
         },
         index=index,
     )

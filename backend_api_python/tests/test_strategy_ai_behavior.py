@@ -70,6 +70,26 @@ def handle_data(context, data):
 '''
 
 
+VOLUME_CONFIRMED_RSI_SOURCE = '''"""Volume-confirmed RSI runtime behavior test."""
+
+def initialize(context):
+    g.symbol = "USStock:SPY"
+    context.set_universe([g.symbol])
+    context.subscribe(frequency="1h")
+    context.set_warmup(30)
+    context.set_metadata(direction_mode="long_only")
+
+def handle_data(context, data):
+    values = indicator("rsi", g.symbol, period=14, frequency="1h").dropna()
+    bars = get_history(20, "1h", None, g.symbol)
+    if len(values) < 1 or len(bars) < 20:
+        return
+    volume = bars["volume"]
+    if float(values.iloc[-1]) > 50 and float(volume.iloc[-1]) > 1.5 * float(volume.mean()):
+        order_target_percent(g.symbol, 0.2, reason="volume_rsi_open_long")
+'''
+
+
 def _intent():
     return resolve_strategy_generation_intent(
         prompt="ETH 永续 Supertrend 对冲模式双向持仓，3% 止损和 6% 止盈"
@@ -126,4 +146,21 @@ def test_runtime_smoke_applies_to_any_registered_technical_factor():
 
     assert intent.factor_ids == ("rsi",)
     assert result["executed"] is True
+    assert result["opened_sides"] == ["long"]
+
+
+def test_runtime_smoke_scenario_volume_can_confirm_entries():
+    intent = resolve_strategy_generation_intent(prompt="使用 RSI 构建 SPY 策略")
+    program = validate_generated_strategy(
+        VOLUME_CONFIRMED_RSI_SOURCE,
+        asset_type="script",
+        intent=intent,
+    )
+
+    result = validate_strategy_ai_behavior(
+        VOLUME_CONFIRMED_RSI_SOURCE,
+        program.manifest,
+        intent,
+    )
+
     assert result["opened_sides"] == ["long"]
