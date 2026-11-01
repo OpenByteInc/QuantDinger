@@ -21,8 +21,10 @@ import base64
 import hashlib
 import hmac
 import html
+import ipaddress
 import json
 import os
+import socket
 import smtplib
 import time
 from datetime import datetime, timezone
@@ -43,6 +45,59 @@ logger = get_logger(__name__)
 def _shorten(value: Any, max_len: int = 200) -> str:
     text = str(value or "")
     return text if len(text) <= max_len else text[: max(0, max_len - 3)] + "..."
+
+
+def _host_matches(host: str, *allowed_hosts: str) -> bool:
+    normalized = str(host or "").strip().lower().rstrip(".")
+    return any(
+        normalized == allowed or normalized.endswith(f".{allowed}")
+        for allowed in allowed_hosts
+    )
+
+
+def _validate_outbound_http_url(
+    url: str,
+    *,
+    allowed_hosts: tuple[str, ...] = (),
+) -> Tuple[str, str]:
+    raw = str(url or "").strip()
+    if not raw or len(raw) > 4096:
+        return "", "invalid_webhook_url"
+    try:
+        parsed = urlsplit(raw)
+        host = str(parsed.hostname or "").strip().lower().rstrip(".")
+        port = parsed.port or (443 if parsed.scheme.lower() == "https" else 80)
+    except ValueError:
+        return "", "invalid_webhook_url"
+    if parsed.scheme.lower() not in {"http", "https"} or not host:
+        return "", "invalid_webhook_url"
+    if parsed.username is not None or parsed.password is not None:
+        return "", "webhook_credentials_not_allowed"
+    if allowed_hosts and not _host_matches(host, *allowed_hosts):
+        return "", "webhook_host_not_allowed"
+
+    allow_private = str(os.getenv("SIGNAL_WEBHOOK_ALLOW_PRIVATE_HOSTS") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if not allow_private:
+        try:
+            addresses = {
+                str(info[4][0]).split("%", 1)[0]
+                for info in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+            }
+        except (OSError, ValueError):
+            return "", "webhook_host_unresolvable"
+        if not addresses:
+            return "", "webhook_host_unresolvable"
+        try:
+            if any(not ipaddress.ip_address(address).is_global for address in addresses):
+                return "", "webhook_private_address_blocked"
+        except ValueError:
+            return "", "webhook_host_unresolvable"
+    return raw, ""
 
 
 def _fmt_float(value: Any, max_decimals: int = 8) -> str:
@@ -116,17 +171,18 @@ def _payload_text(payload: Dict[str, Any]) -> str:
 
 
 def _detect_webhook_dialect(url: str) -> str:
-    host = (urlsplit(str(url or "")).netloc or "").lower()
-    raw = str(url or "").lower()
-    if "discord.com/api/webhooks" in raw:
+    parsed = urlsplit(str(url or ""))
+    host = str(parsed.hostname or "").lower().rstrip(".")
+    path = str(parsed.path or "")
+    if _host_matches(host, "discord.com", "discordapp.com") and path.startswith("/api/webhooks/"):
         return "discord"
-    if "open.feishu.cn" in host or "larksuite.com" in host:
+    if _host_matches(host, "open.feishu.cn", "open.larksuite.com"):
         return "feishu"
-    if "oapi.dingtalk.com" in host:
+    if _host_matches(host, "oapi.dingtalk.com"):
         return "dingtalk"
-    if "qyapi.weixin.qq.com" in host or "work.weixin.qq.com" in host:
+    if _host_matches(host, "qyapi.weixin.qq.com", "work.weixin.qq.com"):
         return "wecom"
-    if "hooks.slack.com" in host:
+    if _host_matches(host, "hooks.slack.com"):
         return "slack"
     return "generic"
 
@@ -738,10 +794,11 @@ class SignalNotifier:
         """
         if not url:
             return False, "missing_webhook_url"
-        if not (str(url).startswith("http://") or str(url).startswith("https://")):
-            return False, "invalid_webhook_url"
+        validated_url, validation_error = _validate_outbound_http_url(url)
+        if validation_error:
+            return False, validation_error
 
-        dialect = _detect_webhook_dialect(url)
+        dialect = _detect_webhook_dialect(validated_url)
         adapted_payload = _adapt_payload_for_dialect(dialect, payload)
 
         headers: Dict[str, str] = {
@@ -784,7 +841,7 @@ class SignalNotifier:
         # the body (feishu). We accept failure here gracefully — if
         # the user provided a secret but the algorithm fails, we fail
         # loud rather than send unsigned.
-        post_url = url
+        post_url = validated_url
         post_body_bytes: Optional[bytes] = None
         if signing_secret and dialect == 'feishu':
             try:
@@ -798,7 +855,7 @@ class SignalNotifier:
                 return False, f"feishu_sign_failed:{e}"
         elif signing_secret and dialect == 'dingtalk':
             try:
-                post_url = _dingtalk_signed_url(url, signing_secret)
+                post_url = _dingtalk_signed_url(validated_url, signing_secret)
             except Exception as e:
                 return False, f"dingtalk_sign_failed:{e}"
         elif signing_secret and dialect == 'generic':
@@ -820,8 +877,20 @@ class SignalNotifier:
 
         def _post_once(timeout: float) -> requests.Response:
             if post_body_bytes is not None:
-                return requests.post(post_url, data=post_body_bytes, headers=headers, timeout=timeout)
-            return requests.post(post_url, json=adapted_payload, headers=headers, timeout=timeout)
+                return requests.post(
+                    post_url,
+                    data=post_body_bytes,
+                    headers=headers,
+                    timeout=timeout,
+                    allow_redirects=False,
+                )
+            return requests.post(
+                post_url,
+                json=adapted_payload,
+                headers=headers,
+                timeout=timeout,
+                allow_redirects=False,
+            )
 
         try:
             resp = _post_once(self.timeout_sec)
@@ -855,7 +924,13 @@ class SignalNotifier:
     def _notify_discord(self, *, url: str, payload: Dict[str, Any], fallback_text: str) -> Tuple[bool, str]:
         if not url:
             return False, "missing_discord_webhook_url"
-        if not (str(url).startswith("http://") or str(url).startswith("https://")):
+        validated_url, validation_error = _validate_outbound_http_url(
+            url,
+            allowed_hosts=("discord.com", "discordapp.com"),
+        )
+        if validation_error:
+            return False, validation_error
+        if not str(urlsplit(validated_url).path or "").startswith("/api/webhooks/"):
             return False, "invalid_discord_webhook_url"
 
         if str((payload or {}).get("event") or "") == "qd.profile_test":
@@ -867,7 +942,7 @@ class SignalNotifier:
             }
             if (payload or {}).get("timestamp_iso"):
                 embed["timestamp"] = str((payload or {}).get("timestamp_iso") or "")
-            return self._post_discord_embed(url=url, embed=embed, fallback_text=fallback_text)
+            return self._post_discord_embed(url=validated_url, embed=embed, fallback_text=fallback_text)
 
         strategy = (payload or {}).get("strategy") or {}
         instrument = (payload or {}).get("instrument") or {}
@@ -906,7 +981,7 @@ class SignalNotifier:
             embed["timestamp"] = str(payload.get("timestamp_iso") or "")
         if trace.get("pending_order_id"):
             embed["footer"] = {"text": f"Generated by QuantDinger signal engine | pending_order_id={int(trace.get('pending_order_id'))}"}
-        return self._post_discord_embed(url=url, embed=embed, fallback_text=fallback_text)
+        return self._post_discord_embed(url=validated_url, embed=embed, fallback_text=fallback_text)
 
     def _post_discord_embed(self, *, url: str, embed: Dict[str, Any], fallback_text: str) -> Tuple[bool, str]:
         headers = {
@@ -915,7 +990,13 @@ class SignalNotifier:
         }
 
         def _post(payload_json: Dict[str, Any]) -> requests.Response:
-            return requests.post(url, json=payload_json, headers=headers, timeout=self.timeout_sec)
+            return requests.post(
+                url,
+                json=payload_json,
+                headers=headers,
+                timeout=self.timeout_sec,
+                allow_redirects=False,
+            )
 
         try:
             resp = _post({"content": "", "embeds": [embed]})

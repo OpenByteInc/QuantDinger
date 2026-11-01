@@ -7,6 +7,8 @@ import threading
 import time
 from typing import Any, Dict, Optional, Tuple
 
+from app.utils.security_fingerprint import opaque_fingerprint
+
 PositionSnapshot = Tuple[
     Dict[str, Dict[str, float]],
     Dict[str, Dict[str, float]],
@@ -28,8 +30,11 @@ def position_sync_cache_key(
     cred_id = exchange_config.get("credential_id") or exchange_config.get("credentials_id")
     if cred_id:
         return f"u{int(user_id)}:{exchange_id}:{market_type}:cred:{int(cred_id)}"
-    hint = str(exchange_config.get("api_key") or exchange_config.get("apiKey") or "")[-16:]
-    return f"u{int(user_id)}:{exchange_id}:{market_type}:inline:{hint}"
+    fingerprint = opaque_fingerprint(
+        exchange_config.get("api_key") or exchange_config.get("apiKey") or "",
+        namespace="position-sync-credential",
+    )
+    return f"u{int(user_id)}:{exchange_id}:{market_type}:inline:{fingerprint}"
 
 
 def position_sync_cache_ttl_sec() -> float:

@@ -50,6 +50,27 @@ def test_indicator_conversion_preserves_explicit_capability_requests():
     assert {"crypto_swap", "one_way_reversal", "protection", "persistent_state", "order_lifecycle"} <= set(intent.capabilities)
 
 
+def test_indicator_conversion_parses_legacy_crlf_prompt_without_regex():
+    prompt = (
+        "Conversion template\r\n"
+        "User conversion request:\r\n"
+        "Add a stop loss and keep the strategy long-only\r\n"
+        "Indicator source code:\r\n"
+        "```python\r\npass\r\n```"
+    )
+
+    intent = resolve_strategy_generation_intent(
+        prompt=prompt,
+        context={
+            "source": "indicator_ide_conversion",
+            "instrument": "Crypto:BTC/USDT@spot",
+        },
+    )
+
+    assert intent.requested_direction_mode == "long_only"
+    assert "protection" in intent.capabilities
+
+
 @pytest.mark.parametrize("history", ['data.history("Crypto:SOL/USDT@spot", count=35)', 'get_history(35, "1d", "close", "Crypto:SOL/USDT@spot")'])
 def test_rolling_history_length_cannot_drive_persistent_cooldown(history):
     source = f'''
