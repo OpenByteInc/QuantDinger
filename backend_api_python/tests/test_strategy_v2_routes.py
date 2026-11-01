@@ -282,6 +282,57 @@ def test_factor_benchmark_detail_restores_complete_snapshot(app, monkeypatch):
     assert body["data"]["result"]["rankings"][0]["factorId"] == "quality"
 
 
+def test_factor_benchmark_rejects_exception_detail_exposure(app, monkeypatch):
+    class BacktestService:
+        @staticmethod
+        def benchmark_universe_factors(**_kwargs):
+            raise ValueError("database password=secret")
+
+    monkeypatch.setattr(backtest_center, "get_strategy_backtest_service", lambda: BacktestService())
+
+    with app.test_request_context("/api/backtest/factor-benchmark", method="POST", json={
+        "universeId": 9,
+        "startDate": "2025-01-01",
+        "endDate": "2026-01-01",
+        "factors": [{"factorId": "quality"}],
+    }):
+        g.user_id = 7
+        response, status = inspect.unwrap(backtest_center.run_factor_benchmark)()
+
+    body = response.get_json()
+    assert status == 400
+    assert body["msg"] == "strategyV2.generationInvalid"
+    assert "secret" not in response.get_data(as_text=True)
+
+
+def test_factor_benchmark_history_rejects_exception_detail_exposure(app, monkeypatch):
+    class ResearchRepository:
+        @staticmethod
+        def list_benchmark_runs(**_kwargs):
+            raise RuntimeError("postgres://user:password@database")
+
+    monkeypatch.setattr(backtest_center, "get_factor_research_repository", lambda: ResearchRepository())
+
+    with app.test_request_context("/api/backtest/factor-benchmark/history", method="GET"):
+        g.user_id = 7
+        response, status = inspect.unwrap(backtest_center.list_factor_benchmark_runs)()
+
+    body = response.get_json()
+    assert status == 500
+    assert body["msg"] == "strategyV2.backtest.runFailed"
+    assert "password" not in response.get_data(as_text=True)
+
+
+def test_factor_benchmark_missing_id_returns_public_error_key(app):
+    with app.test_request_context("/api/backtest/factor-benchmark/get", method="GET"):
+        g.user_id = 7
+        response, status = inspect.unwrap(backtest_center.get_factor_benchmark_run)()
+
+    body = response.get_json()
+    assert status == 400
+    assert body["msg"] == "strategyV2.factorBenchmarkIdRequired"
+
+
 def test_human_backtest_submission_uses_persisted_async_job(app, monkeypatch):
     captured = {}
 

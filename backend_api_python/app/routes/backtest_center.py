@@ -38,6 +38,28 @@ _service: StrategyV2BacktestService | None = None
 _repository: StrategyBacktestRepository | None = None
 _factor_repository: FactorResearchRepository | None = None
 
+_PUBLIC_REQUEST_ERROR_KEYS = frozenset({
+    "factor.outputNotFound",
+    "strategyV2.codeRequired",
+    "strategyV2.dateRangeRequired",
+    "strategyV2.factorBenchmarkFactorsRequired",
+    "strategyV2.factorBenchmarkIdRequired",
+    "strategyV2.factorResearchInsufficientObservations",
+    "strategyV2.factorResearchNoData",
+    "strategyV2.factorResearchUniverseRequired",
+    "strategyV2.runIdRequired",
+    "strategyV2.sourceContractRequired",
+    "strategyV2.sourceNotFound",
+    "strategyV2.strategyNotFound",
+})
+
+
+def _public_request_error(exc: BaseException) -> str:
+    value = exc.args[0] if exc.args else None
+    if isinstance(value, str) and value in _PUBLIC_REQUEST_ERROR_KEYS:
+        return value
+    return "strategyV2.generationInvalid"
+
 
 def get_strategy_backtest_service() -> StrategyV2BacktestService:
     global _service
@@ -248,9 +270,14 @@ def create_strategy_backtest_job():
             "msg": exc.code,
             "data": {"error_type": exc.code, **exc.details},
         }), exc.status
-    except (BacktestRangeLimitError, ValueError) as exc:
-        data = exc.details if isinstance(exc, BacktestRangeLimitError) else None
-        return jsonify({"code": 0, "msg": str(exc), "data": data}), 400
+    except BacktestRangeLimitError as exc:
+        return jsonify({
+            "code": 0,
+            "msg": "strategyV2.backtestRangeLimit",
+            "data": exc.details,
+        }), 400
+    except ValueError as exc:
+        return jsonify({"code": 0, "msg": _public_request_error(exc), "data": None}), 400
     except Exception:
         logger.exception("Strategy backtest job submission failed")
         return jsonify({"code": 0, "msg": "strategyV2.backtest.runFailed", "data": None}), 500
@@ -320,14 +347,18 @@ def run_strategy_backtest():
         })
     except BacktestRangeLimitError as exc:
         _refund_backtest_credits(billing, user_id, charge)
-        return jsonify({"code": 0, "msg": str(exc), "data": exc.details}), 400
+        return jsonify({
+            "code": 0,
+            "msg": "strategyV2.backtestRangeLimit",
+            "data": exc.details,
+        }), 400
     except ValueError as exc:
         _refund_backtest_credits(billing, user_id, charge)
-        return jsonify({"code": 0, "msg": str(exc), "data": None}), 400
-    except Exception as exc:
+        return jsonify({"code": 0, "msg": _public_request_error(exc), "data": None}), 400
+    except Exception:
         _refund_backtest_credits(billing, user_id, charge)
         logger.exception("Strategy backtest failed")
-        return jsonify({"code": 0, "msg": str(exc), "data": None}), 500
+        return jsonify({"code": 0, "msg": "strategyV2.backtest.runFailed", "data": None}), 500
 
 
 @backtest_center_blp.route("/factor-research", methods=["POST"])
@@ -419,12 +450,16 @@ def run_factor_research():
         )
         return jsonify({"code": 1, "msg": "success", "data": {**result, "runId": run_id}})
     except BacktestRangeLimitError as exc:
-        return jsonify({"code": 0, "msg": str(exc), "data": exc.details}), 400
+        return jsonify({
+            "code": 0,
+            "msg": "strategyV2.backtestRangeLimit",
+            "data": exc.details,
+        }), 400
     except ValueError as exc:
-        return jsonify({"code": 0, "msg": str(exc), "data": None}), 400
-    except Exception as exc:
+        return jsonify({"code": 0, "msg": _public_request_error(exc), "data": None}), 400
+    except Exception:
         logger.exception("Factor research failed")
-        return jsonify({"code": 0, "msg": str(exc), "data": None}), 500
+        return jsonify({"code": 0, "msg": "strategyV2.backtest.runFailed", "data": None}), 500
 
 
 @backtest_center_blp.route("/factor-research/history", methods=["GET"])
@@ -442,9 +477,9 @@ def list_factor_research_runs():
             offset=max(0, int(request.args.get("offset") or 0)),
         )
         return jsonify({"code": 1, "msg": "success", "data": rows})
-    except Exception as exc:
+    except Exception:
         logger.exception("Factor research history query failed")
-        return jsonify({"code": 0, "msg": str(exc), "data": None}), 500
+        return jsonify({"code": 0, "msg": "strategyV2.backtest.runFailed", "data": None}), 500
 
 
 @backtest_center_blp.route("/factor-benchmark", methods=["POST"])
@@ -560,12 +595,16 @@ def run_factor_benchmark():
         result.pop("factorResults", None)
         return jsonify({"code": 1, "msg": "success", "data": result})
     except BacktestRangeLimitError as exc:
-        return jsonify({"code": 0, "msg": str(exc), "data": exc.details}), 400
+        return jsonify({
+            "code": 0,
+            "msg": "strategyV2.backtestRangeLimit",
+            "data": exc.details,
+        }), 400
     except ValueError as exc:
-        return jsonify({"code": 0, "msg": str(exc), "data": None}), 400
-    except Exception as exc:
+        return jsonify({"code": 0, "msg": _public_request_error(exc), "data": None}), 400
+    except Exception:
         logger.exception("Factor benchmark failed")
-        return jsonify({"code": 0, "msg": str(exc), "data": None}), 500
+        return jsonify({"code": 0, "msg": "strategyV2.backtest.runFailed", "data": None}), 500
 
 
 def _benchmark_snapshot_from_runs(
@@ -664,9 +703,9 @@ def list_factor_benchmark_runs():
             "msg": "success",
             "data": _factor_benchmark_history_items(runs)[:limit],
         })
-    except Exception as exc:
+    except Exception:
         logger.exception("Factor benchmark history query failed")
-        return jsonify({"code": 0, "msg": str(exc), "data": None}), 500
+        return jsonify({"code": 0, "msg": "strategyV2.backtest.runFailed", "data": None}), 500
 
 
 @backtest_center_blp.route("/factor-benchmark/get", methods=["GET"])
@@ -710,10 +749,10 @@ def get_factor_benchmark_run():
             },
         })
     except ValueError as exc:
-        return jsonify({"code": 0, "msg": str(exc), "data": None}), 400
-    except Exception as exc:
+        return jsonify({"code": 0, "msg": _public_request_error(exc), "data": None}), 400
+    except Exception:
         logger.exception("Factor benchmark detail query failed")
-        return jsonify({"code": 0, "msg": str(exc), "data": None}), 500
+        return jsonify({"code": 0, "msg": "strategyV2.backtest.runFailed", "data": None}), 500
 
 
 @backtest_center_blp.route("/factor-research/get", methods=["GET"])
@@ -731,10 +770,10 @@ def get_factor_research_run():
             return jsonify({"code": 0, "msg": "strategyV2.factorResearchRunNotFound", "data": None}), 404
         return jsonify({"code": 1, "msg": "success", "data": row})
     except ValueError as exc:
-        return jsonify({"code": 0, "msg": str(exc), "data": None}), 400
-    except Exception as exc:
+        return jsonify({"code": 0, "msg": _public_request_error(exc), "data": None}), 400
+    except Exception:
         logger.exception("Factor research lookup failed")
-        return jsonify({"code": 0, "msg": str(exc), "data": None}), 500
+        return jsonify({"code": 0, "msg": "strategyV2.backtest.runFailed", "data": None}), 500
 
 
 @backtest_center_blp.route("/history", methods=["GET"])
@@ -751,9 +790,9 @@ def list_strategy_backtests():
             offset=max(0, int(request.args.get("offset") or 0)),
         )
         return jsonify({"code": 1, "msg": "success", "data": rows})
-    except Exception as exc:
+    except Exception:
         logger.exception("Backtest history query failed")
-        return jsonify({"code": 0, "msg": str(exc), "data": None}), 500
+        return jsonify({"code": 0, "msg": "strategyV2.backtest.runFailed", "data": None}), 500
 
 
 @backtest_center_blp.route("/get", methods=["GET"])
@@ -768,10 +807,10 @@ def get_strategy_backtest():
             return jsonify({"code": 0, "msg": "strategyV2.runNotFound", "data": None}), 404
         return jsonify({"code": 1, "msg": "success", "data": row})
     except ValueError as exc:
-        return jsonify({"code": 0, "msg": str(exc), "data": None}), 400
-    except Exception as exc:
+        return jsonify({"code": 0, "msg": _public_request_error(exc), "data": None}), 400
+    except Exception:
         logger.exception("Backtest lookup failed")
-        return jsonify({"code": 0, "msg": str(exc), "data": None}), 500
+        return jsonify({"code": 0, "msg": "strategyV2.backtest.runFailed", "data": None}), 500
 
 
 def _positive_int(value: Any) -> int | None:

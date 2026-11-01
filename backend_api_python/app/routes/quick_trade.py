@@ -108,9 +108,9 @@ def get_order_book():
     except (TypeError, ValueError):
         limit = 25
     if not exchange_id or not symbol:
-        return jsonify({"code": 0, "msg": "exchange_id and symbol are required"}), 400
+        return jsonify({"code": 0, "msg": "quickTrade.selectSymbol"}), 400
     if not is_supported_crypto_exchange(exchange_id):
-        return jsonify({"code": 0, "msg": "Unsupported crypto exchange"}), 400
+        return jsonify({"code": 0, "msg": "quickTrade.unsupportedMarket"}), 400
     try:
         snapshot = fetch_order_book(
             g.quick_trade_session,
@@ -121,10 +121,16 @@ def get_order_book():
         )
         return jsonify({"code": 1, "msg": "success", "data": snapshot})
     except (OrderBookError, ValueError) as exc:
-        return jsonify({"code": 0, "msg": str(exc)}), 400
+        logger.warning(
+            "quick-trade order book request rejected exchange=%s symbol=%s error=%s",
+            exchange_id,
+            symbol,
+            type(exc).__name__,
+        )
+        return jsonify({"code": 0, "msg": "quickTrade.orderFailed"}), 400
     except Exception as exc:
         logger.warning("quick-trade order book failed exchange=%s symbol=%s: %s", exchange_id, symbol, exc)
-        return jsonify({"code": 0, "msg": "Order book is temporarily unavailable"}), 502
+        return jsonify({"code": 0, "msg": "quickTrade.errorHints.networkError"}), 502
 
 def _reject_quick_trade_if_desktop_broker(exchange_id: str):
     """Quick Trade is USDT-centric and only wired to crypto exchange clients."""

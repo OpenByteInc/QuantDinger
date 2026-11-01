@@ -1,5 +1,9 @@
-import pytest
+import inspect
 
+import pytest
+from flask import g
+
+from app.routes import quick_trade
 from app.services.quick_trade.orderbook import (
     OrderBookError,
     _contract_request_spec,
@@ -141,6 +145,26 @@ def test_contract_metadata_requests_are_symbol_specific():
 def test_inverse_contract_multiplier_fails_closed():
     payload = {"data": [{"ctVal": "100", "ctValCcy": "USD", "ctType": "inverse"}]}
     assert _extract_contract_multiplier("okx", payload, normalize_symbol("BTC/USDT")) == 0
+
+
+def test_order_book_route_rejects_exception_detail_exposure(app, monkeypatch):
+    def reject_order_book(*_args, **_kwargs):
+        raise OrderBookError("credential=secret")
+
+    monkeypatch.setattr(quick_trade, "fetch_order_book", reject_order_book)
+
+    with app.test_request_context(
+        "/api/quick-trade/order-book?exchange_id=binance&symbol=BTC%2FUSDT",
+        method="GET",
+    ):
+        g.user_id = 7
+        g.quick_trade_session = object()
+        response, status = inspect.unwrap(quick_trade.get_order_book)()
+
+    body = response.get_json()
+    assert status == 400
+    assert body["msg"] == "quickTrade.orderFailed"
+    assert "secret" not in response.get_data(as_text=True)
 
 
 def test_order_book_reports_native_contract_unit_metadata():
