@@ -17,6 +17,21 @@ class OrderBookError(RuntimeError):
     """Raised when a supported venue cannot return a usable snapshot."""
 
 
+_CONTRACT_QUANTITY_UNITS = {
+    "binance": "base",
+    "okx": "contracts",
+    "bitget": "base",
+    "bybit": "base",
+    "gate": "contracts",
+    "htx": "contracts",
+}
+_NATIVE_CONTRACT_EXCHANGES = {
+    exchange_id for exchange_id, quantity_unit in _CONTRACT_QUANTITY_UNITS.items() if quantity_unit == "contracts"
+}
+_CONTRACT_METADATA_TTL_SECONDS = 6 * 60 * 60
+_contract_metadata_cache: Dict[Tuple[str, str], Tuple[float, float]] = {}
+
+
 @dataclass(frozen=True)
 class SymbolParts:
     base: str
@@ -115,6 +130,7 @@ def normalize_order_book(
     symbol: str,
     market_type: str,
     limit: int,
+    contract_multiplier: float = 1.0,
 ) -> Dict[str, Any]:
     bids_raw, asks_raw, timestamp = _extract_rows(exchange_id, payload if isinstance(payload, dict) else {})
     if timestamp < 1_000_000_000_000:
@@ -135,6 +151,9 @@ def normalize_order_book(
         "exchange_id": exchange_id,
         "symbol": symbol,
         "market_type": market_type,
+        "base_asset": normalize_symbol(symbol).base,
+        "quantity_unit": "base" if market_type == "spot" else _CONTRACT_QUANTITY_UNITS.get(exchange_id, "unknown"),
+        "contract_multiplier": contract_multiplier,
         "timestamp": timestamp,
         "bids": bids,
         "asks": asks,
@@ -150,6 +169,74 @@ def normalize_order_book(
         "buy_wall": max(bids, key=lambda row: row["notional"]),
         "sell_wall": max(asks, key=lambda row: row["notional"]),
     }
+
+
+def _contract_request_spec(exchange_id: str, parts: SymbolParts):
+    if exchange_id == "okx":
+        return "https://www.okx.com/api/v5/public/instruments", {
+            "instType": "SWAP",
+            "instId": f"{parts.dashed}-SWAP",
+        }
+    if exchange_id == "gate":
+        return f"https://fx-api.gateio.ws/api/v4/futures/usdt/contracts/{parts.underscored}", {}
+    if exchange_id == "htx":
+        return "https://api.hbdm.com/linear-swap-api/v1/swap_contract_info", {
+            "contract_code": parts.dashed,
+        }
+    raise OrderBookError("Unsupported contract metadata exchange")
+
+
+def _extract_contract_multiplier(exchange_id: str, payload: Any, parts: SymbolParts) -> float:
+    data = payload if isinstance(payload, dict) else {}
+    if exchange_id == "okx":
+        rows = data.get("data") or []
+        instrument = rows[0] if rows and isinstance(rows[0], dict) else {}
+        contract_currency = str(instrument.get("ctValCcy") or "").upper()
+        contract_type = str(instrument.get("ctType") or "").lower()
+        if contract_type == "inverse" or (contract_currency and contract_currency != parts.base):
+            return 0.0
+        contract_value = _safe_number(instrument.get("ctVal"))
+        contract_multiple = _safe_number(instrument.get("ctMult")) or 1.0
+        return contract_value * contract_multiple
+    if exchange_id == "gate":
+        return _safe_number(data.get("quanto_multiplier") or data.get("contract_size"))
+    if exchange_id == "htx":
+        rows = data.get("data") or []
+        contract = rows[0] if rows and isinstance(rows[0], dict) else {}
+        return _safe_number(contract.get("contract_size"))
+    return 0.0
+
+
+def _contract_multiplier(
+    session: requests.Session,
+    *,
+    exchange_id: str,
+    parts: SymbolParts,
+    timeout: float,
+) -> float:
+    if exchange_id not in _NATIVE_CONTRACT_EXCHANGES:
+        return 1.0
+    cache_key = (exchange_id, parts.compact)
+    cached = _contract_metadata_cache.get(cache_key)
+    now = time.monotonic()
+    if cached and now - cached[0] < _CONTRACT_METADATA_TTL_SECONDS:
+        return cached[1]
+    try:
+        url, params = _contract_request_spec(exchange_id, parts)
+        response = session.get(
+            url,
+            params=params,
+            timeout=timeout,
+            verify=get_live_trading_requests_verify(),
+            proxies=get_live_trading_proxies(),
+        )
+        response.raise_for_status()
+        multiplier = _extract_contract_multiplier(exchange_id, response.json(), parts)
+    except (requests.RequestException, TypeError, ValueError):
+        return 0.0
+    if multiplier > 0:
+        _contract_metadata_cache[cache_key] = (now, multiplier)
+    return multiplier
 
 
 def _request_spec(exchange_id: str, parts: SymbolParts, market_type: str, limit: int):
@@ -210,7 +297,8 @@ def fetch_order_book(
         raise OrderBookError("Unsupported crypto exchange")
     normalized_market_type = "spot" if str(market_type or "").strip().lower() == "spot" else "swap"
     bounded_limit = max(5, min(int(limit or 25), 50))
-    url, params = _request_spec(exchange, normalize_symbol(symbol), normalized_market_type, bounded_limit)
+    parts = normalize_symbol(symbol)
+    url, params = _request_spec(exchange, parts, normalized_market_type, bounded_limit)
     response = session.get(
         url,
         params=params,
@@ -220,10 +308,19 @@ def fetch_order_book(
     )
     response.raise_for_status()
     payload = response.json()
+    contract_multiplier = 1.0
+    if normalized_market_type != "spot":
+        contract_multiplier = _contract_multiplier(
+            session,
+            exchange_id=exchange,
+            parts=parts,
+            timeout=timeout,
+        )
     return normalize_order_book(
         exchange,
         payload,
         symbol=symbol,
         market_type=normalized_market_type,
         limit=bounded_limit,
+        contract_multiplier=contract_multiplier,
     )
