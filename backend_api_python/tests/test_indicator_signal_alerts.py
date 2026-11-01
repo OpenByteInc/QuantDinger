@@ -224,3 +224,41 @@ def test_signal_alert_poll_seconds_handles_timeframe_case(timeframe, expected):
     service = IndicatorSignalAlertService.__new__(IndicatorSignalAlertService)
 
     assert service._poll_seconds(timeframe) == expected
+
+
+def test_signal_side_follows_marker_type_before_label():
+    assert indicator_signal_alerts._signal_side("Exit Long", "sell") == "sell"
+    assert indicator_signal_alerts._signal_side("L", "buy") == "buy"
+    assert indicator_signal_alerts._signal_side("Long entry", "signal") == "buy"
+
+
+@pytest.mark.parametrize(
+    ("language", "side_text", "marker_label"),
+    [("pt-BR", "COMPRA", "Marcador no gráfico"), ("zh-CN", "买入", "图表标记"), ("", "BUY", "Chart marker")],
+)
+def test_signal_notification_states_side_in_alert_language(language, side_text, marker_label):
+    task = {
+        "indicator_name": "[5m] Crypto SuperTrend Pullback + RSI",
+        "market": "Crypto",
+        "symbol": "ETH/USDT",
+        "timeframe": "5m",
+        "targets": {"language": language},
+    }
+    signal = {
+        "type": "buy",
+        "label": "L",
+        "price": 2261.7278648738,
+        "bar_time": "2026-11-01T13:05:00",
+        "notify_bar_time": "2026-11-01T13:10:00",
+    }
+
+    title, plain, email_html, telegram_html, payload = IndicatorSignalAlertService()._build_indicator_notification(task, signal)
+
+    assert telegram_html.splitlines()[0] == f"🟢 <b>{side_text}</b> · <b>ETH/USDT</b> 5m"
+    assert "<b>2261.73</b>" in telegram_html
+    assert "2026-11-01 13:05 UTC" in telegram_html
+    assert f"{marker_label}: L" in telegram_html
+    assert all(side_text in text for text in (title, plain, email_html))
+    # Webhook fields stay locale-neutral and keep full precision.
+    assert payload["signal"]["side"] == "buy"
+    assert payload["signal"]["price"] == "2261.7278648738"

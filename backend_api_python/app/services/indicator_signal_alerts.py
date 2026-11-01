@@ -19,6 +19,7 @@ from typing import Any, Dict, Iterable, List, Optional
 import numpy as np
 import pandas as pd
 
+from app.services.indicator_signal_i18n import indicator_signal_texts
 from app.services.kline import KlineService
 from app.services.signal_notifier import SignalNotifier
 from app.services.strategy_v2.frequencies import normalize_frequency
@@ -199,12 +200,40 @@ def _fmt_decimal(value: Any, max_decimals: int = 8) -> str:
         return ""
 
 
+def _fmt_price(value: Any) -> str:
+    """Round a price for people: about six significant digits, never fewer than two decimals."""
+    try:
+        magnitude = abs(float(value))
+    except (TypeError, ValueError):
+        return ""
+    if not math.isfinite(magnitude):
+        return ""
+    exponent = math.floor(math.log10(magnitude)) if magnitude > 0 else 0
+    return _fmt_decimal(value, min(10, max(2, 5 - exponent)))
+
+
+def _fmt_candle_time(value: Any) -> str:
+    """Show a bar time (naive UTC ISO, see _format_bar_time) as 'YYYY-MM-DD HH:MM UTC'."""
+    try:
+        moment = datetime.fromisoformat(str(value))
+    except ValueError:
+        return str(value or "-")
+    if moment.tzinfo is not None:
+        moment = moment.astimezone(timezone.utc)
+    return f"{moment:%Y-%m-%d %H:%M} UTC"
+
+
 def _html_escape(value: Any) -> str:
     return html.escape(str(value or ""), quote=True)
 
 
 def _signal_side(label: Any, signal_type: Any) -> str:
-    text = f"{label or ''} {signal_type or ''}".strip().lower()
+    kind = str(signal_type or "").strip().lower()
+    # The indicator contract's marker type is the direction; labels such as "L" or
+    # "Exit Long" are display text and only decide the side when the type is generic.
+    if kind in ("buy", "sell"):
+        return kind
+    text = f"{label or ''} {kind}".strip().lower()
     if any(token in text for token in ("buy", "long", "cross up", "enter", "一买", "二买", "三买")):
         return "buy"
     if any(token in text for token in ("sell", "short", "cross down", "exit", "一卖", "二卖", "三卖")):
@@ -336,9 +365,11 @@ class IndicatorSignalAlertService:
             cur.close()
         return [self._row_to_task(row) for row in rows]
 
-    def create_task(self, user_id: int, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def create_task(self, user_id: int, payload: Dict[str, Any], *, language: str = "") -> Dict[str, Any]:
         ensure_indicator_signal_alert_schema()
         data = self._sanitize_payload(user_id, payload)
+        if language:
+            data["targets"]["language"] = language
         indicator = self._load_indicator_for_user(user_id, data["indicator_id"])
         data["indicator_name"] = data.get("indicator_name") or indicator.get("display_name") or indicator.get("name") or ""
         with get_db_connection() as db:
@@ -370,10 +401,14 @@ class IndicatorSignalAlertService:
             cur.close()
         return self._row_to_task(row)
 
-    def update_task(self, user_id: int, task_id: int, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def update_task(self, user_id: int, task_id: int, payload: Dict[str, Any], *, language: str = "") -> Dict[str, Any]:
         ensure_indicator_signal_alert_schema()
         self._assert_task_owner(user_id, task_id)
         data = self._sanitize_payload(user_id, payload)
+        # Callers without a UI language (Agent Gateway) keep the one saved with the alert.
+        language = language or ((self._load_task(task_id) or {}).get("targets") or {}).get("language")
+        if language:
+            data["targets"]["language"] = language
         indicator = self._load_indicator_for_user(user_id, data["indicator_id"])
         data["indicator_name"] = data.get("indicator_name") or indicator.get("display_name") or indicator.get("name") or ""
         with get_db_connection() as db:
@@ -792,18 +827,29 @@ class IndicatorSignalAlertService:
         signal_bar_time = str(signal.get("bar_time") or "")
         notify_bar_time = str(signal.get("notify_bar_time") or "")
 
-        title = f"Indicator Signal | {indicator_name}"
-        headline = f"{symbol} {timeframe} {label}".strip()
-        summary = f"{headline} @ {price}" if price else headline
+        # People-facing text follows the UI language saved with the alert; the webhook
+        # payload and browser display params below stay locale-neutral.
+        texts = indicator_signal_texts((task.get("targets") or {}).get("language"))
+        side_text = texts.get(side, texts["signal"])
+        emoji = {"buy": "🟢", "sell": "🔴", "watch": "🟡"}.get(side, "🔔")
+        display_price = _fmt_price(signal.get("price"))
+        signal_time = _fmt_candle_time(signal_bar_time)
+        notify_time = _fmt_candle_time(notify_bar_time)
+        marker = label if label.lower() != signal_type.lower() else ""
+
+        headline = f"{side_text} {symbol} {timeframe}".strip()
+        title = f"{emoji} {headline} · {indicator_name}"
+        summary = f"{headline} @ {display_price}" if display_price else headline
         plain_lines = [
-            title,
-            summary,
-            f"Market: {market or '-'}",
-            f"Symbol: {symbol or '-'}{f' ({symbol_name})' if symbol_name else ''}",
-            f"Timeframe: {timeframe or '-'}",
-            f"Signal bar: {signal_bar_time or '-'}",
-            f"Notify bar: {notify_bar_time or '-'}",
-            "Rule: Signal is confirmed on a closed candle and delivered on the next candle.",
+            f"{emoji} {summary}",
+            f"{texts['indicator']}: {indicator_name}",
+            f"{texts['market']}: {market or '-'}",
+            f"{texts['symbol']}: {symbol or '-'}{f' ({symbol_name})' if symbol_name else ''}",
+            f"{texts['timeframe']}: {timeframe or '-'}",
+            f"{texts['signal_candle']}: {signal_time}",
+            f"{texts['notify_candle']}: {notify_time}",
+            f"{texts['marker']}: {marker}" if marker else "",
+            texts["rule"],
         ]
         message_plain = "\n".join([line for line in plain_lines if line])
 
@@ -870,43 +916,36 @@ class IndicatorSignalAlertService:
         <div style="font-family:Inter,Arial,sans-serif;background:#0f1115;padding:24px;color:#e5e7eb;">
           <div style="max-width:620px;margin:0 auto;background:#181b20;border:1px solid #2b3139;border-radius:8px;overflow:hidden;">
             <div style="padding:20px 22px;background:linear-gradient(135deg, rgba(239,68,68,.24), rgba(34,197,94,.12));border-bottom:1px solid #2b3139;">
-              <div style="font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#9ca3af;">QuantDinger Indicator Signal</div>
+              <div style="font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#9ca3af;">QuantDinger · {_html_escape(texts["heading"])}</div>
               <div style="font-size:20px;font-weight:700;margin-top:6px;color:#fff;">{_html_escape(indicator_name)}</div>
-              <div style="margin-top:12px;display:inline-block;padding:7px 11px;border-radius:6px;border:1px solid {side_color};background:rgba(255,255,255,.04);color:{side_color};font-weight:800;">{_html_escape(label)}</div>
+              <div style="margin-top:12px;display:inline-block;padding:7px 11px;border-radius:6px;border:1px solid {side_color};background:rgba(255,255,255,.04);color:{side_color};font-weight:800;">{emoji} {_html_escape(side_text)}</div>
             </div>
             <div style="padding:20px 22px;">
               <table style="width:100%;border-collapse:collapse;font-size:14px;">
-                <tr><td style="padding:8px 0;color:#9ca3af;">Symbol</td><td style="padding:8px 0;text-align:right;font-weight:700;">{_html_escape(symbol)}</td></tr>
-                <tr><td style="padding:8px 0;color:#9ca3af;">Market</td><td style="padding:8px 0;text-align:right;">{_html_escape(market)}</td></tr>
-                <tr><td style="padding:8px 0;color:#9ca3af;">Timeframe</td><td style="padding:8px 0;text-align:right;">{_html_escape(timeframe)}</td></tr>
-                <tr><td style="padding:8px 0;color:#9ca3af;">Trigger price</td><td style="padding:8px 0;text-align:right;font-weight:700;color:{side_color};">{_html_escape(price or "-")}</td></tr>
-                <tr><td style="padding:8px 0;color:#9ca3af;">Signal candle</td><td style="padding:8px 0;text-align:right;">{_html_escape(signal_bar_time or "-")}</td></tr>
-                <tr><td style="padding:8px 0;color:#9ca3af;">Notification candle</td><td style="padding:8px 0;text-align:right;">{_html_escape(notify_bar_time or "-")}</td></tr>
+                <tr><td style="padding:8px 0;color:#9ca3af;">{_html_escape(texts["symbol"])}</td><td style="padding:8px 0;text-align:right;font-weight:700;">{_html_escape(symbol)}</td></tr>
+                <tr><td style="padding:8px 0;color:#9ca3af;">{_html_escape(texts["market"])}</td><td style="padding:8px 0;text-align:right;">{_html_escape(market)}</td></tr>
+                <tr><td style="padding:8px 0;color:#9ca3af;">{_html_escape(texts["timeframe"])}</td><td style="padding:8px 0;text-align:right;">{_html_escape(timeframe)}</td></tr>
+                <tr><td style="padding:8px 0;color:#9ca3af;">{_html_escape(texts["price"])}</td><td style="padding:8px 0;text-align:right;font-weight:700;color:{side_color};">{_html_escape(display_price or "-")}</td></tr>
+                <tr><td style="padding:8px 0;color:#9ca3af;">{_html_escape(texts["signal_candle"])}</td><td style="padding:8px 0;text-align:right;">{_html_escape(signal_time)}</td></tr>
+                <tr><td style="padding:8px 0;color:#9ca3af;">{_html_escape(texts["notify_candle"])}</td><td style="padding:8px 0;text-align:right;">{_html_escape(notify_time)}</td></tr>
+                {f'<tr><td style="padding:8px 0;color:#9ca3af;">{_html_escape(texts["marker"])}</td><td style="padding:8px 0;text-align:right;">{_html_escape(marker)}</td></tr>' if marker else ""}
               </table>
               <div style="margin-top:18px;padding:12px 14px;border-radius:8px;background:#111827;color:#9ca3af;">
-                Signal is confirmed on a closed candle and delivered on the next candle to avoid repaint drift.
+                {_html_escape(texts["rule"])}
               </div>
             </div>
           </div>
         </div>
         """
-        telegram_html = (
-            f"<b>Indicator Signal</b>\n"
-            f"<b>{_html_escape(indicator_name)}</b>\n"
-            f"{_html_escape(symbol)} {_html_escape(timeframe)} · {_html_escape(label)}"
-            f"{' @ ' + _html_escape(price) if price else ''}\n"
-            f"Signal candle: {_html_escape(signal_bar_time or '-')}\n"
-            f"Notify candle: {_html_escape(notify_bar_time or '-')}"
-        )
-        telegram_html = (
-            f"<b>Indicator Signal</b>\n"
-            f"<b>{_html_escape(indicator_name)}</b>\n"
-            f"{_html_escape(symbol)} {_html_escape(timeframe)} | {_html_escape(label)}"
-            f"{' @ ' + _html_escape(price) if price else ''}\n"
-            f"Signal candle: {_html_escape(signal_bar_time or '-')}\n"
-            f"Notify candle: {_html_escape(notify_bar_time or '-')}\n"
-            f"<i>Confirmed candle signal, delivered on the next candle.</i>"
-        )
+        telegram_lines = [
+            f"{emoji} <b>{_html_escape(side_text)}</b> · <b>{_html_escape(symbol)}</b> {_html_escape(timeframe)}",
+            f"{_html_escape(texts['indicator'])}: {_html_escape(indicator_name)}",
+            f"{_html_escape(texts['price'])}: <b>{_html_escape(display_price)}</b>" if display_price else "",
+            f"{_html_escape(texts['signal_candle'])}: {_html_escape(signal_time)}",
+            f"{_html_escape(texts['marker'])}: {_html_escape(marker)}" if marker else "",
+            f"<i>{_html_escape(texts['rule'])}</i>",
+        ]
+        telegram_html = "\n".join(line for line in telegram_lines if line)
         return title, message_plain, email_html, telegram_html, payload
 
     def _deliver_signal(self, task: Dict[str, Any], signal: Dict[str, Any]) -> Dict[str, Any]:

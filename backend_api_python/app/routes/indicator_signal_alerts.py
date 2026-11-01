@@ -6,6 +6,7 @@ from flask import g, jsonify, request
 from app.openapi.blueprint import HumanBlueprint as Blueprint
 from app.services.indicator_signal_alerts import IndicatorSignalAlertService
 from app.utils.auth import login_required
+from app.utils.language import detect_request_language
 from app.utils.logger import get_logger
 
 
@@ -49,7 +50,7 @@ def create_indicator_signal_alert():
     """Create an indicator signal alert task."""
     try:
         payload = request.get_json(silent=True) or {}
-        return _ok(service.create_task(_user_id(), payload))
+        return _ok(service.create_task(_user_id(), payload, language=detect_request_language(request, payload)))
     except ValueError as exc:
         return _fail(str(exc), 400)
     except Exception as exc:
@@ -63,7 +64,7 @@ def update_indicator_signal_alert(task_id: int):
     """Update an indicator signal alert task."""
     try:
         payload = request.get_json(silent=True) or {}
-        return _ok(service.update_task(_user_id(), task_id, payload))
+        return _ok(service.update_task(_user_id(), task_id, payload, language=detect_request_language(request, payload)))
     except ValueError as exc:
         return _fail(str(exc), 400)
     except Exception as exc:
