@@ -50,7 +50,12 @@ def create_indicator_signal_alert():
     """Create an indicator signal alert task."""
     try:
         payload = request.get_json(silent=True) or {}
-        return _ok(service.create_task(_user_id(), payload, language=detect_request_language(request, payload)))
+        return _ok(service.create_task(
+            _user_id(),
+            payload,
+            language=detect_request_language(request, payload),
+            timezone_name=request.headers.get("X-App-Timezone", ""),
+        ))
     except ValueError as exc:
         return _fail(str(exc), 400)
     except Exception as exc:
@@ -64,7 +69,13 @@ def update_indicator_signal_alert(task_id: int):
     """Update an indicator signal alert task."""
     try:
         payload = request.get_json(silent=True) or {}
-        return _ok(service.update_task(_user_id(), task_id, payload, language=detect_request_language(request, payload)))
+        return _ok(service.update_task(
+            _user_id(),
+            task_id,
+            payload,
+            language=detect_request_language(request, payload),
+            timezone_name=request.headers.get("X-App-Timezone", ""),
+        ))
     except ValueError as exc:
         return _fail(str(exc), 400)
     except Exception as exc:

@@ -13,13 +13,14 @@ import math
 import os
 import threading
 import traceback
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 from typing import Any, Dict, Iterable, List, Optional
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
 
-from app.services.indicator_signal_i18n import indicator_signal_texts
+from app.services.indicator_signal_i18n import indicator_signal_texts, indicator_signal_timezone
 from app.services.kline import KlineService
 from app.services.signal_notifier import SignalNotifier
 from app.services.strategy_v2.frequencies import normalize_frequency
@@ -212,15 +213,35 @@ def _fmt_price(value: Any) -> str:
     return _fmt_decimal(value, min(10, max(2, 5 - exponent)))
 
 
-def _fmt_candle_time(value: Any) -> str:
-    """Show a bar time (naive UTC ISO, see _format_bar_time) as 'YYYY-MM-DD HH:MM UTC'."""
+def _zone(name: Any) -> Optional[tzinfo]:
+    try:
+        return ZoneInfo(str(name or "").strip())
+    except Exception:  # empty, unknown or malformed names
+        return None
+
+
+def _alert_zone(task: Dict[str, Any]) -> tzinfo:
+    """Zone for people-facing times: the profile's, else the browser's when the alert was
+    saved, else the usual one for the alert's UI language, else UTC."""
+    targets = task.get("targets") or {}
+    for name in (task.get("user_timezone"), targets.get("timezone"), indicator_signal_timezone(targets.get("language"))):
+        zone = _zone(name)
+        if zone:
+            return zone
+    return timezone.utc
+
+
+def _fmt_candle_time(value: Any, zone: tzinfo = timezone.utc) -> str:
+    """Show a bar time (naive UTC ISO, see _format_bar_time) in ``zone`` as 'YYYY-MM-DD HH:MM UTC-03:00'."""
     try:
         moment = datetime.fromisoformat(str(value))
     except ValueError:
         return str(value or "-")
-    if moment.tzinfo is not None:
-        moment = moment.astimezone(timezone.utc)
-    return f"{moment:%Y-%m-%d %H:%M} UTC"
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    local = moment.astimezone(zone)
+    offset = local.strftime("%:z")
+    return f"{local:%Y-%m-%d %H:%M} UTC{'' if offset == '+00:00' else offset}"
 
 
 def _html_escape(value: Any) -> str:
@@ -365,11 +386,13 @@ class IndicatorSignalAlertService:
             cur.close()
         return [self._row_to_task(row) for row in rows]
 
-    def create_task(self, user_id: int, payload: Dict[str, Any], *, language: str = "") -> Dict[str, Any]:
+    def create_task(self, user_id: int, payload: Dict[str, Any], *, language: str = "", timezone_name: str = "") -> Dict[str, Any]:
         ensure_indicator_signal_alert_schema()
         data = self._sanitize_payload(user_id, payload)
         if language:
             data["targets"]["language"] = language
+        if _zone(timezone_name):
+            data["targets"]["timezone"] = timezone_name
         indicator = self._load_indicator_for_user(user_id, data["indicator_id"])
         data["indicator_name"] = data.get("indicator_name") or indicator.get("display_name") or indicator.get("name") or ""
         with get_db_connection() as db:
@@ -401,14 +424,18 @@ class IndicatorSignalAlertService:
             cur.close()
         return self._row_to_task(row)
 
-    def update_task(self, user_id: int, task_id: int, payload: Dict[str, Any], *, language: str = "") -> Dict[str, Any]:
+    def update_task(self, user_id: int, task_id: int, payload: Dict[str, Any], *, language: str = "", timezone_name: str = "") -> Dict[str, Any]:
         ensure_indicator_signal_alert_schema()
         self._assert_task_owner(user_id, task_id)
         data = self._sanitize_payload(user_id, payload)
-        # Callers without a UI language (Agent Gateway) keep the one saved with the alert.
-        language = language or ((self._load_task(task_id) or {}).get("targets") or {}).get("language")
+        # Callers without a UI language or browser time zone (Agent Gateway) keep the ones saved with the alert.
+        saved = (self._load_task(task_id) or {}).get("targets") or {}
+        language = language or saved.get("language")
+        timezone_name = timezone_name if _zone(timezone_name) else saved.get("timezone")
         if language:
             data["targets"]["language"] = language
+        if timezone_name:
+            data["targets"]["timezone"] = timezone_name
         indicator = self._load_indicator_for_user(user_id, data["indicator_id"])
         data["indicator_name"] = data.get("indicator_name") or indicator.get("display_name") or indicator.get("name") or ""
         with get_db_connection() as db:
@@ -678,7 +705,16 @@ class IndicatorSignalAlertService:
     def _load_task(self, task_id: int) -> Optional[Dict[str, Any]]:
         with get_db_connection() as db:
             cur = db.cursor()
-            cur.execute("SELECT * FROM qd_indicator_signal_alerts WHERE id = ?", (int(task_id),))
+            # The owner's profile time zone goes along for people-facing times (see _alert_zone).
+            cur.execute(
+                """
+                SELECT a.*, COALESCE(u.timezone, '') AS user_timezone
+                FROM qd_indicator_signal_alerts a
+                LEFT JOIN qd_users u ON u.id = a.user_id
+                WHERE a.id = ?
+                """,
+                (int(task_id),),
+            )
             row = cur.fetchone()
             cur.close()
         return self._row_to_task(row) if row else None
@@ -827,14 +863,15 @@ class IndicatorSignalAlertService:
         signal_bar_time = str(signal.get("bar_time") or "")
         notify_bar_time = str(signal.get("notify_bar_time") or "")
 
-        # People-facing text follows the UI language saved with the alert; the webhook
-        # payload and browser display params below stay locale-neutral.
+        # People-facing text follows the UI language saved with the alert and times its zone
+        # (see _alert_zone); the webhook payload and browser display params below stay locale-neutral.
         texts = indicator_signal_texts((task.get("targets") or {}).get("language"))
         side_text = texts.get(side, texts["signal"])
         emoji = {"buy": "🟢", "sell": "🔴", "watch": "🟡"}.get(side, "🔔")
         display_price = _fmt_price(signal.get("price"))
-        signal_time = _fmt_candle_time(signal_bar_time)
-        notify_time = _fmt_candle_time(notify_bar_time)
+        zone = _alert_zone(task)
+        signal_time = _fmt_candle_time(signal_bar_time, zone)
+        notify_time = _fmt_candle_time(notify_bar_time, zone)
         marker = label if label.lower() != signal_type.lower() else ""
 
         headline = f"{side_text} {symbol} {timeframe}".strip()

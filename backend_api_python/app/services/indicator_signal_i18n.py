@@ -56,6 +56,25 @@ SIGNAL_TEXTS: Dict[str, Dict[str, str]] = {
 }
 
 
+# Fallback time zone for alerts saved without the browser's: UI languages whose country
+# keeps one zone (Brazil: the zone most of its population uses).
+SIGNAL_TIMEZONES: Dict[str, str] = {
+    "pt": "America/Sao_Paulo",
+    "zh": "Asia/Shanghai",
+    "zh-tw": "Asia/Taipei",
+    "ja": "Asia/Tokyo",
+    "ko": "Asia/Seoul",
+    "vi": "Asia/Ho_Chi_Minh",
+    "th": "Asia/Bangkok",
+}
+
+
+def indicator_signal_timezone(language: str = "") -> str:
+    """Return the usual time zone for the alert's UI language, or '' when it spans several."""
+    lang = str(language or "").lower()
+    return SIGNAL_TIMEZONES.get(lang) or SIGNAL_TIMEZONES.get(lang.split("-")[0], "")
+
+
 def indicator_signal_texts(language: str = "") -> Dict[str, str]:
     """Return notification text for the alert's saved UI language, falling back to English."""
     lang = str(language or "").lower()

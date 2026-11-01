@@ -233,10 +233,14 @@ def test_signal_side_follows_marker_type_before_label():
 
 
 @pytest.mark.parametrize(
-    ("language", "side_text", "marker_label"),
-    [("pt-BR", "COMPRA", "Marcador no gráfico"), ("zh-CN", "买入", "图表标记"), ("", "BUY", "Chart marker")],
+    ("language", "side_text", "marker_label", "signal_time"),
+    [
+        ("pt-BR", "COMPRA", "Marcador no gráfico", "2026-11-01 10:05 UTC-03:00"),
+        ("zh-CN", "买入", "图表标记", "2026-11-01 21:05 UTC+08:00"),
+        ("", "BUY", "Chart marker", "2026-11-01 13:05 UTC"),
+    ],
 )
-def test_signal_notification_states_side_in_alert_language(language, side_text, marker_label):
+def test_signal_notification_states_side_in_alert_language(language, side_text, marker_label, signal_time):
     task = {
         "indicator_name": "[5m] Crypto SuperTrend Pullback + RSI",
         "market": "Crypto",
@@ -256,9 +260,25 @@ def test_signal_notification_states_side_in_alert_language(language, side_text, 
 
     assert telegram_html.splitlines()[0] == f"🟢 <b>{side_text}</b> · <b>ETH/USDT</b> 5m"
     assert "<b>2261.73</b>" in telegram_html
-    assert "2026-11-01 13:05 UTC" in telegram_html
+    assert signal_time in telegram_html
     assert f"{marker_label}: L" in telegram_html
     assert all(side_text in text for text in (title, plain, email_html))
     # Webhook fields stay locale-neutral and keep full precision.
     assert payload["signal"]["side"] == "buy"
     assert payload["signal"]["price"] == "2261.7278648738"
+    assert payload["signal"]["bar_time"] == "2026-11-01T13:05:00"
+
+
+@pytest.mark.parametrize(
+    ("user_timezone", "targets", "expected"),
+    [
+        ("Asia/Tokyo", {"timezone": "America/Manaus", "language": "pt-BR"}, "2026-11-01 22:05 UTC+09:00"),
+        ("", {"timezone": "America/Manaus", "language": "pt-BR"}, "2026-11-01 09:05 UTC-04:00"),
+        ("Mars/Base", {"timezone": "../etc/passwd", "language": "pt-BR"}, "2026-11-01 10:05 UTC-03:00"),
+        ("", {"language": "en-US"}, "2026-11-01 13:05 UTC"),
+    ],
+)
+def test_candle_time_uses_profile_then_browser_then_language_zone(user_timezone, targets, expected):
+    zone = indicator_signal_alerts._alert_zone({"user_timezone": user_timezone, "targets": targets})
+
+    assert indicator_signal_alerts._fmt_candle_time("2026-11-01T13:05:00", zone) == expected
