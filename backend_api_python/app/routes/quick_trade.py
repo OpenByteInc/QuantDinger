@@ -120,13 +120,7 @@ def get_order_book():
             limit=limit,
         )
         return jsonify({"code": 1, "msg": "success", "data": snapshot})
-    except (OrderBookError, ValueError) as exc:
-        logger.warning(
-            "quick-trade order book request rejected exchange=%s symbol=%s error=%s",
-            exchange_id,
-            symbol,
-            type(exc).__name__,
-        )
+    except (OrderBookError, ValueError):
         return jsonify({"code": 0, "msg": "quickTrade.orderFailed"}), 400
     except Exception as exc:
         logger.warning("quick-trade order book failed exchange=%s symbol=%s: %s", exchange_id, symbol, exc)
