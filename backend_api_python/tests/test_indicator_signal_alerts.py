@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 import pytest
+import requests
 
-from app.services import indicator_signal_alerts
+from app.services import indicator_signal_alerts, signal_notifier
 from app.services.indicator_signal_alerts import IndicatorSignalAlertService
+from app.services.signal_notifier import SignalNotifier
 
 
 def _df(count: int = 4) -> pd.DataFrame:
@@ -80,13 +83,13 @@ def test_signal_alert_ignores_inactive_marker_values_even_with_text(marker):
     assert _pending(output) == []
 
 
-def test_signal_alert_boolean_marker_uses_candle_close_as_price():
+def test_signal_alert_price_is_the_candle_close_not_the_marker_position():
     output = {
         "signals": [
             {
                 "type": "buy",
                 "text": "Long Entry",
-                "data": [False, False, True, False],
+                "data": [None, None, 11.5, None],  # drawn below the candle's low
             }
         ]
     }
@@ -276,7 +279,7 @@ def test_evaluate_task_delivers_each_marker_once_from_the_chart_exchange(monkeyp
     monkeypatch.setattr(service.kline, "get_kline", lambda **kwargs: kline_calls.append(kwargs) or [])
     monkeypatch.setattr(service, "_bars_to_df", lambda bars: _df(4))
     monkeypatch.setattr(service, "_execute_indicator", lambda code, df, params: output)
-    monkeypatch.setattr(service, "_deliver_signal", lambda task, signal: delivered.append(signal["label"]) or {})
+    monkeypatch.setattr(service, "_deliver_signal", lambda task, signal, df: delivered.append(signal["label"]) or {})
     monkeypatch.setattr(
         service,
         "_mark_triggered",
@@ -303,16 +306,19 @@ def test_signal_alert_payload_normalizes_trigger_mode_and_chart_exchange(monkeyp
         7,
         {"indicator_id": 12, "symbol": "ETH/USDT", "trigger_mode": "realtime", "exchange_id": "Binance", "market_type": "swap"},
     )
-    preclose = service._sanitize_payload(7, {"indicator_id": 12, "symbol": "ETH/USDT", "trigger_mode": "PreClose"})
-    unknown = service._sanitize_payload(7, {"indicator_id": 12, "symbol": "ETH/USDT", "trigger_mode": "tick"})
+    preclose = service._sanitize_payload(
+        7, {"indicator_id": 12, "symbol": "ETH/USDT", "trigger_mode": "PreClose", "result_tracking": "Gale1"}
+    )
+    unknown = service._sanitize_payload(7, {"indicator_id": 12, "symbol": "ETH/USDT", "trigger_mode": "tick", "result_tracking": "gale9"})
 
     assert (realtime["targets"]["trigger_mode"], realtime["targets"]["exchange_id"], realtime["targets"]["market_type"]) == (
         "realtime",
         "binance",
         "swap",
     )
-    assert preclose["targets"]["trigger_mode"] == "preclose"
+    assert (preclose["targets"]["trigger_mode"], preclose["targets"]["result_tracking"]) == ("preclose", "gale1")
     assert (unknown["targets"]["trigger_mode"], unknown["targets"]["exchange_id"]) == ("close", "")
+    assert realtime["targets"]["result_tracking"] == unknown["targets"]["result_tracking"] == "off"
 
 
 def test_signal_alert_payload_uses_profile_notification_defaults(monkeypatch):
@@ -382,14 +388,17 @@ def test_signal_side_follows_marker_type_before_label():
 
 
 @pytest.mark.parametrize(
-    ("language", "side_text", "marker_label", "signal_time"),
+    ("language", "side_text", "marker_label", "signal_time", "entry_line", "signal_line"),
     [
-        ("pt-BR", "COMPRA", "Marcador no gráfico", "2026-11-01 10:05 UTC-03:00"),
-        ("zh-CN", "买入", "图表标记", "2026-11-01 21:05 UTC+08:00"),
-        ("", "BUY", "Chart marker", "2026-11-01 13:05 UTC"),
+        (
+            "pt-BR", "COMPRA", "Marcador no gráfico", "2026-11-01 10:05 UTC-03:00",
+            "⏱ Entrada: <b>10:10</b> (próxima vela) · UTC-03:00", "📍 L na vela das 10:05",
+        ),
+        ("zh-CN", "买入", "图表标记", "2026-11-01 21:05 UTC+08:00", "⏱ 入场: <b>21:10</b> (下一根K线) · UTC+08:00", "📍 21:05 K线的 L"),
+        ("", "BUY", "Chart marker", "2026-11-01 13:05 UTC", "⏱ Entry: <b>13:10</b> (next candle) · UTC", "📍 L on the 13:05 candle"),
     ],
 )
-def test_signal_notification_states_side_in_alert_language(language, side_text, marker_label, signal_time):
+def test_signal_notification_states_side_in_alert_language(language, side_text, marker_label, signal_time, entry_line, signal_line):
     task = {
         "indicator_name": "[5m] Crypto SuperTrend Pullback + RSI",
         "market": "Crypto",
@@ -407,10 +416,9 @@ def test_signal_notification_states_side_in_alert_language(language, side_text, 
 
     title, plain, email_html, telegram_html, payload = IndicatorSignalAlertService()._build_indicator_notification(task, signal)
 
-    assert telegram_html.splitlines()[0] == f"🟢 <b>{side_text}</b> · <b>ETH/USDT</b> 5m"
-    assert "<b>2261.73</b>" in telegram_html
-    assert signal_time in telegram_html
-    assert f"{marker_label}: L" in telegram_html
+    assert telegram_html.splitlines()[:2] == [f"🟢 <b>{side_text}</b> · <b>ETH/USDT</b> 5m", entry_line]
+    assert "<b>2261.73</b>" in telegram_html and signal_line in telegram_html
+    assert signal_time in plain and f"{marker_label}: L" in plain
     assert all(side_text in text for text in (title, plain, email_html))
     # Webhook fields stay locale-neutral and keep full precision.
     assert payload["signal"]["side"] == "buy"
@@ -448,3 +456,146 @@ def test_candle_time_uses_profile_then_browser_then_language_zone(user_timezone,
     zone = indicator_signal_alerts._alert_zone({"user_timezone": user_timezone, "targets": targets})
 
     assert indicator_signal_alerts._fmt_candle_time("2026-11-01T13:05:00", zone) == expected
+
+
+def test_tracked_signal_caption_says_when_to_enter_expire_and_gale():
+    task = {
+        "symbol": "ETH/USDT",
+        "timeframe": "5m",
+        "indicator_name": "[Crypto] 5M Next-Candle",
+        "targets": {"language": "pt-BR", "result_tracking": "gale1"},
+    }
+    signal = {"type": "sell", "label": "Next Down", "price": 2293.6, "bar_time": "2026-11-02T01:20:00", "notify_bar_time": "2026-11-02T01:25:00"}
+
+    telegram_html = IndicatorSignalAlertService()._build_indicator_notification(task, signal)[3]
+
+    assert telegram_html.splitlines() == [
+        "🔴 <b>VENDA</b> · <b>ETH/USDT</b> 5m",
+        "⏱ Entrada: <b>22:25</b> (próxima vela) · UTC-03:00",
+        "⌛ Expira: 22:30",
+        "🔁 Gale 1: 22:30 → 22:35",
+        "💲 Preço: <b>2293.6</b>",
+        "📍 Next Down na vela das 22:20",
+        "📊 [Crypto] 5M Next-Candle",
+    ]
+
+
+def _candles(closes, start=1_793_581_200, step=300):
+    """5m candles from 2026-11-02 01:00 UTC; each opens at the previous close. The last one is forming."""
+    opens = [closes[0]] + list(closes[:-1])
+    return pd.DataFrame(
+        {
+            "time": [start + i * step for i in range(len(closes))],
+            "open": opens,
+            "high": [max(o, c) + 0.5 for o, c in zip(opens, closes)],
+            "low": [min(o, c) - 0.5 for o, c in zip(opens, closes)],
+            "close": closes,
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    ("closes", "gales", "expected"),
+    [
+        ([10, 9, 8, 8], 0, ("win", 0)),
+        ([10, 11, 10, 10], 1, ("win", 1)),
+        ([10, 11, 12, 12], 1, ("loss", 1)),
+        ([10, 10, 9, 9], 0, ("loss", 0)),  # a tie loses
+    ],
+)
+def test_sell_wins_when_its_entry_or_gale_candle_closes_lower(closes, gales, expected):
+    df = _candles(closes)
+
+    outcome = indicator_signal_alerts._trade_outcome(df, int(df.time[1]), "sell", gales, 300)
+
+    assert (outcome["status"], outcome["step"]) == expected
+
+
+def test_result_waits_for_the_candle_it_needs_to_close():
+    df = _candles([10, 11, 12])
+    entry = int(df.time[1])
+
+    assert indicator_signal_alerts._trade_outcome(df.iloc[:2], entry, "sell", 0, 300) == {"status": "pending", "closes_at": entry + 300}
+    # The entry lost; its gale candle is still forming.
+    assert indicator_signal_alerts._trade_outcome(df, entry, "sell", 1, 300) == {"status": "pending", "closes_at": entry + 600}
+
+
+def _telegram_task(tracking="next"):
+    return {
+        "id": 3,
+        "market": "Crypto",
+        "symbol": "ETH/USDT",
+        "timeframe": "5m",
+        "indicator_name": "[Crypto] 5M Next-Candle",
+        "targets": {"telegram_chat_id": "@signals", "telegram_bot_token": "token", "language": "pt-BR", "result_tracking": tracking},
+    }
+
+
+def test_telegram_signal_is_a_chart_photo_queued_for_its_result(monkeypatch):
+    service = IndicatorSignalAlertService()
+    df = _candles([2295.0, 2294.0, 2293.6, 2293.0])
+    signal = {"type": "sell", "label": "Next Down", "bar_time": "2026-11-02T01:10:00", "bar_index": 2}
+    calls, queued = [], []
+    monkeypatch.setattr(
+        service.notifier, "_telegram_api", lambda token, method, data, files=None: calls.append((method, data, files)) or (True, {"message_id": 77})
+    )
+    monkeypatch.setattr(service, "_track_result", lambda *args: queued.append(args))
+
+    assert service._send_telegram(_telegram_task(), signal, df, "caption") == {"ok": True, "message": "", "message_id": 77, "kind": "photo"}
+    [(method, data, files)] = calls
+    assert (method, data["caption"], files["photo"][1][:4]) == ("sendPhoto", "caption", b"\x89PNG")
+    assert queued[0][3:6] == (int(df.time[3]), "@signals", 77)  # entry candle, chat, message
+
+    # A photo Telegram refuses still goes out as text.
+    monkeypatch.setattr(
+        service.notifier, "_telegram_api", lambda token, method, data, files=None: (True, {"message_id": 78}) if method == "sendMessage" else (False, "http_400")
+    )
+    assert service._send_telegram(_telegram_task("off"), signal, df, "caption")["kind"] == "text"
+    assert len(queued) == 1  # untracked alerts queue nothing
+
+
+def test_result_is_edited_into_the_message_once_the_entry_candle_closes(monkeypatch):
+    service = IndicatorSignalAlertService()
+    df = _candles([2295.0, 2294.0, 2293.6, 2292.97, 2293.1])
+    entry = int(df.time[3])
+    row = {
+        "id": 5, "alert_id": 3, "side": "sell", "label": "Next Down", "entry_time": entry, "gales": 0,
+        "chat_id": "@signals", "message_id": 77, "message_kind": "photo", "caption": "caption",
+    }
+    calls, updates = [], []
+    monkeypatch.setattr(service, "_load_task", lambda task_id: _telegram_task())
+    monkeypatch.setattr(service.kline, "get_kline", lambda **kwargs: [])
+    monkeypatch.setattr(
+        service.notifier, "_telegram_api", lambda token, method, data, files=None: calls.append((method, data, files)) or (True, {})
+    )
+    monkeypatch.setattr(service, "_update_result", lambda result_id, status, **kwargs: updates.append((status, kwargs)))
+
+    # Still forming: retried 2 s after it closes.
+    monkeypatch.setattr(service, "_bars_to_df", lambda bars: df.iloc[:4])
+    monkeypatch.setattr(indicator_signal_alerts, "_now", lambda: indicator_signal_alerts._utc(entry + 100))
+    service._resolve_result(row)
+    assert updates.pop() == ("pending", {"due_at": indicator_signal_alerts._utc(entry + 302)})
+
+    monkeypatch.setattr(service, "_bars_to_df", lambda bars: df)
+    service._resolve_result(row)
+    [(method, data, files)] = calls
+    assert method == "editMessageMedia" and files["chart"][1][:4] == b"\x89PNG"
+    assert json.loads(data["media"])["caption"] == "caption\n✅ <b>WIN</b> · 2293.6 → 2292.97"
+    assert updates.pop()[0] == "win"
+
+    # Candles that never arrive are given up an hour after the entry candle should have closed.
+    monkeypatch.setattr(service, "_bars_to_df", lambda bars: df.iloc[:3])
+    monkeypatch.setattr(indicator_signal_alerts, "_now", lambda: indicator_signal_alerts._utc(entry + 300 + 3601))
+    service._resolve_result(row)
+    assert updates.pop()[0] == "expired"
+
+
+def test_telegram_errors_never_carry_the_bot_token(monkeypatch):
+    def refuse(url, **kwargs):
+        raise requests.ConnectionError(f"Max retries exceeded with url: {url}")
+
+    monkeypatch.setattr(signal_notifier.requests, "post", refuse)
+
+    ok, error = SignalNotifier()._telegram_api("123:SECRET", "sendMessage", {"chat_id": "1"})
+
+    assert not ok and "SECRET" not in error and "/bot***/sendMessage" in error

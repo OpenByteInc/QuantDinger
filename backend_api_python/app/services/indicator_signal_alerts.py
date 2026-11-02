@@ -22,6 +22,7 @@ from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
 
+from app.services.indicator_signal_chart import render_signal_chart
 from app.services.indicator_signal_i18n import indicator_signal_texts, indicator_signal_timezone
 from app.services.kline import KlineService
 from app.services.signal_notifier import SignalNotifier
@@ -43,6 +44,10 @@ _SENT_MEMORY = 32
 # act. Replaying a 5m indicator on ETH/USDT with 5 s checks, markers present a minute before the
 # close rarely vanished (3 in 100 candles) while markers sent on first sight often did (44).
 _PRE_CLOSE_SECONDS = 60
+# Gales after the entry candle for alerts that mark their Telegram messages WIN/LOSS ('off' marks none).
+_RESULT_GALES = {"next": 0, "gale1": 1, "gale2": 2}
+# A result still undecided this long after its last candle should have closed is given up.
+_RESULT_GIVE_UP_SECONDS = 3600
 
 
 def _json_loads(value: Any, fallback: Any) -> Any:
@@ -157,17 +162,6 @@ def _signal_marker_is_active(value: Any) -> bool:
         return False
 
 
-def _signal_marker_price(value: Any, fallback: float) -> float:
-    if isinstance(value, dict):
-        for key in ("price", "value", "y", "data"):
-            if key in value:
-                return _safe_float(value.get(key), fallback)
-        return fallback
-    if isinstance(value, (bool, np.bool_)):
-        return fallback
-    return _safe_float(value, fallback)
-
-
 def _signal_render_mode(signal: Dict[str, Any], data: List[Any]) -> str:
     raw_mode = str(signal.get("renderMode") or signal.get("mode") or "").strip().lower()
     if raw_mode in ("event", "events"):
@@ -254,13 +248,49 @@ def _pre_close_lead(timeframe: Any) -> timedelta:
     return timedelta(seconds=min(_PRE_CLOSE_SECONDS, frequency_seconds(timeframe) // 2))
 
 
+def _utc(epoch: float) -> datetime:
+    """Epoch seconds as naive UTC, like ``_now()``."""
+    return datetime.fromtimestamp(epoch, timezone.utc).replace(tzinfo=None)
+
+
 def _candle_close_at(df: pd.DataFrame, timeframe: Any) -> Optional[datetime]:
     """When the forming (last) candle closes, as naive UTC like ``_now()``; None unless bar times are epoch seconds."""
     try:
-        opened = float(df["time"].iloc[-1])
-        return datetime.fromtimestamp(opened + frequency_seconds(timeframe), timezone.utc).replace(tzinfo=None)
+        return _utc(float(df["time"].iloc[-1]) + frequency_seconds(timeframe))
     except (IndexError, KeyError, TypeError, ValueError, OverflowError, OSError):
         return None
+
+
+def _result_gales(task: Dict[str, Any]) -> Optional[int]:
+    """Gales after the entry candle when the alert marks its Telegram messages WIN/LOSS; None when it does not."""
+    return _RESULT_GALES.get((task.get("targets") or {}).get("result_tracking"))
+
+
+def _epoch(bar_time: Any) -> Optional[int]:
+    """A bar time (naive UTC ISO, see _format_bar_time) as epoch seconds; None when bar times are not clock times."""
+    try:
+        return int(datetime.fromisoformat(str(bar_time)).replace(tzinfo=timezone.utc).timestamp())
+    except ValueError:
+        return None
+
+
+def _trade_outcome(df: pd.DataFrame, entry_time: int, side: str, gales: int, step_seconds: int) -> Dict[str, Any]:
+    """Fixed-time result of entering at ``entry_time`` (a candle open, epoch seconds): the candle has to
+    close past the close before it in the signal's direction (a tie loses, like the indicators' hit
+    counters); a lost candle moves on to the next one while gales remain. Until the candle it needs has
+    closed (the last row is the forming candle): ``{"status": "pending", "closes_at": epoch}``."""
+    times = [int(float(t)) for t in df["time"]]
+    closes = [float(c) for c in df["close"]]
+    sign = 1 if side == "buy" else -1
+    for step in range(gales + 1):
+        opened = entry_time + step * step_seconds
+        i = times.index(opened) if opened in times else -1
+        if i < 1 or i == len(times) - 1:  # not served yet, still forming, or no candle before it
+            return {"status": "pending", "closes_at": opened + step_seconds}
+        entry, exit_ = closes[i - 1], closes[i]
+        if sign * (exit_ - entry) > 0:
+            return {"status": "win", "step": step, "entry": entry, "exit": exit_}
+    return {"status": "loss", "step": gales, "entry": entry, "exit": exit_}
 
 
 def _reads_forming_candle(mode: str, timeframe: Any, now: datetime, close_at: Optional[datetime]) -> bool:
@@ -278,8 +308,18 @@ def _fmt_candle_time(value: Any, zone: tzinfo = timezone.utc) -> str:
     if moment.tzinfo is None:
         moment = moment.replace(tzinfo=timezone.utc)
     local = moment.astimezone(zone)
+    return f"{local:%Y-%m-%d %H:%M} {_zone_label(local)}"
+
+
+def _zone_label(local: datetime) -> str:
     offset = local.strftime("%:z")
-    return f"{local:%Y-%m-%d %H:%M} UTC{'' if offset == '+00:00' else offset}"
+    return "UTC" if offset == "+00:00" else f"UTC{offset}"
+
+
+def _fmt_clock(epoch: float, zone: tzinfo, step_seconds: int) -> str:
+    """A candle time for people: the clock for intraday candles, the date for daily and longer ones."""
+    local = datetime.fromtimestamp(epoch, timezone.utc).astimezone(zone)
+    return f"{local:%Y-%m-%d}" if step_seconds >= 86400 else f"{local:%H:%M}"
 
 
 def _html_escape(value: Any) -> str:
@@ -302,9 +342,38 @@ def _signal_side(label: Any, signal_type: Any) -> str:
     return "signal"
 
 
+# One row per Telegram signal message whose WIN/LOSS is edited in once its entry candles close.
+_RESULTS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS qd_indicator_signal_results (
+    id SERIAL PRIMARY KEY,
+    alert_id INTEGER NOT NULL REFERENCES qd_indicator_signal_alerts(id) ON DELETE CASCADE,
+    side VARCHAR(8) NOT NULL,
+    label VARCHAR(160) DEFAULT '',
+    entry_time BIGINT NOT NULL,
+    gales INTEGER NOT NULL DEFAULT 0,
+    chat_id VARCHAR(128) NOT NULL,
+    message_id BIGINT NOT NULL,
+    message_kind VARCHAR(8) NOT NULL DEFAULT 'photo',
+    caption TEXT NOT NULL,
+    status VARCHAR(16) NOT NULL DEFAULT 'pending',
+    step INTEGER NULL,
+    entry_price DOUBLE PRECISION NULL,
+    exit_price DOUBLE PRECISION NULL,
+    last_error TEXT DEFAULT '',
+    due_at TIMESTAMP NOT NULL,
+    created_at TIMESTAMP DEFAULT NOW(),
+    resolved_at TIMESTAMP NULL
+)
+"""
+_RESULTS_INDEX_SQL = (
+    "CREATE INDEX IF NOT EXISTS idx_indicator_signal_results_pending "
+    "ON qd_indicator_signal_results(due_at) WHERE status = 'pending'"
+)
+
+
 @functools.cache
 def ensure_indicator_signal_alert_schema() -> None:
-    """Create the task table for local/updated databases (once per process; a failure retries)."""
+    """Create the alert and result tables for local/updated databases (once per process; a failure retries)."""
     with get_db_connection() as db:
         cur = db.cursor()
         cur.execute(
@@ -339,6 +408,8 @@ def ensure_indicator_signal_alert_schema() -> None:
         cur.execute("CREATE INDEX IF NOT EXISTS idx_indicator_signal_alerts_user_id ON qd_indicator_signal_alerts(user_id)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_indicator_signal_alerts_status_next ON qd_indicator_signal_alerts(status, next_check_at)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_indicator_signal_alerts_indicator_id ON qd_indicator_signal_alerts(indicator_id)")
+        cur.execute(_RESULTS_TABLE_SQL)
+        cur.execute(_RESULTS_INDEX_SQL)
         db.commit()
         cur.close()
 
@@ -515,6 +586,12 @@ class IndicatorSignalAlertService:
                 ),
             )
             row = cur.fetchone()
+            # Pending results would be scored on the edited alert's instrument; drop them instead.
+            cur.execute(
+                "UPDATE qd_indicator_signal_results SET status = 'expired', last_error = 'alert edited', resolved_at = NOW() "
+                "WHERE alert_id = ? AND status = 'pending'",
+                (int(task_id),),
+            )
             db.commit()
             cur.close()
         return self._row_to_task(row)
@@ -617,7 +694,7 @@ class IndicatorSignalAlertService:
                 self._mark_checked(task_id, next_check=next_check, last_error="", last_bar_time=last_closed_time)
                 return {"triggered": False, "reason": "no_signal"}
 
-            deliveries = [self._deliver_signal(task, signal) for signal in signals]
+            deliveries = [self._deliver_signal(task, signal, df) for signal in signals]
             self._mark_triggered(task_id, signals, deliveries, last_closed_time, sent, next_check)
             return {"triggered": True, "signal": signals[-1], "delivery": deliveries[-1], "signals": signals}
         except Exception as exc:
@@ -679,6 +756,8 @@ class IndicatorSignalAlertService:
             raise ValueError("Missing Webhook URL")
         trigger_mode = str(payload.get("trigger_mode") or targets.get("trigger_mode") or "").strip().lower()
         targets["trigger_mode"] = trigger_mode if trigger_mode in ("preclose", "realtime") else "close"
+        result_tracking = str(payload.get("result_tracking") or targets.get("result_tracking") or "").strip().lower()
+        targets["result_tracking"] = result_tracking if result_tracking in _RESULT_GALES else "off"
         # The chart's candle source, so the alert reads the candles the chart drew its markers on.
         for key in ("exchange_id", "market_type"):
             targets[key] = str(payload.get(key) or targets.get(key) or "").strip().lower()[:32]
@@ -705,6 +784,7 @@ class IndicatorSignalAlertService:
         data["channels"] = _json_loads(data.get("channels"), ["browser"])
         data["targets"] = _json_loads(data.get("target_json"), {})
         data["trigger_mode"] = _trigger_mode(data)
+        data["result_tracking"] = data["targets"].get("result_tracking") if _result_gales(data) is not None else "off"
         data["params"] = _json_loads(data.get("param_json"), {})
         data["last_signal_payload"] = _json_loads(data.get("last_signal_payload"), {})
         for key in ("created_at", "updated_at", "next_check_at", "last_checked_at"):
@@ -860,7 +940,9 @@ class IndicatorSignalAlertService:
             found.append({
                 "type": signal_type,
                 "label": label,
-                "price": _signal_marker_price(data[idx], _safe_float(bar.get("close"))),
+                # The candle's close: marker data is where the chart draws the marker
+                # (often offset above the high or below the low), not a price anyone traded.
+                "price": _safe_float(bar.get("close")),
                 "bar_time": times[idx],
                 "bar_index": idx,
                 "notify_bar_time": times[notify_idx],
@@ -878,7 +960,6 @@ class IndicatorSignalAlertService:
                 if not isinstance(signal, dict):
                     continue
                 data = signal.get("data") if isinstance(signal.get("data"), list) else []
-                marker = data[idx] if idx < len(data) else None
                 if not _signal_marker_should_notify(signal, data, idx):
                     continue
                 text_data = signal.get("textData") if isinstance(signal.get("textData"), list) else []
@@ -889,7 +970,7 @@ class IndicatorSignalAlertService:
                     "type": signal_type,
                     "label": str(point_text or signal.get("text") or signal_type).strip(),
                     "side": _signal_side(point_text or signal.get("text"), signal_type),
-                    "price": _signal_marker_price(marker, _safe_float(bar.get("close"))),
+                    "price": _safe_float(bar.get("close")),
                     "bar_time": self._format_bar_time(bar.get("time"), idx),
                     "bar_index": idx,
                     "color": signal.get("color"),
@@ -1053,18 +1134,39 @@ class IndicatorSignalAlertService:
           </div>
         </div>
         """
-        telegram_lines = [
-            f"{emoji} <b>{_html_escape(side_text)}</b> · <b>{_html_escape(symbol)}</b> {_html_escape(timeframe)}",
-            f"{_html_escape(texts['indicator'])}: {_html_escape(indicator_name)}",
-            f"{_html_escape(texts['price'])}: <b>{_html_escape(display_price)}</b>" if display_price else "",
-            f"{_html_escape(texts['signal_candle'])}: {_html_escape(signal_time)}",
-            f"{_html_escape(texts['marker'])}: {_html_escape(marker)}" if marker else "",
-            f"<i>{_html_escape(rule)}</i>",
+        # Telegram reads as a trade ticket: enter on the candle after the signal candle, and with
+        # result tracking, when it expires and when each gale runs.
+        step = frequency_seconds(timeframe)
+        opened = _epoch(signal_bar_time)
+
+        def clock(epoch: int) -> str:
+            return _html_escape(_fmt_clock(epoch, zone, step))
+
+        telegram_lines = [f"{emoji} <b>{_html_escape(side_text)}</b> · <b>{_html_escape(symbol)}</b> {_html_escape(timeframe)}"]
+        warning = _html_escape(rule)
+        if opened is not None:
+            entry_at, gales = opened + step, _result_gales(task)
+            zone_label = _zone_label(datetime.fromtimestamp(entry_at, timezone.utc).astimezone(zone))
+            telegram_lines.append(
+                f"⏱ {_html_escape(texts['entry'])}: <b>{clock(entry_at)}</b> ({_html_escape(texts['entry_next'])}) · {zone_label}"
+            )
+            if gales is not None:
+                telegram_lines.append(f"⌛ {_html_escape(texts['expiry'])}: {clock(entry_at + step)}")
+                telegram_lines += [
+                    f"🔁 {_html_escape(texts['gale'].format(n=n))}: {clock(entry_at + n * step)} → {clock(entry_at + (n + 1) * step)}"
+                    for n in range(1, gales + 1)
+                ]
+            warning = _html_escape(texts["live_warning"].format(time=_fmt_clock(entry_at, zone, step)))
+        telegram_lines += [
+            f"💲 {_html_escape(texts['price'])}: <b>{_html_escape(display_price)}</b>" if display_price else "",
+            f"📍 {_html_escape(texts['signal_at'].format(marker=label, time=_fmt_clock(opened, zone, step) if opened is not None else signal_time))}",
+            f"📊 {_html_escape(indicator_name)}",
+            f"⚠️ <i>{warning}</i>" if live else "",
         ]
         telegram_html = "\n".join(line for line in telegram_lines if line)
         return title, message_plain, email_html, telegram_html, payload
 
-    def _deliver_signal(self, task: Dict[str, Any], signal: Dict[str, Any]) -> Dict[str, Any]:
+    def _deliver_signal(self, task: Dict[str, Any], signal: Dict[str, Any], df: pd.DataFrame) -> Dict[str, Any]:
         channels = sorted({c for c in (_normalize_channel(c) for c in (task.get("channels") or ["browser"])) if c})
         targets = task.get("targets") or {}
         title, message_plain, email_html, telegram_html, payload = self._build_indicator_notification(task, signal)
@@ -1090,13 +1192,7 @@ class IndicatorSignalAlertService:
             )
             result["email"] = {"ok": ok, "message": msg}
         if "telegram" in channels:
-            ok, msg = self.notifier._notify_telegram(
-                chat_id=str(targets.get("telegram_chat_id") or targets.get("telegram") or ""),
-                text=telegram_html,
-                token_override=str(targets.get("telegram_bot_token") or targets.get("telegram_token") or ""),
-                parse_mode="HTML",
-            )
-            result["telegram"] = {"ok": ok, "message": msg}
+            result["telegram"] = self._send_telegram(task, signal, df, telegram_html)
         if "webhook" in channels:
             ok, msg = self.notifier._notify_webhook(
                 url=str(targets.get("webhook_url") or targets.get("webhook") or ""),
@@ -1107,6 +1203,196 @@ class IndicatorSignalAlertService:
             )
             result["webhook"] = {"ok": ok, "message": msg}
         return result
+
+    def _send_telegram(self, task: Dict[str, Any], signal: Dict[str, Any], df: pd.DataFrame, caption: str) -> Dict[str, Any]:
+        """Send the signal as a chart photo captioned ``caption`` (as text when the photo cannot be
+        drawn or sent) and, when the alert tracks results, queue the message for its WIN/LOSS edit."""
+        targets = task.get("targets") or {}
+        token = str(targets.get("telegram_bot_token") or targets.get("telegram_token") or "").strip()
+        chat_id = str(targets.get("telegram_chat_id") or targets.get("telegram") or "").strip()
+        if not token or not chat_id:
+            return {"ok": False, "message": "missing_telegram_chat_id" if token else "missing_telegram_bot_token"}
+        side = _signal_side(signal.get("label"), signal.get("type"))
+        opened = _epoch(signal.get("bar_time")) if side in ("buy", "sell") else None
+        png = None
+        if opened is not None:
+            png = self._signal_chart(task, side, str(signal.get("label") or ""), df.iloc[: int(signal["bar_index"]) + 1], opened)
+        sent = None
+        if png:
+            ok, res = self.notifier._telegram_api(
+                token, "sendPhoto", {"chat_id": chat_id, "caption": caption, "parse_mode": "HTML"},
+                files={"photo": ("signal.png", png, "image/png")},
+            )
+            if ok:
+                sent = ("photo", res)
+            else:
+                logger.warning("Indicator signal chart photo failed for alert %s, sending text: %s", task.get("id"), res)
+        if sent is None:
+            ok, res = self.notifier._telegram_api(
+                token, "sendMessage", {"chat_id": chat_id, "text": caption, "parse_mode": "HTML", "disable_web_page_preview": True}
+            )
+            if not ok:
+                return {"ok": False, "message": res}
+            sent = ("text", res)
+        kind, message_id = sent[0], (sent[1] or {}).get("message_id")
+        if message_id and opened is not None and _result_gales(task) is not None:
+            self._track_result(task, signal, side, opened + frequency_seconds(task.get("timeframe")), chat_id, int(message_id), kind, caption)
+        return {"ok": True, "message": "", "message_id": message_id, "kind": kind}
+
+    def _signal_chart(
+        self, task: Dict[str, Any], side: str, label: str, candles: pd.DataFrame, signal_time: int,
+        result: Optional[tuple[int, bool, str]] = None,
+    ) -> Optional[bytes]:
+        """The signal's chart photo (see render_signal_chart), or None when it cannot be drawn."""
+        texts = indicator_signal_texts((task.get("targets") or {}).get("language"))
+        step, zone = frequency_seconds(task.get("timeframe")), _alert_zone(task)
+        try:
+            return render_signal_chart(
+                candles,
+                signal_time,
+                side,
+                [texts["chart_entry"]] + [f"G{n}" for n in range(1, (_result_gales(task) or 0) + 1)],
+                title=f"{task.get('symbol') or ''} · {task.get('timeframe') or ''}",
+                subtitle=str(task.get("indicator_name") or ""),
+                badge=texts[f"chart_{side}"],
+                marker=label,
+                time_text=lambda epoch: _fmt_clock(epoch, zone, step),
+                price_text=_fmt_price,
+                result=result,
+            )
+        except Exception as exc:
+            logger.warning("Indicator signal chart failed for alert %s: %s", task.get("id"), exc)
+            return None
+
+    def _track_result(
+        self, task: Dict[str, Any], signal: Dict[str, Any], side: str, entry_time: int,
+        chat_id: str, message_id: int, kind: str, caption: str,
+    ) -> None:
+        step = frequency_seconds(task.get("timeframe"))
+        try:
+            with get_db_connection() as db:
+                cur = db.cursor()
+                cur.execute(
+                    """
+                    INSERT INTO qd_indicator_signal_results
+                        (alert_id, side, label, entry_time, gales, chat_id, message_id, message_kind, caption, due_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        int(task["id"]), side, str(signal.get("label") or "")[:160], int(entry_time), _result_gales(task),
+                        chat_id, message_id, kind, caption,
+                        _utc(entry_time + step + 2),  # 2 s after the entry candle closes, like _next_check
+                    ),
+                )
+                db.commit()
+                cur.close()
+        except Exception as exc:  # the signal is already out; only its WIN/LOSS edit is lost
+            logger.warning("Indicator signal result not queued for alert %s: %s", task.get("id"), exc)
+
+    def run_due_results(self, limit: int = 20) -> int:
+        """Edit WIN/LOSS into the Telegram signal messages whose entry candles have closed."""
+        ensure_indicator_signal_alert_schema()
+        with get_db_connection() as db:
+            cur = db.cursor()
+            cur.execute(
+                """
+                SELECT *
+                FROM qd_indicator_signal_results
+                WHERE status = 'pending' AND due_at <= NOW()
+                ORDER BY due_at, id
+                LIMIT ?
+                """,
+                (int(max(1, limit)),),
+            )
+            rows = [dict(row) for row in cur.fetchall() or []]
+            cur.close()
+        for row in rows:
+            try:
+                self._resolve_result(row)
+            except Exception as exc:
+                logger.warning("Indicator signal result %s failed: %s", row.get("id"), exc)
+                self._update_result(int(row["id"]), "pending", due_at=_now() + timedelta(seconds=30), error=str(exc))
+        return len(rows)
+
+    def _resolve_result(self, row: Dict[str, Any]) -> None:
+        task = self._load_task(int(row["alert_id"]))
+        if not task:  # deleting an alert deletes its results; this one raced the delete
+            return
+        targets = task.get("targets") or {}
+        step, entry_time, gales = frequency_seconds(task.get("timeframe")), int(row["entry_time"]), int(row["gales"] or 0)
+        bars = self.kline.get_kline(
+            market=task["market"],
+            symbol=task["symbol"],
+            timeframe=task["timeframe"],
+            limit=100,
+            exchange_id=targets.get("exchange_id") or None,
+            market_type=targets.get("market_type") or None,
+        )
+        df = self._bars_to_df(bars)
+        outcome = _trade_outcome(df, entry_time, row["side"], gales, step)
+        if outcome["status"] == "pending":
+            if _now() > _utc(entry_time + (gales + 1) * step + _RESULT_GIVE_UP_SECONDS):
+                self._update_result(int(row["id"]), "expired", error="entry candles not available")
+            else:  # 2 s after the candle it needs closes; every few seconds while the exchange rolls over
+                self._update_result(int(row["id"]), "pending", due_at=max(_now() + timedelta(seconds=3), _utc(outcome["closes_at"] + 2)))
+            return
+        won, n = outcome["status"] == "win", outcome["step"]
+        texts = indicator_signal_texts(targets.get("language"))
+        verdict = texts["result_win_gale"].format(n=n) if won and n else texts["result_win" if won else "result_loss"]
+        line = (
+            f"{'✅' if won else '❌'} <b>{_html_escape(verdict)}</b> · "
+            f"{_html_escape(_fmt_price(outcome['entry']))} → {_html_escape(_fmt_price(outcome['exit']))}"
+        )
+        png = None
+        if row["message_kind"] == "photo":
+            candles = df[df["time"].astype(float) <= entry_time + n * step]  # up to the deciding candle
+            badge = f"WIN G{n}" if won and n else ("WIN" if won else "LOSS")
+            png = self._signal_chart(task, row["side"], str(row.get("label") or ""), candles, entry_time - step, result=(n, won, badge))
+        error = self._edit_telegram(targets, row, f"{row['caption']}\n{line}", png)
+        self._update_result(int(row["id"]), outcome["status"], outcome=outcome, error=error)
+
+    def _edit_telegram(self, targets: Dict[str, Any], row: Dict[str, Any], caption: str, png: Optional[bytes]) -> str:
+        """Edit a sent signal message to ``caption`` and, for photos, to the chart ``png``; '' or the error."""
+        token = str(targets.get("telegram_bot_token") or targets.get("telegram_token") or "").strip()
+        if not token:
+            return "missing_telegram_bot_token"
+        ref = {"chat_id": row["chat_id"], "message_id": int(row["message_id"])}
+        if row["message_kind"] != "photo":
+            ok, res = self.notifier._telegram_api(
+                token, "editMessageText", {**ref, "text": caption, "parse_mode": "HTML", "disable_web_page_preview": True}
+            )
+            return "" if ok else str(res)
+        if png:
+            media = {"type": "photo", "media": "attach://chart", "caption": caption, "parse_mode": "HTML"}
+            ok, res = self.notifier._telegram_api(
+                token, "editMessageMedia", {**ref, "media": json.dumps(media)}, files={"chart": ("signal.png", png, "image/png")}
+            )
+            if ok:
+                return ""
+        ok, res = self.notifier._telegram_api(token, "editMessageCaption", {**ref, "caption": caption, "parse_mode": "HTML"})
+        return "" if ok else str(res)
+
+    def _update_result(
+        self, result_id: int, status: str, *, due_at: Optional[datetime] = None,
+        outcome: Optional[Dict[str, Any]] = None, error: str = "",
+    ) -> None:
+        outcome = outcome or {}
+        with get_db_connection() as db:
+            cur = db.cursor()
+            cur.execute(
+                """
+                UPDATE qd_indicator_signal_results
+                SET status = ?, due_at = COALESCE(?, due_at), step = ?, entry_price = ?, exit_price = ?,
+                    last_error = ?, resolved_at = ?
+                WHERE id = ?
+                """,
+                (
+                    status, due_at, outcome.get("step"), outcome.get("entry"), outcome.get("exit"),
+                    str(error)[:1000], None if status == "pending" else _now(), int(result_id),
+                ),
+            )
+            db.commit()
+            cur.close()
 
     def _mark_checked(self, task_id: int, *, next_check: datetime, last_error: str, last_bar_time: Optional[str] = None) -> None:
         with get_db_connection() as db:
@@ -1223,6 +1509,10 @@ class IndicatorSignalAlertWorker:
                 self._service.run_due_tasks(limit=20)
             except Exception as exc:
                 logger.warning("Indicator signal alert worker loop failed: %s", exc)
+            try:
+                self._service.run_due_results(limit=20)
+            except Exception as exc:
+                logger.warning("Indicator signal result loop failed: %s", exc)
             # Short wake-up so realtime alerts keep their few-second poll; each wake is one indexed query.
             self._stop.wait(float(os.getenv("INDICATOR_SIGNAL_ALERT_WORKER_INTERVAL", "3")))
 

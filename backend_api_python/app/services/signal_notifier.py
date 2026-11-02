@@ -964,26 +964,33 @@ class SignalNotifier:
             return False, "missing_telegram_bot_token (请在个人中心配置 Telegram Bot Token)"
         if not chat_id:
             return False, "missing_telegram_chat_id"
-        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        data: Dict[str, Any] = {
+            "chat_id": chat_id,
+            "text": str(text or "")[:3900],
+            "disable_web_page_preview": True,
+        }
+        if (parse_mode or "").strip():
+            data["parse_mode"] = str(parse_mode).strip()
+        ok, result = self._telegram_api(token, "sendMessage", data)
+        return (True, "") if ok else (False, result)
+
+    def _telegram_api(
+        self, token: str, method: str, data: Dict[str, Any], files: Optional[Dict[str, Any]] = None
+    ) -> Tuple[bool, Any]:
+        """Call a Telegram Bot API method: (True, its result) or (False, an error without the token)."""
         try:
-            data: Dict[str, Any] = {
-                "chat_id": chat_id,
-                "text": str(text or "")[:3900],
-                "disable_web_page_preview": True,
-            }
-            if (parse_mode or "").strip():
-                data["parse_mode"] = str(parse_mode).strip()
-            resp = requests.post(
-                url,
-                data=data,
-                timeout=self.timeout_sec,
-            )
-            if 200 <= resp.status_code < 300:
-                return True, ""
-            return False, f"http_{resp.status_code}:{(resp.text or '')[:300]}"
+            resp = requests.post(f"https://api.telegram.org/bot{token}/{method}", data=data, files=files, timeout=self.timeout_sec)
+            if not 200 <= resp.status_code < 300:
+                return False, f"http_{resp.status_code}:{(resp.text or '')[:300]}"
+            try:
+                return True, resp.json().get("result")
+            except ValueError:
+                return True, None
         except Exception as e:
-            logger.exception("telegram.error")
-            return False, str(e)
+            # requests errors quote the URL, which holds the bot token.
+            error = str(e).replace(token, "***") if token else str(e)
+            logger.warning("telegram.error: %s", error)
+            return False, error
 
     def _notify_email(self, *, to_email: str, subject: str, body_text: str, body_html: str = "") -> Tuple[bool, str]:
         if not to_email:

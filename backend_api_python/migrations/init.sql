@@ -1117,6 +1117,30 @@ CREATE INDEX IF NOT EXISTS idx_indicator_signal_alerts_user_id ON qd_indicator_s
 CREATE INDEX IF NOT EXISTS idx_indicator_signal_alerts_status_next ON qd_indicator_signal_alerts(status, next_check_at);
 CREATE INDEX IF NOT EXISTS idx_indicator_signal_alerts_indicator_id ON qd_indicator_signal_alerts(indicator_id);
 
+-- One row per Telegram signal message whose WIN/LOSS is edited in once its entry candles close.
+CREATE TABLE IF NOT EXISTS qd_indicator_signal_results (
+    id SERIAL PRIMARY KEY,
+    alert_id INTEGER NOT NULL REFERENCES qd_indicator_signal_alerts(id) ON DELETE CASCADE,
+    side VARCHAR(8) NOT NULL,
+    label VARCHAR(160) DEFAULT '',
+    entry_time BIGINT NOT NULL,
+    gales INTEGER NOT NULL DEFAULT 0,
+    chat_id VARCHAR(128) NOT NULL,
+    message_id BIGINT NOT NULL,
+    message_kind VARCHAR(8) NOT NULL DEFAULT 'photo',
+    caption TEXT NOT NULL,
+    status VARCHAR(16) NOT NULL DEFAULT 'pending',
+    step INTEGER NULL,
+    entry_price DOUBLE PRECISION NULL,
+    exit_price DOUBLE PRECISION NULL,
+    last_error TEXT DEFAULT '',
+    due_at TIMESTAMP NOT NULL,
+    created_at TIMESTAMP DEFAULT NOW(),
+    resolved_at TIMESTAMP NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_indicator_signal_results_pending ON qd_indicator_signal_results(due_at) WHERE status = 'pending';
+
 -- =============================================================================
 -- 6b. Strategy runtime logs (dashboard / API)
 -- =============================================================================
