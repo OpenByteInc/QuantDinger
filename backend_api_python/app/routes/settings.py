@@ -103,6 +103,7 @@ ADVANCED_KEYS = {
     'ALPHA_VANTAGE_API_KEY', 'ALPHA_VANTAGE_BASE_URL', 'ALPHA_VANTAGE_TIMEOUT', 'ALPHA_VANTAGE_NEWS_LIMIT',
     'AI_CODE_GEN_MODEL', 'LLM_PROXY_URL', 'LLM_USE_SYSTEM_PROXY',
     'JEV_BASE_URL', 'JEV_MODEL', 'JEV_TIMEOUT_SECONDS', 'JEV_MIN_CONFIDENCE', 'AI_DECISION_TIMEOUT_SECONDS',
+    'NACE_DEFAULT_DECISION_MODEL',
     'SEC_EDGAR_USER_AGENT',
     'OPENAI_BASE_URL', 'DEEPSEEK_BASE_URL', 'GROK_BASE_URL', 'ATLASCLOUD_BASE_URL', 'MINIMAX_BASE_URL',
     # Trading internals
@@ -449,6 +450,35 @@ CONFIG_SCHEMA = {
                 'type': 'number',
                 'default': 0.55,
                 'description': 'settings.desc.JEV_MIN_CONFIDENCE'
+            },
+            {
+                'key': 'AI_DECISION_PROVIDER',
+                'label': 'AI Decision Provider',
+                'type': 'select',
+                'default': 'jev',
+                'options': [
+                    {'value': 'jev', 'label': 'TypeSafe Jev'},
+                    {'value': 'drex', 'label': 'Nace Drex'},
+                ],
+                'description': 'System One model the AI decision filter calls before the LLM fallback'
+            },
+            {
+                'key': 'NACE_API_KEY',
+                'label': 'Nace API Key',
+                'type': 'password',
+                'required': False,
+                'link': 'https://console.nace.ai/',
+                'link_text': 'settings.link.getApiKey',
+                'description': 'Drex API key, used when AI Decision Provider is Nace Drex'
+            },
+            {
+                'key': 'NACE_DEFAULT_DECISION_MODEL',
+                'label': 'Drex Model',
+                'type': 'text',
+                'default': 'drex-max-finance',
+                'link': 'https://console.nace.ai/docs/drex/reference/models',
+                'link_text': 'settings.link.viewModels',
+                'description': 'Drex model name, e.g. drex-max-finance'
             },
             {
                 'key': 'SEC_EDGAR_USER_AGENT',
