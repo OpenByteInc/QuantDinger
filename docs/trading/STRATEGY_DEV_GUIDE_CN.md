@@ -495,6 +495,20 @@ scores = get_factors(symbols, ["momentum_20", "volatility_20"])
 
 TA-Lib 0.8.1 指标在生成代码、因子库和因子投研中使用明确的 <code>talib:</code> 命名空间。当平台原生因子与 TA-Lib 存在同名指标时，这一规则可以保持原有策略行为稳定。多输出指标可在 <code>factor</code> 调用中通过 <code>output</code> 选择结果；<code>indicator</code> 会返回全部输出列。0.8.1 因子目录共包含 201 个函数，其中新增 40 个，包括 <code>SUPERTREND</code>、<code>KDJ</code>、<code>HMA</code>、<code>VWAP</code>、<code>DONCHIAN</code> 和 <code>PERCENTRANK</code>。
 
+### 自定义公式因子
+
+“因子库 → 新建因子”直接提供编写契约与三个可用示例。这是受限表达式语言，不是 Python/Pine 脚本。只写一条公式，最多 2000 字符、120 个语法树节点，例如：
+
+```text
+momentum(period=lookback) / max(realized_volatility(period=vol_window), floor)
+```
+
+默认参数为 `{"lookback":20,"vol_window":20,"floor":0.0001}`，只接受有限数值或布尔值，名称须为合法变量名。OHLCV 字段是当前 K 线的标量，历史通过已注册因子读取。参数必须具名，不能写 `momentum(20)`；扩展库使用 `factor("talib:RSI", timeperiod=14)` 或 `factor("qlib:alpha158:IMAX20")`，公式内部不传标的。输出必须是一个有限数值，布尔转为 0/1。数学函数包括 `abs`、`min`、`max`、`log`、`log1p`、`sqrt`、`clip`；禁止导入、赋值、循环、属性、下标、文件/网络访问和嵌套自定义因子。
+
+验证只检查结构、依赖、参数声明和最低历史长度，不验证实际行情数据或盈利能力。保存后的私有因子当前列为组合/横截面策略使用；通过“复制调用”取得所属账户的 `custom:<id>` 调用。运行环境兼容不代表数据就绪：VWAP 等额外字段必须真实存在，不用 OHLCV 估算替代。TA-Lib ACOS/ASIN 要求输入在 [-1,1]。TA-Lib 和自建因子原始字段的最新值无效时会报错，不会悄悄沿用旧值。
+
+Qlib IMAX/IMIN 是从窗口最老一根开始的 1 基位置，相同极值取第一个，不是距极值的天数；IMXD 是两者之差。RSQR 对平盘/近似平盘遵循 Qlib 的标准差容差并视为未定义。使用旧版反向位置或平盘结果的研究、回测应在升级后重跑；不会自动重写已保存结果。
+
 基本面：
 
 ~~~python

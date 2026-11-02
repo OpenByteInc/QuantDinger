@@ -3150,6 +3150,26 @@ paths:
       schema:
         type: integer
         minimum: 0
+  /api/factors/custom/generate:
+    post:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      summary: Generate a private draft using the strategy AI code-generation tariff.
+      tags:
+      - Factor
+      operationId: postApiFactorsCustomGenerate
+      x-visibility: internal
   /api/factors:
     get:
       responses:

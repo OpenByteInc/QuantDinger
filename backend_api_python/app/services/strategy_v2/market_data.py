@@ -112,6 +112,8 @@ def _covers_crypto_window(
         frame.index.min() <= requested_start + tolerance
         and frame.index.max() >= requested_end - tolerance
         and coverage_ratio >= 0.98
+        and frame.index.is_unique
+        and (frame.index.to_series().diff().dropna() == pd.Timedelta(seconds=timeframe_seconds)).all()
     )
 
 
@@ -564,10 +566,18 @@ def load_strategy_frame(
             and requested_start >= entry.coverage_start
             and coverage_end <= entry.coverage_end
         ):
-            return entry.frame[
+            cached_result = entry.frame[
                 (entry.frame.index >= requested_start)
                 & (entry.frame.index <= coverage_end)
             ].copy()
+            if not continuous_crypto_market or _cached_crypto_frame_is_usable(
+                cached_result, requested_start, coverage_end, timeframe_seconds,
+                live_request=live_request,
+            ):
+                return cached_result
+            # Do not let an earlier rejected frame bypass validation on a cache hit.
+            entry = None
+            _shared_frames.pop(key, None)
 
         fetch_windows: list[tuple[pd.Timestamp, pd.Timestamp]] = []
         if entry is None:

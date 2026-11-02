@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import json
 import math
+import keyword
 import re
 from dataclasses import dataclass
 from typing import Any, Mapping
@@ -18,6 +19,7 @@ from app.services.factors import (
     get_factor_metadata,
 )
 from app.utils.db import get_db_connection
+from app.services.factors.talib_adapter import talib_warmup_bars
 
 
 _FACTOR_REF = re.compile(r"^custom:(\d+)$", re.IGNORECASE)
@@ -62,10 +64,21 @@ class CustomFactorAnalysis:
 def _parameter_schema(values: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
     schema: dict[str, dict[str, Any]] = {}
     for key, value in values.items():
+        if (
+            not isinstance(key, str) or not key.isidentifier() or keyword.iskeyword(key)
+            or key in _RAW_FIELDS or key in _SAFE_FUNCTIONS
+            or not isinstance(value, (int, float, bool))
+        ):
+            raise CustomFactorError("factor.customInvalidParameter")
+        try:
+            if not math.isfinite(value):
+                raise CustomFactorError("factor.customInvalidParameter")
+        except OverflowError as exc:
+            raise CustomFactorError("factor.customInvalidParameter") from exc
         if isinstance(value, bool):
             schema[key] = {"type": "boolean"}
         elif isinstance(value, int):
-            schema[key] = {"type": "integer", "minimum": 1, "maximum": 5000, "step": 1}
+            schema[key] = {"type": "integer", "step": 1}
         elif isinstance(value, float):
             schema[key] = {"type": "number", "step": 0.1}
         else:
@@ -93,6 +106,10 @@ def _literal_or_parameter(node: ast.AST, parameters: Mapping[str, Any]) -> Any:
         return node.value
     if isinstance(node, ast.Name) and node.id in parameters:
         return parameters[node.id]
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
+        value = _literal_or_parameter(node.operand, parameters)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return -value if isinstance(node.op, ast.USub) else value
     raise CustomFactorError("factor.customParameterMustBeLiteral")
 
 
@@ -144,24 +161,31 @@ def analyze_custom_factor(expression: str, default_params: Mapping[str, Any] | N
         if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name):
             raise CustomFactorError("factor.customNodeUnsupported")
         function_name = node.func.id
+        if any(item.arg is None for item in node.keywords):
+            raise CustomFactorError("factor.customKeywordUnsupported")
+        if len({item.arg for item in node.keywords}) != len(node.keywords):
+            raise CustomFactorError("factor.customKeywordUnsupported")
         if function_name in _SAFE_FUNCTIONS - {"factor"}:
             if node.keywords:
                 raise CustomFactorError("factor.customKeywordUnsupported")
+            expected = 3 if function_name == "clip" else 1
+            if (function_name in {"min", "max"} and not node.args) or (
+                function_name not in {"min", "max"} and len(node.args) != expected
+            ):
+                raise CustomFactorError("factor.customArgumentCount")
             for argument in node.args:
                 visit(argument)
             return
         if function_name == "factor":
-            if not node.args:
-                raise CustomFactorError("factor.customDependencyRequired")
+            if len(node.args) != 1:
+                raise CustomFactorError("factor.customArgumentCount")
             dependency = str(_literal_or_parameter(node.args[0], parameters)).strip()
             if dependency.lower().startswith("custom:"):
                 raise CustomFactorError("factor.customNestedDependencyUnsupported")
-            for argument in node.args[1:]:
-                visit(argument)
         else:
             dependency = function_name
-            for argument in node.args:
-                visit(argument)
+            if node.args:
+                raise CustomFactorError("factor.customArgumentCount")
         kwargs = {
             item.arg: _literal_or_parameter(item.value, parameters)
             for item in node.keywords
@@ -171,12 +195,36 @@ def analyze_custom_factor(expression: str, default_params: Mapping[str, Any] | N
             metadata = get_factor_metadata(dependency)
         except (FactorError, ValueError) as exc:
             raise CustomFactorError("factor.customDependencyNotFound") from exc
+        allowed = set(metadata.get("default_params") or {})
+        if dependency.lower().startswith("talib:"):
+            aliases = {"period": "timeperiod", "fast_period": "fastperiod", "slow_period": "slowperiod", "signal_period": "signalperiod"}
+            allowed.update(alias for alias, target in aliases.items() if target in allowed)
+        if set(kwargs) - allowed:
+            raise CustomFactorError("factor.customInvalidParameter")
+        for key, value in kwargs.items():
+            rule = (metadata.get("parameter_schema") or {}).get(key, {})
+            if rule.get("type") == "integer" and (isinstance(value, bool) or not isinstance(value, int)):
+                raise CustomFactorError("factor.customInvalidParameter")
+            if rule.get("type") in {"integer", "number"}:
+                if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+                    raise CustomFactorError("factor.customInvalidParameter")
+                if not dependency.lower().startswith("talib:") and (
+                    ("minimum" in rule and value < rule["minimum"]) or ("maximum" in rule and value > rule["maximum"])
+                ):
+                    raise CustomFactorError("factor.customInvalidParameter")
+            if rule.get("type") == "enum" and value not in rule.get("options", []):
+                raise CustomFactorError("factor.customInvalidParameter")
         dependencies.add(dependency)
         required_fields.update(str(item) for item in metadata.get("required_fields") or [])
-        try:
-            warmup = max(warmup, factor_warmup_bars(dependency.lower(), kwargs))
-        except FactorError:
+        if dependency.lower().startswith("talib:"):
+            try:
+                warmup = max(warmup, talib_warmup_bars(dependency, kwargs))
+            except ValueError as exc:
+                raise CustomFactorError("factor.customInvalidParameter") from exc
+        elif dependency.lower().startswith("qlib:"):
             warmup = max(warmup, int(metadata.get("default_warmup_bars") or 1))
+        else:
+            warmup = max(warmup, factor_warmup_bars(dependency.lower(), kwargs))
 
     visit(tree)
     return CustomFactorAnalysis(
@@ -195,20 +243,21 @@ def compute_custom_factor(
         raise CustomFactorError("factor.noData")
     defaults = dict(definition.get("default_params") or definition.get("defaultParams") or {})
     values = {**defaults, **dict(params or {})}
-    _parameter_schema(values)
+    analyze_custom_factor(str(definition.get("expression") or ""), values)
     tree = _parse_expression(str(definition.get("expression") or ""))
 
     def evaluate(node: ast.AST) -> Any:
         if isinstance(node, ast.Expression):
             return evaluate(node.body)
         if isinstance(node, ast.Constant):
-            return node.value
+            return float(node.value) if isinstance(node.value, (int, float)) and not isinstance(node.value, bool) else node.value
         if isinstance(node, ast.Name):
             if node.id in values:
-                return values[node.id]
+                value = values[node.id]
+                return value if isinstance(value, bool) else float(value)
             if node.id in _RAW_FIELDS and node.id in frame.columns:
-                series = pd.to_numeric(frame[node.id], errors="coerce").dropna()
-                if series.empty:
+                series = pd.to_numeric(frame[node.id], errors="coerce")
+                if series.empty or not math.isfinite(series.iloc[-1]):
                     raise CustomFactorError("factor.missingFields")
                 return float(series.iloc[-1])
             raise CustomFactorError("factor.customUnknownName")
@@ -223,7 +272,7 @@ def compute_custom_factor(
         if isinstance(node, ast.BinOp) and type(node.op) in _SAFE_BINARY:
             return _SAFE_BINARY[type(node.op)](evaluate(node.left), evaluate(node.right))
         if isinstance(node, ast.BoolOp):
-            resolved = [bool(evaluate(item)) for item in node.values]
+            resolved = (bool(evaluate(item)) for item in node.values)
             return all(resolved) if isinstance(node.op, ast.And) else any(resolved)
         if isinstance(node, ast.Compare):
             left = evaluate(node.left)
@@ -239,7 +288,7 @@ def compute_custom_factor(
             raise CustomFactorError("factor.customNodeUnsupported")
         name = node.func.id
         args = [evaluate(item) for item in node.args]
-        kwargs = {item.arg: evaluate(item.value) for item in node.keywords if item.arg}
+        kwargs = {item.arg: _literal_or_parameter(item.value, values) for item in node.keywords}
         if name == "abs":
             return abs(args[0])
         if name == "min":

@@ -139,6 +139,15 @@ def test_crypto_market_data_rejects_partial_historical_window(monkeypatch):
     assert raised.value.failure.code == "incomplete_market_data"
 
 
+def test_crypto_coverage_rejects_small_internal_gaps_and_duplicates():
+    index = pd.date_range('2026-07-01', periods=201, freq='1min')
+    frame = pd.DataFrame({'close': 100.0}, index=index)
+    assert market_data._covers_crypto_window(frame, index[0], index[-1], 60)
+    assert not market_data._covers_crypto_window(frame.drop(index[100]), index[0], index[-1], 60)
+    duplicate = pd.concat([frame, frame.iloc[[100]]]).sort_index()
+    assert not market_data._covers_crypto_window(duplicate, index[0], index[-1], 60)
+
+
 def test_crypto_market_data_ignores_partial_cached_window(monkeypatch):
     partial = pd.DataFrame(
         {
@@ -233,6 +242,25 @@ def test_shared_market_data_extends_only_uncovered_tail(monkeypatch):
     assert windows[1][0] > start
     assert extended.index.is_unique
     assert extended.index.max() == pd.Timestamp("2026-08-01 00:11")
+
+
+def test_repeated_shared_cache_request_never_reuses_an_internal_gap(monkeypatch):
+    calls = []
+    index = pd.date_range("2026-08-01", periods=201, freq="1min")
+    incomplete = pd.DataFrame({"close": range(201)}, index=index).drop(index[100])
+
+    def load(*_args, **_kwargs):
+        calls.append(True)
+        return incomplete.copy()
+
+    monkeypatch.setattr(market_data, "_load_strategy_frame_uncached", load)
+    start = datetime(2026, 8, 1, tzinfo=timezone.utc)
+    for _ in range(2):
+        frame = market_data.load_strategy_frame(
+            "Crypto", "BTC/USDT", "1m", start, start + timedelta(minutes=200)
+        )
+        assert frame.empty
+    assert len(calls) == 2
 
 
 def test_last_completed_bar_cutoff_is_aligned_to_the_previous_minute():

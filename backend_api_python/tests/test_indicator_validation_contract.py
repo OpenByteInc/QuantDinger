@@ -25,3 +25,17 @@ def test_validation_accepts_output_signals_without_execution_columns():
     assert result["success"] is True
     assert result["error_type"] is None
     assert result["signals_count"] == 1
+
+
+def test_validation_rejects_zone_without_renderable_bounds():
+    code = OUTPUT_SIGNALS_ONLY + "\noutput['layers'] = [{'type': 'zone', 'upper': 120}]\n"
+    result = _validate_indicator_code_internal(code)
+    assert result["success"] is False
+    assert result["error_type"] == "InvalidZoneLayer"
+
+
+def test_validation_rejects_legacy_zone_bounds():
+    code = OUTPUT_SIGNALS_ONLY + "\noutput['layers'] = [{'type': 'zone', 'upper': 120, 'lower': 100}]\n"
+    result = _validate_indicator_code_internal(code)
+    assert result["success"] is False
+    assert result["error_type"] == "InvalidZoneLayer"

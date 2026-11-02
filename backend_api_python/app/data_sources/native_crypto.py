@@ -541,11 +541,15 @@ class NativeCryptoPublicClient:
             }
             if since is not None:
                 params["start"] = int(since)
-                params["end"] = int(since) + tf_ms * min(limit, 1000)
+                params["end"] = int(since) + tf_ms * min(limit, 1000) - 1
             payload = self._get("https://api.bybit.com/v5/market/kline", params)
             rows = (payload.get("result") or {}).get("list") or []
             parsed = [[int(row[0]), _float(row[1]), _float(row[2]), _float(row[3]), _float(row[4]), _float(row[5])] for row in rows]
         elif self.id == "bitget":
+            path = "/api/v3/market/candles"
+            if since is not None:
+                path = "/api/v3/market/history-candles"
+                limit = min(limit, 100, max(1, 90 * 86400000 // tf_ms))
             granularity = {
                 "1m": "1m",
                 "3m": "3m",
@@ -573,7 +577,7 @@ class NativeCryptoPublicClient:
                     int(since) + max_window_ms,
                     int(time.time() * 1000),
                 )
-            payload = self._get("https://api.bitget.com/api/v3/market/candles", params)
+            payload = self._get("https://api.bitget.com" + path, params)
             rows = payload.get("data") or []
             parsed = [[int(row[0]), _float(row[1]), _float(row[2]), _float(row[3]), _float(row[4]), _float(row[5])] for row in rows]
         elif self.id == "gate":
@@ -581,7 +585,8 @@ class NativeCryptoPublicClient:
             params = {"interval": interval, "limit": min(limit, 1000)}
             if since is not None:
                 params["from"] = int(since // 1000)
-                params["to"] = int((int(since) + tf_ms * min(limit, 1000)) // 1000)
+                # Gate includes both endpoints; 1000 intervals would request 1001 bars.
+                params["to"] = int((int(since) + tf_ms * min(limit, 1000) - 1) // 1000)
                 params.pop("limit", None)
             if self.market_type == "swap":
                 params["contract"] = native
@@ -593,7 +598,9 @@ class NativeCryptoPublicClient:
                 parsed = [[int(row[0]) * 1000, _float(row[5]), _float(row[3]), _float(row[4]), _float(row[2]), _float(row[6])] for row in rows]
         elif self.id == "htx":
             period = {"1m": "1min", "5m": "5min", "15m": "15min", "30m": "30min", "1h": "60min", "4h": "4hour", "1d": "1day", "1w": "1week"}[timeframe]
-            params = {"period": period, "size": min(limit, 2000)}
+            # This REST endpoint has no historical cursor. Read its retained window
+            # before slicing; requesting only `limit` returns the wrong recent page.
+            params = {"period": period, "size": 2000 if since is not None else limit}
             if self.market_type == "swap":
                 params["contract_code"] = native
                 url = "https://api.hbdm.com/linear-swap-ex/market/history/kline"
@@ -606,7 +613,12 @@ class NativeCryptoPublicClient:
         else:
             raise ValueError(f"Unsupported crypto exchange: {self.id}")
         lower_bound = int(since) if since is not None else 0
-        unique = {int(row[0]): row for row in parsed if row and int(row[0]) >= lower_bound}
+        upper_bound = int(since) + tf_ms * limit if since is not None else None
+        unique = {
+            int(row[0]): row for row in parsed
+            if row and int(row[0]) >= lower_bound
+            and (upper_bound is None or int(row[0]) < upper_bound)
+        }
         return sorted(unique.values(), key=lambda row: row[0])[:limit]
 
 
