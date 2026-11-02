@@ -20,6 +20,7 @@ SIGNAL_TEXTS: Dict[str, Dict[str, str]] = {
         "notify_candle": "Sent on candle",
         "marker": "Chart marker",
         "rule": "Confirmed when the signal candle closed and sent on the next candle, so it does not repaint.",
+        "rule_live": "Sent while the signal candle is still open; the marker can still disappear before the candle closes.",
     },
     "pt-BR": {
         "buy": "COMPRA",
@@ -36,6 +37,7 @@ SIGNAL_TEXTS: Dict[str, Dict[str, str]] = {
         "notify_candle": "Enviado na vela",
         "marker": "Marcador no gráfico",
         "rule": "Confirmado no fechamento da vela do sinal e enviado na vela seguinte, por isso não muda depois.",
+        "rule_live": "Enviado com a vela do sinal ainda aberta; o marcador ainda pode sumir antes de a vela fechar.",
     },
     "zh-CN": {
         "buy": "买入",
@@ -52,6 +54,7 @@ SIGNAL_TEXTS: Dict[str, Dict[str, str]] = {
         "notify_candle": "通知K线",
         "marker": "图表标记",
         "rule": "信号在K线收盘后确认，并在下一根K线发送，不会重绘。",
+        "rule_live": "信号K线尚未收盘时发送，收盘前该标记仍可能消失。",
     },
 }
 

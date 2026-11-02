@@ -1,11 +1,13 @@
 """Indicator signal alert tasks.
 
-This service monitors chart-only indicator ``output.signals`` and delivers
-notifications when the latest bar emits a selected signal. It never places
-orders and does not reuse strategy execution state.
+This service monitors chart-only indicator ``output.signals`` and delivers a
+notification for every selected marker the chart draws: on each candle as it
+closes, or already on the forming candle for pre-close and realtime alerts. It
+never places orders and does not reuse strategy execution state.
 """
 from __future__ import annotations
 
+import functools
 import hashlib
 import html
 import json
@@ -23,7 +25,7 @@ import pandas as pd
 from app.services.indicator_signal_i18n import indicator_signal_texts, indicator_signal_timezone
 from app.services.kline import KlineService
 from app.services.signal_notifier import SignalNotifier
-from app.services.strategy_v2.frequencies import normalize_frequency
+from app.services.strategy_v2.frequencies import frequency_seconds, normalize_frequency
 from app.services.user_preferences import get_notification_settings
 from app.utils.db import get_db_connection
 from app.utils.logger import get_logger
@@ -32,6 +34,15 @@ from app.utils.safe_exec import safe_exec_indicator_isolated
 
 
 logger = get_logger(__name__)
+
+# Closed candles re-scanned after a missed check (e.g. a worker restart); older markers are stale.
+_CATCH_UP_BARS = 3
+# Fingerprints kept so a marker sent on the forming candle is not sent again when that candle closes.
+_SENT_MEMORY = 32
+# Pre-close alerts read the forming candle from this long before it closes, so people have time to
+# act. Replaying a 5m indicator on ETH/USDT with 5 s checks, markers present a minute before the
+# close rarely vanished (3 in 100 candles) while markers sent on first sight often did (44).
+_PRE_CLOSE_SECONDS = 60
 
 
 def _json_loads(value: Any, fallback: Any) -> Any:
@@ -231,6 +242,33 @@ def _alert_zone(task: Dict[str, Any]) -> tzinfo:
     return timezone.utc
 
 
+def _trigger_mode(task: Dict[str, Any]) -> str:
+    """When an alert reads the forming candle, whose marker can still vanish before it closes:
+    'close' (default) never, 'preclose' from ``_PRE_CLOSE_SECONDS`` before it closes, 'realtime' always."""
+    mode = (task.get("targets") or {}).get("trigger_mode")
+    return mode if mode in ("preclose", "realtime") else "close"
+
+
+def _pre_close_lead(timeframe: Any) -> timedelta:
+    # At most half a candle, so 1m alerts are not read on the candle's first tick.
+    return timedelta(seconds=min(_PRE_CLOSE_SECONDS, frequency_seconds(timeframe) // 2))
+
+
+def _candle_close_at(df: pd.DataFrame, timeframe: Any) -> Optional[datetime]:
+    """When the forming (last) candle closes, as naive UTC like ``_now()``; None unless bar times are epoch seconds."""
+    try:
+        opened = float(df["time"].iloc[-1])
+        return datetime.fromtimestamp(opened + frequency_seconds(timeframe), timezone.utc).replace(tzinfo=None)
+    except (IndexError, KeyError, TypeError, ValueError, OverflowError, OSError):
+        return None
+
+
+def _reads_forming_candle(mode: str, timeframe: Any, now: datetime, close_at: Optional[datetime]) -> bool:
+    if mode == "realtime":
+        return True
+    return mode == "preclose" and close_at is not None and now >= close_at - _pre_close_lead(timeframe)
+
+
 def _fmt_candle_time(value: Any, zone: tzinfo = timezone.utc) -> str:
     """Show a bar time (naive UTC ISO, see _format_bar_time) in ``zone`` as 'YYYY-MM-DD HH:MM UTC-03:00'."""
     try:
@@ -264,8 +302,9 @@ def _signal_side(label: Any, signal_type: Any) -> str:
     return "signal"
 
 
+@functools.cache
 def ensure_indicator_signal_alert_schema() -> None:
-    """Create the task table for local/updated databases."""
+    """Create the task table for local/updated databases (once per process; a failure retries)."""
     with get_db_connection() as db:
         cur = db.cursor()
         cur.execute(
@@ -453,6 +492,7 @@ class IndicatorSignalAlertService:
                     channels = ?,
                     target_json = ?,
                     param_json = ?,
+                    last_bar_time = '',
                     last_error = '',
                     next_check_at = NOW(),
                     updated_at = NOW()
@@ -545,41 +585,47 @@ class IndicatorSignalAlertService:
         if task.get("status") != "running":
             return {"triggered": False, "reason": "paused"}
 
-        next_check = _now() + timedelta(seconds=self._poll_seconds(task.get("timeframe")))
+        mode = _trigger_mode(task)
         try:
             indicator = self._load_indicator_for_user(int(task["user_id"]), int(task["indicator_id"]))
             code = str(indicator.get("runtime_code") or indicator.get("code") or "")
             if not code.strip():
                 raise ValueError("Indicator code is empty")
 
+            targets = task.get("targets") or {}
+            # As much history as the chart loads (up to 1000 candles): indicators with long
+            # warm-ups (rolling z-scores, pivots) otherwise draw different markers than the chart.
             bars = self.kline.get_kline(
                 market=task["market"],
                 symbol=task["symbol"],
                 timeframe=task["timeframe"],
-                limit=360,
+                limit=1000,
+                exchange_id=targets.get("exchange_id") or None,
+                market_type=targets.get("market_type") or None,
             )
             df = self._bars_to_df(bars)
             if df.empty:
                 raise ValueError("No K-line data")
 
             output = self._execute_indicator(code, df, task.get("params") or {})
-            signal = self._latest_matching_signal(output, df, task.get("signal_keys") or ["any"])
-            if not signal:
-                self._mark_checked(task_id, next_check=next_check, last_error="")
+            now = _now()
+            close_at = _candle_close_at(df, task.get("timeframe"))
+            scan_forming = _reads_forming_candle(mode, task.get("timeframe"), now, close_at)
+            signals, last_closed_time, sent = self._pending_signals(output, df, task, scan_forming=scan_forming)
+            next_check = self._next_check(mode, task.get("timeframe"), now, close_at)
+            if not signals:
+                self._mark_checked(task_id, next_check=next_check, last_error="", last_bar_time=last_closed_time)
                 return {"triggered": False, "reason": "no_signal"}
 
-            fingerprint = self._signal_fingerprint(task, signal)
-            if fingerprint == (task.get("last_fingerprint") or ""):
-                self._mark_checked(task_id, next_check=next_check, last_error="")
-                return {"triggered": False, "reason": "duplicate"}
-
-            delivery = self._deliver_signal(task, signal)
-            self._mark_triggered(task_id, signal, fingerprint, next_check, delivery)
-            return {"triggered": True, "signal": signal, "delivery": delivery}
+            deliveries = [self._deliver_signal(task, signal) for signal in signals]
+            self._mark_triggered(task_id, signals, deliveries, last_closed_time, sent, next_check)
+            return {"triggered": True, "signal": signals[-1], "delivery": deliveries[-1], "signals": signals}
         except Exception as exc:
             logger.warning("Indicator signal alert evaluation failed for %s: %s", task_id, exc)
             logger.debug(traceback.format_exc())
-            self._mark_checked(task_id, next_check=next_check, last_error=str(exc)[:1000])
+            # A broken alert retries at the regular pace, not every few seconds.
+            retry_at = _now() + timedelta(seconds=self._poll_seconds(task.get("timeframe")))
+            self._mark_checked(task_id, next_check=retry_at, last_error=str(exc)[:1000])
             return {"triggered": False, "reason": "error", "error": str(exc)}
 
     def _sanitize_payload(self, user_id: int, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -631,6 +677,11 @@ class IndicatorSignalAlertService:
             raise ValueError("Missing Telegram Chat ID")
         if "webhook" in channels and not str(targets.get("webhook_url") or "").strip():
             raise ValueError("Missing Webhook URL")
+        trigger_mode = str(payload.get("trigger_mode") or targets.get("trigger_mode") or "").strip().lower()
+        targets["trigger_mode"] = trigger_mode if trigger_mode in ("preclose", "realtime") else "close"
+        # The chart's candle source, so the alert reads the candles the chart drew its markers on.
+        for key in ("exchange_id", "market_type"):
+            targets[key] = str(payload.get(key) or targets.get(key) or "").strip().lower()[:32]
         params = payload.get("params") if isinstance(payload.get("params"), dict) else {}
         return {
             "user_id": int(user_id),
@@ -653,6 +704,7 @@ class IndicatorSignalAlertService:
         data["signal_keys"] = _json_loads(data.get("signal_keys"), ["any"])
         data["channels"] = _json_loads(data.get("channels"), ["browser"])
         data["targets"] = _json_loads(data.get("target_json"), {})
+        data["trigger_mode"] = _trigger_mode(data)
         data["params"] = _json_loads(data.get("param_json"), {})
         data["last_signal_payload"] = _json_loads(data.get("last_signal_payload"), {})
         for key in ("created_at", "updated_at", "next_check_at", "last_checked_at"):
@@ -754,44 +806,68 @@ class IndicatorSignalAlertService:
             raise ValueError("Indicator output must be a dict")
         return output
 
-    def _latest_matching_signal(self, output: Dict[str, Any], df: pd.DataFrame, keys: List[str]) -> Optional[Dict[str, Any]]:
+    def _pending_signals(
+        self, output: Dict[str, Any], df: pd.DataFrame, task: Dict[str, Any], *, scan_forming: bool = False
+    ) -> tuple[List[Dict[str, Any]], Optional[str], List[str]]:
+        """Return the markers to deliver now, the newest closed candle's time and the sent fingerprints.
+
+        The last row is the forming candle, scanned only with ``scan_forming``. Closed candles after
+        ``last_bar_time`` are scanned once (at most ``_CATCH_UP_BARS``, so a missed check still
+        delivers); a new alert starts at the newest closed candle. Every selected marker on a scanned
+        candle is returned unless its fingerprint was already sent.
+        """
         signals = output.get("signals") or []
-        # Alert timing follows the live-safe next-bar-open rule:
-        # evaluate the last fully closed bar only after a newer bar exists.
-        if not isinstance(signals, list) or df.empty or len(df) < 2:
-            return None
-        idx = len(df) - 2
-        notify_idx = len(df) - 1
+        if not isinstance(signals, list) or len(df) < 2:
+            return [], None, []
+        times = [self._format_bar_time(value, idx) for idx, value in enumerate(df["time"].tolist())]
+        last_closed = len(df) - 2
+        start = last_closed
+        watermark = str(task.get("last_bar_time") or "")
+        if watermark in times:
+            start = max(times.index(watermark) + 1, last_closed - _CATCH_UP_BARS + 1)
+        end = len(df) - 1 if scan_forming else last_closed
+        saved = task.get("last_signal_payload")
+        sent = list(saved.get("sent") or []) if isinstance(saved, dict) else []
+        selected = {_normalize_key(k) for k in (task.get("signal_keys") or ["any"])}
+        pending = []
+        for idx in range(start, end + 1):
+            for signal in self._bar_signals(signals, df, idx, selected, times):
+                fingerprint = self._signal_fingerprint(task, signal)
+                if fingerprint not in sent:
+                    sent.append(fingerprint)
+                    pending.append(signal)
+        return pending, times[last_closed], sent[-_SENT_MEMORY:]
+
+    def _bar_signals(self, signals: List[Any], df: pd.DataFrame, idx: int, selected: set[str], times: List[str]) -> List[Dict[str, Any]]:
+        """Every selected marker the chart draws on candle ``idx``, sent while the last candle forms."""
         bar = df.iloc[idx]
-        notify_bar = df.iloc[notify_idx]
-        bar_time = self._format_bar_time(bar.get("time"), idx)
-        notify_bar_time = self._format_bar_time(notify_bar.get("time"), notify_idx)
-        selected = {_normalize_key(k) for k in (keys or ["any"])}
+        notify_idx = len(df) - 1
+        found = []
         for sig in signals:
             if not isinstance(sig, dict):
                 continue
             data = sig.get("data") if isinstance(sig.get("data"), list) else []
-            text_data = sig.get("textData") if isinstance(sig.get("textData"), list) else []
-            marker = data[idx] if idx < len(data) else None
-            point_text = text_data[idx] if idx < len(text_data) else None
             # Match chart rendering semantics: labels never create a signal,
             # and dense state arrays notify only when they become active.
             if not _signal_marker_should_notify(sig, data, idx):
                 continue
+            text_data = sig.get("textData") if isinstance(sig.get("textData"), list) else []
+            point_text = text_data[idx] if idx < len(text_data) else None
             signal_type = str(sig.get("type") or "signal").strip() or "signal"
             label = str(point_text or sig.get("text") or signal_type).strip()
             if not self._matches_selected_signal(selected, signal_type, label):
                 continue
-            return {
+            found.append({
                 "type": signal_type,
                 "label": label,
-                "price": _signal_marker_price(marker, _safe_float(bar.get("close"))),
-                "bar_time": bar_time,
+                "price": _signal_marker_price(data[idx], _safe_float(bar.get("close"))),
+                "bar_time": times[idx],
                 "bar_index": idx,
-                "notify_bar_time": notify_bar_time,
+                "notify_bar_time": times[notify_idx],
                 "notify_bar_index": notify_idx,
-            }
-        return None
+                "live": idx == notify_idx,
+            })
+        return found
 
     def _latest_chart_signal(self, signals: List[Dict[str, Any]], df: pd.DataFrame) -> Optional[Dict[str, Any]]:
         """Return the newest visible marker for the mobile chart summary."""
@@ -862,6 +938,7 @@ class IndicatorSignalAlertService:
         price = _fmt_decimal(signal.get("price"), 10)
         signal_bar_time = str(signal.get("bar_time") or "")
         notify_bar_time = str(signal.get("notify_bar_time") or "")
+        live = bool(signal.get("live"))
 
         # People-facing text follows the UI language saved with the alert and times its zone
         # (see _alert_zone); the webhook payload and browser display params below stay locale-neutral.
@@ -873,6 +950,7 @@ class IndicatorSignalAlertService:
         signal_time = _fmt_candle_time(signal_bar_time, zone)
         notify_time = _fmt_candle_time(notify_bar_time, zone)
         marker = label if label.lower() != signal_type.lower() else ""
+        rule = texts["rule_live" if live else "rule"]
 
         headline = f"{side_text} {symbol} {timeframe}".strip()
         title = f"{emoji} {headline} · {indicator_name}"
@@ -886,7 +964,7 @@ class IndicatorSignalAlertService:
             f"{texts['signal_candle']}: {signal_time}",
             f"{texts['notify_candle']}: {notify_time}",
             f"{texts['marker']}: {marker}" if marker else "",
-            texts["rule"],
+            rule,
         ]
         message_plain = "\n".join([line for line in plain_lines if line])
 
@@ -917,6 +995,7 @@ class IndicatorSignalAlertService:
                 "bar_index": signal.get("bar_index"),
                 "notify_bar_time": notify_bar_time,
                 "notify_bar_index": signal.get("notify_bar_index"),
+                "live": live,
             },
             "alert": {
                 "task_id": task.get("id"),
@@ -924,7 +1003,7 @@ class IndicatorSignalAlertService:
             },
             "trace": {
                 "source": "indicator_signal_alerts",
-                "delivery_rule": "closed_bar_next_open",
+                "delivery_rule": "live_bar" if live else "closed_bar_next_open",
                 "generated_at": _now().isoformat(),
             },
         }
@@ -968,7 +1047,7 @@ class IndicatorSignalAlertService:
                 {f'<tr><td style="padding:8px 0;color:#9ca3af;">{_html_escape(texts["marker"])}</td><td style="padding:8px 0;text-align:right;">{_html_escape(marker)}</td></tr>' if marker else ""}
               </table>
               <div style="margin-top:18px;padding:12px 14px;border-radius:8px;background:#111827;color:#9ca3af;">
-                {_html_escape(texts["rule"])}
+                {_html_escape(rule)}
               </div>
             </div>
           </div>
@@ -980,7 +1059,7 @@ class IndicatorSignalAlertService:
             f"{_html_escape(texts['price'])}: <b>{_html_escape(display_price)}</b>" if display_price else "",
             f"{_html_escape(texts['signal_candle'])}: {_html_escape(signal_time)}",
             f"{_html_escape(texts['marker'])}: {_html_escape(marker)}" if marker else "",
-            f"<i>{_html_escape(texts['rule'])}</i>",
+            f"<i>{_html_escape(rule)}</i>",
         ]
         telegram_html = "\n".join(line for line in telegram_lines if line)
         return title, message_plain, email_html, telegram_html, payload
@@ -1029,7 +1108,7 @@ class IndicatorSignalAlertService:
             result["webhook"] = {"ok": ok, "message": msg}
         return result
 
-    def _mark_checked(self, task_id: int, *, next_check: datetime, last_error: str) -> None:
+    def _mark_checked(self, task_id: int, *, next_check: datetime, last_error: str, last_bar_time: Optional[str] = None) -> None:
         with get_db_connection() as db:
             cur = db.cursor()
             cur.execute(
@@ -1038,23 +1117,32 @@ class IndicatorSignalAlertService:
                 SET check_count = check_count + 1,
                     last_checked_at = NOW(),
                     next_check_at = ?,
+                    last_bar_time = COALESCE(?, last_bar_time),
                     last_error = ?,
                     updated_at = NOW()
                 WHERE id = ?
                 """,
-                (next_check, last_error, int(task_id)),
+                (next_check, last_bar_time, last_error, int(task_id)),
             )
             db.commit()
             cur.close()
 
-    def _mark_triggered(self, task_id: int, signal: Dict[str, Any], fingerprint: str, next_check: datetime, delivery: Dict[str, Any]) -> None:
+    def _mark_triggered(
+        self,
+        task_id: int,
+        signals: List[Dict[str, Any]],
+        deliveries: List[Dict[str, Any]],
+        last_bar_time: Optional[str],
+        sent: List[str],
+        next_check: datetime,
+    ) -> None:
         with get_db_connection() as db:
             cur = db.cursor()
             cur.execute(
                 """
                 UPDATE qd_indicator_signal_alerts
                 SET check_count = check_count + 1,
-                    trigger_count = trigger_count + 1,
+                    trigger_count = trigger_count + ?,
                     last_checked_at = NOW(),
                     next_check_at = ?,
                     last_bar_time = ?,
@@ -1065,17 +1153,18 @@ class IndicatorSignalAlertService:
                 WHERE id = ?
                 """,
                 (
+                    len(signals),
                     next_check,
-                    str(signal.get("bar_time") or ""),
-                    fingerprint,
-                    _json_dumps({"signal": signal, "delivery": delivery}),
+                    str(last_bar_time or ""),
+                    sent[-1] if sent else "",
+                    _json_dumps({"signal": signals[-1], "delivery": deliveries[-1], "sent": sent}),
                     int(task_id),
                 ),
             )
             db.commit()
             cur.close()
 
-    def _poll_seconds(self, timeframe: str) -> int:
+    def _poll_seconds(self, timeframe: str, realtime: bool = False) -> int:
         tf = normalize_frequency(timeframe, default="")
         mapping = {
             "1m": 20,
@@ -1089,7 +1178,21 @@ class IndicatorSignalAlertService:
             "1w": 1800,
             "1mo": 3600,
         }
-        return mapping.get(tf, 120)
+        base = mapping.get(tf, 120)
+        # Realtime alerts re-read the forming candle every few seconds (slower on long timeframes).
+        return max(5, base // 6) if realtime else base
+
+    def _next_check(self, mode: str, timeframe: Any, now: datetime, close_at: Optional[datetime]) -> datetime:
+        """The regular poll, pulled in to just after the forming candle closes and, for pre-close
+        alerts, to the pre-close lead before it. Bar times that are not clock times keep the poll."""
+        poll = timedelta(seconds=self._poll_seconds(timeframe, realtime=mode == "realtime"))
+        if mode == "realtime" or close_at is None or close_at < now - poll:
+            return now + poll
+        lead_at = close_at - _pre_close_lead(timeframe)
+        # 2 s after the close so the exchange already serves the new candle.
+        target = lead_at if mode == "preclose" and now < lead_at else close_at + timedelta(seconds=2)
+        # Never sooner than 2 s, so a candle the exchange has not rolled over yet is retried calmly.
+        return max(now + timedelta(seconds=2), min(now + poll, target))
 
 
 class IndicatorSignalAlertWorker:
@@ -1113,12 +1216,15 @@ class IndicatorSignalAlertWorker:
         self._stop.set()
 
     def _run(self) -> None:
+        # ponytail: one thread evaluates every due alert in turn; shard tasks across workers
+        # if many realtime alerts (a few seconds of indicator time each) start running late.
         while not self._stop.is_set():
             try:
                 self._service.run_due_tasks(limit=20)
             except Exception as exc:
                 logger.warning("Indicator signal alert worker loop failed: %s", exc)
-            self._stop.wait(float(os.getenv("INDICATOR_SIGNAL_ALERT_WORKER_INTERVAL", "15")))
+            # Short wake-up so realtime alerts keep their few-second poll; each wake is one indexed query.
+            self._stop.wait(float(os.getenv("INDICATOR_SIGNAL_ALERT_WORKER_INTERVAL", "3")))
 
 
 _worker: Optional[IndicatorSignalAlertWorker] = None

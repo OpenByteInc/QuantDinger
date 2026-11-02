@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 import pandas as pd
 import pytest
 
@@ -20,8 +22,13 @@ def _df(count: int = 4) -> pd.DataFrame:
     )
 
 
+def _pending(output, keys=("any",), df=None, **task):
+    """Markers a check would deliver now (the last candle of ``df`` is the forming one)."""
+    task = {"signal_keys": list(keys), **task}
+    return IndicatorSignalAlertService()._pending_signals(output, _df(4) if df is None else df, task)[0]
+
+
 def test_signal_alert_static_text_does_not_trigger_every_bar():
-    service = IndicatorSignalAlertService()
     output = {
         "signals": [
             {
@@ -32,11 +39,10 @@ def test_signal_alert_static_text_does_not_trigger_every_bar():
         ]
     }
 
-    assert service._latest_matching_signal(output, _df(4), ["any"]) is None
+    assert _pending(output) == []
 
 
 def test_signal_alert_uses_closed_signal_bar_on_next_bar_open():
-    service = IndicatorSignalAlertService()
     output = {
         "signals": [
             {
@@ -47,9 +53,8 @@ def test_signal_alert_uses_closed_signal_bar_on_next_bar_open():
         ]
     }
 
-    signal = service._latest_matching_signal(output, _df(4), ["any"])
+    [signal] = _pending(output)
 
-    assert signal is not None
     assert signal["label"] == "Cross Up"
     assert signal["bar_index"] == 2
     assert signal["bar_time"] == "1970-01-01T00:00:02"
@@ -61,7 +66,6 @@ def test_signal_alert_uses_closed_signal_bar_on_next_bar_open():
     [False, 0, 0.0, "0", "false", "None", {"active": False, "price": 12.0}],
 )
 def test_signal_alert_ignores_inactive_marker_values_even_with_text(marker):
-    service = IndicatorSignalAlertService()
     output = {
         "signals": [
             {
@@ -73,11 +77,10 @@ def test_signal_alert_ignores_inactive_marker_values_even_with_text(marker):
         ]
     }
 
-    assert service._latest_matching_signal(output, _df(4), ["any"]) is None
+    assert _pending(output) == []
 
 
 def test_signal_alert_boolean_marker_uses_candle_close_as_price():
-    service = IndicatorSignalAlertService()
     output = {
         "signals": [
             {
@@ -88,15 +91,13 @@ def test_signal_alert_boolean_marker_uses_candle_close_as_price():
         ]
     }
 
-    signal = service._latest_matching_signal(output, _df(4), ["text:long entry"])
+    [signal] = _pending(output, ["text:long entry"])
 
-    assert signal is not None
     assert signal["label"] == "Long Entry"
     assert signal["price"] == pytest.approx(12.2)
 
 
 def test_signal_alert_dense_state_notifies_only_on_transition():
-    service = IndicatorSignalAlertService()
     output = {
         "signals": [
             {
@@ -107,11 +108,10 @@ def test_signal_alert_dense_state_notifies_only_on_transition():
         ]
     }
 
-    assert service._latest_matching_signal(output, _df(4), ["any"]) is None
+    assert _pending(output) == []
 
 
 def test_signal_alert_dense_state_transition_still_notifies():
-    service = IndicatorSignalAlertService()
     output = {
         "signals": [
             {
@@ -122,14 +122,12 @@ def test_signal_alert_dense_state_transition_still_notifies():
         ]
     }
 
-    signal = service._latest_matching_signal(output, _df(4), ["any"])
+    [signal] = _pending(output)
 
-    assert signal is not None
     assert signal["bar_index"] == 2
 
 
 def test_signal_alert_points_mode_allows_consecutive_markers():
-    service = IndicatorSignalAlertService()
     output = {
         "signals": [
             {
@@ -141,14 +139,12 @@ def test_signal_alert_points_mode_allows_consecutive_markers():
         ]
     }
 
-    signal = service._latest_matching_signal(output, _df(4), ["any"])
+    [signal] = _pending(output)
 
-    assert signal is not None
     assert signal["bar_index"] == 2
 
 
 def test_signal_alert_events_mode_keeps_dense_events_explicit():
-    service = IndicatorSignalAlertService()
     output = {
         "signals": [
             {
@@ -160,10 +156,163 @@ def test_signal_alert_events_mode_keeps_dense_events_explicit():
         ]
     }
 
-    signal = service._latest_matching_signal(output, _df(4), ["any"])
+    [signal] = _pending(output)
 
-    assert signal is not None
     assert signal["bar_index"] == 2
+
+
+def test_signal_alert_sends_every_marker_on_the_closed_candle():
+    output = {
+        "signals": [
+            {"type": "buy", "text": "Next Up", "renderMode": "events", "data": [None, None, 9.0, None]},
+            {"type": "buy", "text": "Pullback Buy", "renderMode": "events", "data": [None, None, 8.5, None]},
+        ]
+    }
+
+    assert [s["label"] for s in _pending(output)] == ["Next Up", "Pullback Buy"]
+
+
+def test_close_alert_waits_for_the_forming_candle_to_close():
+    output = {"signals": [{"type": "buy", "text": "Next Up", "renderMode": "events", "data": [None, None, None, 13.0]}]}
+
+    assert _pending(output) == []
+
+
+def test_forming_candle_marker_is_sent_once():
+    service = IndicatorSignalAlertService()
+    task = {"id": 1, "signal_keys": ["any"], "last_bar_time": "1970-01-01T00:00:02"}
+    forming = {"signals": [{"type": "buy", "text": "Next Up", "renderMode": "events", "data": [None, None, None, 13.0]}]}
+
+    signals, last_closed, sent = service._pending_signals(forming, _df(4), task, scan_forming=True)
+
+    assert [(s["bar_index"], s["live"]) for s in signals] == [(3, True)]
+    assert last_closed == "1970-01-01T00:00:02"
+
+    # The next poll on the same forming candle sends nothing again.
+    task.update(last_bar_time=last_closed, last_signal_payload={"sent": sent})
+    assert service._pending_signals(forming, _df(4), task, scan_forming=True)[0] == []
+
+    # Once candle 3 closes, only the marker it gained at the close goes out.
+    closed = {
+        "signals": [
+            {"type": "buy", "text": "Next Up", "renderMode": "events", "data": [None, None, None, 13.0, None]},
+            {"type": "buy", "text": "LTA Bounce", "renderMode": "events", "data": [None, None, None, 12.5, None]},
+        ]
+    }
+    signals, last_closed, _ = service._pending_signals(closed, _df(5), task, scan_forming=True)
+
+    assert [(s["label"], s["live"]) for s in signals] == [("LTA Bounce", False)]
+    assert last_closed == "1970-01-01T00:00:03"
+
+
+def test_preclose_alert_reads_the_forming_candle_from_a_minute_before_it_closes():
+    service = IndicatorSignalAlertService.__new__(IndicatorSignalAlertService)
+    reads = indicator_signal_alerts._reads_forming_candle
+    close_at = datetime(2026, 11, 1, 21, 30)
+
+    assert service._next_check("preclose", "5m", datetime(2026, 11, 1, 21, 28, 45), close_at) == datetime(2026, 11, 1, 21, 29)
+    assert not reads("preclose", "5m", datetime(2026, 11, 1, 21, 28, 58), close_at)
+    assert reads("preclose", "5m", datetime(2026, 11, 1, 21, 29, 1), close_at)
+    assert not reads("close", "5m", datetime(2026, 11, 1, 21, 29, 1), close_at)
+    # A 1m candle is read from its second half, not on its first tick.
+    assert not reads("preclose", "1m", datetime(2026, 11, 1, 21, 29, 29), close_at)
+    assert reads("preclose", "1m", datetime(2026, 11, 1, 21, 29, 31), close_at)
+
+
+def test_confirmed_alert_checks_right_after_the_candle_closes():
+    service = IndicatorSignalAlertService.__new__(IndicatorSignalAlertService)
+    opened = datetime(2026, 11, 1, 21, 25, tzinfo=timezone.utc).timestamp()
+    close_at = indicator_signal_alerts._candle_close_at(pd.DataFrame({"time": [opened - 300, opened]}), "5m")
+    before_close = datetime(2026, 11, 1, 21, 29, 35)
+
+    assert close_at == datetime(2026, 11, 1, 21, 30)
+    assert service._next_check("close", "5m", before_close, close_at) == datetime(2026, 11, 1, 21, 30, 2)
+    assert service._next_check("preclose", "5m", before_close, close_at) == datetime(2026, 11, 1, 21, 30, 2)
+    # The exchange has not rolled the candle over yet: retry shortly, not on the next poll.
+    assert service._next_check("close", "5m", datetime(2026, 11, 1, 21, 30, 3), close_at) == datetime(2026, 11, 1, 21, 30, 5)
+    # Realtime alerts keep their few-second poll; bar times that are not clock times keep the regular one.
+    assert service._next_check("realtime", "5m", before_close, close_at) == before_close + timedelta(seconds=5)
+    assert service._next_check("close", "5m", before_close, datetime(1970, 1, 1)) == before_close + timedelta(seconds=30)
+
+
+def test_signal_alert_catches_up_closed_candles_missed_since_last_check():
+    output = {
+        "signals": [
+            {"type": "sell", "text": "Next Down", "renderMode": "events", "data": [14.0, None, 14.0, 15.0, 16.0, 17.0, None]}
+        ]
+    }
+
+    # Candles 0-5 are closed and 6 is forming; the last check covered candle 3.
+    assert [s["bar_index"] for s in _pending(output, df=_df(7), last_bar_time="1970-01-01T00:00:03")] == [4, 5]
+    # A long outage replays only the newest closed candles; older markers are stale.
+    assert [s["bar_index"] for s in _pending(output, df=_df(7), last_bar_time="1970-01-01T00:00:00")] == [3, 4, 5]
+
+
+def test_evaluate_task_delivers_each_marker_once_from_the_chart_exchange(monkeypatch):
+    service = IndicatorSignalAlertService()
+    task = {
+        "id": 9,
+        "user_id": 1,
+        "indicator_id": 5,
+        "market": "Crypto",
+        "symbol": "ETH/USDT",
+        "timeframe": "5m",
+        "status": "running",
+        "signal_keys": ["any"],
+        "params": {},
+        "last_bar_time": "",
+        "targets": {"trigger_mode": "realtime", "exchange_id": "binance", "market_type": "swap"},
+    }
+    output = {
+        "signals": [
+            {"type": "buy", "text": "Next Up", "renderMode": "events", "data": [None, None, 9.0, 13.0]},
+            {"type": "sell", "text": "Pullback Sell", "renderMode": "events", "data": [None, None, 12.0, None]},
+        ]
+    }
+    kline_calls, delivered, saved = [], [], {}
+    monkeypatch.setattr(indicator_signal_alerts, "ensure_indicator_signal_alert_schema", lambda: None)
+    monkeypatch.setattr(service, "_load_task", lambda task_id: dict(task))
+    monkeypatch.setattr(service, "_load_indicator_for_user", lambda user_id, indicator_id: {"code": "output = {}"})
+    monkeypatch.setattr(service.kline, "get_kline", lambda **kwargs: kline_calls.append(kwargs) or [])
+    monkeypatch.setattr(service, "_bars_to_df", lambda bars: _df(4))
+    monkeypatch.setattr(service, "_execute_indicator", lambda code, df, params: output)
+    monkeypatch.setattr(service, "_deliver_signal", lambda task, signal: delivered.append(signal["label"]) or {})
+    monkeypatch.setattr(
+        service,
+        "_mark_triggered",
+        lambda task_id, signals, deliveries, last_bar_time, sent, next_check: saved.update(last_bar_time=last_bar_time, sent=sent),
+    )
+    monkeypatch.setattr(service, "_mark_checked", lambda task_id, **kwargs: saved.update(checked=kwargs))
+
+    assert service.evaluate_task(9)["triggered"] is True
+    # Both markers on closed candle 2, then the live marker on forming candle 3.
+    assert delivered == ["Next Up", "Pullback Sell", "Next Up"]
+    assert (kline_calls[0]["exchange_id"], kline_calls[0]["market_type"]) == ("binance", "swap")
+
+    task.update(last_bar_time=saved["last_bar_time"], last_signal_payload={"sent": saved["sent"]})
+    assert service.evaluate_task(9)["triggered"] is False
+    assert len(delivered) == 3
+    assert saved["checked"]["last_bar_time"] == "1970-01-01T00:00:02"
+
+
+def test_signal_alert_payload_normalizes_trigger_mode_and_chart_exchange(monkeypatch):
+    monkeypatch.setattr(indicator_signal_alerts, "get_notification_settings", lambda user_id: {})
+    service = IndicatorSignalAlertService()
+
+    realtime = service._sanitize_payload(
+        7,
+        {"indicator_id": 12, "symbol": "ETH/USDT", "trigger_mode": "realtime", "exchange_id": "Binance", "market_type": "swap"},
+    )
+    preclose = service._sanitize_payload(7, {"indicator_id": 12, "symbol": "ETH/USDT", "trigger_mode": "PreClose"})
+    unknown = service._sanitize_payload(7, {"indicator_id": 12, "symbol": "ETH/USDT", "trigger_mode": "tick"})
+
+    assert (realtime["targets"]["trigger_mode"], realtime["targets"]["exchange_id"], realtime["targets"]["market_type"]) == (
+        "realtime",
+        "binance",
+        "swap",
+    )
+    assert preclose["targets"]["trigger_mode"] == "preclose"
+    assert (unknown["targets"]["trigger_mode"], unknown["targets"]["exchange_id"]) == ("close", "")
 
 
 def test_signal_alert_payload_uses_profile_notification_defaults(monkeypatch):
@@ -267,6 +416,23 @@ def test_signal_notification_states_side_in_alert_language(language, side_text, 
     assert payload["signal"]["side"] == "buy"
     assert payload["signal"]["price"] == "2261.7278648738"
     assert payload["signal"]["bar_time"] == "2026-11-01T13:05:00"
+
+
+def test_live_marker_notification_says_it_can_still_change():
+    task = {"symbol": "ETH/USDT", "timeframe": "5m", "targets": {"language": "pt-BR"}}
+    signal = {
+        "type": "buy",
+        "label": "Next Up",
+        "price": 2263.46,
+        "bar_time": "2026-11-01T21:20:00",
+        "notify_bar_time": "2026-11-01T21:20:00",
+        "live": True,
+    }
+
+    _, plain, _, telegram_html, payload = IndicatorSignalAlertService()._build_indicator_notification(task, signal)
+
+    assert "ainda pode sumir" in plain and "ainda pode sumir" in telegram_html
+    assert (payload["signal"]["live"], payload["trace"]["delivery_rule"]) == (True, "live_bar")
 
 
 @pytest.mark.parametrize(
