@@ -1,7 +1,7 @@
 """
 LLM service.
 Supports multiple providers: OpenRouter, OpenAI, Google Gemini, DeepSeek, Grok,
-AtlasCloud, Custom (OpenAI-compatible), MiniMax.
+AtlasCloud, Custom (OpenAI-compatible), MiniMax, 88API.
 Kept separate from AnalysisService to avoid circular imports.
 """
 import json
@@ -115,6 +115,7 @@ class LLMProvider(Enum):
     CUSTOM = "custom"
     MINIMAX = "minimax"
     LITELLM = "litellm"
+    API88 = "api88"  # 88API; enum and env names cannot start with a digit
 
 
 # Provider configurations
@@ -164,6 +165,11 @@ PROVIDER_CONFIGS = {
         "default_model": "openai/gpt-5.4",
         "fallback_model": "gpt-4o-mini",
     },
+    LLMProvider.API88: {
+        "base_url": "https://88api.ai/v1",
+        "default_model": "claude-sonnet-5-5",
+        "fallback_model": "claude-haiku-5-5",
+    },
 }
 
 
@@ -175,7 +181,7 @@ class LLMService:
         Initialize LLM service.
 
         Args:
-            provider: Override the default provider (openrouter, openai, google, deepseek, grok, atlascloud, custom, minimax)
+            provider: Override the default provider (openrouter, openai, google, deepseek, grok, atlascloud, custom, minimax, api88)
         """
         self._provider_override = provider
         # Populated by call_llm_api() so callers can report what actually answered;
@@ -207,7 +213,7 @@ class LLMService:
                 pass
         
         # Auto-detect: find any provider with a configured API key
-        # Priority: DeepSeek > AtlasCloud > Grok > MiniMax > OpenAI > Google > OpenRouter
+        # Priority: DeepSeek > AtlasCloud > Grok > MiniMax > OpenAI > Google > 88API > OpenRouter
         # (LiteLLM excluded from auto-detect; must be set explicitly via LLM_PROVIDER=litellm)
         priority_order = [
             LLMProvider.DEEPSEEK,
@@ -216,6 +222,7 @@ class LLMService:
             LLMProvider.MINIMAX,
             LLMProvider.OPENAI,
             LLMProvider.GOOGLE,
+            LLMProvider.API88,
             LLMProvider.OPENROUTER,
         ]
         
@@ -241,6 +248,7 @@ class LLMService:
             LLMProvider.CUSTOM: APIKeys.CUSTOM_API_KEY,
             LLMProvider.MINIMAX: APIKeys.MINIMAX_API_KEY,
             LLMProvider.LITELLM: APIKeys.LITELLM_API_KEY,
+            LLMProvider.API88: APIKeys.API88_API_KEY,
         }
         return key_map.get(p, "") or ""
 
@@ -447,7 +455,7 @@ class LLMService:
     def _call_openai_compatible(self, messages: list, model: str, temperature: float, 
                                  api_key: str, base_url: str, timeout: int,
                                  use_json_mode: bool = True) -> str:
-        """Call OpenAI-compatible API (OpenAI, DeepSeek, Grok, AtlasCloud, OpenRouter)."""
+        """Call OpenAI-compatible API (OpenAI, DeepSeek, Grok, AtlasCloud, OpenRouter, 88API)."""
         url = f"{base_url}/chat/completions"
         
         headers = {"Content-Type": "application/json"}
@@ -470,18 +478,25 @@ class LLMService:
         # its public parameter table currently lists model/messages/temperature/
         # max_tokens/stream/top_p and not response_format. Keep prompts JSON-
         # oriented while avoiding a provider-side 400 from an unsupported knob.
-        if use_json_mode and "atlascloud" not in (base_url or "").lower():
+        # 88API routes claude-* models to Anthropic, which rejects
+        # {"type": "json_object"} (only text or json_schema), so skip it there too.
+        normalized_base_url = (base_url or "").lower()
+        skip_json_mode = "atlascloud" in normalized_base_url or (
+            "88api.ai" in normalized_base_url and (model or "").lower().startswith("claude")
+        )
+        if use_json_mode and not skip_json_mode:
             data["response_format"] = {"type": "json_object"}
 
         response = self._llm_post(url, headers=headers, json_payload=data, timeout=timeout)
         
         # Handle non-2xx with provider/model-aware details
         if response.status_code >= 400:
-            normalized_base_url = (base_url or "").lower()
             if "atlascloud" in normalized_base_url:
                 provider_name = "AtlasCloud"
             elif "openrouter" in normalized_base_url:
                 provider_name = "OpenRouter"
+            elif "88api.ai" in normalized_base_url:
+                provider_name = "88API"
             else:
                 provider_name = "LLM"
             err_text = self._extract_provider_error(response)
@@ -1137,6 +1152,8 @@ class LLMService:
                 'atlascloud': LLMProvider.ATLASCLOUD,
                 'atlas': LLMProvider.ATLASCLOUD,
                 'minimax': LLMProvider.MINIMAX,
+                'api88': LLMProvider.API88,
+                '88api': LLMProvider.API88,
             }
             
             # If the model prefix matches the current provider, use the extracted model name
@@ -1171,6 +1188,8 @@ class LLMService:
             'atlascloud': LLMProvider.ATLASCLOUD,
             'atlas': LLMProvider.ATLASCLOUD,
             'minimax': LLMProvider.MINIMAX,
+            'api88': LLMProvider.API88,
+            '88api': LLMProvider.API88,
             'anthropic': LLMProvider.OPENROUTER,  # Anthropic only via OpenRouter
             'meta': LLMProvider.OPENROUTER,  # Meta/Llama only via OpenRouter
             'mistral': LLMProvider.OPENROUTER,  # Mistral only via OpenRouter
@@ -1247,7 +1266,7 @@ class LLMService:
                 )
             # If no API key for current provider, try to find any available provider
             if try_alternative_providers:
-                for alt_provider in [LLMProvider.DEEPSEEK, LLMProvider.ATLASCLOUD, LLMProvider.GROK, LLMProvider.MINIMAX, LLMProvider.OPENAI, LLMProvider.GOOGLE, LLMProvider.OPENROUTER]:
+                for alt_provider in [LLMProvider.DEEPSEEK, LLMProvider.ATLASCLOUD, LLMProvider.GROK, LLMProvider.MINIMAX, LLMProvider.OPENAI, LLMProvider.GOOGLE, LLMProvider.API88, LLMProvider.OPENROUTER]:
                     if alt_provider != p and self.get_api_key(alt_provider):
                         logger.warning(f"No API key for {p.value}, switching to {alt_provider.value}")
                         p = alt_provider
@@ -1460,7 +1479,7 @@ class LLMService:
         """
         Try alternative providers when current provider fails.
 
-        Priority: DeepSeek > AtlasCloud > Grok > MiniMax > OpenAI > Google > OpenRouter
+        Priority: DeepSeek > AtlasCloud > Grok > MiniMax > OpenAI > Google > 88API > OpenRouter
         """
         priority_order = [
             LLMProvider.DEEPSEEK,
@@ -1469,6 +1488,7 @@ class LLMService:
             LLMProvider.MINIMAX,
             LLMProvider.OPENAI,
             LLMProvider.GOOGLE,
+            LLMProvider.API88,
             LLMProvider.OPENROUTER,
         ]
         

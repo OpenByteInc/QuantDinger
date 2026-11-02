@@ -138,6 +138,11 @@ def load_addon_config() -> Dict[str, Any]:
         ('LITELLM_BASE_URL', 'litellm.base_url', 'string'),
         ('LITELLM_MODEL', 'litellm.model', 'string'),
 
+        # 88API
+        ('API88_API_KEY', 'api88.api_key', 'string'),
+        ('API88_BASE_URL', 'api88.base_url', 'string'),
+        ('API88_MODEL', 'api88.model', 'string'),
+
         # LLM Provider Selection
         ('LLM_PROVIDER', 'llm.provider', 'string'),
         ('LLM_PROXY_URL', 'llm.proxy_url', 'string'),
