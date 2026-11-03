@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
 from uuid import uuid4
 
 from app.services.custom_factors import CustomFactorError, analyze_custom_factor
@@ -80,7 +79,12 @@ Available native/TA-Lib factors:
 def parse_factor_candidate(content: str) -> dict:
     if not isinstance(content, str) or len(content) > 24000:
         raise FactorGenerationError("factor.aiInvalid")
-    text = re.sub(r"^```(?:json)?\s*|\s*```$", "", content.strip(), flags=re.IGNORECASE)
+    lines = content.strip().splitlines()
+    if lines and lines[0].strip().lower() in {"```", "```json"}:
+        lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+    text = "\n".join(lines).strip()
     try:
         candidate = json.loads(text)
     except (TypeError, ValueError) as exc:

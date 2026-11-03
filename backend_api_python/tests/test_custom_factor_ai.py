@@ -96,8 +96,9 @@ def test_invalid_or_unsafe_model_output_rejected(content):
         service.parse_factor_candidate(content)
 
 
-def test_json_fences_are_accepted():
-    assert service.parse_factor_candidate('```json\n' + candidate() + '\n```')["name"]
+@pytest.mark.parametrize("opening", ["```json", "```JSON", "```"])
+def test_json_fences_are_accepted(opening):
+    assert service.parse_factor_candidate(opening + '\n' + candidate() + '\n```')["name"]
 
 
 def test_billing_uses_strategy_tariff_once_and_configured_model(compact_prompt):
