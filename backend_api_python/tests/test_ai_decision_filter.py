@@ -170,7 +170,8 @@ def test_jev_rejection_blocks_entry(monkeypatch):
             )}
 
     captured = {}
-    monkeypatch.setattr(module.AIDecisionFilter, "_jev_config", staticmethod(lambda: {
+    monkeypatch.setattr(module.AIDecisionFilter, "_system_one_config", staticmethod(lambda: {
+        "provider": "jev",
         "api_key": "secret",
         "base_url": "https://api.typesafe.ai/v1",
         "model": "jev-latest",
@@ -208,7 +209,8 @@ def test_calibrated_jev_confidence_accepts_clear_entry(monkeypatch):
         def __init__(self):
             raise AssertionError("LLM fallback should not run for a valid JEV result")
 
-    monkeypatch.setattr(module.AIDecisionFilter, "_jev_config", staticmethod(lambda: {
+    monkeypatch.setattr(module.AIDecisionFilter, "_system_one_config", staticmethod(lambda: {
+        "provider": "jev",
         "api_key": "secret",
         "base_url": "https://api.typesafe.ai/v1",
         "model": "jev-latest",
@@ -252,7 +254,8 @@ def test_malformed_jev_answer_falls_back_to_llm(monkeypatch):
         def call_llm_api(self, *args, **kwargs):
             return '{"decision":"reject","confidence":0.7,"reason":"fallback_check","checks":[]}'
 
-    monkeypatch.setattr(module.AIDecisionFilter, "_jev_config", staticmethod(lambda: {
+    monkeypatch.setattr(module.AIDecisionFilter, "_system_one_config", staticmethod(lambda: {
+        "provider": "jev",
         "api_key": "secret",
         "base_url": "https://api.typesafe.ai/v1",
         "model": "jev-latest",
@@ -279,7 +282,8 @@ def test_llm_is_used_when_jev_is_not_configured(monkeypatch):
         def call_llm_api(self, *args, **kwargs):
             return '{"decision":"pass","confidence":0.8,"reason":"clear","checks":[]}'
 
-    monkeypatch.setattr(module.AIDecisionFilter, "_jev_config", staticmethod(lambda: {
+    monkeypatch.setattr(module.AIDecisionFilter, "_system_one_config", staticmethod(lambda: {
+        "provider": "jev",
         "api_key": "",
         "base_url": "https://api.typesafe.ai/v1",
         "model": "jev-latest",
@@ -306,13 +310,103 @@ def test_jev_config_reads_the_latest_persisted_settings(monkeypatch):
         "JEV_MIN_CONFIDENCE": "0.72",
     })
 
-    assert module.AIDecisionFilter._jev_config() == {
+    assert module.AIDecisionFilter._system_one_config() == {
+        "provider": "jev",
         "api_key": "saved-key",
         "base_url": "https://example.test/v1",
         "model": "saved-model",
         "timeout_seconds": "5",
         "min_confidence": "0.72",
     }
+
+
+def test_drex_provider_reads_nace_settings(monkeypatch):
+    from app.services.settings import env_file
+
+    monkeypatch.setattr(env_file, "read_env_file", lambda: {
+        "AI_DECISION_PROVIDER": "drex",
+        "JEV_API_KEY": "jev-key",
+        "NACE_API_KEY": "nace-key",
+        "NACE_DEFAULT_DECISION_MODEL": "",
+        "JEV_TIMEOUT_SECONDS": "5",
+        "JEV_MIN_CONFIDENCE": "0.72",
+    })
+
+    assert module.AIDecisionFilter._system_one_config() == {
+        "provider": "drex",
+        "api_key": "nace-key",
+        "base_url": "https://console.nace.ai/v1",
+        "model": "drex-max-finance",
+        "timeout_seconds": "5",
+        "min_confidence": "0.72",
+    }
+
+
+def test_drex_rejection_is_audited_as_drex(monkeypatch):
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"answers": _jev_answers(
+                risk_check=("block", {"clear": 0.03, "caution": 0.05, "block": 0.9, "insufficient": 0.02}),
+            )}
+
+    captured = {}
+    persisted = []
+    monkeypatch.setattr(module.AIDecisionFilter, "_system_one_config", staticmethod(lambda: {
+        "provider": "drex",
+        "api_key": "secret",
+        "base_url": "https://console.nace.ai/v1",
+        "model": "drex-max-finance",
+        "timeout_seconds": "8",
+        "min_confidence": "0.55",
+    }))
+    monkeypatch.setattr(module.requests, "post", lambda url, **kwargs: (captured.update(kwargs, url=url) or Response()))
+    monkeypatch.setattr(module.AIDecisionFilter, "_persist", staticmethod(lambda request, result: persisted.append(result)))
+
+    result = module.AIDecisionFilter().evaluate(_request(), enabled=True)
+
+    assert captured["url"] == "https://console.nace.ai/v1/systemone"
+    assert captured["json"]["model"] == "drex-max-finance"
+    assert result.allowed is False
+    assert result.provider == "drex"
+    assert result.model == "drex-max-finance"
+    assert result.reason == "drex_entry_rejected:risk_block"
+    assert persisted == [result]
+
+
+def test_drex_error_falls_back_to_llm(monkeypatch):
+    class LLM:
+        def is_configured(self):
+            return True
+
+        def get_default_model(self):
+            return "fallback-model"
+
+        def call_llm_api(self, *args, **kwargs):
+            return '{"decision":"pass","confidence":0.7,"reason":"fallback_check","checks":[]}'
+
+    def unavailable(*args, **kwargs):
+        raise module.requests.ConnectionError("drex unreachable")
+
+    monkeypatch.setattr(module.AIDecisionFilter, "_system_one_config", staticmethod(lambda: {
+        "provider": "drex",
+        "api_key": "secret",
+        "base_url": "https://console.nace.ai/v1",
+        "model": "drex-max-finance",
+        "timeout_seconds": "8",
+        "min_confidence": "0.55",
+    }))
+    monkeypatch.setattr(module.requests, "post", unavailable)
+    monkeypatch.setattr(module, "LLMService", LLM)
+    monkeypatch.setattr(module.AIDecisionFilter, "_persist", staticmethod(lambda request, result: None))
+
+    result = module.AIDecisionFilter().evaluate(_request(), enabled=True)
+
+    assert result.allowed is True
+    assert result.provider == "llm"
+    assert result.fallback_reason == "drex:drex unreachable"
 
 
 def test_low_confidence_jev_result_falls_back_to_llm(monkeypatch):
@@ -335,7 +429,8 @@ def test_low_confidence_jev_result_falls_back_to_llm(monkeypatch):
         def call_llm_api(self, *args, **kwargs):
             return '{"decision":"pass","confidence":0.8,"reason":"evidence_reviewed","checks":[]}'
 
-    monkeypatch.setattr(module.AIDecisionFilter, "_jev_config", staticmethod(lambda: {
+    monkeypatch.setattr(module.AIDecisionFilter, "_system_one_config", staticmethod(lambda: {
+        "provider": "jev",
         "api_key": "secret",
         "base_url": "https://api.typesafe.ai/v1",
         "model": "jev-latest",
@@ -365,7 +460,8 @@ def test_jev_uses_atomic_checks_without_composite_entry_question(monkeypatch):
         def json(self):
             return {"answers": _jev_answers()}
 
-    monkeypatch.setattr(module.AIDecisionFilter, "_jev_config", staticmethod(lambda: {
+    monkeypatch.setattr(module.AIDecisionFilter, "_system_one_config", staticmethod(lambda: {
+        "provider": "jev",
         "api_key": "secret",
         "base_url": "https://api.typesafe.ai/v1",
         "model": "jev-latest",
@@ -423,7 +519,8 @@ def test_ai_decision_filter_default_cost_is_one(monkeypatch):
 
 
 def test_insufficient_credits_skip_provider_without_blocking_order(monkeypatch):
-    monkeypatch.setattr(module.AIDecisionFilter, "_jev_config", staticmethod(lambda: {
+    monkeypatch.setattr(module.AIDecisionFilter, "_system_one_config", staticmethod(lambda: {
+        "provider": "jev",
         "api_key": "secret",
         "base_url": "https://api.typesafe.ai/v1",
         "model": "jev-latest",
@@ -462,7 +559,8 @@ def test_jev_to_llm_fallback_charges_once(monkeypatch):
         def call_llm_api(self, *args, **kwargs):
             return '{"decision":"pass","confidence":0.8,"reason":"clear","checks":[]}'
 
-    monkeypatch.setattr(module.AIDecisionFilter, "_jev_config", staticmethod(lambda: {
+    monkeypatch.setattr(module.AIDecisionFilter, "_system_one_config", staticmethod(lambda: {
+        "provider": "jev",
         "api_key": "secret",
         "base_url": "https://api.typesafe.ai/v1",
         "model": "jev-latest",
@@ -493,7 +591,8 @@ def test_all_provider_failures_refund_charge(monkeypatch):
         def is_configured(self):
             return False
 
-    monkeypatch.setattr(module.AIDecisionFilter, "_jev_config", staticmethod(lambda: {
+    monkeypatch.setattr(module.AIDecisionFilter, "_system_one_config", staticmethod(lambda: {
+        "provider": "jev",
         "api_key": "secret",
         "base_url": "https://api.typesafe.ai/v1",
         "model": "jev-latest",
@@ -523,7 +622,8 @@ def test_unconfigured_ai_does_not_charge(monkeypatch):
         def is_configured(self):
             return False
 
-    monkeypatch.setattr(module.AIDecisionFilter, "_jev_config", staticmethod(lambda: {
+    monkeypatch.setattr(module.AIDecisionFilter, "_system_one_config", staticmethod(lambda: {
+        "provider": "jev",
         "api_key": "",
         "base_url": "https://api.typesafe.ai/v1",
         "model": "jev-latest",

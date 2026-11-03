@@ -632,6 +632,12 @@ Configure `JEV_API_KEY`, `JEV_BASE_URL`, `JEV_MODEL`, and
 `JEV_TIMEOUT_SECONDS` in **System Settings → AI / LLM**. TypeSafe documents the
 HTTP contract at [`POST /v1/systemone`](https://docs.typesafe.ai/introduction/quickstart).
 
+To use [Nace Drex](https://console.nace.ai/docs/drex) instead, set `AI_DECISION_PROVIDER` to
+`drex` and add `NACE_API_KEY` (model `NACE_DEFAULT_DECISION_MODEL`, default
+`drex-max-finance`). Drex serves the same System One contract and runs the same
+checks, `JEV_TIMEOUT_SECONDS`, `JEV_MIN_CONFIDENCE`, and fallbacks. The decision
+timeline records it as provider `drex`.
+
 ## AI agents and MCP
 
 The Agent Gateway is exposed under `/api/agent/v1`. The included MCP server lets

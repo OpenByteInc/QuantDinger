@@ -567,6 +567,10 @@ flowchart TD
 和 `JEV_TIMEOUT_SECONDS`。TypeSafe 在
 [`POST /v1/systemone`](https://docs.typesafe.ai/introduction/quickstart) 中说明了 HTTP 合同。
 
+如需改用 [Nace Drex](https://console.nace.ai/docs/drex)，将 `AI_DECISION_PROVIDER` 设为 `drex` 并配置
+`NACE_API_KEY`（模型为 `NACE_DEFAULT_DECISION_MODEL`，默认 `drex-max-finance`）。Drex 使用相同的
+System One 合同、检查项、`JEV_TIMEOUT_SECONDS`、`JEV_MIN_CONFIDENCE` 和回退流程，决策时间线中的提供商记录为 `drex`。
+
 ## AI Agent 与 MCP
 
 Agent Gateway 通过 `/api/agent/v1` 暴露。内置 MCP Server 允许 Cursor、Claude Code 和
