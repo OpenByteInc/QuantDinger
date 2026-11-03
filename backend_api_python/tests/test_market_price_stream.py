@@ -1,6 +1,8 @@
 import time
 from concurrent.futures import ThreadPoolExecutor
 
+import pytest
+
 from app.services.market_price_stream import PublicMarketPriceFeed
 from app.services.shared_market_price_feed import (
     SharedPublicMarketPriceFeedRegistry,
@@ -37,6 +39,11 @@ def test_public_price_feed_normalizes_binance_and_okx_symbols():
     for symbol, price in okx._parse({"data": [{"instId": "BTC-USDT-SWAP", "last": "102"}]}):
         okx._update(symbol, price)
     assert okx.snapshot().prices["Crypto:BTC/USDT@okx:swap"] == 102
+
+
+@pytest.mark.parametrize("market_type", ("spot", "swap"))
+def test_okx_public_price_feed_uses_port_443_websocket(market_type):
+    assert _feed("okx", market_type)._url() == "wss://ws.okx.com/ws/v5/public"
 
 
 def test_binance_spot_ticker_uses_last_price_instead_of_price_change():
