@@ -316,6 +316,8 @@ Multi-timeframe runtime rules:
 - <code>set_warmup(n)</code> requests an appropriate lookback for every subscribed timeframe. The source must still guard the length of every returned DataFrame.
 - The requested backtest window must satisfy every timeframe's provider limit. An instrument missing any required timeframe is not run with a partial bundle.
 - Provider history limits still apply independently. Intraday feeds often retain less history than daily or weekly feeds, so a <code>5m + 1w</code> design may need a shorter backtest range even though both subscriptions are valid. Crypto venues, stock feeds, and forex feeds may expose different historical depths.
+- Crypto history is fetched in endpoint-sized pages, including the pre-start warm-up window. A per-request candle cap is not the total backtest limit. Bitget historical requests use the V3 history endpoint with at most 100 candles and a 90-day query window per page.
+- Pagination cannot extend a venue's retained history. Gate requests must remain within the recent 10,000 native candles, including warm-up; the HTX REST adapter can only serve its recent 2,000 candles. Older ranges need an archival data source. Incomplete history is rejected rather than replaced by a recent page or a different venue for an explicitly exchange-scoped instrument.
 - Manifest <code>primaryFrequency</code> remains the first declaration for compatibility. Scheduling, execution, and performance annualization use <code>drivingFrequency</code>.
 - <code>data.history(..., frequency="4h")</code>, <code>data.current(..., frequency="4h")</code>, <code>indicator(..., frequency="4h")</code>, and <code>factor(..., frequency="4h")</code> also accept an explicit timeframe. <code>data[symbol]</code> uses the driving timeframe.
 

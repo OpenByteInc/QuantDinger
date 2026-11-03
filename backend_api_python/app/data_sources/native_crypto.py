@@ -181,7 +181,12 @@ class NativeCryptoPublicClient:
             proxies=self._proxies,
             headers={"User-Agent": "QuantDinger/5 public-market"},
         )
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except requests.HTTPError as exc:
+            raise NativeCryptoAPIError(
+                f"{self.id} public API HTTP {response.status_code}: {response.text[:500]}"
+            ) from exc
         payload = response.json()
         if isinstance(payload, dict):
             code = payload.get("code")
@@ -500,18 +505,39 @@ class NativeCryptoPublicClient:
             )
         raise ValueError(f"Unsupported crypto exchange: {self.id}")
 
+    def ohlcv_page_limit(self, *, historical: bool = False) -> int:
+        """Return the cap of the endpoint used for this candle request."""
+        if self.id == "okx":
+            return 300
+        if self.id == "bitget" and historical:
+            return 100
+        if self.id == "htx":
+            return 2000
+        return 1000
+
     def fetch_ohlcv(
         self,
         symbol: str,
         timeframe: str,
         since: Optional[int] = None,
         limit: int = 300,
+        until: Optional[int] = None,
     ) -> List[List[Any]]:
         if timeframe not in self.timeframes:
             raise NativeCryptoAPIError(f"Unsupported timeframe {timeframe} on {self.id}")
-        limit = max(1, min(int(limit or 300), 1000))
+        limit = max(1, min(int(limit or 300), self.ohlcv_page_limit(historical=since is not None)))
         native = self._native_symbol(symbol)
         tf_ms = int(_TIMEFRAME_SECONDS[timeframe] * 1000)
+        now_ms = int(time.time() * 1000)
+        upper_bound = min(int(until) if until is not None else now_ms, now_ms)
+        page_end = upper_bound
+        if since is not None:
+            if int(since) > upper_bound:
+                return []
+            # Both endpoints count on venues such as Gate and Bybit. A window
+            # of limit * duration can contain limit + 1 candles and skip a bar
+            # or be rejected before client-side truncation can help.
+            page_end = min(page_end, int(since) + tf_ms * (limit - 1))
         rows: Iterable[Any]
         if self.id == "binance":
             host = "https://fapi.binance.com" if self.market_type == "swap" else "https://api.binance.com"
@@ -519,6 +545,7 @@ class NativeCryptoPublicClient:
             params: Dict[str, Any] = {"symbol": native, "interval": timeframe, "limit": limit}
             if since is not None:
                 params["startTime"] = int(since)
+                params["endTime"] = page_end
             rows = self._get(host + path, params)
             parsed = [[int(row[0]), _float(row[1]), _float(row[2]), _float(row[3]), _float(row[4]), _float(row[5])] for row in rows]
         elif self.id == "okx":
@@ -527,7 +554,8 @@ class NativeCryptoPublicClient:
             path = "/api/v5/market/candles"
             if since is not None:
                 path = "/api/v5/market/history-candles"
-                params["after"] = int(since) + tf_ms * min(limit, 300)
+                # OKX's after cursor excludes the supplied timestamp.
+                params["after"] = page_end + 1
             payload = self._get(f"https://{self._okx_host}{path}", params)
             rows = payload.get("data") or []
             parsed = [[int(row[0]), _float(row[1]), _float(row[2]), _float(row[3]), _float(row[4]), _float(row[5])] for row in rows]
@@ -541,7 +569,7 @@ class NativeCryptoPublicClient:
             }
             if since is not None:
                 params["start"] = int(since)
-                params["end"] = int(since) + tf_ms * min(limit, 1000)
+                params["end"] = page_end
             payload = self._get("https://api.bybit.com/v5/market/kline", params)
             rows = (payload.get("result") or {}).get("list") or []
             parsed = [[int(row[0]), _float(row[1]), _float(row[2]), _float(row[3]), _float(row[4]), _float(row[5])] for row in rows]
@@ -568,12 +596,15 @@ class NativeCryptoPublicClient:
             if since is not None:
                 params["startTime"] = int(since)
                 max_window_ms = 90 * 24 * 60 * 60 * 1000
+                # Bitget history ends before the supplied interval boundary.
+                # A non-aligned endTime can round down and return an older bar.
                 params["endTime"] = min(
-                    int(since) + tf_ms * min(limit, 1000),
+                    (page_end // tf_ms + 1) * tf_ms,
                     int(since) + max_window_ms,
-                    int(time.time() * 1000),
+                    now_ms,
                 )
-            payload = self._get("https://api.bitget.com/api/v3/market/candles", params)
+            path = "history-candles" if since is not None else "candles"
+            payload = self._get(f"https://api.bitget.com/api/v3/market/{path}", params)
             rows = payload.get("data") or []
             parsed = [[int(row[0]), _float(row[1]), _float(row[2]), _float(row[3]), _float(row[4]), _float(row[5])] for row in rows]
         elif self.id == "gate":
@@ -581,7 +612,7 @@ class NativeCryptoPublicClient:
             params = {"interval": interval, "limit": min(limit, 1000)}
             if since is not None:
                 params["from"] = int(since // 1000)
-                params["to"] = int((int(since) + tf_ms * min(limit, 1000)) // 1000)
+                params["to"] = page_end // 1000
                 params.pop("limit", None)
             if self.market_type == "swap":
                 params["contract"] = native
@@ -594,6 +625,10 @@ class NativeCryptoPublicClient:
         elif self.id == "htx":
             period = {"1m": "1min", "5m": "5min", "15m": "15min", "30m": "30min", "1h": "60min", "4h": "4hour", "1d": "1day", "1w": "1week"}[timeframe]
             params = {"period": period, "size": min(limit, 2000)}
+            if since is not None:
+                # This REST endpoint has no historical cursor. Fetch its full
+                # recent window once rather than pretending since is honored.
+                params["size"] = 2000
             if self.market_type == "swap":
                 params["contract_code"] = native
                 url = "https://api.hbdm.com/linear-swap-ex/market/history/kline"
@@ -603,10 +638,18 @@ class NativeCryptoPublicClient:
             payload = self._get(url, params)
             rows = payload.get("data") or []
             parsed = [[int(row.get("id") or 0) * 1000, _float(row.get("open")), _float(row.get("high")), _float(row.get("low")), _float(row.get("close")), _float(row.get("amount"))] for row in rows]
+            if since is not None and parsed and int(since) < min(row[0] for row in parsed) - tf_ms:
+                raise NativeCryptoAPIError(
+                    "Incomplete K-line history: HTX REST only exposes its recent 2000 candles; "
+                    "the requested start requires an archival data source"
+                )
         else:
             raise ValueError(f"Unsupported crypto exchange: {self.id}")
         lower_bound = int(since) if since is not None else 0
-        unique = {int(row[0]): row for row in parsed if row and int(row[0]) >= lower_bound}
+        unique = {
+            int(row[0]): row for row in parsed
+            if row and lower_bound <= int(row[0]) <= page_end
+        }
         return sorted(unique.values(), key=lambda row: row[0])[:limit]
 
 

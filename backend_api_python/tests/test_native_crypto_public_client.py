@@ -89,7 +89,7 @@ def test_okx_historical_window_uses_forward_compatible_after_cursor(monkeypatch)
     client.fetch_ohlcv("BTC/USDT", "1m", since=1699999880000, limit=2)
 
     assert captured["url"].endswith("/api/v5/market/history-candles")
-    assert captured["params"]["after"] == 1700000000000
+    assert captured["params"]["after"] == 1699999940001
 
 
 def test_bitget_historical_window_is_capped_at_ninety_days(monkeypatch):
@@ -104,7 +104,8 @@ def test_bitget_historical_window_is_capped_at_ninety_days(monkeypatch):
     start = 1700000000000
     client.fetch_ohlcv("BTC/USDT", "1d", since=start, limit=1000)
 
-    assert captured["url"].endswith("/api/v3/market/candles")
+    assert captured["url"].endswith("/api/v3/market/history-candles")
+    assert captured["params"]["limit"] == 100
     assert captured["params"]["endTime"] - start <= 90 * 24 * 60 * 60 * 1000
 
 

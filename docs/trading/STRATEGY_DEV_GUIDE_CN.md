@@ -318,6 +318,8 @@ def handle_data(context, data):
 - <code>set_warmup(n)</code> 对每个已订阅周期都请求至少相应的预热窗口；策略仍须分别检查每个 DataFrame 的长度。
 - 回测日期范围必须同时满足所有周期的数据源限制；任一必需周期缺失的标的不会以不完整周期集合继续运行。
 - 各数据源的历史深度限制仍分别生效。分钟线通常比日线、周线保留时间短，所以 <code>5m + 1w</code> 虽然是合法组合，回测区间仍可能需要按 5 分钟数据的可用范围缩短；加密货币、股票和外汇数据源的历史深度也可能不同。
+- 加密货币历史行情按接口上限分页获取，范围包含回测开始前的预热窗口。单次请求的根数上限不是整个回测的根数上限。Bitget 历史请求使用 V3 历史接口，每页最多 100 根，单页查询时间跨度不超过 90 天。
+- 分页不能突破交易所保留的历史范围。Gate 请求包含预热在内必须位于最近 10000 根原生 K 线范围内；HTX REST 适配器只能提供最近 2000 根 K 线。更早的区间需要历史归档数据源。历史不完整时会拒绝使用；对于明确指定交易所的标的，不会改用最新一页或其他交易所的行情代替。
 - 清单中的 <code>primaryFrequency</code> 为首个声明周期的兼容字段；调度、执行时钟和绩效年化使用 <code>drivingFrequency</code>。
 - <code>data.history(..., frequency="4h")</code>、<code>data.current(..., frequency="4h")</code>、<code>indicator(..., frequency="4h")</code> 和 <code>factor(..., frequency="4h")</code> 同样支持显式周期。<code>data[symbol]</code> 默认使用驱动周期。
 

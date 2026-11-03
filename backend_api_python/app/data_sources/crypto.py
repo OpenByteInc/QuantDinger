@@ -8,6 +8,7 @@ import time
 from app.data_sources.base import BaseDataSource, TIMEFRAME_SECONDS
 from app.data_sources.errors import MarketDataFailure, classify_market_data_failure
 from app.data_sources.native_crypto import (
+    NativeCryptoPublicClient,
     SUPPORTED_EXCHANGES,
     create_native_crypto_client,
     normalize_exchange_id,
@@ -828,6 +829,12 @@ class CryptoDataSource(BaseDataSource):
                 if recent_limit > 0:
                     earliest_supported_ms = max(0, now_ms - timeframe_ms * (recent_limit - 1))
                     if end_ms < earliest_supported_ms:
+                        self._set_last_failure(
+                            f"Incomplete K-line history: requested end predates {exchange_id}'s "
+                            f"recent {recent_limit}-candle window",
+                            symbol=symbol_pair,
+                            timeframe=timeframe,
+                        )
                         logger.info(
                             "Skipped %s %s history because the requested end precedes the exchange recent-candle window",
                             exchange_id,
@@ -835,6 +842,12 @@ class CryptoDataSource(BaseDataSource):
                         )
                         return []
                     if since < earliest_supported_ms:
+                        self._set_last_failure(
+                            f"Incomplete K-line history: requested start predates {exchange_id}'s "
+                            f"recent {recent_limit}-candle window",
+                            symbol=symbol_pair,
+                            timeframe=timeframe,
+                        )
                         logger.warning(
                             "Refused partial %s %s history: requested start predates the exchange "
                             "recent-candle limit (%s bars)",
@@ -846,6 +859,9 @@ class CryptoDataSource(BaseDataSource):
 
                 all_ohlcv: List[List[Any]] = []
                 batch_limit = int(self._PAGINATION_BATCH_LIMITS.get(exchange_id, 300))
+                native_client = isinstance(self.exchange, NativeCryptoPublicClient)
+                if native_client:
+                    batch_limit = self.exchange.ohlcv_page_limit(historical=True)
                 current_since = since
                 max_batches = 6000
                 empty_streak = 0
@@ -867,7 +883,7 @@ class CryptoDataSource(BaseDataSource):
                 fetch_budget_seconds = 180.0
 
                 for batch_idx in range(max_batches):
-                    if current_since >= end_ms:
+                    if current_since > end_ms:
                         break
                     if (_t.monotonic() - fetch_started_at) > fetch_budget_seconds:
                         logger.warning(
@@ -878,13 +894,16 @@ class CryptoDataSource(BaseDataSource):
 
                     batch = None
                     last_err = None
+                    page_limit = min(batch_limit, (end_ms - current_since) // timeframe_ms + 1)
+                    page_kwargs = {"until": end_ms} if native_client else {}
                     for attempt in range(retry_per_batch + 1):
                         try:
                             batch = self.exchange.fetch_ohlcv(
                                 symbol_pair,
                                 exchange_timeframe,
                                 since=current_since,
-                                limit=batch_limit,
+                                limit=page_limit,
+                                **page_kwargs,
                             )
                             break
                         except Exception as exc:
@@ -910,6 +929,12 @@ class CryptoDataSource(BaseDataSource):
                             _t.sleep(inter_batch_sleep)
                         continue
                     empty_streak = 0
+                    batch = sorted(
+                        (row for row in batch if row and len(row) >= 6 and current_since <= row[0] <= end_ms),
+                        key=lambda row: row[0],
+                    )
+                    if not batch:
+                        break
                     all_ohlcv.extend(batch)
                     last_timestamp = batch[-1][0]
                     if last_timestamp >= end_ms:
