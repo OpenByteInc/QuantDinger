@@ -1307,7 +1307,17 @@ paths:
 
         search: str (optional, search by username/email/nickname/id)
 
-        user_id: int (optional, exact user id filter)'
+        user_id: int (optional, exact user id filter)
+
+        role: str (optional)
+
+        status: str (optional, active or disabled)
+
+        vip_status: str (optional, active or inactive)
+
+        sort_by: str (optional, credits)
+
+        sort_order: str (optional, asc or desc)'
       tags:
       - Users
       operationId: getApiUsersList
@@ -2143,8 +2153,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HumanErrorEnvelope'
-        '202':
-          description: Accepted
+        '200':
+          description: OK
           content:
             application/json:
               schema:
@@ -2229,8 +2239,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HumanErrorEnvelope'
-        '202':
-          description: Accepted
+        '200':
+          description: OK
           content:
             application/json:
               schema:
@@ -2249,8 +2259,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HumanErrorEnvelope'
-        '202':
-          description: Accepted
+        '200':
+          description: OK
           content:
             application/json:
               schema:
@@ -2291,8 +2301,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HumanErrorEnvelope'
-        '202':
-          description: Accepted
+        '200':
+          description: OK
           content:
             application/json:
               schema:
@@ -2443,6 +2453,26 @@ paths:
       - Strategy
       operationId: postApiStrategyEvolutionEstimate
       summary: Post Api Strategy Evolution Estimate
+      x-visibility: internal
+  /api/strategy-evolution/preflight:
+    post:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - Strategy
+      operationId: postApiStrategyEvolutionPreflight
+      summary: Post Api Strategy Evolution Preflight
       x-visibility: internal
   /api/strategy-evolution/run:
     post:
@@ -7770,10 +7800,12 @@ paths:
         \ / empty (all)\nvip_free: 1/true to show VIP-free paid assets only\ncode_visibility:\
         \ 'visible' / 'hidden' / empty (all)\nmin_price, max_price: Numeric price\
         \ bounds\nsort_by: 'score' (default) / 'newest' / 'hot' / 'price_asc' /\n\
-        \         'price_desc' / 'rating'.\n         'score' sorts by the composite\
-        \ Strategy API V2 backtest score\n         (see services/community_kpis.py)\
-        \ and is now the\n         default — putting genuinely well-performing indicators\n\
-        \         at the top of the marketplace, not just the newest ones."
+        \         'price_desc' / 'rating' / 'views' / 'installs' /\n         'annual_return'\
+        \ / 'max_drawdown' / 'sharpe' / 'users'.\nsort_order: 'asc' / 'desc' for sortable\
+        \ catalog columns.\n         'score' sorts by the composite Strategy API V2\
+        \ backtest score\n         (see services/community_kpis.py) and is now the\n\
+        \         default — putting genuinely well-performing indicators\n       \
+        \  at the top of the marketplace, not just the newest ones."
       tags:
       - Community
       operationId: getApiCommunityIndicators

@@ -1116,8 +1116,7 @@ class FastAnalysisService(FastAnalysisScoringMixin):
                         market=market,
                         symbol=symbol,
                     )
-                    analysis["confidence"] = adjusted_conf
-                    analysis["_confidence_calibrated"] = adjusted_conf != raw_conf
+                    analysis.update(confidence=adjusted_conf, _confidence_calibrated=adjusted_conf != raw_conf)
                 except Exception as e:
                     logger.debug(f"Confidence calibration skipped: {e}")
             

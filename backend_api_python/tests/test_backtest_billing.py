@@ -14,84 +14,24 @@ def test_backtest_cost_defaults_to_30_and_can_be_overridden(monkeypatch):
     assert load_billing_config()["cost_backtest"] == 45
 
 
-def test_backtest_charge_reports_insufficient_credits(monkeypatch):
-    class FakeBilling:
-        def is_billing_enabled(self):
-            return True
-
-        def get_feature_cost(self, feature):
-            assert feature == "backtest"
-            return 30
-
-        def get_user_credits(self, user_id):
-            assert user_id == 7
-            return Decimal("12")
-
-        def check_and_consume(self, **kwargs):
-            assert kwargs["feature"] == "backtest"
-            return False, "insufficient_credits:12:30"
-
-    monkeypatch.setattr(backtest_center, "get_billing_service", lambda: FakeBilling())
-
-    _billing, charge = backtest_center._consume_backtest_credits(7)
-
-    assert charge["error"] == "insufficient_credits"
-    assert charge["current"] == 12
-    assert charge["required"] == 30
-    assert charge["shortage"] == 18
-    assert charge["charged"] == 0
-
-
-def test_backtest_charge_consumes_configured_cost_and_reports_balance(monkeypatch):
-    class FakeBilling:
-        def __init__(self):
-            self.balance_reads = iter((Decimal("100"), Decimal("70")))
-
-        def is_billing_enabled(self):
-            return True
-
-        def get_feature_cost(self, feature):
-            return 30
-
-        def get_user_credits(self, user_id):
-            return next(self.balance_reads)
-
-        def check_and_consume(self, **kwargs):
-            assert kwargs["user_id"] == 7
-            assert kwargs["feature"] == "backtest"
-            assert kwargs["reference_id"].startswith("backtest:")
-            return True, "consumed"
-
-    monkeypatch.setattr(backtest_center, "get_billing_service", FakeBilling)
-
-    _billing, charge = backtest_center._consume_backtest_credits(7)
-
-    assert charge["cost"] == 30
-    assert charge["charged"] == 30
-    assert charge["remaining"] == 70
-
-
-def test_failed_backtest_refunds_the_original_charge_reference():
+def test_backtest_submission_delegates_billing_to_job_boundary(monkeypatch):
     calls = []
 
-    class FakeBilling:
-        def add_credits(self, **kwargs):
-            calls.append(kwargs)
-            return True, "100"
+    def submit_job(**kwargs):
+        calls.append(kwargs)
+        return {"job_id": "job-1", "status": "queued"}
 
-    backtest_center._refund_backtest_credits(
-        FakeBilling(),
-        7,
-        {"charged": 30, "referenceId": "backtest:request-1"},
-    )
+    monkeypatch.setattr(backtest_center.agent_jobs, "submit_job", submit_job)
+    receipt = backtest_center._submit_backtest_job({
+        "code": "def initialize(context):\n    pass",
+        "startDate": "2026-01-01",
+        "endDate": "2026-01-31",
+    }, 7)
 
-    assert calls == [{
-        "user_id": 7,
-        "amount": 30,
-        "action": "refund",
-        "remark": "Automatic refund: backtest execution failed",
-        "reference_id": "backtest:request-1",
-    }]
+    assert receipt == {"job_id": "job-1", "status": "queued"}
+    assert calls[0]["user_id"] == 7
+    assert calls[0]["kind"] == "backtest"
+    assert calls[0]["request_payload"]["__user_id"] == 7
 
 
 def test_credit_deduction_is_atomic(monkeypatch):

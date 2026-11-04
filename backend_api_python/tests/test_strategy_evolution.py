@@ -31,6 +31,15 @@ from app.routes import strategy_evolution as evolution_routes
 from app.tasks import agent_jobs as celery_agent_jobs
 
 
+def test_strategy_evolution_validation_messages_are_allowlisted():
+    assert evolution_routes._public_validation_message(
+        ValueError("strategyEvolution.sourceRequired")
+    ) == "strategyEvolution.sourceRequired"
+    assert evolution_routes._public_validation_message(
+        ValueError("database connection details")
+    ) == "strategyEvolution.runFailed"
+
+
 def _evaluator(params, start, end, commission, slippage):
     fast = float(params["fast"])
     slow = float(params["slow"])

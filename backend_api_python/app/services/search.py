@@ -759,7 +759,7 @@ class SearchService:
         ]
 
     def _effective_result_limit(self, requested: Optional[int]) -> int:
-        configured = max(1, int(self.max_results or 10))
+        configured = max(1, int(getattr(self, "max_results", 10) or 10))
         if requested is None:
             return configured
         return min(max(1, int(requested)), configured)
