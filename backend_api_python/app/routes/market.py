@@ -219,7 +219,7 @@ def get_symbol_capabilities():
     except Exception as e:
         logger.error(f"get_symbol_capabilities failed: {str(e)}")
         logger.error(traceback.format_exc())
-        return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
+        return jsonify({'code': 0, 'msg': 'internal_server_error', 'data': None}), 500
 
 @market_blp.route('/watchlist/get', methods=['GET'])
 @login_required
