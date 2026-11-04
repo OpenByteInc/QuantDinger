@@ -417,8 +417,8 @@ class OkxExecutionAdapter(PrivateWebSocketAdapter):
 
     def url(self) -> str:
         if exchange_trading_environment(self.config, "okx") != "live":
-            return "wss://wspap.okx.com:8443/ws/v5/private"
-        return "wss://ws.okx.com:8443/ws/v5/private"
+            return "wss://wspap.okx.com/ws/v5/private"
+        return "wss://ws.okx.com/ws/v5/private"
 
     def on_open_messages(self) -> List[Dict[str, Any]]:
         timestamp = str(int(time.time()))

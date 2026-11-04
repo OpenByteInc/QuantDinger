@@ -241,7 +241,7 @@ class PublicMarketPriceFeed:
             host = "wss://fstream.binance.com" if swap else "wss://stream.binance.com:9443"
             return f"{host}/stream?streams={streams}"
         if self.exchange_id == "okx":
-            return "wss://ws.okx.com:8443/ws/v5/public"
+            return "wss://ws.okx.com/ws/v5/public"
         if self.exchange_id == "bybit":
             return f"wss://stream.bybit.com/v5/public/{'linear' if swap else 'spot'}"
         if self.exchange_id == "bitget":
