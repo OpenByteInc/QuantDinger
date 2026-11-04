@@ -1,6 +1,7 @@
 """Exercise native REST pagination with exchange-shaped, bounded responses."""
 
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 import requests
@@ -212,3 +213,64 @@ def test_final_page_stops_at_the_requested_end(monkeypatch):
     client.fetch_ohlcv("BTC/USDT", "4h", since=start * 1000, limit=1000, until=(start + 14400 * 2) * 1000)
 
     assert captured["to"] == start + 14400 * 2
+
+
+@pytest.mark.parametrize("market_type", ["spot", "swap"])
+@pytest.mark.parametrize("start_date", ["2026-08-29", "2026-08-28", "2025-11-03"])
+def test_gate_backtest_job_loads_all_pages_and_completes(monkeypatch, market_type, start_date):
+    from app.services.backtest_cache import KlineCache
+    from app.services.backtest_jobs import run_backtest_job
+    from app.services.strategy_v2 import market_data
+    from app.services.strategy_v2 import service as service_module
+
+    start = datetime.fromisoformat(start_date).replace(tzinfo=timezone.utc)
+    fetch_start = start - timedelta(days=backtest_warmup_calendar_days("4H", 400), hours=4)
+    end = datetime(2026, 11, 3, tzinfo=timezone.utc)
+    timestamps = list(range(int(fetch_start.timestamp() * 1000), int(end.timestamp() * 1000) + 1, BAR_MS))
+    source, calls = native_source(monkeypatch, "gate", timestamps, market_type=market_type)
+    source._allow_public_fallback = False
+    source._scoped_market_type = market_type
+    source._preferred_public_exchange_id = ""
+    native_symbol = "BTC/USDT:USDT" if market_type == "swap" else "BTC/USDT"
+    monkeypatch.setattr(source, "_symbol_for_scoped_market", lambda _symbol: native_symbol)
+    monkeypatch.setattr(source, "_is_invalid_symbol_cached", lambda _symbol: False)
+    monkeypatch.setattr(market_data.DataSourceFactory, "_resolve_source", lambda *_args, **_kwargs: source)
+    monkeypatch.setattr(market_data, "_resolve_catalog_product", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(market_data, "_cache", KlineCache())
+    monkeypatch.setattr(market_data, "_shared_frames", {})
+    monkeypatch.setattr(service_module, "get_catalog_product", lambda **_kwargs: None)
+    backtest = service_module.StrategyV2BacktestService(
+        repository=object(),
+        universe_service=object(),
+        snapshot_store=object(),
+        instrument_rules_provider=SimpleNamespace(historical_snapshot=lambda *_args, **_kwargs: None),
+    )
+    symbol = f"Crypto:BTC/USDT@gate:{market_type}"
+    code = f'''\
+"""Gate candle pagination regression."""
+
+def initialize(context):
+    g.symbol = "{symbol}"
+    context.set_universe([g.symbol])
+    context.subscribe(frequency="4h")
+    context.set_warmup(400)
+
+def handle_data(context, data):
+    pass
+'''
+    progress = []
+
+    result = run_backtest_job(
+        dict(code=code, startDate=start_date, endDate="2026-11-02", persist=False),
+        on_progress=progress.append,
+        service=backtest,
+    )
+
+    assert result["runId"] is None
+    assert result["resultStatus"] == "no_signals"
+    assert result["diagnostics"]["symbolsUsed"] == 1
+    assert result["diagnostics"]["symbolsSkipped"] == []
+    provenance = result["dataProvenance"]["symbols"][0]
+    assert provenance["bars"] == len(timestamps) - 2
+    assert progress[-1]["phase"] == "completed"
+    assert len(calls) >= (2 if start_date == "2026-08-28" else 1)
