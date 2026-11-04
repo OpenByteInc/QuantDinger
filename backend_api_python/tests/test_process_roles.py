@@ -70,6 +70,30 @@ def test_api_startup_does_not_launch_process_local_services(monkeypatch):
     startup.run_startup_hooks(Flask(__name__))
 
 
+def test_pending_order_worker_cannot_be_disabled_by_legacy_env(monkeypatch):
+    from app import startup
+
+    class Worker:
+        lease_guard = None
+
+        def __init__(self):
+            self.start_calls = 0
+
+        def start(self):
+            self.start_calls += 1
+            return True
+
+    worker = Worker()
+    monkeypatch.setenv("ENABLE_PENDING_ORDER_WORKER", "false")
+    monkeypatch.setattr(startup, "get_pending_order_worker", lambda: worker)
+    monkeypatch.setattr(startup, "start_execution_stream_supervisor", lambda: None)
+    monkeypatch.setattr(startup, "start_grid_fill_poller", lambda: None)
+
+    startup._start_trading_support_services()
+
+    assert worker.start_calls == 1
+
+
 def test_config_loader_does_not_override_supervisor_environment(monkeypatch):
     import dotenv
     from app.utils import config_loader

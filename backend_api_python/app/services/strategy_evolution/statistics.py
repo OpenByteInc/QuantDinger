@@ -24,6 +24,34 @@ def metric_snapshot(result: dict[str, Any]) -> dict[str, float]:
     }
 
 
+def training_score(train: list[dict[str, float]], weights: dict[str, float]) -> tuple[float, dict[str, float]]:
+    train_sharpe = mean(row["sharpe"] for row in train) if train else 0.0
+    train_return = _compounded_return(row["return"] for row in train)
+    drawdown = mean(abs(row["drawdown"]) for row in train) if train else 100.0
+    variation = pstdev(row["return"] for row in train) if len(train) > 1 else 0.0
+    stability = max(0.0, 1.0 - min(1.0, variation / (abs(train_return) + 12.0)))
+    activity = sum(max(0.0, row.get("activity", row.get("trades", 0.0))) for row in train)
+    components = {
+        "return": _sigmoid_score(train_return / 12.0),
+        "sharpe": _sigmoid_score(train_sharpe),
+        "drawdown": max(0.0, 1.0 - min(drawdown / 50.0, 1.0)),
+        "stability": stability,
+    }
+    active_weights = {key: max(0.0, float(weights.get(key, 0.0))) for key in components}
+    total_weight = sum(active_weights.values()) or 1.0
+    raw_score = 100.0 * sum(active_weights[key] * components[key] for key in components) / total_weight
+    evidence = min(1.0, activity / max(8.0, len(train) * 2.0))
+    score = raw_score * math.sqrt(evidence) if activity > 0 else 0.0
+    return round(score, 4), {
+        **{key: round(value * 100.0, 2) for key, value in components.items()},
+        "trainSharpe": round(train_sharpe, 4),
+        "trainReturn": round(train_return, 4),
+        "trainDrawdown": round(drawdown, 4),
+        "trainingActivity": round(activity, 2),
+        "trainingActivityEvidence": round(evidence * 100.0, 2),
+    }
+
+
 def composite_score(train: list[dict[str, float]], validation: list[dict[str, float]], weights: dict[str, float]) -> tuple[float, dict[str, float]]:
     train_sharpe = mean(row["sharpe"] for row in train) if train else 0.0
     oos_sharpe = mean(row["sharpe"] for row in validation) if validation else 0.0
@@ -201,10 +229,18 @@ def parameter_heatmap(trials: list[dict[str, Any]]) -> dict[str, Any]:
     numeric_names.sort(key=lambda name: len({row["params"].get(name) for row in completed}), reverse=True)
     x_name, y_name = numeric_names[:2]
     points = [
-        [row["params"][x_name], row["params"][y_name], round(float(row.get("score") or 0.0), 4)]
+        [row["params"][x_name], row["params"][y_name], round(float(row.get("searchScore", row.get("score")) or 0.0), 4)]
         for row in completed
     ]
-    return {"xParameter": x_name, "yParameter": y_name, "points": points}
+    scores = [float(point[2]) for point in points]
+    return {
+        "xParameter": x_name,
+        "yParameter": y_name,
+        "scoreMetric": "trainingCompositeScore",
+        "scoreMin": round(min(scores), 4) if scores else 0.0,
+        "scoreMax": round(max(scores), 4) if scores else 0.0,
+        "points": points,
+    }
 
 
 def equity_returns(curve: Iterable[dict[str, Any]]) -> list[float]:

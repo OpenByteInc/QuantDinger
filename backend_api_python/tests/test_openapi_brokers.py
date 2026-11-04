@@ -96,6 +96,35 @@ def test_tiger_order_uses_official_sdk_order_and_user_mark(monkeypatch):
     assert order.user_mark == "qd-order-1"
 
 
+def test_tiger_order_normalization_preserves_reported_realized_pnl():
+    client = TigerClient(TigerConfig(tiger_id="tiger-1", account_id="account-1", private_key="pem"))
+    order = SimpleNamespace(
+        contract=SimpleNamespace(symbol="AAPL", currency="USD", market="US", exchange="NASDAQ"),
+        id=401001,
+        order_id=401001,
+        action="SELL",
+        order_type="MKT",
+        status="FILLED",
+        quantity=2,
+        filled=2,
+        remaining=0,
+        avg_fill_price=200,
+        limit_price=None,
+        realized_pnl=-3.25,
+        commission=1.5,
+        charges=None,
+        order_time=None,
+        update_time=None,
+        trade_time=None,
+        reason=None,
+    )
+
+    normalized = client._normalize_order(order)
+
+    assert normalized["realized_pnl"] == -3.25
+    assert normalized["currency"] == "USD"
+
+
 def test_tiger_strategy_execution_keeps_stock_symbol(monkeypatch):
     trade_client = FakeTigerTradeClient()
     client = TigerClient(TigerConfig(tiger_id="tiger-1", account_id="account-1", private_key="pem"))

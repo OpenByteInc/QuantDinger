@@ -262,7 +262,8 @@ One backend image is reused by several containers with different commands:
 | `strategy-evaluator-worker` | Owns hot distributed bar runtimes and evaluates fenced strategy inbox events. |
 | `kafka-audit-worker` | Validates and records the versioned event stream independently of execution. |
 | `scheduler-worker` | Runs portfolio, deployment, payment, and signal schedules. |
-| `celery-worker` | Executes finite AI, backtest, experiment, report, and maintenance jobs. |
+| `celery-worker` | Executes finite AI, report, and maintenance jobs. |
+| `celery-backtest-worker` | Executes backtests, factor research, and experiments; recycles its child after every task. |
 | `celery-beat` | Dispatches periodic Celery tasks. |
 
 See [Backend process roles](docs/architecture/PROCESS_ROLES_AND_TASKS.md),
@@ -628,8 +629,9 @@ flowchart TD
     O --> T["Place order normally and record provider unavailable"]
 ```
 
-Configure `JEV_API_KEY`, `JEV_BASE_URL`, `JEV_MODEL`, and
-`JEV_TIMEOUT_SECONDS` in **System Settings → AI / LLM**. TypeSafe documents the
+Configure `JEV_ENABLED`, `JEV_API_KEY`, `JEV_BASE_URL`, `JEV_MODEL`, and
+`JEV_TIMEOUT_SECONDS` in **System Settings → AI / LLM**. When JEV is disabled,
+the decision filter uses the configured LLM directly. TypeSafe documents the
 HTTP contract at [`POST /v1/systemone`](https://docs.typesafe.ai/introduction/quickstart).
 
 ## AI agents and MCP
@@ -750,7 +752,7 @@ QuantDinger/
 | --- | --- |
 | Synchronous API request | `app/routes` -> `app/services` -> database, cache, market-data, or trading adapter |
 | Durable strategy command | API route -> PostgreSQL command record -> `trading-worker` -> strategy runtime and broker adapter |
-| Finite background job | API or Celery beat -> job Redis -> `app/tasks` in `celery-worker` -> PostgreSQL result |
+| Finite background job | API or Celery beat -> job Redis -> `app/tasks` in the queue-specific Celery worker -> PostgreSQL result |
 | Scheduled domain work | `app/commands/scheduler.py` -> scheduling services -> durable state and notifications |
 | Monitoring | API and workers -> `app/observability` metrics -> Prometheus -> Grafana and Alertmanager |
 | Agent or MCP call | MCP client -> `mcp_server` -> `/api/agent/v1` -> the same service layer used by human APIs |

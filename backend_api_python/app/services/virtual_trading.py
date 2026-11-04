@@ -8,7 +8,9 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from app.utils.db import get_db_connection
+from app.services.market_schedule import is_equity_market_open
 from app.services.virtual_execution_costs import resolve_virtual_execution_cost_policy
+from app.utils.trade_close_reason import INDICATOR_SIGNAL
 
 
 _ENTRY_ACTIONS = {"open_long", "add_long", "open_short", "add_short"}
@@ -170,6 +172,8 @@ def execute_virtual_signal_order(order_row: Mapping[str, Any], payload: Mapping[
         slippage_rate = cost_policy.slippage_rate
         fill_price = forced_fill_price or _fill_price(action, reference_price, slippage_rate)
         market_type = cost_policy.market_type
+        market_category = str(strategy.get("market_category") or "").strip()
+        market_open = is_equity_market_open(market_category)
 
         cur.execute(
             """
@@ -182,7 +186,9 @@ def execute_virtual_signal_order(order_row: Mapping[str, Any], payload: Mapping[
         )
         existing = cur.fetchone() or {}
         if existing and not (
-            forced_fill_price > 0 and str(existing.get("status") or "").strip().lower() == "open"
+            market_open
+            and forced_fill_price > 0
+            and str(existing.get("status") or "").strip().lower() == "open"
         ):
             cur.close()
             return {
@@ -208,13 +214,15 @@ def execute_virtual_signal_order(order_row: Mapping[str, Any], payload: Mapping[
             (strategy_id,),
         )
         account = cur.fetchone() or {}
-        if order_type == "limit" and forced_fill_price <= 0:
-            immediate_fill = calculate_virtual_limit_fill_price(
-                action=action,
-                limit_price=limit_price,
-                market_price=reference_price,
-                slippage_rate=slippage_rate,
-            )
+        if not market_open or (order_type == "limit" and forced_fill_price <= 0):
+            immediate_fill = None
+            if market_open:
+                immediate_fill = calculate_virtual_limit_fill_price(
+                    action=action,
+                    limit_price=limit_price,
+                    market_price=reference_price,
+                    slippage_rate=slippage_rate,
+                )
             if immediate_fill is None:
                 cur.execute(
                     """
@@ -224,13 +232,13 @@ def execute_virtual_signal_order(order_row: Mapping[str, Any], payload: Mapping[
                          reference_price, limit_price, fill_price, exchange_id, market_type, leverage,
                          commission_rate, commission_quote, slippage_rate, slippage_quote,
                          status, reason, filled_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'limit', %s, 0, %s, %s, 0,
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0, %s, %s, 0,
                             %s, %s, %s, %s, 0, %s, 0, 'open', %s, NULL)
                     RETURNING id
                     """,
                     (
                         user_id, strategy_id, strategy_run_id, order_id, order_intent_id,
-                        symbol, side, action, requested_quantity, reference_price, limit_price,
+                        symbol, side, action, order_type, requested_quantity, reference_price, limit_price,
                         cost_policy.exchange_id, market_type, cost_policy.leverage,
                         commission_rate, slippage_rate, str(payload.get("reason") or "")[:255],
                     ),
@@ -252,6 +260,7 @@ def execute_virtual_signal_order(order_row: Mapping[str, Any], payload: Mapping[
                     "market_type": market_type,
                     "leverage": cost_policy.leverage,
                     "account_equity": float(account.get("initial_cash") or initial_cash),
+                    "deferred_reason": "market_closed" if not market_open else "limit_not_reached",
                     "idempotent": False,
                 }
             fill_price = immediate_fill
@@ -400,7 +409,7 @@ def execute_virtual_signal_order(order_row: Mapping[str, Any], payload: Mapping[
                     order_intent_id, symbol, symbol_key, action, side, fill_price,
                     transition.fill_quantity, transition.fill_quantity * fill_price,
                     commission, commission, transition.gross_realized_pnl,
-                    str(payload.get("reason") or "")[:255] if action in _EXIT_ACTIONS else "",
+                    str(payload.get("reason") or INDICATOR_SIGNAL)[:255] if action in _EXIT_ACTIONS else "",
                     float(position.get("entry_price") or 0.0), account_equity, market_type,
                     cost_policy.exchange_id, cost_policy.leverage, reference_price,
                     commission_rate, slippage_rate, slippage_quote,
@@ -553,7 +562,7 @@ def match_virtual_limit_orders(
     *,
     strategy_run_id: int = 0,
 ) -> list[dict[str, Any]]:
-    """Match open signal-mode limit orders against fresh market prices."""
+    """Match open signal-mode orders against fresh in-session market prices."""
     normalized_prices = {
         canonical_symbol(symbol): float(price or 0.0)
         for symbol, price in (prices or {}).items()
@@ -565,9 +574,11 @@ def match_virtual_limit_orders(
         cur = db.cursor()
         cur.execute(
             """
-            SELECT vo.*, po.payload_json, po.execution_mode AS pending_execution_mode
+            SELECT vo.*, po.payload_json, po.execution_mode AS pending_execution_mode,
+                   s.market_category AS strategy_market_category
             FROM qd_strategy_virtual_orders vo
             JOIN pending_orders po ON po.id = vo.pending_order_id
+            JOIN qd_strategies_trading s ON s.id = vo.strategy_id
             WHERE vo.strategy_id = %s AND vo.status = 'open'
               AND (%s = 0 OR vo.strategy_run_id = %s)
             ORDER BY vo.id ASC
@@ -593,13 +604,26 @@ def match_virtual_limit_orders(
                 int(row.get("order_intent_id") or 0),
             )
             continue
+        market_category = str(
+            row.get("strategy_market_category") or payload.get("market_category") or ""
+        ).strip()
+        if not is_equity_market_open(market_category):
+            continue
         market_price = normalized_prices.get(canonical_symbol(row.get("symbol"))) or 0.0
-        fill_price = calculate_virtual_limit_fill_price(
-            action=str(row.get("action") or ""),
-            limit_price=float(row.get("limit_price") or 0.0),
-            market_price=market_price,
-            slippage_rate=float(row.get("slippage_rate") or 0.0),
-        )
+        order_type = str(row.get("order_type") or "limit").strip().lower()
+        if order_type == "market":
+            fill_price = _fill_price(
+                str(row.get("action") or ""),
+                market_price,
+                float(row.get("slippage_rate") or 0.0),
+            ) if market_price > 0 else None
+        else:
+            fill_price = calculate_virtual_limit_fill_price(
+                action=str(row.get("action") or ""),
+                limit_price=float(row.get("limit_price") or 0.0),
+                market_price=market_price,
+                slippage_rate=float(row.get("slippage_rate") or 0.0),
+            )
         if fill_price is None:
             continue
         payload.update({
@@ -610,7 +634,7 @@ def match_virtual_limit_orders(
             "signal_type": str(row.get("action") or ""),
             "symbol": str(row.get("symbol") or ""),
             "amount": float(row.get("requested_qty") or 0.0),
-            "order_type": "limit",
+            "order_type": order_type,
             "limit_price": float(row.get("limit_price") or 0.0),
             "ref_price": market_price,
             "_virtual_fill_price": fill_price,
@@ -626,7 +650,7 @@ def match_virtual_limit_orders(
                 "signal_type": str(row.get("action") or ""),
                 "symbol": str(row.get("symbol") or ""),
                 "amount": float(row.get("requested_qty") or 0.0),
-                "order_type": "limit",
+                "order_type": order_type,
             },
             payload,
         )

@@ -64,15 +64,31 @@ class UserService:
     BOOTSTRAP_DEFAULT_PASSWORD = '123456'
     
     # Available roles (ordered by privilege level)
-    ROLES = ['viewer', 'user', 'manager', 'admin']
+    ROLES = ['viewer', 'user', 'admin']
     
     # Role permissions mapping
     ROLE_PERMISSIONS = {
         'viewer': ['dashboard', 'view'],
         'user': ['dashboard', 'view', 'indicator', 'backtest', 'strategy', 'portfolio'],
-        'manager': ['dashboard', 'view', 'indicator', 'backtest', 'strategy', 'portfolio', 'settings'],
         'admin': ['dashboard', 'view', 'indicator', 'backtest', 'strategy', 'portfolio', 'settings', 'user_manage', 'credentials'],
     }
+
+    @classmethod
+    def normalize_role(cls, role: Any) -> str:
+        """Map legacy role values to the current role model."""
+        normalized = str(role or 'user').strip().lower()
+        if normalized == 'manager':
+            return 'user'
+        return normalized
+
+    @classmethod
+    def normalize_user_record(cls, user: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """Return a user record that never exposes a retired role value."""
+        if not user:
+            return user
+        normalized = dict(user)
+        normalized['role'] = cls.normalize_role(normalized.get('role'))
+        return normalized
     
     def ensure_password_changed_column(self) -> None:
         """Add password_changed_at if missing (idempotent)."""
@@ -571,7 +587,7 @@ class UserService:
                 )
                 row = cur.fetchone()
                 cur.close()
-                return row
+                return self.normalize_user_record(row)
         except Exception as e:
             logger.error(f"get_user_by_id failed: {e}")
             return None
@@ -591,7 +607,7 @@ class UserService:
                 )
                 row = cur.fetchone()
                 cur.close()
-                return row
+                return self.normalize_user_record(row)
         except Exception as e:
             logger.error(f"get_user_by_username failed: {e}")
             return None
@@ -613,7 +629,7 @@ class UserService:
                 )
                 row = cur.fetchone()
                 cur.close()
-                return row
+                return self.normalize_user_record(row)
         except Exception as e:
             logger.error(f"get_user_by_email failed: {e}")
             return None
@@ -945,8 +961,14 @@ class UserService:
             return False
     
     @staticmethod
-    def _build_user_list_filter(search: str = None, user_id: int = None) -> tuple:
-        """WHERE clause + params for admin user list (supports exact user id)."""
+    def _build_user_list_filter(
+        search: str = None,
+        user_id: int = None,
+        role: str = None,
+        status: str = None,
+        vip_status: str = None,
+    ) -> tuple:
+        """Build the parameterized filters shared by user listing and export."""
         clauses = []
         params = []
         if user_id is not None:
@@ -970,9 +992,34 @@ class UserService:
                 part_params.append(f"%{raw}%")
             clauses.append("(" + " OR ".join(parts) + ")")
             params.extend(part_params)
+
+        normalized_role = str(role or '').strip().lower()
+        if normalized_role in UserService.ROLES:
+            clauses.append("role = ?")
+            params.append(normalized_role)
+
+        normalized_status = str(status or '').strip().lower()
+        if normalized_status in {'active', 'disabled'}:
+            clauses.append("status = ?")
+            params.append(normalized_status)
+
+        normalized_vip_status = str(vip_status or '').strip().lower()
+        if normalized_vip_status == 'active':
+            clauses.append("vip_expires_at IS NOT NULL AND vip_expires_at > NOW()")
+        elif normalized_vip_status == 'inactive':
+            clauses.append("(vip_expires_at IS NULL OR vip_expires_at <= NOW())")
+
         if not clauses:
             return "", []
         return "WHERE " + " AND ".join(clauses), params
+
+    @staticmethod
+    def _build_user_list_order(sort_by: str = None, sort_order: str = None) -> str:
+        """Return an allowlisted ORDER BY clause for the admin user list."""
+        if str(sort_by or '').strip().lower() != 'credits':
+            return "id DESC"
+        direction = 'ASC' if str(sort_order or '').strip().lower() == 'asc' else 'DESC'
+        return f"credits {direction}, id DESC"
 
     def list_users(
         self,
@@ -980,6 +1027,11 @@ class UserService:
         page_size: int = 20,
         search: str = None,
         user_id: int = None,
+        role: str = None,
+        status: str = None,
+        vip_status: str = None,
+        sort_by: str = None,
+        sort_order: str = None,
     ) -> Dict[str, Any]:
         """List all users with pagination and optional search"""
         offset = (page - 1) * page_size
@@ -988,7 +1040,14 @@ class UserService:
             with get_db_connection() as db:
                 cur = db.cursor()
                 
-                where_clause, params = self._build_user_list_filter(search, user_id)
+                where_clause, params = self._build_user_list_filter(
+                    search=search,
+                    user_id=user_id,
+                    role=role,
+                    status=status,
+                    vip_status=vip_status,
+                )
+                order_clause = self._build_user_list_order(sort_by, sort_order)
                 
                 # Get total count
                 count_sql = f"SELECT COUNT(*) as count FROM qd_users {where_clause}"
@@ -1031,11 +1090,11 @@ class UserService:
                            created_at, updated_at
                     FROM qd_users
                     {where_clause}
-                    ORDER BY id DESC
+                    ORDER BY {order_clause}
                     LIMIT ? OFFSET ?
                 """
                 cur.execute(query_sql, tuple(params + [page_size, offset]))
-                users = cur.fetchall()
+                users = [self.normalize_user_record(user) for user in cur.fetchall()]
                 cur.close()
                 
                 return {
@@ -1049,13 +1108,29 @@ class UserService:
             logger.error(f"list_users failed: {e}")
             return {'items': [], 'total': 0, 'page': 1, 'page_size': page_size, 'total_pages': 0}
 
-    def list_all_users_for_export(self, search: str = None, user_id: int = None) -> List[Dict[str, Any]]:
+    def list_all_users_for_export(
+        self,
+        search: str = None,
+        user_id: int = None,
+        role: str = None,
+        status: str = None,
+        vip_status: str = None,
+        sort_by: str = None,
+        sort_order: str = None,
+    ) -> List[Dict[str, Any]]:
         """List all users for export with the same fields as the admin user table."""
         try:
             with get_db_connection() as db:
                 cur = db.cursor()
 
-                where_clause, params = self._build_user_list_filter(search, user_id)
+                where_clause, params = self._build_user_list_filter(
+                    search=search,
+                    user_id=user_id,
+                    role=role,
+                    status=status,
+                    vip_status=vip_status,
+                )
+                order_clause = self._build_user_list_order(sort_by, sort_order)
 
                 query_sql = f"""
                     SELECT id, username, email, nickname, avatar, status, role,
@@ -1092,10 +1167,10 @@ class UserService:
                            created_at, updated_at
                     FROM qd_users
                     {where_clause}
-                    ORDER BY id DESC
+                    ORDER BY {order_clause}
                 """
                 cur.execute(query_sql, tuple(params))
-                users = cur.fetchall() or []
+                users = [self.normalize_user_record(user) for user in (cur.fetchall() or [])]
                 cur.close()
                 return users
         except Exception as e:
@@ -1104,7 +1179,8 @@ class UserService:
     
     def get_user_permissions(self, role: str) -> List[str]:
         """Get permissions for a role"""
-        return self.ROLE_PERMISSIONS.get(role, self.ROLE_PERMISSIONS['viewer'])
+        normalized_role = self.normalize_role(role)
+        return self.ROLE_PERMISSIONS.get(normalized_role, self.ROLE_PERMISSIONS['viewer'])
     
     def ensure_admin_exists(self):
         """

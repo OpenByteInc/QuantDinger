@@ -5,11 +5,13 @@ from app.utils.trade_close_reason import (
     GRID_LONG_EXIT,
     GRID_REDUCE_LONG,
     GRID_WATERFALL_CLOSE,
+    INDICATOR_SIGNAL,
     SERVER_STOP_LOSS,
     enrich_trade_row,
     infer_legacy_close_reason,
     is_exit_trade_type,
     label_for_reason,
+    resolve_close_reason_for_record,
 )
 
 
@@ -22,6 +24,12 @@ def test_is_exit_trade_type():
 def test_infer_legacy_grid():
     assert infer_legacy_close_reason("close_long", bot_type="grid") == GRID_REDUCE_LONG
     assert infer_legacy_close_reason("close_short", bot_type="grid") == "grid_reduce_short"
+
+
+def test_generic_and_typed_closes_have_evidence_safe_reasons():
+    assert infer_legacy_close_reason("close_long") == "signal_trigger"
+    assert infer_legacy_close_reason("close_short_stop") == SERVER_STOP_LOSS
+    assert resolve_close_reason_for_record("close_long") == INDICATOR_SIGNAL
 
 
 def test_enrich_trade_row_stored_reason():

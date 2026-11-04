@@ -1,6 +1,7 @@
 import pytest
+import requests
 
-from app.data_sources.native_crypto import NativeCryptoPublicClient
+from app.data_sources.native_crypto import NativeCryptoAPIError, NativeCryptoPublicClient
 
 
 @pytest.mark.parametrize(
@@ -89,7 +90,7 @@ def test_okx_historical_window_uses_forward_compatible_after_cursor(monkeypatch)
     client.fetch_ohlcv("BTC/USDT", "1m", since=1699999880000, limit=2)
 
     assert captured["url"].endswith("/api/v5/market/history-candles")
-    assert captured["params"]["after"] == 1700000000000
+    assert captured["params"]["after"] == 1699999940001
 
 
 def test_bitget_historical_window_is_capped_at_ninety_days(monkeypatch):
@@ -104,7 +105,8 @@ def test_bitget_historical_window_is_capped_at_ninety_days(monkeypatch):
     start = 1700000000000
     client.fetch_ohlcv("BTC/USDT", "1d", since=start, limit=1000)
 
-    assert captured["url"].endswith("/api/v3/market/candles")
+    assert captured["url"].endswith("/api/v3/market/history-candles")
+    assert captured["params"]["limit"] <= 100
     assert captured["params"]["endTime"] - start <= 90 * 24 * 60 * 60 * 1000
 
 
@@ -112,6 +114,74 @@ def test_bitget_weekly_is_resampled_instead_of_sent_as_unsupported_native_interv
     client = NativeCryptoPublicClient("bitget", "swap")
 
     assert "1w" not in client.timeframes
+
+
+@pytest.mark.parametrize(
+    ("exchange_id", "historical", "expected"),
+    [
+        ("binance", True, 1000),
+        ("bybit", True, 1000),
+        ("gate", True, 1000),
+        ("okx", True, 300),
+        ("bitget", True, 100),
+        ("bitget", False, 1000),
+        ("htx", True, 2000),
+    ],
+)
+def test_ohlcv_page_limit_matches_endpoint(exchange_id, historical, expected):
+    client = NativeCryptoPublicClient(exchange_id, "spot")
+
+    assert client.ohlcv_page_limit(historical=historical) == expected
+
+
+def test_gate_historical_window_stops_at_explicit_until(monkeypatch):
+    client = NativeCryptoPublicClient("gate", "spot")
+    captured = {}
+    start = 1700000000000
+    until = start + 2 * 60_000
+
+    def fake_get(url, params):
+        captured.update(url=url, params=params)
+        return []
+
+    monkeypatch.setattr(client, "_get", fake_get)
+    client.fetch_ohlcv("BTC/USDT", "1m", since=start, limit=1000, until=until)
+
+    assert captured["params"]["from"] == start // 1000
+    assert captured["params"]["to"] == until // 1000
+    assert "limit" not in captured["params"]
+
+
+def test_htx_swap_historical_window_uses_from_and_to(monkeypatch):
+    client = NativeCryptoPublicClient("htx", "swap")
+    captured = {}
+    start = 1700000000000
+    end = start + 1999 * 4 * 60 * 60 * 1000
+
+    def fake_get(url, params):
+        captured.update(url=url, params=params)
+        return {"status": "ok", "data": []}
+
+    monkeypatch.setattr(client, "_get", fake_get)
+    client.fetch_ohlcv("BTC/USDT", "4h", since=start, limit=2000, until=end)
+
+    assert captured["url"].endswith("/linear-swap-ex/market/history/kline")
+    assert captured["params"]["from"] == start // 1000
+    assert captured["params"]["to"] == end // 1000
+    assert "size" not in captured["params"]
+
+
+def test_http_failure_preserves_exchange_error_message(monkeypatch):
+    client = NativeCryptoPublicClient("gate", "spot")
+    response = requests.Response()
+    response.status_code = 400
+    response._content = (
+        b'{"label":"INVALID_PARAM_VALUE","message":"Candlestick range too broad"}'
+    )
+    monkeypatch.setattr(client._http_session(), "get", lambda *_args, **_kwargs: response)
+
+    with pytest.raises(NativeCryptoAPIError, match="Candlestick range too broad"):
+        client.fetch_ohlcv("BTC/USDT", "4h", since=1700000000000)
 
 
 def test_market_catalog_exposes_perpetual_alias(monkeypatch):
@@ -137,6 +207,40 @@ def test_market_catalog_exposes_perpetual_alias(monkeypatch):
 
     assert markets["BTC/USDT:USDT"]["contract"] is True
     assert markets["BTC/USDT"]["linear"] is True
+
+
+def test_binance_market_catalog_keeps_tradfi_perpetuals(monkeypatch):
+    client = NativeCryptoPublicClient("binance", "swap")
+    monkeypatch.setattr(
+        client,
+        "_get",
+        lambda *_args, **_kwargs: {
+            "symbols": [
+                {
+                    "symbol": "AAPLUSDT",
+                    "baseAsset": "AAPL",
+                    "quoteAsset": "USDT",
+                    "marginAsset": "USDT",
+                    "status": "TRADING",
+                    "contractType": "TRADIFI_PERPETUAL",
+                    "underlyingType": "EQUITY",
+                },
+                {
+                    "symbol": "BTCUSDT_261225",
+                    "baseAsset": "BTC",
+                    "quoteAsset": "USDT",
+                    "marginAsset": "USDT",
+                    "status": "TRADING",
+                    "contractType": "CURRENT_QUARTER",
+                },
+            ]
+        },
+    )
+
+    markets = client.load_markets()
+
+    assert markets["AAPL/USDT:USDT"]["info"]["underlyingType"] == "EQUITY"
+    assert "BTC/USDT:USDT" not in markets
 
 
 def test_bybit_spot_catalog_does_not_send_unsupported_pagination(monkeypatch):

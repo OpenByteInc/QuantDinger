@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from app.routes.settings import (
+    AGENT_RUNTIME_SETTINGS,
     ADVANCED_KEYS,
     CONFIG_SCHEMA,
     RESTART_REQUIRED_SETTINGS,
@@ -15,6 +16,7 @@ def test_strategy_runtime_settings_are_exposed_and_restart_scoped():
     keys = {item["key"] for item in items}
 
     assert keys == {
+        "AGENT_JOBS_MAX_WORKERS",
         "STRATEGY_MAX_ACTIVE",
         "STRATEGY_EVALUATOR_THREADS",
         "STRATEGY_EVALUATION_BATCH_SIZE",
@@ -23,7 +25,8 @@ def test_strategy_runtime_settings_are_exposed_and_restart_scoped():
         "BAR_CLOSE_EVENT_GRACE_SEC",
     }
     assert keys <= RESTART_REQUIRED_SETTINGS
-    assert keys < STRATEGY_RUNTIME_SETTINGS
+    assert keys - {"AGENT_JOBS_MAX_WORKERS"} < STRATEGY_RUNTIME_SETTINGS
+    assert "AGENT_JOBS_MAX_WORKERS" in AGENT_RUNTIME_SETTINGS
     assert {
         "KAFKA_EVENT_PUBLISH_ENABLED",
         "STRATEGY_EVALUATOR_MODE",

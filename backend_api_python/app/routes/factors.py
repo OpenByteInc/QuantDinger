@@ -28,6 +28,22 @@ logger = get_logger(__name__)
 factors_blp = Blueprint("factors", __name__)
 
 
+@factors_blp.route("/custom/generate", methods=["POST"])
+@login_required
+def generate_custom_factor():
+    """Generate a private draft using the strategy AI code-generation tariff."""
+    from app.services.custom_factor_ai import FactorGenerationError, generate_factor_candidate
+
+    try:
+        data = generate_factor_candidate(int(g.user_id), request.get_json(silent=True))
+        return jsonify({"code": 1, "msg": "success", "data": data})
+    except FactorGenerationError as exc:
+        return jsonify({"code": 0, "msg": exc.code, "data": exc.data}), exc.status
+    except Exception:
+        logger.exception("custom factor generation failed")
+        return jsonify({"code": 0, "msg": "factor.aiFailed", "data": None}), 500
+
+
 @factors_blp.route("", methods=["GET"])
 @login_required
 def factor_catalog():

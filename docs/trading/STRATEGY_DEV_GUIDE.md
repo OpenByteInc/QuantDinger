@@ -316,6 +316,8 @@ Multi-timeframe runtime rules:
 - <code>set_warmup(n)</code> requests an appropriate lookback for every subscribed timeframe. The source must still guard the length of every returned DataFrame.
 - The requested backtest window must satisfy every timeframe's provider limit. An instrument missing any required timeframe is not run with a partial bundle.
 - Provider history limits still apply independently. Intraday feeds often retain less history than daily or weekly feeds, so a <code>5m + 1w</code> design may need a shorter backtest range even though both subscriptions are valid. Crypto venues, stock feeds, and forex feeds may expose different historical depths.
+- Crypto history includes the pre-start warm-up window and is fetched in endpoint-sized pages. A per-request candle cap is not the total backtest limit. Bitget historical requests use the V3 history endpoint with at most 100 candles and a 90-day query range per page.
+- Pagination cannot extend a venue's retained history. HTX spot exposes only its recent 2,000 candles through this adapter, while HTX USDT swaps use inclusive <code>from</code>/<code>to</code> historical pages. Incomplete history is rejected instead of being replaced with a recent page or another venue for an explicitly exchange-scoped instrument.
 - Manifest <code>primaryFrequency</code> remains the first declaration for compatibility. Scheduling, execution, and performance annualization use <code>drivingFrequency</code>.
 - <code>data.history(..., frequency="4h")</code>, <code>data.current(..., frequency="4h")</code>, <code>indicator(..., frequency="4h")</code>, and <code>factor(..., frequency="4h")</code> also accept an explicit timeframe. <code>data[symbol]</code> uses the driving timeframe.
 
@@ -493,7 +495,21 @@ scores = get_factors(symbols, ["momentum_20", "volatility_20"])
 
 TA-Lib 0.8.1 functions use the explicit <code>talib:</code> namespace in generated code, the factor library, and factor research. This keeps platform-native factors stable when both libraries expose the same name. Multi-output functions expose an <code>output</code> parameter in factor calls; <code>indicator</code> returns all output columns. The 0.8.1 catalog contains 201 functions, including the 40 additions such as <code>SUPERTREND</code>, <code>KDJ</code>, <code>HMA</code>, <code>VWAP</code>, <code>DONCHIAN</code>, and <code>PERCENTRANK</code>.
 
-Fundamentals:
+### Custom formula factors
+
+The **Factor library → New factor** dialog exposes the authoring contract and three runnable examples. This is a restricted expression language, not Python/Pine source. Write one expression (at most 2,000 characters / 120 AST nodes), for example:
+
+```text
+momentum(period=lookback) / max(realized_volatility(period=vol_window), floor)
+```
+
+Default parameters: `{"lookback":20,"vol_window":20,"floor":0.0001}`. Defaults are finite numbers or booleans with identifier names. Raw OHLCV names are current-bar scalars, not series; history is available through registered factor calls. Use named arguments, not `momentum(20)`. Library calls use `factor("talib:RSI", timeperiod=14)` or `factor("qlib:alpha158:IMAX20")`, without a symbol inside the formula. The result must be one finite scalar; booleans become 0/1. Math helpers are `abs`, `min`, `max`, `log`, `log1p`, `sqrt`, and `clip`. Imports, assignment, loops, attributes, indexing, I/O and nested custom-factor dependencies are forbidden.
+
+Validation checks structure, dependencies, parameter declarations and minimum history, not actual market data or profitability. Saved private factors are listed for portfolio/cross-sectional strategies; use the catalog's **Copy call** action for their owner-scoped `custom:<id>` invocation. Runtime compatibility does not guarantee data availability. VWAP and other extra fields must exist in the supplied frame; no OHLCV estimate is substituted. TA-Lib ACOS/ASIN require inputs in [-1, 1]. Invalid latest TA-Lib or raw custom-factor values fail instead of silently reusing an older valid result.
+
+Qlib IMAX/IMIN are the one-based positions measured from the oldest bar of the window (first tied extreme wins), not bars since the extreme. IMXD is their difference. RSQR is undefined for flat/near-flat prices, matching Qlib's standard-deviation tolerance. Research and backtests using the earlier reversed-position or flat-price results should be rerun after upgrading; existing saved results are not rewritten.
+
+### Fundamental data
 
 ~~~python
 fundamentals = get_fundamentals(

@@ -24,13 +24,20 @@ class ParameterSampler:
         axes = [self._grid_values(item, limit) for item in self.parameters]
         combination_count = math.prod(len(axis) for axis in axes)
         max_scan = max(limit * 30, limit + 100)
-        if combination_count <= max_scan:
+        if combination_count <= limit:
             combinations = itertools.product(*axes)
         else:
             sample_count = min(combination_count, max_scan)
-            sampled_indices = self.random.sample(range(combination_count), sample_count)
+            primary_indices = self._spread_indices(combination_count, min(limit, combination_count))
+            primary_set = set(primary_indices)
+            backup_indices = tuple(
+                index
+                for index in self._spread_indices(combination_count, sample_count)
+                if index not in primary_set
+            )
+            sampled_indices = primary_indices + backup_indices
             combinations = (self._combination_at(axes, index) for index in sampled_indices)
-        reservoir: list[tuple[int, dict[str, Any]]] = []
+        candidates: list[dict[str, Any]] = []
         scanned = 0
         rejected = 0
         eligible = 0
@@ -40,18 +47,12 @@ class ParameterSampler:
             if callable(accept) and not accept(candidate):
                 rejected += 1
                 continue
-            index = eligible
             eligible += 1
-            if index < limit:
-                reservoir.append((index, candidate))
-            else:
-                replace = self.random.randint(0, index)
-                if replace < limit:
-                    reservoir[replace] = (index, candidate)
-            if combination_count > max_scan and eligible >= limit:
+            candidates.append(candidate)
+            if len(candidates) >= limit:
                 break
         return (
-            [item[1] for item in sorted(reservoir, key=lambda row: row[0])],
+            candidates,
             {"scanned": scanned, "eligible": eligible, "rejected": rejected},
         )
 
@@ -90,6 +91,48 @@ class ParameterSampler:
 
     def random_candidate(self) -> dict[str, Any]:
         return {item.name: self._random_value(item) for item in self.parameters}
+
+    def stratified_candidates(self, count: int) -> list[dict[str, Any]]:
+        """Return deterministic space-filling candidates for random search."""
+        target = min(max(0, int(count)), self.space_size())
+        if target <= 0:
+            return []
+        if target >= self.space_size() and self.space_size() <= 100_000:
+            candidates = self.grid(self.space_size())
+            self.random.shuffle(candidates)
+            return candidates[:target]
+
+        axes: dict[str, list[Any]] = {}
+        for item in self.parameters:
+            domain_size = self._domain_size(item)
+            strata = list(range(target))
+            self.random.shuffle(strata)
+            values: list[Any] = []
+            for stratum in strata:
+                quantile = (stratum + self.random.random()) / target
+                domain_index = min(domain_size - 1, int(quantile * domain_size))
+                values.append(self._value_at_domain_index(item, domain_index, domain_size))
+            axes[item.name] = values
+
+        candidates: list[dict[str, Any]] = []
+        seen: set[tuple[tuple[str, str], ...]] = set()
+        for row_index in range(target):
+            candidate = {item.name: axes[item.name][row_index] for item in self.parameters}
+            identity = tuple(sorted((str(key), repr(value)) for key, value in candidate.items()))
+            if identity not in seen:
+                seen.add(identity)
+                candidates.append(candidate)
+
+        attempts = 0
+        while len(candidates) < target and attempts < target * 30:
+            attempts += 1
+            candidate = self.random_candidate()
+            identity = tuple(sorted((str(key), repr(value)) for key, value in candidate.items()))
+            if identity in seen:
+                continue
+            seen.add(identity)
+            candidates.append(candidate)
+        return candidates
 
     def tpe_candidate(self, history: list[tuple[dict[str, Any], float]], *, samples: int = 48) -> dict[str, Any]:
         if len(history) < max(5, len(self.parameters) + 1):
@@ -144,6 +187,16 @@ class ParameterSampler:
             value = self._snap_to_domain(item, value)
         return self._cast(item, min(high, max(low, value)))
 
+    def _value_at_domain_index(self, item: SearchParameter, index: int, domain_size: int) -> Any:
+        if item.kind == "boolean":
+            return bool(index)
+        if item.choices:
+            return item.choices[index]
+        low = float(item.minimum or 0)
+        high = float(item.maximum if item.maximum is not None else low)
+        step = float(item.step or ((high - low) / 9.0) or 1.0)
+        return self._cast(item, self._domain_value(item, index, domain_size, low, high, step))
+
     def _tpe_value(self, item: SearchParameter, good: list[dict[str, Any]]) -> Any:
         if item.kind == "boolean" or item.choices:
             values = [row.get(item.name, item.default) for row in good]
@@ -179,6 +232,17 @@ class ParameterSampler:
             remaining, offset = divmod(remaining, len(axis))
             values[index] = axis[offset]
         return tuple(values)
+
+    @staticmethod
+    def _spread_indices(total: int, count: int) -> tuple[int, ...]:
+        if count >= total:
+            return tuple(range(total))
+        if count <= 1:
+            return (0,)
+        return tuple(
+            round(index * (total - 1) / (count - 1))
+            for index in range(count)
+        )
 
     @staticmethod
     def _domain_value(item: SearchParameter, index: int, domain_size: int, low: float, high: float, step: float) -> Any:

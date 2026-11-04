@@ -422,6 +422,7 @@ def fetch_yfinance_klines(
     timeframe: str,
     limit: int,
     before_time: Optional[int],
+    after_time: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     """Fetch K-lines via yfinance for CN/HK stocks. Globally accessible, no API key needed."""
     try:
@@ -447,7 +448,11 @@ def fetch_yfinance_klines(
     days = days_func(effective_limit)
 
     end = datetime.fromtimestamp(int(before_time)) if before_time else datetime.now()
-    start = end - timedelta(days=days)
+    start = (
+        datetime.fromtimestamp(int(after_time))
+        if after_time is not None
+        else end - timedelta(days=days)
+    )
 
     df: Any = None
     for attempt in range(_MAX_ATTEMPTS):
@@ -491,10 +496,19 @@ def _minute_period_str(timeframe: str) -> Optional[str]:
     return {"1m": "1", "3m": "1", "5m": "5", "15m": "15", "30m": "30", "1H": "60", "4H": "60"}.get(timeframe)
 
 
-def _min_bar_window(timeframe: str, limit: int, before_time: Optional[int]) -> tuple[str, str]:
+def _min_bar_window(
+    timeframe: str,
+    limit: int,
+    before_time: Optional[int],
+    after_time: Optional[int] = None,
+) -> tuple[str, str]:
     _ = (timeframe, limit)
     end = datetime.fromtimestamp(int(before_time)) if before_time else datetime.now()
-    start = end - timedelta(days=16)
+    start = (
+        datetime.fromtimestamp(int(after_time))
+        if after_time is not None
+        else end - timedelta(days=16)
+    )
     fmt = "%Y-%m-%d %H:%M:%S"
     return start.strftime(fmt), end.strftime(fmt)
 
@@ -564,6 +578,7 @@ def fetch_akshare_minute_klines(
     timeframe: str,
     limit: int,
     before_time: Optional[int],
+    after_time: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     try:
         assert_fd_available("AkShare minute K-line")
@@ -581,7 +596,7 @@ def fetch_akshare_minute_klines(
         return []
 
     sym = ak_hk_code_from_tencent(tencent_code) if is_hk else ak_a_code_from_tencent(tencent_code)
-    sd, ed = _min_bar_window(timeframe, limit, before_time)
+    sd, ed = _min_bar_window(timeframe, limit, before_time, after_time)
     adj = "" if p == "1" else "qfq"
 
     df: Any = None

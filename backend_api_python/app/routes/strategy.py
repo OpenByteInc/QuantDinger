@@ -50,6 +50,7 @@ from app.services.strategy_ai_workspace import (
 )
 from app.services.strategy import StrategyLimitExceeded, redact_strategy_row
 from app.services.strategy_daily_pnl import load_strategy_daily_metrics
+from app.services.settings.capabilities import is_live_trading_enabled
 from app.services.strategy_runtime.bot_type import resolve_bot_type
 from app.services.strategy_runtime.health import load_runtime_health
 from app.services.strategy_v2 import compile_strategy_v2
@@ -232,6 +233,8 @@ def start_strategy(strategy_id: int):
     row = _strategy(strategy_id)
     if not row:
         return _error("strategyV2.strategyNotFound", 404)
+    if str(row.get("execution_mode") or "signal").strip().lower() == "live" and not is_live_trading_enabled():
+        return _error("strategyV2.liveTradingDisabled", 403)
     service = get_strategy_service()
     try:
         if not service.update_strategy_status(strategy_id, "running", user_id=int(g.user_id)):

@@ -56,3 +56,27 @@ def test_kline_cache_ignores_corrupt_persistent_payload(monkeypatch):
     redis.values[cache._persistent_key("broken")] = b"not-zlib"
 
     assert cache.get("broken") is None
+
+
+def test_kline_cache_evicts_frames_to_stay_within_byte_budget():
+    frame = pd.DataFrame({"close": list(range(64))})
+    frame_bytes = KlineCache._frame_bytes(frame)
+    cache = KlineCache(max_size=10, max_bytes=frame_bytes + 8)
+    cache._redis_checked = True
+
+    cache.put("first", frame, "1m")
+    cache.put("second", frame, "1m")
+
+    assert list(cache._store) == ["second"]
+    assert cache._current_bytes <= cache._max_bytes
+
+
+def test_kline_cache_skips_frame_larger_than_byte_budget():
+    frame = pd.DataFrame({"close": list(range(64))})
+    cache = KlineCache(max_bytes=KlineCache._frame_bytes(frame) - 1)
+    cache._redis_checked = True
+
+    cache.put("oversized", frame, "1m")
+
+    assert cache._store == {}
+    assert cache._current_bytes == 0

@@ -149,10 +149,21 @@ def compute_talib_factor(
         values = result[selected]
     else:
         values = result
-    clean = pd.to_numeric(values, errors="coerce").dropna()
-    if clean.empty:
+    clean = pd.to_numeric(values, errors="coerce")
+    if clean.empty or not np.isfinite(clean.iloc[-1]):
         raise TalibFactorError("factor.insufficientHistory")
     return float(clean.iloc[-1])
+
+
+def talib_warmup_bars(name: str, params: Mapping[str, Any] | None = None) -> int:
+    _, abstract = _load_talib()
+    library_id = str(name).split(":")[-1].upper()
+    try:
+        function = abstract.Function(library_id)
+        function.set_parameters(_normalized_parameters(function, params))
+        return max(1, int(function.lookback) + 1)
+    except Exception as exc:
+        raise TalibFactorError("factor.customInvalidParameter") from exc
 
 
 def _load_talib():

@@ -92,7 +92,12 @@ class CNStockDataSource(BaseDataSource):
 
         # Tier 3: yfinance (works when Yahoo not rate-limited)
         rows = fetch_yfinance_klines(
-            is_hk=False, tencent_code=code, timeframe=tf, limit=lim, before_time=before_time
+            is_hk=False,
+            tencent_code=code,
+            timeframe=tf,
+            limit=lim,
+            before_time=before_time,
+            after_time=after_time,
         )
         if rows:
             return self.filter_and_limit(
@@ -106,7 +111,12 @@ class CNStockDataSource(BaseDataSource):
         # Tier 4: AkShare (fragile overseas, last resort)
         if tf in ("1m", "5m", "15m", "30m", "1H", "4H"):
             rows = fetch_akshare_minute_klines(
-                is_hk=False, tencent_code=code, timeframe=tf, limit=lim, before_time=before_time
+                is_hk=False,
+                tencent_code=code,
+                timeframe=tf,
+                limit=lim,
+                before_time=before_time,
+                after_time=after_time,
             )
         elif tf == "1W":
             rows = fetch_akshare_weekly_klines(

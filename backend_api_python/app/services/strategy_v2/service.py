@@ -344,7 +344,7 @@ class StrategyV2BacktestService:
         neutralize_industry: bool = False,
         train_fraction: float = 0.6,
         false_discovery_rate: float = 0.1,
-        minimum_oos_observations: int = 5,
+        minimum_oos_observations: int = 12,
         minimum_abs_oos_ic: float = 0.02,
         minimum_coverage: float = 0.5,
     ) -> dict[str, Any]:

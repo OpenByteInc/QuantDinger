@@ -13,6 +13,7 @@ from app.services.live_trading.capabilities import (
 )
 from app.services.market.instrument_products import PRODUCT_CRYPTO
 from app.services.market.product_catalog import get_catalog_product
+from app.services.settings.capabilities import is_live_trading_enabled
 from app.services.strategy_direction import (
     direction_mode_position_side,
     normalize_direction_mode,
@@ -25,6 +26,9 @@ from .contract import PLATFORM_MAX_LEVERAGE, StrategyV2ContractError, compile_st
 
 class StrategyV2DeploymentService:
     def save(self, *, user_id: int, payload: dict[str, Any], strategy_id: int | None = None) -> int:
+        requested_execution_mode = str(payload.get("executionMode") or "signal").strip().lower()
+        if requested_execution_mode == "live" and not is_live_trading_enabled():
+            raise StrategyV2ContractError("strategyV2.liveTradingDisabled")
         source_id = int(payload.get("sourceId") or 0)
         source_service = get_script_source_service()
         source = source_service.get_source(source_id, user_id=user_id) if source_id else None
@@ -69,7 +73,7 @@ class StrategyV2DeploymentService:
         if not 0 <= equity_stop_loss_pct <= 1 or not 0 <= equity_take_profit_pct <= 10:
             raise StrategyV2ContractError("strategyV2.invalidEquityRiskLimit")
 
-        execution_mode = str(payload.get("executionMode") or "signal").strip().lower()
+        execution_mode = requested_execution_mode
         if execution_mode not in {"signal", "live"}:
             raise StrategyV2ContractError("strategyV2.invalidExecutionMode")
         credential_id = int(payload.get("credentialId") or 0)

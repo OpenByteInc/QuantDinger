@@ -2,18 +2,22 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
+import math
 from typing import Any
 
+from app.services.backtest_limits import BacktestRangeLimitError
 from app.services.script_source import get_script_source_service
 from app.services.strategy_v2 import StrategyV2BacktestService
+from app.services.strategy_v2.contract import compile_strategy_v2
 
 from .constraints import discover_parameter_constraints
-from .engine import StrategyEvolutionEngine
+from .engine import StrategyEvolutionEngine, parameter_lookback_bars
 from .evaluator import PreparedEvolutionEvaluator
 from .models import EvolutionConfig, SearchParameter
 from .parameter_space import adapt_source_for_parameters, build_parameter_space
 from .search import ParameterSampler
+from .walk_forward import build_walk_forward_plan, walk_forward_requirements
 
 
 class StrategyEvolutionService:
@@ -88,6 +92,131 @@ class StrategyEvolutionService:
         result["source"] = {"id": source_id, "name": str(source.get("name") or "")}
         return result
 
+    def preflight(self, *, user_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        source_id = _positive_int(payload.get("sourceId"))
+        if not source_id:
+            raise ValueError("strategyEvolution.sourceRequired")
+        source = get_script_source_service().get_source(source_id, user_id=user_id)
+        if not source:
+            raise ValueError("strategyEvolution.sourceNotFound")
+        code = str(source.get("code") or "").strip()
+        if not code:
+            raise ValueError("strategyEvolution.sourceCodeRequired")
+        start_date = _date(payload.get("startDate"), "strategyEvolution.startDateRequired")
+        end_date = _date(payload.get("endDate"), "strategyEvolution.endDateRequired", end_of_day=True)
+        if end_date <= start_date:
+            raise ValueError("strategyEvolution.dateRangeInvalid")
+        config = EvolutionConfig.from_payload(payload.get("config"))
+        parameter_rows = self._parameter_rows(source, payload.get("parameterSpace"))
+        parameters = [SearchParameter.from_payload(item) for item in parameter_rows]
+        if not parameters:
+            raise ValueError("strategyEvolution.parametersRequired")
+        code = adapt_source_for_parameters(code, parameter_rows)
+        manifest = compile_strategy_v2(code).manifest
+        try:
+            evaluator = PreparedEvolutionEvaluator(
+                backtest_service=self.backtest_service,
+                user_id=user_id,
+                code=code,
+                start_date=start_date,
+                end_date=end_date,
+                initial_capital=max(10.0, float(payload.get("initialCapital") or 10_000)),
+                leverage_enabled=bool(payload.get("leverageEnabled", False)),
+                leverage=max(1.0, float(payload.get("leverage") or 1.0)),
+                source_id=source_id,
+                strategy_name=str(source.get("name") or ""),
+                candidate_limit=8 if manifest.strategy_type == "portfolio" else None,
+            )
+        except BacktestRangeLimitError as exc:
+            details = dict(exc.details or {})
+            return {
+                "sufficient": False,
+                "rangeLimited": True,
+                "sampleCount": None,
+                "minimumRequiredBars": None,
+                "selectedCalendarDays": details.get("selected_days"),
+                "requestedCalendarDays": details.get("fetch_days"),
+                "rangeLimitCalendarDays": details.get("max_days"),
+                "warmupBars": details.get("warmup_bars"),
+                "warmupCalendarDays": details.get("warmup_days"),
+                "suggestedStartDate": details.get("recommended_start"),
+                "suggestedEndDate": details.get("recommended_end"),
+                "frequency": str(details.get("timeframe") or ""),
+            }
+        context = evaluator.walk_forward_context(start_date, end_date)
+        observations = tuple(context.get("observations") or ())
+        warmup_bars = max(
+            int(context.get("warmupBars") or 0),
+            parameter_lookback_bars(parameters),
+        )
+        requirements = walk_forward_requirements(
+            warmup_bars=warmup_bars,
+            embargo_bars=config.embargo_bars,
+            blind_ratio=config.blind_ratio,
+        )
+        sample_count = len(observations)
+        bar_sufficient = sample_count >= requirements.minimum_required_bars
+        strategy_type = str(context.get("strategyType") or "cta")
+        universe_kind = str(context.get("universeKind") or "static")
+        universe_size = int(context.get("universeSize") or 0)
+        symbols_used = int(context.get("symbolsUsed") or 0)
+        symbols_checked = int(context.get("symbolsChecked") or universe_size)
+        symbol_coverage_percent = float(context.get("symbolCoveragePercent") or 0.0)
+        symbol_coverage_estimated = bool(context.get("symbolCoverageEstimated"))
+        symbol_coverage_sufficient = True
+        if strategy_type == "portfolio":
+            symbol_coverage_sufficient = (
+                symbols_used == symbols_checked
+                if universe_kind == "static"
+                else symbols_used >= 2 and symbol_coverage_percent >= 80.0
+            )
+        sufficient = bar_sufficient and symbol_coverage_sufficient
+        selected_days = max(1, (end_date.date() - start_date.date()).days + 1)
+        recommended_days = None
+        suggested_start_date = None
+        if sample_count > 0 and not bar_sufficient:
+            recommended_days = max(
+                selected_days + 1,
+                int(math.ceil(selected_days * requirements.minimum_required_bars / sample_count * 1.1)),
+            )
+            suggested_start_date = (end_date.date() - timedelta(days=recommended_days - 1)).isoformat()
+        plan = None
+        if bar_sufficient:
+            plan = build_walk_forward_plan(
+                start_date,
+                end_date,
+                folds=config.folds,
+                train_ratio=config.train_ratio,
+                blind_ratio=config.blind_ratio,
+                observations=observations,
+                warmup_bars=warmup_bars,
+                embargo_bars=config.embargo_bars,
+            ).metadata()
+        return {
+            "sufficient": sufficient,
+            "barSufficient": bar_sufficient,
+            "symbolCoverageSufficient": symbol_coverage_sufficient,
+            "sampleCount": sample_count,
+            "shortageBars": max(0, requirements.minimum_required_bars - sample_count),
+            "frequency": str(context.get("frequency") or ""),
+            "observedFrom": observations[0].isoformat() if observations else None,
+            "observedTo": observations[-1].isoformat() if observations else None,
+            "selectedCalendarDays": selected_days,
+            "recommendedCalendarDays": recommended_days,
+            "suggestedStartDate": suggested_start_date,
+            "plan": plan,
+            "strategyType": strategy_type,
+            "universeKind": universe_kind,
+            "universeId": context.get("universeId"),
+            "universeSize": universe_size,
+            "symbolsChecked": symbols_checked,
+            "symbolsUsed": symbols_used,
+            "skippedSymbols": int(context.get("skippedSymbols") or 0),
+            "symbolCoveragePercent": symbol_coverage_percent,
+            "symbolCoverageEstimated": symbol_coverage_estimated,
+            **requirements.metadata(),
+        }
+
     @staticmethod
     def parameter_space(*, user_id: int, source_id: int) -> dict[str, Any]:
         source = get_script_source_service().get_source(source_id, user_id=user_id)
@@ -119,6 +248,7 @@ class StrategyEvolutionService:
             "backtestRuns": total_runs,
             "relativeUnits": relative_units,
             "resourceTier": tier,
+            "universeSize": universe_size,
             "parameterCount": parameter_count,
             "trials": trial_count,
             "requestedTrials": config.trials,
@@ -186,7 +316,7 @@ def _recommended_trial_floor(method: str, parameter_count: int, search_space_siz
     if method == "grid":
         return min(search_space_size, 300)
     if method == "random":
-        return min(search_space_size, max(48, parameter_count * 24))
+        return min(search_space_size, max(64, parameter_count * 16))
     return min(search_space_size, max(32, parameter_count * 16))
 
 

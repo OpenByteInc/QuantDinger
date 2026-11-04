@@ -12,12 +12,12 @@ def trade(index, pnl=-1, **overrides):
             "profit": pnl, "commission": 0.5, "commission_ccy": "USDT", **overrides}
 
 
-def evidence(rows=None, net=-12, fees=10, context=None):
+def evidence(rows=None, net=-12, fees=10, context=None, strategy=None, positions=None, logs=None):
     return build_evidence(
         metrics={"window_net_pnl": net, "total_commission": fees, "max_consecutive_losses": 5},
         trades=rows if rows is not None else [trade(i) for i in range(1, 7)],
-        strategy={"symbol": "BTC/USDT"}, context=context or source_context("", {}),
-        since_ts=1, now_ts=1000, log_levels=["INFO", "ERROR"],
+        strategy=strategy or {"symbol": "BTC/USDT"}, context=context or source_context("", {}),
+        since_ts=1, now_ts=1000, log_levels=["INFO", "ERROR"], positions=positions, logs=logs,
     )
 
 
@@ -109,7 +109,51 @@ def test_trade_samples_are_bounded_deduplicated_and_do_not_include_free_text():
     samples = report["trade_samples"]
     assert len(samples) <= 30
     assert len({row["id"] for row in samples}) == len(samples)
+    assert len(report["trade_ledger"]) == 100
+    assert report["coverage"]["trade_ledger_complete"] is True
     assert "SECRET" not in json.dumps(report)
+
+
+def test_complete_ledger_positions_and_redacted_logs_reach_evidence():
+    rows = [trade(i, close_reason="signal_close") for i in range(1, 7)]
+    positions = [{"id": 8, "symbol": "BTC/USDT", "side": "long", "size": 0.2,
+                  "entry_price": 100, "current_price": 101, "unrealized_pnl": 0.2}]
+    logs = [{"id": 9, "level": "INFO", "message": "api_key=private-value signal close confirmed",
+             "created_at": 900}]
+    report = evidence(rows=rows, positions=positions, logs=logs)
+    coverage = report["coverage"]
+    assert coverage["trade_rows_total"] == coverage["trade_rows_included"] == 6
+    assert coverage["exit_reason_rows"] == coverage["closed_rows_total"] == 6
+    assert coverage["exit_reason_recorded_rows"] == 6
+    assert coverage["exit_reason_inferred_rows"] == 0
+    assert coverage["current_position_rows"] == 1
+    assert coverage["log_rows_total"] == coverage["log_rows_included"] == 1
+    assert report["current_positions"][0]["symbol"] == "BTC/USDT"
+    assert "signal close confirmed" in report["log_events"][0]["message"]
+    assert "private-value" not in json.dumps(report)
+
+
+def test_evidence_gaps_are_conditional_and_describe_actual_scope():
+    empty = evidence(rows=[], net=0, fees=0)
+    assert not {"market_path", "historical_positions", "version_continuity", "funding", "execution_cost"} & set(empty["coverage"]["gaps"])
+
+    spot_signal = evidence(rows=[trade(1)], strategy={"symbol": "BTC/USDT", "execution_mode": "signal"})
+    assert {"market_path", "historical_positions", "version_continuity"} <= set(spot_signal["coverage"]["gaps"])
+    assert "exit_reason" not in spot_signal["coverage"]["gaps"]
+    assert spot_signal["coverage"]["exit_reason_inferred_rows"] == 1
+    assert not {"funding", "execution_cost", "fill_not_roundtrip"} & set(spot_signal["coverage"]["gaps"])
+
+    derivative_live = evidence(rows=[trade(1)], strategy={
+        "symbol": "BTC/USDT", "execution_mode": "live", "trading_config": {"market_type": "swap"},
+    })
+    assert {"funding", "execution_cost"} <= set(derivative_live["coverage"]["gaps"])
+
+
+def test_large_trade_ledger_discloses_truncation():
+    report = evidence(rows=[trade(i) for i in range(1, 402)])
+    assert len(report["trade_ledger"]) == 400
+    assert report["coverage"]["trade_ledger_complete"] is False
+    assert "trade_ledger_truncated" in report["coverage"]["gaps"]
 
 
 def test_ai_cannot_introduce_unknown_issues_or_claim_test_execution():
@@ -125,7 +169,7 @@ def test_invalid_ai_output_is_rejected_for_refundable_fallback(value):
     assert normalize_ai_review(value, evidence()) is None
 
 
-def test_ai_receives_code_evidence_but_not_legacy_logs(monkeypatch):
+def test_ai_receives_structured_evidence_and_not_legacy_samples(monkeypatch):
     captured = {}
     class FakeLLM:
         provider = SimpleNamespace(value="test")
@@ -136,9 +180,18 @@ def test_ai_receives_code_evidence_but_not_legacy_logs(monkeypatch):
             return {"summary": "Review", "issues": [{"code": "cost_check", "interpretation": "x", "proposed_change": "x", "validation_plan": "x", "tradeoff": "x"}]}
     monkeypatch.setattr("app.services.strategy_review.LLMService", FakeLLM)
     service = StrategyReviewService.__new__(StrategyReviewService)
-    result = service._build_ai_review(base_report={"evidence": evidence(), "source_context": source_context("x = 1", {}), "samples": {"recent_logs": ["SECRET"]}}, language="zh-CN")
+    report = evidence(
+        rows=[trade(1, close_reason="signal_close")],
+        positions=[{"id": 2, "symbol": "BTC/USDT", "side": "long", "size": 1}],
+        logs=[{"id": 3, "level": "INFO", "message": "password=private-value order settled"}],
+    )
+    result = service._build_ai_review(base_report={"evidence": report, "source_context": source_context("x = 1", {}), "samples": {"recent_logs": ["LEGACY_SECRET"]}}, language="zh-CN")
     assert result["status"] == "ok"
-    assert "SECRET" not in captured["user_prompt"]
+    assert "LEGACY_SECRET" not in captured["user_prompt"]
+    assert "private-value" not in captured["user_prompt"]
+    assert "order settled" in captured["user_prompt"]
+    assert '"trade_ledger"' in captured["user_prompt"]
+    assert '"current_positions"' in captured["user_prompt"]
     assert "x = 1" in captured["user_prompt"]
 
 
@@ -205,7 +258,7 @@ def test_numeric_string_pnls_are_sorted_numerically_in_evidence():
     assert report["trade_samples"][0]["id"] == 2
 
 
-def test_exit_cohorts_are_exclusive_and_missing_reasons_are_not_invented():
+def test_exit_cohorts_are_exclusive_and_custom_reasons_remain_distinct():
     result = evidence(rows=[trade(1, -4, close_reason="server_stop_loss"), trade(2, 3, close_reason="take_profit"),
                             trade(3, -2, close_reason="custom_exit"), trade(4, None, close_reason="server_stop_loss")])
     groups = {group["code"]: group for group in result["exit_groups"]}
@@ -213,16 +266,23 @@ def test_exit_cohorts_are_exclusive_and_missing_reasons_are_not_invented():
     assert groups["stop_loss"]["count"] == 2
     assert groups["stop_loss"]["pnl_count"] == 1
     assert groups["stop_loss"]["net_pnl"] == -4
-    assert groups["unknown"]["count"] == 1
-    assert result["facts"]["exit_reason_coverage_pct"] == 75
+    assert groups["other"]["count"] == 1
+    assert groups["unknown"]["count"] == 0
+    assert result["facts"]["exit_reason_coverage_pct"] == 100
+    assert result["coverage"]["exit_reason_recorded_rows"] == 4
     assert next(c for c in result["checks"] if c["code"] == "exits_check")["status"] == "review"
 
 
-def test_missing_exits_and_high_fill_counts_do_not_prove_bad_settings():
+def test_legacy_close_actions_are_classified_without_claiming_protective_triggers():
     result = evidence(rows=[trade(i) for i in range(1, 100)])
     checks = {check["code"]: check for check in result["checks"]}
     assert checks["frequency_check"]["status"] == "insufficient"
-    assert checks["exits_check"]["finding"] == "exits_unknown"
+    assert checks["exits_check"]["finding"] == "exits_signal_only"
+    assert checks["exits_check"]["status"] == "review"
+    assert result["coverage"]["exit_reason_inferred_rows"] == 99
+    assert result["coverage"]["exit_reason_recorded_rows"] == 0
+    assert result["trade_ledger"][0]["review_close_reason"] == "signal_trigger"
+    assert result["trade_ledger"][0]["review_close_reason_source"] == "inferred"
     assert checks["risk_check"]["finding"] == "risk_unknown"
 
 

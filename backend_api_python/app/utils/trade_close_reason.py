@@ -145,6 +145,12 @@ def infer_legacy_close_reason(
         return ""
     bt = str(bot_type or "").strip().lower()
     t = str(trade_type or "").strip().lower()
+    if t.endswith("_stop"):
+        return SERVER_STOP_LOSS
+    if t.endswith("_profit"):
+        return SERVER_TAKE_PROFIT
+    if t.endswith("_trailing"):
+        return SERVER_TRAILING_STOP
     if bt in ("grid", "dca"):
         if "long" in t:
             return GRID_REDUCE_LONG
@@ -169,8 +175,7 @@ def resolve_close_reason_for_record(
     bot_type = str(tc.get("bot_type") or "").strip().lower()
     if bot_type in ("grid", "dca"):
         return infer_legacy_close_reason(trade_type, bot_type=bot_type, stored_reason="")
-    # Indicator/script closes without an explicit reason: leave empty so UI uses
-    return ""
+    return INDICATOR_SIGNAL
 
 
 def enrich_trade_row(

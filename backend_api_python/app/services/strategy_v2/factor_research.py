@@ -254,7 +254,11 @@ class FactorResearchEngine:
         ic_mean = float(ic_series.mean())
         ic_std = float(ic_series.std(ddof=1)) if len(ic_series) > 1 else 0.0
         annualization = max(1.0, float(annualization_periods or 252.0))
-        icir = ic_mean / ic_std * math.sqrt(annualization / holding_period) if ic_std > 0 else 0.0
+        ic_periods_per_year = self._observed_periods_per_year(
+            [item["time"] for item in ic_rows],
+            fallback=annualization / holding_period,
+        )
+        icir = ic_mean / ic_std * math.sqrt(ic_periods_per_year) if ic_std > 0 else 0.0
         rolling = ic_series.rolling(20, min_periods=5).mean()
         for index, item in enumerate(ic_rows):
             item["rolling"] = None if pd.isna(rolling.iloc[index]) else float(rolling.iloc[index])
@@ -295,7 +299,7 @@ class FactorResearchEngine:
         )
 
         return {
-            "methodologyVersion": 2,
+            "methodologyVersion": 3,
             "factorId": factor_name,
             "factorParams": normalized_factor_params,
             "rankIc": ic_mean,
@@ -305,7 +309,10 @@ class FactorResearchEngine:
             "groupCurves": curves,
             "longShortCurve": long_short,
             "groupObservations": group_rows,
-            "monotonicity": sum(monotonicities) / len(monotonicities) if monotonicities else 0.0,
+            "monotonicity": (
+                sum(monotonicities) / len(monotonicities)
+                if monotonicities else None
+            ),
             "coverage": coverage,
             "missingRate": 1.0 - coverage,
             "averageTurnover": average_turnover,
@@ -344,6 +351,9 @@ class FactorResearchEngine:
                 "commission": commission,
                 "slippage": slippage,
                 "periodsPerYear": annualization,
+                "icPeriodsPerYear": ic_periods_per_year,
+                "longShortGrossExposure": 2.0,
+                "longShortCapitalConvention": "one_unit_per_leg",
                 "initialFormationExcludedFromAverageTurnover": True,
             },
         }
@@ -596,6 +606,21 @@ class FactorResearchEngine:
         )
 
     @staticmethod
+    def _observed_periods_per_year(
+        timestamps: Sequence[Any],
+        *,
+        fallback: float,
+    ) -> float:
+        parsed = sorted(pd.Timestamp(item) for item in timestamps)
+        if len(parsed) < 2:
+            return max(1.0, float(fallback))
+        elapsed_years = (parsed[-1] - parsed[0]).total_seconds() / (365.25 * 86_400.0)
+        if elapsed_years <= 0:
+            return max(1.0, float(fallback))
+        observed = (len(parsed) - 1) / elapsed_years
+        return max(1.0, min(float(fallback), observed))
+
+    @staticmethod
     def _long_short_curve(
         long_values: list[dict[str, Any]],
         short_values: list[dict[str, Any]],
@@ -643,10 +668,10 @@ class FactorResearchEngine:
         if not names:
             return {"factors": [], "matrix": [], "observations": []}
 
-        values: list[list[float]] = []
+        values: list[list[float | None]] = []
         observations: list[list[int]] = []
         for row_name in names:
-            value_row: list[float] = []
+            value_row: list[float | None] = []
             observation_row: list[int] = []
             for column_name in names:
                 correlations: list[float] = []
@@ -669,7 +694,10 @@ class FactorResearchEngine:
                     correlation = left_rank.corr(right_rank, method="pearson")
                     if not pd.isna(correlation):
                         correlations.append(float(correlation))
-                value_row.append(sum(correlations) / len(correlations) if correlations else 0.0)
+                value_row.append(
+                    sum(correlations) / len(correlations)
+                    if correlations else None
+                )
                 observation_row.append(len(correlations))
             values.append(value_row)
             observations.append(observation_row)

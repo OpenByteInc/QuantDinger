@@ -13,12 +13,26 @@ from __future__ import annotations
 
 from flask import Blueprint, jsonify
 
+from app.services.settings.capabilities import is_agent_gateway_enabled
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
 
 agent_v1_bp = Blueprint("agent_v1", __name__)
+
+
+@agent_v1_bp.before_request
+def _require_agent_gateway_enabled():
+    if not is_agent_gateway_enabled():
+        return jsonify({
+            "code": 503,
+            "message": "agentGateway.disabled",
+            "details": None,
+            "retriable": False,
+            "data": None,
+        }), 503
+    return None
 
 
 @agent_v1_bp.errorhandler(404)

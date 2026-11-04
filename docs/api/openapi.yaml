@@ -1307,7 +1307,17 @@ paths:
 
         search: str (optional, search by username/email/nickname/id)
 
-        user_id: int (optional, exact user id filter)'
+        user_id: int (optional, exact user id filter)
+
+        role: str (optional)
+
+        status: str (optional, active or disabled)
+
+        vip_status: str (optional, active or inactive)
+
+        sort_by: str (optional, credits)
+
+        sort_order: str (optional, asc or desc)'
       tags:
       - Users
       operationId: getApiUsersList
@@ -2257,10 +2267,9 @@ paths:
                 $ref: '#/components/schemas/HumanSuccessEnvelope'
       tags:
       - Strategy
-      summary: Run factor research with built-in or TA-Lib 0.8.1 factors
-      description: 'Accepts factorId and optional factorParams. TA-Lib factors use
-        the talib: namespace and support explicit output selection for multi-output
-        functions.'
+      summary: Queue factor research with built-in or TA-Lib 0.8.1 factors
+      description: Validates the request and executes factor research in a dedicated
+        Celery worker.
       operationId: postApiBacktestFactorResearch
       x-visibility: internal
   /api/backtest/factor-research/history:
@@ -2300,10 +2309,9 @@ paths:
                 $ref: '#/components/schemas/HumanSuccessEnvelope'
       tags:
       - Strategy
-      summary: Benchmark multiple factors with out-of-sample validation
-      description: Loads a managed universe once, evaluates multiple factors, applies
-        out-of-sample validation and Benjamini-Hochberg false-discovery control, then
-        persists every successful factor run.
+      summary: Queue a multi-factor benchmark with out-of-sample validation
+      description: Validates the request and executes the benchmark in a dedicated
+        Celery worker.
       operationId: postApiBacktestFactorBenchmark
       x-visibility: internal
   /api/backtest/factor-benchmark/history:
@@ -2445,6 +2453,26 @@ paths:
       - Strategy
       operationId: postApiStrategyEvolutionEstimate
       summary: Post Api Strategy Evolution Estimate
+      x-visibility: internal
+  /api/strategy-evolution/preflight:
+    post:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - Strategy
+      operationId: postApiStrategyEvolutionPreflight
+      summary: Post Api Strategy Evolution Preflight
       x-visibility: internal
   /api/strategy-evolution/run:
     post:
@@ -3150,6 +3178,26 @@ paths:
       schema:
         type: integer
         minimum: 0
+  /api/factors/custom/generate:
+    post:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      summary: Generate a private draft using the strategy AI code-generation tariff.
+      tags:
+      - Factor
+      operationId: postApiFactorsCustomGenerate
+      x-visibility: internal
   /api/factors:
     get:
       responses:
@@ -7752,10 +7800,12 @@ paths:
         \ / empty (all)\nvip_free: 1/true to show VIP-free paid assets only\ncode_visibility:\
         \ 'visible' / 'hidden' / empty (all)\nmin_price, max_price: Numeric price\
         \ bounds\nsort_by: 'score' (default) / 'newest' / 'hot' / 'price_asc' /\n\
-        \         'price_desc' / 'rating'.\n         'score' sorts by the composite\
-        \ Strategy API V2 backtest score\n         (see services/community_kpis.py)\
-        \ and is now the\n         default — putting genuinely well-performing indicators\n\
-        \         at the top of the marketplace, not just the newest ones."
+        \         'price_desc' / 'rating' / 'views' / 'installs' /\n         'annual_return'\
+        \ / 'max_drawdown' / 'sharpe' / 'users'.\nsort_order: 'asc' / 'desc' for sortable\
+        \ catalog columns.\n         'score' sorts by the composite Strategy API V2\
+        \ backtest score\n         (see services/community_kpis.py) and is now the\n\
+        \         default — putting genuinely well-performing indicators\n       \
+        \  at the top of the marketplace, not just the newest ones."
       tags:
       - Community
       operationId: getApiCommunityIndicators

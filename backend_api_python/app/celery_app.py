@@ -23,6 +23,7 @@ class FlaskContextTask(Task):
 
 
 celery_app = Celery("quantdinger", task_cls=FlaskContextTask)
+_max_memory_per_child_kb = int(os.getenv("CELERY_MAX_MEMORY_PER_CHILD_KB", "0"))
 celery_app.conf.update(
     broker_url=celery_broker_url(),
     result_backend=celery_result_backend_url(),
@@ -36,6 +37,9 @@ celery_app.conf.update(
     task_reject_on_worker_lost=True,
     worker_prefetch_multiplier=max(1, int(os.getenv("CELERY_WORKER_PREFETCH", "1"))),
     worker_max_tasks_per_child=max(1, int(os.getenv("CELERY_MAX_TASKS_PER_CHILD", "100"))),
+    worker_max_memory_per_child=(
+        _max_memory_per_child_kb if _max_memory_per_child_kb > 0 else None
+    ),
     task_soft_time_limit=max(60, int(os.getenv("CELERY_TASK_SOFT_TIME_LIMIT", "3300"))),
     task_time_limit=max(120, int(os.getenv("CELERY_TASK_TIME_LIMIT", "3600"))),
     result_expires=max(3600, int(os.getenv("CELERY_RESULT_EXPIRES", "86400"))),
@@ -52,7 +56,7 @@ celery_app.conf.update(
     task_routes={
         "quantdinger.tasks.fast_analysis": {"queue": "ai"},
         "quantdinger.tasks.indicator_translation": {"queue": "ai"},
-        "quantdinger.tasks.agent_job": {"queue": "jobs"},
+        "quantdinger.tasks.agent_job": {"queue": "backtest"},
         "quantdinger.tasks.expire_agent_jobs": {"queue": "maintenance"},
         "quantdinger.tasks.reflection": {"queue": "maintenance"},
         "quantdinger.tasks.ai_calibration": {"queue": "maintenance"},

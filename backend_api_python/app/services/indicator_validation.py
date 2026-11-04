@@ -108,6 +108,15 @@ def validate_indicator_code(code: str, user_params: Dict[str, Any] | None = None
 
     plots = output.get("plots", [])
     signals = output.get("signals", [])
+    layers = output.get("layers", [])
+    if not isinstance(layers, list):
+        return _validation_error(
+            "InvalidLayers",
+            "Output 'layers' must be a list.",
+            plots,
+            signals,
+            hints,
+        )
     for plot in plots:
         if "data" not in plot:
             return _validation_error("InvalidPlot", f"Plot '{plot.get('name')}' missing 'data' field.", plots, signals, hints)
@@ -132,6 +141,28 @@ def validate_indicator_code(code: str, user_params: Dict[str, Any] | None = None
                 hints,
             )
 
+    for layer_index, layer in enumerate(layers):
+        if not isinstance(layer, dict):
+            return _validation_error(
+                "InvalidLayer",
+                f"Layer {layer_index} must be a dictionary.",
+                plots,
+                signals,
+                hints,
+            )
+        layer_type = str(layer.get("type") or "").strip().lower()
+        if layer_type not in {"zone", "box", "rect", "area"}:
+            continue
+        top = layer.get("top")
+        bottom = layer.get("bottom")
+        if not _is_finite_number(top) or not _is_finite_number(bottom):
+            return _validation_error(
+                "InvalidZoneLayer",
+                f"Zone layer {layer_index} requires finite numeric 'top' and 'bottom' bounds.",
+                plots,
+                signals,
+                hints,
+            )
     return {
         "success": True,
         "msg": "Verification passed. Indicator code rendered successfully.",
@@ -141,6 +172,15 @@ def validate_indicator_code(code: str, user_params: Dict[str, Any] | None = None
         "signals_count": len(signals),
         "hints": hints,
     }
+
+
+def _is_finite_number(value: Any) -> bool:
+    if isinstance(value, bool):
+        return False
+    try:
+        return bool(np.isfinite(float(value)))
+    except (TypeError, ValueError, OverflowError):
+        return False
 
 
 def _validation_error(

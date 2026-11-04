@@ -59,7 +59,7 @@ def _run_factor_benchmark(payload: dict, on_progress=None):
         neutralize_industry=bool(payload.get("neutralizeIndustry", False)),
         train_fraction=float(payload.get("trainFraction") or 0.6),
         false_discovery_rate=float(payload.get("falseDiscoveryRate") or 0.1),
-        minimum_oos_observations=int(payload.get("minimumOosObservations") or 5),
+        minimum_oos_observations=int(payload.get("minimumOosObservations") or 12),
         minimum_abs_oos_ic=float(payload.get("minimumAbsOosIc") or 0.02),
         minimum_coverage=float(payload.get("minimumCoverage") or 0.5),
     )

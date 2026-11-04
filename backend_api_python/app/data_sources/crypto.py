@@ -8,6 +8,7 @@ import time
 from app.data_sources.base import BaseDataSource, TIMEFRAME_SECONDS
 from app.data_sources.errors import MarketDataFailure, classify_market_data_failure
 from app.data_sources.native_crypto import (
+    NativeCryptoPublicClient,
     SUPPORTED_EXCHANGES,
     create_native_crypto_client,
     normalize_exchange_id,
@@ -110,11 +111,12 @@ class CryptoDataSource(BaseDataSource):
 
     _RECENT_CANDLE_LIMITS: Dict[str, int] = {
         "gate": 10000,
+        "htx": 2000,
     }
 
     _PAGINATION_BATCH_LIMITS: Dict[str, int] = {
         "binance": 1000,
-        "bitget": 1000,
+        "bitget": 100,
         "bybit": 1000,
         "gate": 1000,
         "htx": 1000,
@@ -562,7 +564,7 @@ class CryptoDataSource(BaseDataSource):
                 fetch_exchange_timeframe = source_exchange_tf
                 fetch_qd_timeframe = self._exchange_to_qd_timeframe(source_exchange_tf, timeframe)
                 resample_bucket = bucket
-                fetch_limit = min(limit * bucket, self._SINGLE_FETCH_HARD_CAP)
+                fetch_limit = limit * bucket
                 logger.info(
                     f"Exchange '{self.exchange.id}' has no native '{exchange_timeframe}' "
                     f"timeframe; fetching '{source_exchange_tf}' x{bucket} candles "
@@ -602,7 +604,21 @@ class CryptoDataSource(BaseDataSource):
                 raise _PublicKlineUnavailable
 
             if resample_bucket > 1:
-                ohlcv = self._resample_ohlcv(ohlcv, resample_bucket)
+                source_ms = int(TIMEFRAME_SECONDS.get(fetch_qd_timeframe, 86400)) * 1000
+                target_ms = source_ms * resample_bucket
+                origin_ms = 0
+                if exchange_timeframe == '1w':
+                    # Anchor weekly bars to Monday while preserving the source
+                    # daily session boundary (UTC or the venue's UTC+8 session).
+                    day_ms = 86400000
+                    phase = int(ohlcv[0][0]) % day_ms
+                    if phase > day_ms // 2:
+                        phase -= day_ms
+                    origin_ms = 4 * day_ms + phase
+                ohlcv = self._resample_ohlcv(
+                    ohlcv, resample_bucket, source_ms=source_ms,
+                    target_ms=target_ms, origin_ms=origin_ms,
+                )
                 if not ohlcv:
                     logger.warning(
                         f"Resampling produced no candles for {symbol_pair} "
@@ -750,7 +766,11 @@ class CryptoDataSource(BaseDataSource):
         return None
 
     @staticmethod
-    def _resample_ohlcv(ohlcv: List[List[Any]], bucket_size: int) -> List[List[Any]]:
+    def _resample_ohlcv(
+        ohlcv: List[List[Any]], bucket_size: int, *,
+        source_ms: Optional[int] = None, target_ms: Optional[int] = None,
+        origin_ms: int = 0,
+    ) -> List[List[Any]]:
         """Aggregate every `bucket_size` consecutive exchange OHLCV rows into one larger candle.
 
         Each input row is [ts_ms, open, high, low, close, volume]. Output preserves the
@@ -761,8 +781,20 @@ class CryptoDataSource(BaseDataSource):
         if bucket_size <= 1 or not ohlcv:
             return list(ohlcv or [])
         out: List[List[Any]] = []
-        for i in range(0, len(ohlcv), bucket_size):
-            chunk = ohlcv[i:i + bucket_size]
+        if source_ms and target_ms:
+            groups: Dict[int, Dict[int, List[Any]]] = {}
+            for row in ohlcv:
+                ts = int(row[0])
+                start = (ts - origin_ms) // target_ms * target_ms + origin_ms
+                groups.setdefault(start, {})[ts] = row
+            chunks = [
+                [group[ts] for ts in range(start, start + target_ms, source_ms)]
+                for start, group in sorted(groups.items())
+                if all(ts in group for ts in range(start, start + target_ms, source_ms))
+            ]
+        else:
+            chunks = [ohlcv[i:i + bucket_size] for i in range(0, len(ohlcv), bucket_size)]
+        for chunk in chunks:
             if len(chunk) < bucket_size:
                 break  # drop incomplete trailing bucket
             out.append([
@@ -825,16 +857,35 @@ class CryptoDataSource(BaseDataSource):
 
                 exchange_id = str(getattr(self.exchange, "id", "") or "").strip().lower()
                 recent_limit = int(self._RECENT_CANDLE_LIMITS.get(exchange_id, 0) or 0)
+                if (
+                    exchange_id == "htx"
+                    and str(getattr(self.exchange, "market_type", "spot")).lower() == "swap"
+                ):
+                    # HTX USDT swaps support from/to history; only spot is
+                    # restricted to the recent size-based window.
+                    recent_limit = 0
                 if recent_limit > 0:
                     earliest_supported_ms = max(0, now_ms - timeframe_ms * (recent_limit - 1))
                     if end_ms < earliest_supported_ms:
+                        self._set_last_failure(
+                            f"Incomplete K-line history: requested end predates {exchange_id}'s "
+                            f"recent {recent_limit}-candle window",
+                            symbol=symbol_pair,
+                            timeframe=timeframe,
+                        )
                         logger.info(
                             "Skipped %s %s history because the requested end precedes the exchange recent-candle window",
                             exchange_id,
                             exchange_timeframe,
                         )
                         return []
-                    if since < earliest_supported_ms:
+                    if since < earliest_supported_ms and after_time is not None:
+                        self._set_last_failure(
+                            f"Incomplete K-line history: requested start predates {exchange_id}'s "
+                            f"recent {recent_limit}-candle window",
+                            symbol=symbol_pair,
+                            timeframe=timeframe,
+                        )
                         logger.warning(
                             "Refused partial %s %s history: requested start predates the exchange "
                             "recent-candle limit (%s bars)",
@@ -843,13 +894,19 @@ class CryptoDataSource(BaseDataSource):
                             recent_limit,
                         )
                         return []
+                    if since < earliest_supported_ms:
+                        # A chart may show a shorter contiguous page at retention
+                        # limits; explicit strategy windows must remain complete.
+                        since += ((earliest_supported_ms - since + timeframe_ms - 1)
+                                  // timeframe_ms) * timeframe_ms
 
                 all_ohlcv: List[List[Any]] = []
                 batch_limit = int(self._PAGINATION_BATCH_LIMITS.get(exchange_id, 300))
+                native_client = isinstance(self.exchange, NativeCryptoPublicClient)
+                if native_client:
+                    batch_limit = self.exchange.ohlcv_page_limit(historical=True)
                 current_since = since
                 max_batches = 6000
-                empty_streak = 0
-                max_empty = 6
                 # Long-range fetches (months of 5m candles) need to be defensive
                 # about transient exchange errors and rate limits. We do per-batch
                 # retries, a short sleep between batches, and a wall-clock budget
@@ -872,20 +929,34 @@ class CryptoDataSource(BaseDataSource):
                     if (_t.monotonic() - fetch_started_at) > fetch_budget_seconds:
                         logger.warning(
                             f"Exchange paginated fetch budget exceeded for {symbol_pair} {exchange_timeframe} "
-                            f"after {batch_idx} batches ({len(all_ohlcv)} candles); returning partial."
+                            f"after {batch_idx} batches ({len(all_ohlcv)} candles); validating coverage."
                         )
                         break
 
                     batch = None
                     last_err = None
+                    remaining_bars = max(
+                        1,
+                        (end_ms - current_since + timeframe_ms - 1) // timeframe_ms,
+                    )
+                    request_limit = min(batch_limit, remaining_bars)
                     for attempt in range(retry_per_batch + 1):
                         try:
-                            batch = self.exchange.fetch_ohlcv(
-                                symbol_pair,
-                                exchange_timeframe,
-                                since=current_since,
-                                limit=batch_limit,
-                            )
+                            if native_client:
+                                batch = self.exchange.fetch_ohlcv(
+                                    symbol_pair,
+                                    exchange_timeframe,
+                                    since=current_since,
+                                    limit=request_limit,
+                                    until=end_ms,
+                                )
+                            else:
+                                batch = self.exchange.fetch_ohlcv(
+                                    symbol_pair,
+                                    exchange_timeframe,
+                                    since=current_since,
+                                    limit=request_limit,
+                                )
                             break
                         except Exception as exc:
                             last_err = exc
@@ -902,14 +973,15 @@ class CryptoDataSource(BaseDataSource):
                         raise last_err if last_err else RuntimeError("Exchange fetch_ohlcv failed without error")
 
                     if not batch:
-                        empty_streak += 1
-                        if empty_streak >= max_empty:
-                            break
-                        current_since += timeframe_ms * min(batch_limit, 64)
+                        # Requests may begin before listing. Skip only the
+                        # queried window, bounded by the overall time budget.
+                        window_bars = request_limit
+                        if exchange_id == "bitget":
+                            window_bars = min(window_bars, max(1, 90 * 86400000 // timeframe_ms))
+                        current_since += timeframe_ms * window_bars
                         if inter_batch_sleep:
                             _t.sleep(inter_batch_sleep)
                         continue
-                    empty_streak = 0
                     all_ohlcv.extend(batch)
                     last_timestamp = batch[-1][0]
                     if last_timestamp >= end_ms:
@@ -921,12 +993,28 @@ class CryptoDataSource(BaseDataSource):
                     if inter_batch_sleep:
                         _t.sleep(inter_batch_sleep)
 
-                by_ts = {int(row[0]): row for row in all_ohlcv if row and len(row) >= 6}
+                by_ts = {
+                    int(row[0]): row for row in all_ohlcv
+                    if row and len(row) >= 6 and since <= int(row[0]) < end_ms
+                }
                 ohlcv = sorted(by_ts.values(), key=lambda r: r[0])
                 if not ohlcv:
                     return self._fetch_ohlcv_fallback(
                         symbol_pair, exchange_timeframe, limit, before_time, timeframe, after_time
                     )
+                # Never attach an old partial page across an unreported gap. Only
+                # validate the returned chart tail, not its extra warmup buffer.
+                checked_rows = ohlcv if after_time is not None else ohlcv[-limit:]
+                if (
+                    int(checked_rows[-1][0]) < end_ms - timeframe_ms
+                    or any(int(b[0]) - int(a[0]) != timeframe_ms
+                           for a, b in zip(checked_rows, checked_rows[1:]))
+                ):
+                    self._set_last_failure(
+                        "Incomplete K-line history: missing candles or historical right boundary",
+                        symbol=symbol_pair, timeframe=timeframe,
+                    )
+                    return []
                 if after_time is not None:
                     tolerance_ms = timeframe_ms * 3
                     requested_start_ms = int(after_time) * 1000
@@ -968,7 +1056,7 @@ class CryptoDataSource(BaseDataSource):
                 self._set_last_failure(e, symbol=symbol_pair, timeframe=timeframe)
                 return []
             partial_rows = locals().get("all_ohlcv") or []
-            if partial_rows and after_time is None:
+            if partial_rows and before_time is None and after_time is None:
                 logger.warning(
                     "Exchange paginated fetch stopped early for %s %s; returning %s available candles: %s",
                     symbol_pair,
@@ -1005,7 +1093,7 @@ class CryptoDataSource(BaseDataSource):
         # An explicit historical window must never be replaced with a recent
         # page. Returning no rows lets an unscoped research/backtest source try
         # another public venue; a live venue-scoped source fails explicitly.
-        if after_time is not None:
+        if before_time is not None or after_time is not None:
             return []
         try:
             total_seconds = self.calculate_time_range(timeframe, limit)

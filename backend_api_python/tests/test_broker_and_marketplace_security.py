@@ -16,6 +16,7 @@ from app.services.community_service import (
 from app.services.ibkr_trading import client as ibkr_client_module
 from app.services.ibkr_trading.client import IBKRClient
 from app.services.live_trading import factory
+from app.utils import local_brokers
 
 
 def _marketplace_detail_row(**overrides):
@@ -210,7 +211,7 @@ def test_marketplace_purchase_uses_shared_transaction(monkeypatch):
 
 
 def test_ibkr_client_policy_blocks_before_loading_sdk(monkeypatch):
-    monkeypatch.setenv("ALLOW_LOCAL_DESKTOP_BROKERS", "false")
+    monkeypatch.setattr("app.utils.local_brokers.is_trading_venue_enabled", lambda _venue: False)
     ensure_sdk = Mock()
     monkeypatch.setattr(ibkr_client_module, "_ensure_ib_insync", ensure_sdk)
 
@@ -218,8 +219,24 @@ def test_ibkr_client_policy_blocks_before_loading_sdk(monkeypatch):
     ensure_sdk.assert_not_called()
 
 
+def test_ibkr_policy_follows_supported_market_selection(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.settings.env_file.read_env_file",
+        lambda: {"ENABLED_TRADING_VENUES": "alpaca,binance,okx"},
+    )
+
+    assert local_brokers.local_desktop_brokers_allowed() is False
+
+    monkeypatch.setattr(
+        "app.services.settings.env_file.read_env_file",
+        lambda: {"ENABLED_TRADING_VENUES": "alpaca,ibkr,binance"},
+    )
+
+    assert local_brokers.local_desktop_brokers_allowed() is True
+
+
 def test_ibkr_existing_client_operations_obey_disabled_policy(monkeypatch):
-    monkeypatch.setenv("ALLOW_LOCAL_DESKTOP_BROKERS", "false")
+    monkeypatch.setattr("app.utils.local_brokers.is_trading_venue_enabled", lambda _venue: False)
     client = IBKRClient()
 
     with pytest.raises(PermissionError):
@@ -227,7 +244,7 @@ def test_ibkr_existing_client_operations_obey_disabled_policy(monkeypatch):
 
 
 def test_ibkr_factory_policy_blocks_before_client_creation(monkeypatch):
-    monkeypatch.setenv("ALLOW_LOCAL_DESKTOP_BROKERS", "false")
+    monkeypatch.setattr("app.utils.local_brokers.is_trading_venue_enabled", lambda _venue: False)
     client_class = Mock()
     monkeypatch.setattr(factory, "IBKRClient", client_class)
 
@@ -238,7 +255,7 @@ def test_ibkr_factory_policy_blocks_before_client_creation(monkeypatch):
 
 
 def test_ibkr_connect_route_returns_forbidden_before_client_creation(app, monkeypatch):
-    monkeypatch.setenv("ALLOW_LOCAL_DESKTOP_BROKERS", "false")
+    monkeypatch.setattr("app.utils.local_brokers.is_trading_venue_enabled", lambda _venue: False)
     client_class = Mock()
     monkeypatch.setattr(ibkr_route, "IBKRClient", client_class)
     view = ibkr_route.connect

@@ -224,7 +224,7 @@ def test_billing_settings_only_expose_costs_with_real_charge_paths():
     assert "ai_copilot_radar" not in FEATURE_NAMES
 
     charge_paths = {
-        "backtest": "app/routes/backtest_center.py",
+        "backtest": "app/utils/agent_jobs.py",
         "ai_review": "app/routes/strategy_review_routes.py",
         "ai_analysis": "app/routes/fast_analysis.py",
         "ai_code_gen": "app/routes/strategy.py",
@@ -236,7 +236,7 @@ def test_billing_settings_only_expose_costs_with_real_charge_paths():
     for feature, relative_path in charge_paths.items():
         source = (backend_root / relative_path).read_text(encoding="utf-8")
         billing_call = (
-            rf"(?:get_feature_cost|check_and_consume)\("
+            rf"(?:get_feature_cost|check_and_consume|consume_in_transaction)\("
             rf"[\s\S]{{0,160}}?(?:feature\s*=\s*)?['\"]{feature}['\"]"
         )
         assert re.search(billing_call, source), f"{feature} no longer has a runtime billing path"

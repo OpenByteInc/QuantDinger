@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import math
+import os
 import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -28,12 +30,19 @@ class _SharedFrameEntry:
     frame: pd.DataFrame
     coverage_start: pd.Timestamp
     coverage_end: pd.Timestamp
+    size_bytes: int
+    last_access: float
 
 
 _shared_frames: dict[str, _SharedFrameEntry] = {}
 _shared_frame_locks: dict[str, threading.RLock] = {}
 _shared_frames_lock = threading.RLock()
+_shared_frames_bytes = 0
 _SHARED_FRAME_CACHE_MAX_SIZE = 256
+_SHARED_FRAME_CACHE_MAX_BYTES = max(
+    0,
+    int(os.getenv("STRATEGY_SHARED_FRAME_CACHE_MAX_BYTES", str(256 * 1024 * 1024))),
+)
 _LIVE_CACHE_GRACE_BARS = 2
 _INCOMPLETE_WARMUP_RETRIES = 1
 
@@ -112,6 +121,26 @@ def _covers_crypto_window(
         frame.index.min() <= requested_start + tolerance
         and frame.index.max() >= requested_end - tolerance
         and coverage_ratio >= 0.98
+        and frame.index.is_unique
+        and (frame.index.to_series().diff().dropna() == pd.Timedelta(seconds=timeframe_seconds)).all()
+    )
+
+
+def _covers_equity_window(
+    frame: pd.DataFrame,
+    requested_start: pd.Timestamp,
+    requested_end: pd.Timestamp,
+    timeframe_seconds: int,
+) -> bool:
+    if frame is None or frame.empty:
+        return False
+    tolerance = max(
+        pd.Timedelta(days=10),
+        pd.Timedelta(seconds=max(1, timeframe_seconds) * 2),
+    )
+    return bool(
+        frame.index.min() <= requested_start + tolerance
+        and frame.index.max() >= requested_end - tolerance
     )
 
 
@@ -189,17 +218,28 @@ def _load_strategy_frame_uncached(
             resolved_api_family=resolved_api_family,
         )
     )
+    equity_market = data_market in {"USStock", "HKStock", "AStock", "CNStock"}
     cached = _cache.get(cache_key)
     if cached is not None and not cached.empty:
-        if not continuous_calendar or _covers_crypto_window(
-            cached,
-            requested_start,
-            coverage_end,
-            timeframe_seconds,
-        ):
+        cache_is_usable = True
+        if continuous_calendar:
+            cache_is_usable = _covers_crypto_window(
+                cached,
+                requested_start,
+                coverage_end,
+                timeframe_seconds,
+            )
+        elif equity_market:
+            cache_is_usable = _covers_equity_window(
+                cached,
+                requested_start,
+                coverage_end,
+                timeframe_seconds,
+            )
+        if cache_is_usable:
             return cached.copy()
         logger.warning(
-            "Ignored incomplete cached crypto history for %s %s: requested=%s~%s, actual=%s~%s",
+            "Ignored incomplete cached history for %s %s: requested=%s~%s, actual=%s~%s",
             symbol,
             timeframe,
             requested_start,
@@ -340,6 +380,21 @@ def _load_strategy_frame_uncached(
                 timeframe=timeframe,
             )
         )
+    if equity_market and not _covers_equity_window(
+        frame,
+        requested_start,
+        coverage_end,
+        timeframe_seconds,
+    ):
+        raise MarketDataUnavailableError(
+            classify_market_data_failure(
+                "Incomplete equity K-line coverage after strategy window normalization",
+                exchange_id=exchange_id or "",
+                market_type=market_type or "",
+                symbol=symbol,
+                timeframe=timeframe,
+            )
+        )
     if not frame.empty:
         _cache.put(cache_key, frame, timeframe)
     return frame.copy()
@@ -384,14 +439,51 @@ def _merge_frames(current: pd.DataFrame, incoming: pd.DataFrame) -> pd.DataFrame
     return merged[~merged.index.duplicated(keep="last")]
 
 
+def _frame_bytes(frame: pd.DataFrame) -> int:
+    return int(frame.memory_usage(index=True, deep=True).sum())
+
+
+def _remove_shared_frame(key: str) -> None:
+    global _shared_frames_bytes
+    entry = _shared_frames.pop(key, None)
+    if entry is not None:
+        _shared_frames_bytes = max(0, _shared_frames_bytes - entry.size_bytes)
+
+
 def _evict_shared_frame_if_needed() -> None:
     with _shared_frames_lock:
-        while len(_shared_frames) > _SHARED_FRAME_CACHE_MAX_SIZE:
+        while _shared_frames and (
+            len(_shared_frames) > _SHARED_FRAME_CACHE_MAX_SIZE
+            or _shared_frames_bytes > _SHARED_FRAME_CACHE_MAX_BYTES
+        ):
             oldest_key = min(
                 _shared_frames,
-                key=lambda item: _shared_frames[item].coverage_end,
+                key=lambda item: _shared_frames[item].last_access,
             )
-            _shared_frames.pop(oldest_key, None)
+            _remove_shared_frame(oldest_key)
+
+
+def _remember_shared_frame(
+    key: str,
+    frame: pd.DataFrame,
+    coverage_start: pd.Timestamp,
+    coverage_end: pd.Timestamp,
+) -> None:
+    global _shared_frames_bytes
+    size_bytes = _frame_bytes(frame)
+    with _shared_frames_lock:
+        _remove_shared_frame(key)
+        if _SHARED_FRAME_CACHE_MAX_BYTES <= 0 or size_bytes > _SHARED_FRAME_CACHE_MAX_BYTES:
+            return
+        _shared_frames[key] = _SharedFrameEntry(
+            frame=frame,
+            coverage_start=coverage_start,
+            coverage_end=coverage_end,
+            size_bytes=size_bytes,
+            last_access=time.monotonic(),
+        )
+        _shared_frames_bytes += size_bytes
+        _evict_shared_frame_if_needed()
 
 
 def _is_live_request(
@@ -496,9 +588,11 @@ def _resolve_catalog_product(
 
 def clear_shared_strategy_frame_cache() -> None:
     """Clear process-local candle state. Intended for tests and controlled reloads."""
+    global _shared_frames_bytes
     with _shared_frames_lock:
         _shared_frames.clear()
         _shared_frame_locks.clear()
+        _shared_frames_bytes = 0
 
 
 def load_strategy_frame(
@@ -547,6 +641,7 @@ def load_strategy_frame(
             )
         )
     )
+    equity_market = data_market in {"USStock", "HKStock", "AStock", "CNStock"}
     key = _shared_frame_key(
         market,
         symbol,
@@ -564,10 +659,33 @@ def load_strategy_frame(
             and requested_start >= entry.coverage_start
             and coverage_end <= entry.coverage_end
         ):
-            return entry.frame[
+            cached_result = entry.frame[
                 (entry.frame.index >= requested_start)
                 & (entry.frame.index <= coverage_end)
             ].copy()
+            cached_result_is_usable = True
+            if continuous_crypto_market:
+                cached_result_is_usable = _cached_crypto_frame_is_usable(
+                    cached_result,
+                    requested_start,
+                    coverage_end,
+                    timeframe_seconds,
+                    live_request=live_request,
+                )
+            elif equity_market:
+                cached_result_is_usable = _covers_equity_window(
+                    cached_result,
+                    requested_start,
+                    coverage_end,
+                    timeframe_seconds,
+                )
+            if cached_result_is_usable:
+                entry.last_access = time.monotonic()
+                return cached_result
+            # Do not let an earlier rejected frame bypass validation on a cache hit.
+            entry = None
+            with _shared_frames_lock:
+                _remove_shared_frame(key)
 
         fetch_windows: list[tuple[pd.Timestamp, pd.Timestamp]] = []
         if entry is None:
@@ -641,12 +759,35 @@ def load_strategy_frame(
             and live_request
             and equity_bar_session_date(actual_end, data_market) < equity_bar_session_date(coverage_end, data_market)
         )
-        _shared_frames[key] = _SharedFrameEntry(
-            frame=merged,
-            coverage_start=actual_start if continuous_crypto_market else min(actual_start, requested_start),
-            coverage_end=actual_end if continuous_crypto_market or incomplete_equity_daily else max(actual_end, coverage_end),
+        complete_equity_window = bool(
+            equity_market
+            and _covers_equity_window(
+                merged,
+                requested_start,
+                coverage_end,
+                timeframe_seconds,
+            )
         )
-        _evict_shared_frame_if_needed()
+        cached_coverage_start = (
+                requested_start
+                if complete_equity_window
+                else actual_start
+                if continuous_crypto_market or equity_market
+                else min(actual_start, requested_start)
+            )
+        cached_coverage_end = (
+                coverage_end
+                if complete_equity_window and not incomplete_equity_daily
+                else actual_end
+                if continuous_crypto_market or equity_market
+                else max(actual_end, coverage_end)
+            )
+        _remember_shared_frame(
+            key,
+            merged,
+            cached_coverage_start,
+            cached_coverage_end,
+        )
         result = merged[
             (merged.index >= requested_start)
             & (merged.index <= coverage_end)
@@ -660,6 +801,25 @@ def load_strategy_frame(
         ):
             logger.warning(
                 "Refused stale/incomplete cached crypto frame for %s %s: "
+                "requested=%s~%s, actual=%s~%s",
+                symbol,
+                timeframe,
+                requested_start,
+                coverage_end,
+                result.index.min() if not result.empty else "empty",
+                result.index.max() if not result.empty else "empty",
+            )
+            if last_failure is not None:
+                raise last_failure
+            return pd.DataFrame()
+        if equity_market and not _covers_equity_window(
+            result,
+            requested_start,
+            coverage_end,
+            timeframe_seconds,
+        ):
+            logger.warning(
+                "Refused incomplete cached equity frame for %s %s: "
                 "requested=%s~%s, actual=%s~%s",
                 symbol,
                 timeframe,
