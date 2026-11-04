@@ -88,8 +88,26 @@ def search_market_symbols(
         exchange_id = normalize_exchange_id(exchange_id) or default_crypto_exchange_id()
         if exchange_id not in SUPPORTED_CRYPTO_EXCHANGE_IDS:
             return []
-        market_type = normalize_market_type(market_type, market=market)
-        out = _search_cached_crypto_symbols(keyword, limit, exchange_id, market_type)
+        requested_market_type = str(market_type or "").strip()
+        if requested_market_type:
+            normalized_market_type = normalize_market_type(requested_market_type, market=market)
+            out = _search_cached_crypto_symbols(keyword, limit, exchange_id, normalized_market_type)
+        else:
+            result_groups = [
+                _search_cached_crypto_symbols(
+                    keyword,
+                    limit,
+                    exchange_id,
+                    candidate_market_type,
+                )
+                for candidate_market_type in ("spot", "swap")
+            ]
+            out = [
+                group[index]
+                for index in range(max((len(group) for group in result_groups), default=0))
+                for group in result_groups
+                if index < len(group)
+            ]
         return dedupe_symbol_results(out, limit)
 
     out = dedupe_symbol_results(
@@ -141,6 +159,35 @@ def find_market_symbol(
         )
 
     return _first_exact_match(rows, market, symbol)
+
+
+def get_crypto_symbol_capabilities(symbol: str, *, exchange_id: str = "") -> dict:
+    """Return exact spot/swap catalog contexts for one exchange symbol."""
+    canonical_symbol = canonical_crypto_symbol(symbol)
+    exchange_id = normalize_exchange_id(exchange_id) or default_crypto_exchange_id()
+    if not canonical_symbol or exchange_id not in SUPPORTED_CRYPTO_EXCHANGE_IDS:
+        return {
+            "symbol": canonical_symbol,
+            "exchange_id": exchange_id,
+            "market_types": [],
+            "contexts": [],
+        }
+
+    contexts = []
+    for market_type in ("spot", "swap"):
+        rows = dedupe_symbol_results(
+            _search_cached_crypto_symbols(canonical_symbol, 10, exchange_id, market_type),
+            10,
+        )
+        exact = _first_exact_match(rows, "Crypto", canonical_symbol)
+        if exact:
+            contexts.append(exact)
+    return {
+        "symbol": canonical_symbol,
+        "exchange_id": exchange_id,
+        "market_types": [item["market_type"] for item in contexts],
+        "contexts": contexts,
+    }
 
 
 def find_available_crypto_symbol(

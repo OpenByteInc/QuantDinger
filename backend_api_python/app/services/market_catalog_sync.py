@@ -207,6 +207,10 @@ def get_market_catalog_overview() -> dict:
                              AND COALESCE(product_type, 'crypto') = 'crypto'
                        ) AS ordinary_spot,
                        COUNT(*) FILTER (
+                           WHERE is_active = 1 AND market_type = 'swap'
+                             AND COALESCE(product_type, 'crypto') = 'crypto'
+                       ) AS ordinary_swap,
+                       COUNT(*) FILTER (
                            WHERE is_active = 1 AND product_type = 'tokenized_equity'
                        ) AS tokenized_equity,
                        COUNT(*) FILTER (
@@ -232,6 +236,10 @@ def get_market_catalog_overview() -> dict:
                            WHERE is_active = 1 AND market_type = 'spot'
                              AND COALESCE(product_type, 'crypto') = 'crypto'
                        ) AS ordinary_spot,
+                       COUNT(*) FILTER (
+                           WHERE is_active = 1 AND market_type = 'swap'
+                             AND COALESCE(product_type, 'crypto') = 'crypto'
+                       ) AS ordinary_swap,
                        COUNT(*) FILTER (
                            WHERE is_active = 1 AND product_type = 'tokenized_equity'
                        ) AS tokenized_equity,

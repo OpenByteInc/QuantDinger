@@ -12,6 +12,7 @@ from app.utils.config_loader import load_addon_config
 from app.utils.auth import login_required
 from app.services.market.quotes import get_price_map, get_single_price
 from app.services.market.symbol_search import (
+    get_crypto_symbol_capabilities,
     get_hot_symbols as search_hot_symbols,
     search_market_symbols,
 )
@@ -194,6 +195,31 @@ def get_hot_symbols():
     except Exception as e:
         logger.error(f"get_hot_symbols failed: {str(e)}")
         return jsonify({'code': 0, 'msg': str(e), 'data': []}), 500
+
+
+@market_blp.route('/symbols/capabilities', methods=['GET'])
+def get_symbol_capabilities():
+    """Return exact product availability for one crypto symbol and venue."""
+    try:
+        market = (request.args.get('market') or '').strip()
+        symbol = normalize_symbol(request.args.get('symbol', ''))
+        exchange_id = (request.args.get('exchange_id') or request.args.get('exchangeId') or '').strip()
+        if market != 'Crypto' or not symbol:
+            return jsonify({'code': 1, 'msg': 'success', 'data': {
+                'symbol': symbol,
+                'exchange_id': exchange_id,
+                'market_types': ['spot'] if market and symbol else [],
+                'contexts': [],
+            }})
+        return jsonify({
+            'code': 1,
+            'msg': 'success',
+            'data': get_crypto_symbol_capabilities(symbol, exchange_id=exchange_id),
+        })
+    except Exception as e:
+        logger.error(f"get_symbol_capabilities failed: {str(e)}")
+        logger.error(traceback.format_exc())
+        return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
 
 @market_blp.route('/watchlist/get', methods=['GET'])
 @login_required
