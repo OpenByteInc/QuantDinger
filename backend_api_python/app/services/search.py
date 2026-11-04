@@ -627,43 +627,32 @@ class KeenableSearchProvider(BaseSearchProvider):
         try:
             response = requests.post(url, headers=headers, json=payload, timeout=15)
             if response.status_code != 200:
-                return SearchResponse(
-                    query=query,
-                    results=[],
-                    provider=self.name,
-                    success=False,
-                    error_message=f"HTTP {response.status_code}: {response.text[:200]}",
-                )
-
+                raise RuntimeError(f"HTTP {response.status_code}: {response.text[:200]}")
             data = response.json()
-            raw_results = data.get("results") if isinstance(data, dict) else []
-            results: List[SearchResult] = []
-            for item in raw_results or []:
-                if len(results) >= max_results:
-                    break
-                if not isinstance(item, dict):
-                    continue
-                link = item.get("url") or ""
-                if not link:
-                    continue
-                published = item.get("published_at")
-                results.append(SearchResult(
-                    title=item.get("title") or link,
-                    snippet=" ".join((item.get("snippet") or "").split())[:500],
-                    url=link,
-                    source=self._extract_domain(link),
-                    published_date=published if isinstance(published, str) else "",
-                ))
-
-            return SearchResponse(
-                query=query,
-                results=results,
-                provider=self.name,
-                success=bool(results),
-                error_message=None if results else "Keenable returned no results",
-            )
+            items = data.get("results") if isinstance(data, dict) else None
         except Exception as e:
             return SearchResponse(query=query, results=[], provider=self.name, success=False, error_message=str(e))
+
+        results = [self._to_result(item) for item in items or [] if isinstance(item, dict) and item.get("url")]
+        results = results[:max_results]
+        return SearchResponse(
+            query=query,
+            results=results,
+            provider=self.name,
+            success=bool(results),
+            error_message=None if results else "Keenable returned no results",
+        )
+
+    def _to_result(self, item: Dict[str, Any]) -> SearchResult:
+        link = item["url"]
+        published = item.get("published_at")
+        return SearchResult(
+            title=item.get("title") or link,
+            snippet=" ".join((item.get("snippet") or "").split())[:500],
+            url=link,
+            source=self._extract_domain(link),
+            published_date=published if isinstance(published, str) else "",
+        )
 
 
 class DuckDuckGoSearchProvider(BaseSearchProvider):
