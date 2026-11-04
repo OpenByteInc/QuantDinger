@@ -53,6 +53,30 @@ def test_http_451_is_reported_as_a_region_restriction():
         == "quickTrade.errorHints.regionRestricted"
     )
 
+
+def test_binance_tradfi_agreement_error_is_not_misclassified_as_rate_limit():
+    error = (
+        "binanceusdm {\"code\":-4411,\"msg\":\"Please sign TradFi-Perps agreement contract fapi.\","
+        "\"rateLimits\":[{\"rateLimitType\":\"ORDERS\"}]}"
+    )
+
+    assert (
+        parse_trade_error_hint(error)
+        == "quickTrade.errorHints.binanceTradFiAgreement"
+    )
+
+
+def test_rate_limit_metadata_alone_is_not_a_rate_limit_error():
+    assert parse_trade_error_hint('{"rateLimits":[{"rateLimitType":"ORDERS"}]}') == ""
+
+
+def test_actual_rate_limit_error_is_still_recognized():
+    assert (
+        parse_trade_error_hint("HTTP 429 Too many requests")
+        == "quickTrade.errorHints.rateLimit"
+    )
+
+
 def test_symbols_match_exchange_native_suffixes():
     assert symbols_match("ETH/USDT", "ETH-USDT-SWAP")
     assert symbols_match("BTC/USDT", "BTC_USDT_PERP")

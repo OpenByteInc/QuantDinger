@@ -7,7 +7,6 @@ import os
 import re
 from flask import jsonify, request
 from app.openapi.blueprint import HumanBlueprint as Blueprint
-from app._version import APP_VERSION
 from app.markets.registry import market_options
 from app.utils.logger import get_logger
 from app.utils.config_loader import clear_config_cache
@@ -2126,7 +2125,7 @@ def get_brand_config():
     return jsonify({
         'code': 1,
         'msg': 'success',
-        'data': build_brand_config(APP_VERSION)
+        'data': build_brand_config()
     })
 
 

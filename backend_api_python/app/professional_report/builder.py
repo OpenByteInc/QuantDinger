@@ -8,6 +8,8 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping
 
+from app.services.fast_analysis_formatters import build_crypto_factor_summary_code
+
 from .features.equity import build_equity_features
 from .features.cross_asset import build_forex_features, build_futures_features
 from .narrative import normalize_report_text, validate_evidence_claims
@@ -269,6 +271,28 @@ def _macro_dimension_narrative(
     if zh:
         return f"可用宏观证据显示：{joined}。这些指标仅代表{market_context[0]}背景；若缺少明确的标的传导机制，不应单独作为买卖依据。"
     return f"Available macro evidence shows {joined}. These observations describe {market_context[1]} and are not a standalone trade signal without an asset-specific transmission mechanism."
+
+
+def _macro_dimension_code(payload: Mapping[str, Any], market: str = "") -> dict[str, Any]:
+    macro = payload.get("macro") or {}
+    facts: list[dict[str, Any]] = []
+    sources = (
+        ("vix", macro.get("VIX") or {}, "price", None),
+        ("dxy", macro.get("DXY") or {}, "price", None),
+        ("us10y", macro.get("TNX") or {}, "price", "%"),
+        ("risk_sentiment", macro.get("FEAR_GREED") or {}, "price", None),
+        ("hibor_1m", macro.get("HKMA") or {}, "one_month_pct", "%"),
+    )
+    for metric, source, field, unit in sources:
+        value = _plain_number(source.get(field), 3 if unit == "%" else 2)
+        if value is not None:
+            facts.append({"metric": metric, "value": value, "unit": unit})
+    context = {
+        "HKStock": "hk_funding",
+        "USStock": "us_risk_assets",
+        "Crypto": "crypto_liquidity",
+    }.get(market, "global_risk_assets")
+    return {"facts": facts, "context": context}
 
 
 def _hk_market_dimension_narrative(
@@ -672,17 +696,19 @@ def build_professional_report(
     scores = analysis_result.get("scores") or {}
     objective = analysis_result.get("objective_score") or {}
     report_language = str(analysis_result.get("language") or "en-US")
+    macro_dimension = _dimension(
+        "macro",
+        50.0 + float(objective.get("macro_score") or 0.0) * 0.5,
+        observations,
+        ("macro",),
+        _macro_dimension_narrative(collector_payload, report_language, market),
+    )
+    macro_dimension["narrative_code"] = _macro_dimension_code(collector_payload, market)
     dimensions = [
         _dimension("technical", scores.get("technical"), observations, ("technical", "market"), detailed.get("technical", "")),
         _dimension("fundamental", scores.get("fundamental"), observations, ("fundamental",), detailed.get("fundamental", "")),
         _dimension("news_sentiment", scores.get("sentiment"), observations, ("news",), detailed.get("sentiment", "")),
-        _dimension(
-            "macro",
-            50.0 + float(objective.get("macro_score") or 0.0) * 0.5,
-            observations,
-            ("macro",),
-            _macro_dimension_narrative(collector_payload, report_language, market),
-        ),
+        macro_dimension,
     ]
 
     if market in {"USStock", "HKStock"}:
@@ -730,6 +756,10 @@ def build_professional_report(
                 for item in market_features.get("warnings") or []
                 if isinstance(item, Mapping) and str(item.get("code") or "").startswith("MISSING")
             ],
+        )
+        crypto_dimension["narrative_code"] = dict(
+            analysis_result.get("crypto_factor_summary_code")
+            or build_crypto_factor_summary_code(collector_payload.get("crypto_factors") or {})
         )
         if not crypto_usable:
             crypto_dimension["status"] = "insufficient_data"

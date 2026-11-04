@@ -13,6 +13,13 @@ _LANGUAGE_RULES = {
     "zh-TW": "All narrative text must be in Traditional Chinese.",
     "en-US": "All narrative text must be in English.",
     "ja-JP": "All narrative text must be in Japanese.",
+    "ko-KR": "All narrative text must be in Korean.",
+    "de-DE": "All narrative text must be in German.",
+    "fr-FR": "All narrative text must be in French.",
+    "ru-RU": "All narrative text must be in Russian.",
+    "th-TH": "All narrative text must be in Thai.",
+    "vi-VN": "All narrative text must be in Vietnamese.",
+    "ar-SA": "All narrative text must be in Arabic.",
 }
 
 _MARKET_RULES = {
