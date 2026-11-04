@@ -215,6 +215,15 @@ def test_bitget_demo_and_live_use_matching_private_websocket_hosts():
     assert live.url() == "wss://ws.bitget.com/v3/ws/private"
 
 
+def test_okx_demo_and_live_use_port_443_private_websocket_hosts():
+    demo, _states = _adapter(OkxExecutionAdapter)
+    live, _states = _adapter(OkxExecutionAdapter)
+    live.config["environment"] = "live"
+
+    assert demo.url() == "wss://wspap.okx.com/ws/v5/private"
+    assert live.url() == "wss://ws.okx.com/ws/v5/private"
+
+
 def test_bybit_subscribes_only_after_successful_authentication():
     adapter, _states = _adapter(BybitExecutionAdapter)
     ws = FakeSocket()
