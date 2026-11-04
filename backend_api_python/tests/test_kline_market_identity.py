@@ -42,6 +42,27 @@ def test_kline_route_preserves_explicit_perpetual_venue(monkeypatch):
     assert payload["meta"]["market_context"]["exchange_id"] == "binance"
 
 
+def test_kline_route_preserves_stock_perpetual_native_identity(monkeypatch):
+    response, captured = _call_route(
+        monkeypatch,
+        {
+            "market": "Crypto",
+            "symbol": "QQQ/USDT",
+            "exchange_id": "binance",
+            "market_type": "swap",
+            "instrument_id": "QQQUSDT",
+            "timeframe": "1m",
+            "limit": 1,
+        },
+    )
+
+    assert response.get_json()["code"] == 1
+    assert captured["symbol"] == "QQQ/USDT"
+    assert captured["exchange_id"] == "binance"
+    assert captured["market_type"] == "swap"
+    assert captured["instrument_id"] == "QQQUSDT"
+
+
 def test_kline_route_keeps_unqualified_research_request_unpinned(monkeypatch):
     response, captured = _call_route(
         monkeypatch,

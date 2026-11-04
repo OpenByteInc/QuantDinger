@@ -68,7 +68,7 @@ def build_product_aware_config(
             "market_type": str(current.get("market_type") or market_type).strip().lower(),
             "instrument_id": str(current.get("instrument_id") or ""),
             "settle_currency": str(current.get("settle_currency") or ""),
-            "product_type": str(current.get("product_type") or ""),
+            "instrument_product_type": str(current.get("product_type") or ""),
             "api_family": str(current.get("api_family") or ""),
             "instrument_product_meta": dict(current.get("product_meta") or {}),
         }
