@@ -621,6 +621,16 @@ class FastAnalysisService(FastAnalysisScoringMixin):
             )
             result["professional_report_error"] = str(exc)
 
+    @staticmethod
+    def _analysis_prompt_data(primary_data: Dict[str, Any], market: str) -> Dict[str, Any]:
+        if market != "Crypto" or not primary_data.get("crypto_factors"):
+            return primary_data
+        data = dict(primary_data)
+        crypto_factors = dict(primary_data.get("crypto_factors") or {})
+        crypto_factors.pop("summary", None)
+        data["crypto_factors"] = crypto_factors
+        return data
+
     def analyze(self, market: str, symbol: str, language: str = 'en-US',
                 model: str = None, timeframe: str = "1D", user_id: int = None,
                 research_mode: str = "research") -> Dict[str, Any]:
@@ -853,11 +863,7 @@ class FastAnalysisService(FastAnalysisScoringMixin):
                 f"agreement_ratio={agreement_ratio:.2f}, quality_multiplier={quality_multiplier:.2f}"
             )
 
-            data = primary_data  # keep original variable usage for prompt/LLM input
-            if market == "Crypto" and data.get("crypto_factors"):
-                localized_crypto_factors = dict(data.get("crypto_factors") or {})
-                localized_crypto_factors.pop("summary", None)
-                data["crypto_factors"] = localized_crypto_factors
+            data = self._analysis_prompt_data(primary_data, market)
             
             # Validate we have essential data - with fallback to indicators
             current_price = None
@@ -938,10 +944,6 @@ class FastAnalysisService(FastAnalysisScoringMixin):
                 f"Sentiment: {objective_score['sentiment_score']:.1f}, Macro: {objective_score['macro_score']:.1f})"
             )
             crypto_factor_score = objective_score.get("crypto_factor_score")
-            crypto_factor_summary = ""
-            crypto_factor_summary_code = build_crypto_factor_summary_code(
-                data.get("crypto_factors") or {}
-            )
 
             score_based_decision = self._score_to_decision(objective_score["overall_score"], market=market)
             llm_decision = str(analysis.get("decision", "HOLD") or "HOLD").upper()
@@ -1003,7 +1005,7 @@ class FastAnalysisService(FastAnalysisScoringMixin):
             self._replace_failed_llm_narrative(
                 analysis,
                 trend_outlook_summary,
-                crypto_factor_summary,
+                "",
             )
 
             # Consensus confidence:
@@ -1138,7 +1140,7 @@ class FastAnalysisService(FastAnalysisScoringMixin):
                 # If AI returned a string instead of dict, use it as technical analysis
                 detailed_analysis = {"technical": detailed_analysis, "fundamental": "", "sentiment": ""}
             if market == "Crypto" and not detailed_analysis.get("fundamental"):
-                detailed_analysis["fundamental"] = crypto_factor_summary or (data.get("crypto_factors") or {}).get("summary", "")
+                detailed_analysis["fundamental"] = ""
 
             score_payload = build_score_payload(objective_score, analysis, self._calculate_overall_score(analysis))
             provenance_payload = fundamental_provenance(data.get("fundamental") or {})
@@ -1179,8 +1181,8 @@ class FastAnalysisService(FastAnalysisScoringMixin):
                 "crypto_factors": data.get("crypto_factors", {}),
                 "crypto_factor_score": crypto_factor_score,
                 "crypto_factor_breakdown": objective_score.get("crypto_factor_breakdown", []),
-                "crypto_factor_summary": crypto_factor_summary,
-                "crypto_factor_summary_code": crypto_factor_summary_code,
+                "crypto_factor_summary": "",
+                "crypto_factor_summary_code": build_crypto_factor_summary_code(data.get("crypto_factors") or {}),
                 "score_based_decision": analysis.get("score_based_decision", "HOLD"),
                 "market_data": {
                     "current_price": current_price,
