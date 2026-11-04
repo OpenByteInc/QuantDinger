@@ -327,6 +327,33 @@ def test_macro_dimension_has_deterministic_narrative_and_evidence():
     assert "美元指数" in macro["narrative"]
     assert "不应单独作为买卖依据" in macro["narrative"]
     assert macro["evidence_refs"]
+    assert macro["narrative_code"]["facts"] == [
+        {"metric": "dxy", "value": "98.87", "unit": None},
+        {"metric": "risk_sentiment", "value": "71.00", "unit": None},
+    ]
+    assert macro["narrative_code"]["context"] == "hk_funding"
+
+
+def test_crypto_dimension_exposes_language_neutral_narrative_code():
+    payload = _collector_payload("Crypto")
+    payload["crypto_factors"]["signals"] = {
+        "volume_state": "expanding",
+        "derivatives_bias": "neutral",
+        "flow_bias": "bullish",
+        "squeeze_risk": "low",
+    }
+
+    report = build_professional_report(payload, _analysis(payload))
+    dimension = next(
+        item for item in report["dimensions"]
+        if item["key"] == "crypto_market_structure"
+    )
+
+    assert dimension["narrative_code"] == {
+        "volume_state": "expanding",
+        "bias": "bullish",
+        "crowding": "low",
+    }
 
 
 def test_macro_dimension_uses_market_specific_context():

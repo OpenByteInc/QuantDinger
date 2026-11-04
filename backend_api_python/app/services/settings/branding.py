@@ -21,7 +21,7 @@ BRAND_DEFAULTS = {
 }
 
 
-def build_brand_config(app_version: str) -> Dict[str, object]:
+def build_brand_config() -> Dict[str, object]:
     """Build public branding, legal, social, and mobile metadata."""
     social_accounts: List[Dict[str, str]] = []
     for name, icon, env_key, default_key in _social_specs():
@@ -31,7 +31,6 @@ def build_brand_config(app_version: str) -> Dict[str, object]:
 
     return {
         "app_name": brand_env("BRAND_APP_NAME", "app_name"),
-        "app_version": app_version,
         "copyright": brand_env("BRAND_COPYRIGHT", "copyright"),
         "logos": {
             "light": brand_env("BRAND_LOGO_LIGHT_URL"),

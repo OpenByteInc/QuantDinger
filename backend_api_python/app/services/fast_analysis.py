@@ -8,7 +8,11 @@ from typing import Dict, Any, Optional, List
 from app.utils.logger import get_logger
 from app.services.llm import LLMService
 from app.services.market_data_collector import get_market_data_collector
-from app.services.fast_analysis_formatters import build_trend_outlook_summary, safe_float_price
+from app.services.fast_analysis_formatters import (
+    build_crypto_factor_summary_code,
+    build_trend_outlook_summary,
+    safe_float_price,
+)
 from app.services.fast_analysis_fundamentals import (
     build_score_payload,
     format_financial_statements,
@@ -301,8 +305,7 @@ class FastAnalysisService(FastAnalysisScoringMixin):
                 f"- 稳定币净流: {_fmt_num(crypto_factors.get('stablecoin_netflow'), ' USD')}\n"
                 f"- 衍生品偏向: {signals.get('derivatives_bias', 'neutral')}\n"
                 f"- 资金流偏向: {signals.get('flow_bias', 'neutral')}\n"
-                f"- 挤仓风险: {signals.get('squeeze_risk', 'low')}\n"
-                f"- 因子摘要: {crypto_factors.get('summary') or '暂无'}"
+                f"- 挤仓风险: {signals.get('squeeze_risk', 'low')}"
             )
 
         return (
@@ -316,8 +319,7 @@ class FastAnalysisService(FastAnalysisScoringMixin):
             f"- Stablecoin netflow: {_fmt_num(crypto_factors.get('stablecoin_netflow'), ' USD')}\n"
             f"- Derivatives bias: {signals.get('derivatives_bias', 'neutral')}\n"
             f"- Flow bias: {signals.get('flow_bias', 'neutral')}\n"
-            f"- Squeeze risk: {signals.get('squeeze_risk', 'low')}\n"
-            f"- Factor summary: {crypto_factors.get('summary') or 'N/A'}"
+            f"- Squeeze risk: {signals.get('squeeze_risk', 'low')}"
         )
     
     # ==================== Memory Layer ====================
@@ -852,6 +854,10 @@ class FastAnalysisService(FastAnalysisScoringMixin):
             )
 
             data = primary_data  # keep original variable usage for prompt/LLM input
+            if market == "Crypto" and data.get("crypto_factors"):
+                localized_crypto_factors = dict(data.get("crypto_factors") or {})
+                localized_crypto_factors.pop("summary", None)
+                data["crypto_factors"] = localized_crypto_factors
             
             # Validate we have essential data - with fallback to indicators
             current_price = None
@@ -932,7 +938,10 @@ class FastAnalysisService(FastAnalysisScoringMixin):
                 f"Sentiment: {objective_score['sentiment_score']:.1f}, Macro: {objective_score['macro_score']:.1f})"
             )
             crypto_factor_score = objective_score.get("crypto_factor_score")
-            crypto_factor_summary = objective_score.get("crypto_factor_summary") or (data.get("crypto_factors") or {}).get("summary", "")
+            crypto_factor_summary = ""
+            crypto_factor_summary_code = build_crypto_factor_summary_code(
+                data.get("crypto_factors") or {}
+            )
 
             score_based_decision = self._score_to_decision(objective_score["overall_score"], market=market)
             llm_decision = str(analysis.get("decision", "HOLD") or "HOLD").upper()
@@ -1171,6 +1180,7 @@ class FastAnalysisService(FastAnalysisScoringMixin):
                 "crypto_factor_score": crypto_factor_score,
                 "crypto_factor_breakdown": objective_score.get("crypto_factor_breakdown", []),
                 "crypto_factor_summary": crypto_factor_summary,
+                "crypto_factor_summary_code": crypto_factor_summary_code,
                 "score_based_decision": analysis.get("score_based_decision", "HOLD"),
                 "market_data": {
                     "current_price": current_price,

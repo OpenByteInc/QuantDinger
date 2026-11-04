@@ -306,6 +306,7 @@ class _AnalysisDimension(_ContractModel):
     score_kind: str
     status: Literal["available", "insufficient_data"]
     narrative: str = ""
+    narrative_code: dict[str, Any] = Field(default_factory=dict)
     evidence_refs: list[str] = Field(default_factory=list)
     missing_data: list[str] = Field(default_factory=list)
 
