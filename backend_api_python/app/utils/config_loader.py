@@ -202,6 +202,7 @@ def load_addon_config() -> Dict[str, Any]:
         ('SEARCH_SEARXNG_CATEGORIES', 'search.searxng.categories', 'string'),
         ('SEARCH_SEARXNG_LANGUAGE', 'search.searxng.language', 'string'),
         ('SEARCH_SEARXNG_TIMEOUT', 'search.searxng.timeout', 'int'),
+        ('KEENABLE_API_KEY', 'search.keenable.api_key', 'string'),
         
         # Tavily (AI-optimized search)
         ('TAVILY_API_KEYS', 'tavily.api_keys', 'string'),

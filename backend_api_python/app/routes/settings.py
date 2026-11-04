@@ -97,7 +97,7 @@ ADVANCED_KEYS = {
     'LLM_MAX_TOKENS',
     'AI_ANALYSIS_CONSENSUS_TIMEFRAMES', 'SEARCH_MAX_RESULTS',
     'FAST_ANALYSIS_INCLUDE_GLOBAL_NEWS',
-    'SEARCH_GOOGLE_API_KEY', 'SEARCH_GOOGLE_CX', 'SEARCH_BING_API_KEY', 'SERPAPI_KEYS',
+    'SEARCH_GOOGLE_API_KEY', 'SEARCH_GOOGLE_CX', 'SEARCH_BING_API_KEY', 'SERPAPI_KEYS', 'KEENABLE_API_KEY',
     'SEARCH_SEARXNG_ENGINES', 'SEARCH_SEARXNG_CATEGORIES', 'SEARCH_SEARXNG_LANGUAGE', 'SEARCH_SEARXNG_TIMEOUT',
     'GDELT_BASE_URL', 'GDELT_TIMEOUT', 'GDELT_MAX_RESULTS',
     'ALPHA_VANTAGE_API_KEY', 'ALPHA_VANTAGE_BASE_URL', 'ALPHA_VANTAGE_TIMEOUT', 'ALPHA_VANTAGE_NEWS_LIMIT',
@@ -1153,7 +1153,7 @@ CONFIG_SCHEMA = {
                 'key': 'SEARCH_PROVIDER',
                 'label': 'Search Provider',
                 'type': 'select',
-                'options': ['tavily', 'searxng', 'gdelt', 'serpapi', 'google', 'bing', 'duckduckgo', 'none'],
+                'options': ['tavily', 'searxng', 'gdelt', 'serpapi', 'google', 'bing', 'keenable', 'duckduckgo', 'none'],
                 'default': 'tavily',
                 'description': 'Primary news/web search provider used by AI analysis. QuantDinger falls back to configured providers, then GDELT and DuckDuckGo when available'
             },
@@ -1227,6 +1227,15 @@ CONFIG_SCHEMA = {
                 'link': 'https://portal.azure.com/',
                 'link_text': 'settings.link.getApiKey',
                 'description': 'Microsoft Bing Web Search API key'
+            },
+            {
+                'key': 'KEENABLE_API_KEY',
+                'label': 'Keenable API Key',
+                'type': 'password',
+                'required': False,
+                'link': 'https://docs.keenable.ai/authentication',
+                'link_text': 'settings.link.getApiKey',
+                'description': 'Optional. SEARCH_PROVIDER=keenable works without a key; a key only raises the rate limits'
             },
             {
                 'key': 'SEARCH_SEARXNG_ENGINES',
