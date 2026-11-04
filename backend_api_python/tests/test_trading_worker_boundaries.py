@@ -271,6 +271,21 @@ def test_distributed_restore_does_not_reregister_an_active_strategy(monkeypatch)
     assert executor.registered_streams == [(55, {stream})]
 
 
+def test_running_strategy_restore_cannot_be_disabled_by_legacy_env(monkeypatch):
+    monkeypatch.setenv("DISABLE_RESTORE_RUNNING_STRATEGIES", "true")
+    worker = TradingWorker(FakeExecutor(), FakeRepository())
+    calls = []
+    monkeypatch.setattr(
+        worker,
+        "restore_desired_strategies",
+        lambda: calls.append(True),
+    )
+
+    worker._restore_if_due(force=True)
+
+    assert calls == [True]
+
+
 def test_nonleader_persists_distributed_route_without_duplicate_market_stream(monkeypatch):
     from app.services.strategy import StrategyService
     from app.services.strategy_event_subscriptions import (

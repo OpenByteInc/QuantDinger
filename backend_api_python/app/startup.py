@@ -73,9 +73,6 @@ def start_portfolio_monitor():
 
 def start_pending_order_worker():
     """Start the pending order worker."""
-    if os.getenv("ENABLE_PENDING_ORDER_WORKER", "true").lower() != "true":
-        logger.info("Pending order worker is disabled. Set ENABLE_PENDING_ORDER_WORKER=true to enable.")
-        return
     try:
         get_pending_order_worker().start()
     except Exception as e:
@@ -143,9 +140,6 @@ def start_usdt_order_worker():
 
 def restore_running_strategies():
     """Restore running strategies on startup."""
-    if os.getenv("DISABLE_RESTORE_RUNNING_STRATEGIES", "false").lower() == "true":
-        logger.info("Startup strategy restore is disabled via DISABLE_RESTORE_RUNNING_STRATEGIES")
-        return
     if _is_debug_reloader_parent():
         return
     try:
@@ -240,9 +234,8 @@ def _start_trading_support_services(*, lease_guard=None) -> None:
     """Start exchange-facing services that belong with the trading runtime."""
     worker = get_pending_order_worker()
     worker.lease_guard = lease_guard
-    if os.getenv("ENABLE_PENDING_ORDER_WORKER", "true").lower() == "true":
-        if not worker.start():
-            raise RuntimeError("Pending order worker failed to start")
+    if not worker.start():
+        raise RuntimeError("Pending order worker failed to start")
     start_execution_stream_supervisor()
     start_grid_fill_poller()
 

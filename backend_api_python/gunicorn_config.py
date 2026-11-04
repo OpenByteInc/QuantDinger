@@ -22,6 +22,11 @@ timeout = 120
 graceful_timeout = 30
 keepalive = 5
 
+# Periodically replace workers so native allocations and fragmented heaps from
+# request handling cannot accumulate for the lifetime of the container.
+max_requests = max(1, int(os.getenv("GUNICORN_MAX_REQUESTS", "800")))
+max_requests_jitter = max(0, int(os.getenv("GUNICORN_MAX_REQUESTS_JITTER", "100")))
+
 # Do NOT preload — background threads in create_app() rely on being in
 # the actual worker process.  preload would start them in master then
 # lose them after fork.

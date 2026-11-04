@@ -59,7 +59,7 @@ def generate_token(user_id: int, username: str, role: str = 'user', token_versio
     Args:
         user_id: User ID
         username: Username
-        role: User role (admin/manager/user/viewer)
+        role: User role (admin/user/viewer)
         token_version: Token version for single-client enforcement
     
     Returns:
@@ -154,8 +154,10 @@ def verify_token(token: str) -> dict:
             logger.warning("Rejecting user %s with invalid database token_version", user_id)
             return None
 
-        role = auth_user.get('role')
-        if role not in ('admin', 'manager', 'user', 'viewer'):
+        from app.services.user_service import UserService
+
+        role = UserService.normalize_role(auth_user.get('role'))
+        if role not in ('admin', 'user', 'viewer'):
             logger.warning("Rejecting user %s with invalid database role", user_id)
             return None
 
@@ -254,7 +256,7 @@ def login_required(f):
             return jsonify({'code': 401, 'msg': 'Token invalid or expired', 'data': None}), 401
         
         verified_role = payload.get('_verified_user_role')
-        if verified_role not in ('admin', 'manager', 'user', 'viewer'):
+        if verified_role not in ('admin', 'user', 'viewer'):
             logger.warning("Verified token missing authoritative database role")
             return jsonify({'code': 401, 'msg': 'Token invalid or expired', 'data': None}), 401
 
@@ -278,20 +280,6 @@ def admin_required(f):
         role = getattr(g, 'user_role', None)
         if role != 'admin':
             return jsonify({'code': 403, 'msg': 'Admin access required', 'data': None}), 403
-        return f(*args, **kwargs)
-    return decorated
-
-
-def manager_required(f):
-    """
-    Decorator that requires manager or admin role.
-    Must be used after @login_required.
-    """
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        role = getattr(g, 'user_role', None)
-        if role not in ('admin', 'manager'):
-            return jsonify({'code': 403, 'msg': 'Manager access required', 'data': None}), 403
         return f(*args, **kwargs)
     return decorated
 

@@ -9,7 +9,18 @@ from app.utils.db import get_db_connection
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
-_SUPPORTED = {"binance", "okx", "bybit", "bitget", "gate", "htx", "ibkr"}
+_CRYPTO_VENUES = {"binance", "okx", "bybit", "bitget", "gate", "htx"}
+_DERIVATIVE_MARKETS = {"swap", "future", "futures", "perp", "perpetual"}
+
+
+def supports_reported_order_pnl(exchange_id, market_type):
+    exchange = str(exchange_id or "").strip().lower()
+    market = str(market_type or "").strip().lower()
+    if exchange == "ibkr":
+        return market == "usstock"
+    if exchange == "tiger":
+        return market in {"usstock", "hkstock"}
+    return exchange in _CRYPTO_VENUES and market in _DERIVATIVE_MARKETS
 
 
 def order_key(row):
@@ -89,14 +100,17 @@ def enrich_reported_order_pnl(rows, *, user_id, trading_config):
         row["exchange_pnl"] = {"status": "not_applicable"}
         if row.get("exchange_order_id"):
             groups[order_key(row)].append(row)
-    eligible = {k: v for k, v in groups.items() if k[0] > 0 and k[1] in _SUPPORTED
-                and (k[2] in {"swap", "future", "futures", "perp", "perpetual"} or (k[1] == "ibkr" and k[2] == "usstock"))
+    eligible = {k: v for k, v in groups.items() if k[0] > 0 and supports_reported_order_pnl(k[1], k[2])
                 and all(is_exit_trade_type(str(r.get("type") or "")) for r in v)}
     for key, members in groups.items():
         if any(is_exit_trade_type(str(r.get("type") or "")) for r in members):
             for row in members:
-                if key[2] == "spot" and key[1] in _SUPPORTED - {"ibkr"}:
+                if key[0] <= 0:
+                    row["exchange_pnl"] = {"status": "unavailable"}
+                elif key[2] == "spot" and key[1] in _CRYPTO_VENUES:
                     row["exchange_pnl"] = {"status": "not_applicable_spot"}
+                elif not supports_reported_order_pnl(key[1], key[2]):
+                    row["exchange_pnl"] = {"status": "unsupported"}
                 else:
                     row["exchange_pnl"] = {"status": "pending" if key in eligible else "unavailable"}
     if not eligible:

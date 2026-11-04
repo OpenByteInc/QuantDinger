@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS qd_users (
     nickname VARCHAR(50),
     avatar VARCHAR(255) DEFAULT '/avatar2.jpg',
     status VARCHAR(20) DEFAULT 'active',  -- active/disabled/pending
-    role VARCHAR(20) DEFAULT 'user',       -- admin/manager/user/viewer
+    role VARCHAR(20) DEFAULT 'user',       -- admin/user/viewer
     credits DECIMAL(20,2) DEFAULT 0,
     vip_expires_at TIMESTAMP,              -- VIP杩囨湡鏃堕棿
     vip_plan VARCHAR(64) DEFAULT '',

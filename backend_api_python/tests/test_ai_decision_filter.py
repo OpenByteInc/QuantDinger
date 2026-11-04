@@ -294,11 +294,50 @@ def test_llm_is_used_when_jev_is_not_configured(monkeypatch):
     assert result.model == "configured-model"
 
 
+def test_llm_is_used_when_jev_is_disabled(monkeypatch):
+    calls = []
+
+    class LLM:
+        def is_configured(self):
+            return True
+
+        def get_default_model(self):
+            return "configured-model"
+
+        def call_llm_api(self, *args, **kwargs):
+            calls.append(kwargs)
+            return '{"decision":"pass","confidence":0.8,"reason":"clear","checks":[]}'
+
+    monkeypatch.setattr(module.AIDecisionFilter, "_jev_config", staticmethod(lambda: {
+        "enabled": False,
+        "api_key": "saved-jev-key",
+        "base_url": "https://api.typesafe.ai/v1",
+        "model": "jev-latest",
+        "timeout_seconds": "8",
+        "min_confidence": "0.65",
+    }))
+    monkeypatch.setattr(
+        module.requests,
+        "post",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("JEV must not be called")),
+    )
+    monkeypatch.setattr(module, "LLMService", LLM)
+    monkeypatch.setattr(module.AIDecisionFilter, "_persist", staticmethod(lambda request, result: None))
+
+    result = module.AIDecisionFilter().evaluate(_request(), enabled=True)
+
+    assert result.allowed is True
+    assert result.provider == "llm"
+    assert result.model == "configured-model"
+    assert len(calls) == 1
+
+
 def test_jev_config_reads_the_latest_persisted_settings(monkeypatch):
     from app.services.settings import env_file
 
     monkeypatch.setenv("JEV_API_KEY", "stale-process-key")
     monkeypatch.setattr(env_file, "read_env_file", lambda: {
+        "JEV_ENABLED": "false",
         "JEV_API_KEY": "saved-key",
         "JEV_BASE_URL": "https://example.test/v1",
         "JEV_MODEL": "saved-model",
@@ -307,6 +346,7 @@ def test_jev_config_reads_the_latest_persisted_settings(monkeypatch):
     })
 
     assert module.AIDecisionFilter._jev_config() == {
+        "enabled": False,
         "api_key": "saved-key",
         "base_url": "https://example.test/v1",
         "model": "saved-model",

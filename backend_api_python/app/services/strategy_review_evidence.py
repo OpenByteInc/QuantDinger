@@ -7,7 +7,7 @@ import re
 from collections import Counter, defaultdict, deque
 from statistics import median
 
-from app.utils.trade_close_reason import is_exit_trade_type
+from app.utils.trade_close_reason import infer_legacy_close_reason, is_exit_trade_type
 
 
 def number(value):
@@ -128,14 +128,20 @@ def settings_diagnostics(trades, metrics, strategy, context, facts, cost_usable,
         "liquidation": {"exchange_liquidation"},
         "signal": {"indicator_signal", "signal_close", "signal_trigger", "legacy_signal_trigger"},
     }
-    groups = {key: {"code": key, "count": 0, "pnl_count": 0, "net_pnl": 0.0, "negative_pnl_abs": 0.0}
-              for key in (*reasons, "unknown")}
+    groups = {key: {"code": key, "count": 0, "recorded_count": 0, "inferred_count": 0,
+                    "pnl_count": 0, "net_pnl": 0.0, "negative_pnl_abs": 0.0}
+              for key in (*reasons, "other", "unknown")}
+    config = strategy.get("trading_config")
+    config = config if isinstance(config, dict) else {}
+    bot_type = str(strategy.get("bot_type") or config.get("bot_type") or "")
     closed = [t for t in trades if is_exit_trade_type(str(t.get("type") or ""))]
     for trade in closed:
-        reason = str(trade.get("close_reason") or "").strip().lower()
-        key = next((key for key, values in reasons.items() if reason in values), "unknown")
+        recorded = str(trade.get("close_reason") or "").strip().lower()
+        reason = recorded or infer_legacy_close_reason(str(trade.get("type") or ""), bot_type=bot_type)
+        key = next((key for key, values in reasons.items() if reason in values), "other" if recorded else "unknown")
         group = groups[key]
         group["count"] += 1
+        group["recorded_count" if recorded else "inferred_count"] += 1
         pnl = number(trade.get("profit"))
         if pnl is not None:
             group["pnl_count"] += 1
@@ -145,8 +151,6 @@ def settings_diagnostics(trades, metrics, strategy, context, facts, cost_usable,
         if not group["pnl_count"] or not cost_usable:
             group["net_pnl"] = group["negative_pnl_abs"] = None
     days = (now_ts - since_ts) / 86400 if now_ts > since_ts else None
-    config = strategy.get("trading_config")
-    config = config if isinstance(config, dict) else {}
     capital = number(strategy.get("initial_capital") or config.get("initial_capital"))
     leverage = number(config.get("leverage", strategy.get("leverage")))
     if config.get("leverage_enabled") is False:
@@ -163,6 +167,8 @@ def settings_diagnostics(trades, metrics, strategy, context, facts, cost_usable,
         "take_profit_fills": groups["take_profit"]["count"],
         "take_profit_net": groups["take_profit"]["net_pnl"],
         "unknown_exit_fills": groups["unknown"]["count"],
+        "recorded_exit_reason_fills": sum(group["recorded_count"] for group in groups.values()),
+        "inferred_exit_reason_fills": sum(group["inferred_count"] for group in groups.values()),
         "exit_reason_coverage_pct": 100 * (len(closed) - groups["unknown"]["count"]) / len(closed) if closed else None,
         "configured_leverage": leverage,
         "worst_close_loss": worst,
@@ -184,13 +190,17 @@ def settings_diagnostics(trades, metrics, strategy, context, facts, cost_usable,
     before = facts["before_commission_pnl"]
     cost_finding = "cost_unknown" if before is None else "cost_negative" if net < 0 and before < 0 else "cost_flipped" if net < 0 else "cost_recorded"
     short_loss = cost_usable and facts["short_hold_count"] >= 5 and (facts["short_hold_net_pnl"] or 0) < 0
+    protective_exit_count = sum(groups[key]["count"] for key in ("stop_loss", "take_profit", "trailing", "liquidation"))
+    classified_exit_count = len(closed) - groups["unknown"]["count"]
+    exit_finding = "exits_observed" if protective_exit_count else "exits_signal_only" if classified_exit_count else "exits_unknown"
     checks = [
         check("cost_check", "observed" if before is not None else "insufficient", cost_finding,
               "cost_sensitivity" if cost_usable else "reconcile_fees", ["window_net_pnl", "commission", "before_commission_pnl"]),
         check("frequency_check", "review" if short_loss else "insufficient", "frequency_short" if short_loss else "frequency_unknown",
               "frequency_filter", ["events_per_day", "closes_per_day", "short_hold_count", "short_hold_net_pnl"]),
-        check("exits_check", "review" if groups["stop_loss"]["count"] or groups["take_profit"]["count"] else "insufficient", "exits_observed" if groups["stop_loss"]["count"] or groups["take_profit"]["count"] else "exits_unknown",
-              "exit_timing", ["stop_loss_fills", "stop_loss_net", "take_profit_fills", "take_profit_net", "exit_reason_coverage_pct"]),
+        check("exits_check", "review" if classified_exit_count else "insufficient", exit_finding,
+              "exit_timing", ["stop_loss_fills", "stop_loss_net", "take_profit_fills", "take_profit_net",
+                              "recorded_exit_reason_fills", "inferred_exit_reason_fills", "exit_reason_coverage_pct"]),
         check("risk_check", "review" if groups["liquidation"]["count"] else "insufficient", "risk_liquidation" if groups["liquidation"]["count"] else "risk_unknown",
               "risk_budget", ["configured_leverage", "worst_close_loss", "worst_close_initial_pct", "liquidation_fills"]),
     ]
@@ -199,7 +209,55 @@ def settings_diagnostics(trades, metrics, strategy, context, facts, cost_usable,
     return checks, list(groups.values()), settings[:30]
 
 
-def build_evidence(*, metrics, trades, strategy, context, since_ts, now_ts, log_levels, all_trades=None):
+def _compact_trade_ledger(trades, limit=400, bot_type=""):
+    fields = (
+        "id", "created_at", "symbol", "type", "price", "amount", "value",
+        "profit", "profit_gross", "commission", "commission_quote", "commission_ccy",
+        "close_reason", "matched_entry_price",
+    )
+    ordered = sorted(trades, key=lambda row: (row.get("created_at") or 0, row.get("id") or 0))
+    included = ordered if len(ordered) <= limit else ordered[-limit:]
+    ledger = []
+    for row in included:
+        item = {key: row.get(key) for key in fields}
+        recorded = str(row.get("close_reason") or "").strip()
+        effective = recorded or infer_legacy_close_reason(str(row.get("type") or ""), bot_type=bot_type)
+        item["review_close_reason"] = effective
+        item["review_close_reason_source"] = "recorded" if recorded else "inferred" if effective else "missing"
+        ledger.append(item)
+    return ledger, len(ordered) <= limit
+
+
+def _safe_log_events(logs, limit=80):
+    events = []
+    for row in list(logs or [])[:limit]:
+        if not isinstance(row, dict):
+            continue
+        message = str(row.get("message") or "")[:1200]
+        message = re.sub(r"(?i)\b(bearer)\s+\S+", r"\1 <redacted>", message)
+        message = re.sub(r"(?i)\b(api[_-]?key|secret|token|password|credential)\s*[:=]\s*[^\s,;]+", r"\1=<redacted>", message)
+        message = re.sub(r"https?://\S+", "<redacted-url>", message)
+        message = re.sub(r"\b[A-Fa-f0-9]{32,}\b", "<redacted-id>", message)
+        events.append({
+            "id": row.get("id"),
+            "level": str(row.get("level") or "unknown")[:24],
+            "message": message[:600],
+            "created_at": row.get("created_at"),
+        })
+    return events
+
+
+def _compact_positions(positions, limit=100):
+    fields = (
+        "id", "symbol", "side", "size", "entry_price", "current_price",
+        "unrealized_pnl", "created_at", "updated_at",
+    )
+    return [{key: row.get(key) for key in fields} for row in list(positions or [])[:limit] if isinstance(row, dict)]
+
+
+def build_evidence(*, metrics, trades, strategy, context, since_ts, now_ts, log_levels, all_trades=None,
+                   positions=None, logs=None):
+    all_closed = [t for t in trades if is_exit_trade_type(str(t.get("type") or ""))]
     closed = [t for t in trades if is_exit_trade_type(str(t.get("type") or "")) and number(t.get("profit")) is not None]
     pnls = [number(t["profit"]) for t in closed]
     wins, losses = [p for p in pnls if p > 0], [p for p in pnls if p < 0]
@@ -284,7 +342,24 @@ def build_evidence(*, metrics, trades, strategy, context, since_ts, now_ts, log_
         samples.append({key: trade.get(key) for key in (
             "id", "created_at", "symbol", "type", "price", "amount", "profit", "profit_gross", "commission_quote", "commission"
         )})
-    gaps_list = ["market_path", "funding", "execution_cost", "version_continuity", "fill_not_roundtrip"]
+    bot_type = str(strategy.get("bot_type") or config.get("bot_type") or "")
+    trade_ledger, trade_ledger_complete = _compact_trade_ledger(trades, bot_type=bot_type)
+    log_events = _safe_log_events(logs)
+    current_positions = _compact_positions(positions)
+    execution_mode = str(strategy.get("execution_mode") or config.get("execution_mode") or "signal").lower()
+    market_type = str(config.get("market_type") or strategy.get("market_type") or "").lower()
+    derivative_market = any(token in market_type for token in ("future", "perpetual", "swap", "margin"))
+    gaps_list = []
+    if not trade_ledger_complete:
+        gaps_list.append("trade_ledger_truncated")
+    if all_closed and facts.get("exit_reason_coverage_pct") != 100:
+        gaps_list.append("exit_reason")
+    if trades:
+        gaps_list.extend(("market_path", "historical_positions", "version_continuity"))
+    if derivative_market:
+        gaps_list.append("funding")
+    if execution_mode != "signal" and trades:
+        gaps_list.append("execution_cost")
     if not context.get("available"):
         gaps_list.append("source")
     if context.get("truncated"):
@@ -302,8 +377,19 @@ def build_evidence(*, metrics, trades, strategy, context, since_ts, now_ts, log_
         "facts": facts, "issues": issues, "checks": checks, "exit_groups": exit_groups,
         "current_settings": settings, "holding_groups": holding_groups,
         "coverage": {"gaps": gaps_list, "unconverted_fees": unconverted, "cost_usable": cost_usable,
-                     "unspecified_fee_currency": unspecified, "source_available": bool(context.get("available"))},
+                     "unspecified_fee_currency": unspecified, "source_available": bool(context.get("available")),
+                     "trade_rows_total": len(trades), "trade_rows_included": len(trade_ledger),
+                     "trade_ledger_complete": trade_ledger_complete, "closed_rows_total": len(all_closed),
+                     "exit_reason_rows": len(all_closed) - facts.get("unknown_exit_fills", 0),
+                     "exit_reason_recorded_rows": facts.get("recorded_exit_reason_fills", 0),
+                     "exit_reason_inferred_rows": facts.get("inferred_exit_reason_fills", 0),
+                     "current_position_rows": len(current_positions), "log_rows_total": len(logs or []),
+                     "log_rows_included": len(log_events), "position_scope": "current_snapshot",
+                     "source_scope": context.get("scope") or "current_deployment_only"},
         "source": {key: value for key, value in context.items() if key != "outline"},
+        "trade_ledger": trade_ledger,
+        "current_positions": current_positions,
+        "log_events": log_events,
         "trade_samples": samples, "sample_policy": "worst_10_and_latest_20_not_representative",
         "log_levels": dict(Counter(log_levels)),
         "verdict": "insufficient_data" if len(closed) < 5 or not cost_usable else ("review_required" if net < 0 else "unvalidated"),

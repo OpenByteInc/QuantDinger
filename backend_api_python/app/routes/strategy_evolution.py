@@ -52,6 +52,25 @@ def estimate_strategy_evolution():
         return jsonify({"code": 0, "msg": str(exc), "data": None}), 400
 
 
+@strategy_evolution_blp.route("/preflight", methods=["POST"])
+@login_required
+def preflight_strategy_evolution():
+    try:
+        payload = request.get_json(silent=True) or {}
+        data = get_strategy_evolution_service().preflight(
+            user_id=int(g.user_id),
+            payload=payload,
+        )
+        return jsonify({"code": 1, "msg": "common.success", "data": data})
+    except BacktestRangeLimitError as exc:
+        return jsonify({"code": 0, "msg": str(exc), "data": exc.details}), 400
+    except ValueError as exc:
+        return jsonify({"code": 0, "msg": str(exc), "data": None}), 400
+    except Exception:
+        logger.exception("Strategy evolution preflight failed")
+        return jsonify({"code": 0, "msg": "strategyEvolution.preflightFailed", "data": None}), 500
+
+
 @strategy_evolution_blp.route("/run", methods=["POST"])
 @login_required
 def run_strategy_evolution():

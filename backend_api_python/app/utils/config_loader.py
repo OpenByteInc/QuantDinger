@@ -196,7 +196,6 @@ def load_addon_config() -> Dict[str, Any]:
         ('SEARCH_MAX_RESULTS', 'search.max_results', 'int'),
         ('SEARCH_GOOGLE_API_KEY', 'search.google.api_key', 'string'),
         ('SEARCH_GOOGLE_CX', 'search.google.cx', 'string'),
-        ('SEARCH_BING_API_KEY', 'search.bing.api_key', 'string'),
         ('SEARCH_SEARXNG_BASE_URL', 'search.searxng.base_url', 'string'),
         ('SEARCH_SEARXNG_ENGINES', 'search.searxng.engines', 'string'),
         ('SEARCH_SEARXNG_CATEGORIES', 'search.searxng.categories', 'string'),

@@ -21,7 +21,7 @@ Review at least:
 QUANTDINGER_DEPLOYMENT_MODE=saas
 FRONTEND_URL=https://app.example.com,https://m.example.com
 ENABLE_REGISTRATION=true
-ALLOW_LOCAL_DESKTOP_BROKERS=false
+ENABLED_TRADING_VENUES=alpaca,tiger,webull,binance,okx,bybit,bitget,gate,htx
 BILLING_ENABLED=true
 ```
 
@@ -58,4 +58,3 @@ Verify identity lifecycle, cross-tenant isolation, billing idempotency, migratio
 Progress through internal administrators, invited users, limited paid users, and finally public registration. At each stage inspect authentication failures, API latency, queue lag, database connections, payment failures, and trading incidents.
 
 Continue with [post-installation setup](../getting-started/POST_INSTALL_SETUP.md) and the [installation FAQ](INSTALLATION_FAQ.md).
-

@@ -1889,14 +1889,14 @@ def _macro_setup_guidance(indicator: str, provider_status: dict) -> list[dict]:
             "reason": "Provides structured global macro calendar fields such as actual, forecast, and previous.",
         },
         {
-            "target": "Google Custom Search fallback",
-            "settings": ["SEARCH_GOOGLE_API_KEY", "SEARCH_GOOGLE_CX"],
-            "reason": "Recommended low-cost fallback for current macro releases, company news, symbol discovery, and source verification.",
+            "target": "Configured web search",
+            "settings": ["TAVILY_API_KEYS", "SEARCH_SEARXNG_BASE_URL", "SERPAPI_KEYS"],
+            "reason": "Provides current macro releases, company news, symbol discovery, and source verification.",
         },
         {
-            "target": "Other search providers",
-            "settings": ["SEARCH_SEARXNG_BASE_URL", "SEARCH_GOOGLE_API_KEY + SEARCH_GOOGLE_CX", "SEARCH_BING_API_KEY", "TAVILY_API_KEYS"],
-            "reason": "Lets Copilot verify newly released macro figures when the calendar provider is missing them.",
+            "target": "Legacy Google Custom Search",
+            "settings": ["SEARCH_GOOGLE_API_KEY", "SEARCH_GOOGLE_CX"],
+            "reason": "Existing Google Custom Search customers can use it during the provider migration period.",
         },
     ]
     if indicator == "US_NONFARM_PAYROLLS":

@@ -43,7 +43,9 @@ def get_market_indicators():
         code_visibility: 'visible' / 'hidden' / empty (all)
         min_price, max_price: Numeric price bounds
         sort_by: 'score' (default) / 'newest' / 'hot' / 'price_asc' /
-                 'price_desc' / 'rating'.
+                 'price_desc' / 'rating' / 'views' / 'installs' /
+                 'annual_return' / 'max_drawdown' / 'sharpe' / 'users'.
+        sort_order: 'asc' / 'desc' for sortable catalog columns.
                  'score' sorts by the composite Strategy API V2 backtest score
                  (see services/community_kpis.py) and is now the
                  default — putting genuinely well-performing indicators
@@ -72,6 +74,9 @@ def get_market_indicators():
         if min_price is not None and max_price is not None and min_price > max_price:
             min_price, max_price = max_price, min_price
         sort_by = request.args.get('sort_by', 'score').strip()
+        sort_order = request.args.get('sort_order', '').strip().lower()
+        if sort_order not in {'asc', 'desc'}:
+            sort_order = None
         asset_type = request.args.get('asset_type', '').strip() or None
         market = request.args.get('market', '').strip() or None
         market_type = request.args.get('market_type', '').strip().lower() or None
@@ -99,6 +104,7 @@ def get_market_indicators():
             min_price=min_price,
             max_price=max_price,
             sort_by=sort_by,
+            sort_order=sort_order,
             user_id=g.user_id,
             accept_language=accept_lang,
             asset_type=asset_type,

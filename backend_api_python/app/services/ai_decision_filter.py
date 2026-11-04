@@ -151,9 +151,12 @@ class AIDecisionFilter:
 
         failures: list[str] = []
         jev_config = self._jev_config()
+        jev_enabled = str(jev_config.get("enabled", True)).strip().lower() in {
+            "1", "true", "yes", "on",
+        }
         llm: LLMService | None = None
         llm_configured = False
-        if not jev_config["api_key"]:
+        if not jev_enabled or not jev_config["api_key"]:
             try:
                 llm = LLMService()
                 llm_configured = llm.is_configured()
@@ -191,7 +194,7 @@ class AIDecisionFilter:
             self._persist(request, result)
             return result
 
-        if jev_config["api_key"]:
+        if jev_enabled and jev_config["api_key"]:
             try:
                 result = replace(
                     self._evaluate_jev(request, decision_id, started, jev_config),
@@ -242,7 +245,7 @@ class AIDecisionFilter:
         request: AIDecisionRequest,
         decision_id: str,
         started: float,
-        config: dict[str, str],
+        config: dict[str, Any],
     ) -> AIDecisionResult:
         base_url = config["base_url"].strip().rstrip("/")
         url = base_url if base_url.endswith("/systemone") else f"{base_url}/systemone"
@@ -495,7 +498,7 @@ class AIDecisionFilter:
         return parsed
 
     @staticmethod
-    def _jev_config() -> dict[str, str]:
+    def _jev_config() -> dict[str, Any]:
         values: dict[str, str] = {}
         try:
             from app.services.settings.env_file import read_env_file
@@ -510,6 +513,7 @@ class AIDecisionFilter:
             return str(os.getenv(key, default) or default).strip()
 
         return {
+            "enabled": setting("JEV_ENABLED", "true").lower() in {"1", "true", "yes", "on"},
             "api_key": setting("JEV_API_KEY"),
             "base_url": setting("JEV_BASE_URL", "https://api.typesafe.ai/v1"),
             "model": setting("JEV_MODEL", "jev-latest"),

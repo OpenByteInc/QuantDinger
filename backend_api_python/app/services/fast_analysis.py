@@ -496,11 +496,12 @@ class FastAnalysisService(FastAnalysisScoringMixin):
         }
         ensemble_models = []
         if os.getenv("ENABLE_AI_ENSEMBLE", "false").lower() == "true":
-            ensemble_models = [
-                item.strip()
-                for item in (os.getenv("AI_ENSEMBLE_MODELS") or "").split(",")
-                if item.strip()
-            ][:3]
+            for item in (os.getenv("AI_ENSEMBLE_MODELS") or "").split(","):
+                normalized = item.strip()
+                if normalized and normalized not in ensemble_models:
+                    ensemble_models.append(normalized)
+                if len(ensemble_models) == 3:
+                    break
         if len(ensemble_models) < 2:
             raw = self.llm_service.safe_call_llm(
                 system_prompt, user_prompt, default_structure=default_struct, model=model
@@ -522,12 +523,17 @@ class FastAnalysisService(FastAnalysisScoringMixin):
             for item in ensemble_models
         ]
         decisions = [str(item.get("decision") or "HOLD").upper() for item in analyses]
-        vote = Counter(decisions).most_common(1)[0][0]
-        selected = analyses[decisions.index(vote)].copy()
+        vote_counts = Counter(decisions)
+        vote, vote_count = vote_counts.most_common(1)[0]
+        has_majority = vote_count > len(decisions) / 2
+        if not has_majority:
+            vote = "HOLD"
+        selected = analyses[decisions.index(vote)].copy() if vote in decisions else analyses[0].copy()
         selected.update({
             "decision": vote,
-            "_ensemble_vote": dict(Counter(decisions)),
+            "_ensemble_vote": dict(vote_counts),
             "_ensemble_models": ensemble_models,
+            "_ensemble_consensus": has_majority,
         })
         return selected
 
@@ -573,7 +579,7 @@ class FastAnalysisService(FastAnalysisScoringMixin):
             report = build_professional_report(
                 data,
                 result,
-                data_tier=os.getenv("PROFESSIONAL_REPORT_DATA_TIER", "community").strip().lower(),
+                data_tier="community",
                 account_risk_budget_pct=float(
                     os.getenv("PROFESSIONAL_REPORT_RISK_BUDGET_PCT", "1.0") or 1.0
                 ),
@@ -1104,12 +1110,14 @@ class FastAnalysisService(FastAnalysisScoringMixin):
                 try:
                     from app.services.analysis_memory import get_analysis_memory
                     raw_conf = int(analysis.get("confidence", 50) or 50)
-                    analysis["confidence"] = get_analysis_memory().get_adjusted_confidence(
+                    adjusted_conf = get_analysis_memory().get_adjusted_confidence(
                         raw_conf,
                         user_id=int(user_id),
                         market=market,
                         symbol=symbol,
                     )
+                    analysis["confidence"] = adjusted_conf
+                    analysis["_confidence_calibrated"] = adjusted_conf != raw_conf
                 except Exception as e:
                     logger.debug(f"Confidence calibration skipped: {e}")
             
@@ -1130,6 +1138,7 @@ class FastAnalysisService(FastAnalysisScoringMixin):
             result.update({
                 "decision": analysis.get("decision", "HOLD"),
                 "confidence": analysis.get("confidence", 50),
+                "confidence_calibrated": bool(analysis.get("_confidence_calibrated", False)),
                 "summary": analysis.get("summary", ""),
                 "model": model,  # Model is already set in result initialization
                 "language": language,  # Ensure language is included for task record

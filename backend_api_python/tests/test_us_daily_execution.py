@@ -3,7 +3,11 @@ from datetime import datetime, timezone
 import pandas as pd
 import pytest
 
-from app.services.market_schedule import equity_daily_bar_cutoff, equity_daily_execution_session
+from app.services.market_schedule import (
+    equity_daily_bar_cutoff,
+    equity_daily_execution_session,
+    is_equity_market_open,
+)
 from app.services.strategy_runtime.timeframes import daily_equity_execution_policy, equity_daily_frames_ready
 from app.services.strategy_v2 import market_data
 
@@ -41,6 +45,20 @@ def test_daily_cutoff_uses_completed_session(now, expected):
 def test_execution_window_dst_holidays_and_early_close(now, expected):
     session = equity_daily_execution_session("USStock", now=utc(now))
     assert (session.date().isoformat() if session else None) == expected
+
+
+@pytest.mark.parametrize("now, expected", [
+    ("2026-09-18T13:29:59", False),
+    ("2026-09-18T13:30:00", True),
+    ("2026-09-18T19:59:59", True),
+    ("2026-09-18T20:00:00", False),
+    ("2026-09-19T15:00:00", False),
+    ("2026-11-27T17:59:59", True),
+    ("2026-11-27T18:00:00", False),
+    ("2026-12-25T15:00:00", False),
+])
+def test_us_regular_market_session_gate(now, expected):
+    assert is_equity_market_open("USStock", utc(now)) is expected
 
 
 def test_crypto_cutoff_and_custom_schedules_are_unchanged():
@@ -163,6 +181,25 @@ def test_delayed_daily_provider_is_retried_in_shared_cache(monkeypatch):
 def test_hk_execution_lunch_break_half_day_and_holidays(now, expected):
     session = equity_daily_execution_session("HKStock", now=utc(now))
     assert (session.date().isoformat() if session else None) == expected
+
+
+@pytest.mark.parametrize("now, expected", [
+    ("2026-09-18T01:29:59", False),
+    ("2026-09-18T01:30:00", True),
+    ("2026-09-18T03:59:59", True),
+    ("2026-09-18T04:00:00", False),
+    ("2026-09-18T04:59:59", False),
+    ("2026-09-18T05:00:00", True),
+    ("2026-09-18T08:00:00", False),
+    ("2026-09-19T02:00:00", False),
+    ("2026-12-25T02:00:00", False),
+])
+def test_hk_regular_market_session_gate(now, expected):
+    assert is_equity_market_open("HKStock", utc(now)) is expected
+
+
+def test_non_equity_market_session_gate_is_continuous():
+    assert is_equity_market_open("Crypto", utc("2026-09-19T02:00:00")) is True
 
 
 def test_hk_daily_candle_date_is_hong_kong_date_not_utc_date():

@@ -126,10 +126,11 @@ def _explicit_equity_marker(raw: Mapping[str, Any]) -> bool:
             "businessType",
             "business_type",
             "marketRegion",
+            "tradfi_labels",
         )
     ).lower()
     return inst_category == "3" or has_named_underlying or any(
-        token in fields for token in ("stock", "xstock", "equity", "tradfi", "etf")
+        token in fields for token in ("stock", "xstock", "equity", "etf")
     )
 
 

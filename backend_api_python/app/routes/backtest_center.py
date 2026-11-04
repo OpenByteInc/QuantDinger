@@ -18,7 +18,7 @@ from app.services.backtest_execution import (
     parse_rate,
 )
 from app.services.backtest_limits import BacktestRangeLimitError
-from app.services.billing_service import BillingError, get_billing_service
+from app.services.billing_service import BillingError
 from app.services.backtest_jobs import run_backtest_job
 from app.services.script_source import get_script_source_service
 from app.services.strategy_v2 import (
@@ -134,67 +134,6 @@ def _prepare_run(payload: dict[str, Any], user_id: int) -> dict[str, Any]:
     }
 
 
-def _run_prepared(prepared: dict[str, Any], *, persist: bool) -> tuple[int | None, dict[str, Any]]:
-    return get_strategy_backtest_service().run(**prepared, persist=persist)
-
-
-def _run(payload: dict[str, Any], user_id: int, *, persist: bool) -> tuple[int | None, dict[str, Any]]:
-    return _run_prepared(_prepare_run(payload, user_id), persist=persist)
-
-
-def _consume_backtest_credits(user_id: int) -> tuple[Any, dict[str, Any]]:
-    """Charge one backtest run and return a response-safe billing snapshot."""
-    billing = get_billing_service()
-    enabled = bool(billing.is_billing_enabled())
-    cost = max(0, int(billing.get_feature_cost("backtest") or 0))
-    reference_id = f"backtest:{uuid4().hex}"
-    charge = {
-        "enabled": enabled,
-        "cost": cost,
-        "charged": 0,
-        "remaining": float(billing.get_user_credits(user_id)),
-        "referenceId": reference_id,
-    }
-    if not enabled or cost <= 0:
-        return billing, charge
-
-    success, message = billing.check_and_consume(
-        user_id=user_id,
-        feature="backtest",
-        reference_id=reference_id,
-    )
-    if not success:
-        current = float(billing.get_user_credits(user_id))
-        if str(message).startswith("insufficient_credits:"):
-            return billing, {
-                **charge,
-                "error": "insufficient_credits",
-                "current": current,
-                "required": cost,
-                "shortage": max(0, cost - current),
-            }
-        return billing, {**charge, "error": "billing_error", "message": str(message)}
-
-    charge["charged"] = cost
-    charge["remaining"] = float(billing.get_user_credits(user_id))
-    return billing, charge
-
-
-def _refund_backtest_credits(billing: Any, user_id: int, charge: dict[str, Any]) -> None:
-    cost = int(charge.get("charged") or 0)
-    if not billing or cost <= 0:
-        return
-    refunded, message = billing.add_credits(
-        user_id=user_id,
-        amount=cost,
-        action="refund",
-        remark="Automatic refund: backtest execution failed",
-        reference_id=str(charge.get("referenceId") or ""),
-    )
-    if not refunded:
-        logger.error("Backtest credit refund failed for user %s: %s", user_id, message)
-
-
 def _job_payload(prepared: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "code": prepared["code"],
@@ -235,6 +174,7 @@ def _public_backtest_job(row: dict[str, Any] | None) -> dict[str, Any] | None:
         billing = request_payload.get("__billing")
     return {
         "jobId": row.get("job_id"),
+        "kind": row.get("kind"),
         "status": row.get("status"),
         "progress": progress or {},
         "result": result,
@@ -246,19 +186,30 @@ def _public_backtest_job(row: dict[str, Any] | None) -> dict[str, Any] | None:
     }
 
 
+_HUMAN_BACKTEST_JOB_KINDS = frozenset({
+    "backtest",
+    "factor_research",
+    "factor_benchmark_human",
+})
+
+
+def _submit_backtest_job(payload: dict[str, Any], user_id: int) -> dict[str, Any]:
+    prepared = _prepare_run(payload, user_id)
+    return agent_jobs.submit_job(
+        user_id=user_id,
+        agent_token_id=None,
+        kind="backtest",
+        request_payload=_job_payload(prepared, payload),
+        runner=run_backtest_job,
+    )
+
+
 @backtest_center_blp.route("/jobs", methods=["POST"])
 @login_required
 def create_strategy_backtest_job():
     try:
         payload = request.get_json(silent=True) or {}
-        prepared = _prepare_run(payload, int(g.user_id))
-        receipt = agent_jobs.submit_job(
-            user_id=int(g.user_id),
-            agent_token_id=None,
-            kind="backtest",
-            request_payload=_job_payload(prepared, payload),
-            runner=run_backtest_job,
-        )
+        receipt = _submit_backtest_job(payload, int(g.user_id))
         return jsonify({
             "code": 1,
             "msg": "common.success",
@@ -287,7 +238,7 @@ def create_strategy_backtest_job():
 @login_required
 def get_strategy_backtest_job(job_id: str):
     row = agent_jobs.get_job(job_id, user_id=int(g.user_id))
-    if not row or row.get("kind") != "backtest":
+    if not row or row.get("kind") not in _HUMAN_BACKTEST_JOB_KINDS:
         return jsonify({"code": 0, "msg": "strategyV2.backtest.jobNotFound", "data": None}), 404
     return jsonify({"code": 1, "msg": "common.success", "data": _public_backtest_job(row)})
 
@@ -296,7 +247,7 @@ def get_strategy_backtest_job(job_id: str):
 @login_required
 def cancel_strategy_backtest_job(job_id: str):
     row = agent_jobs.get_job(job_id, user_id=int(g.user_id))
-    if not row or row.get("kind") != "backtest":
+    if not row or row.get("kind") not in _HUMAN_BACKTEST_JOB_KINDS:
         return jsonify({"code": 0, "msg": "strategyV2.backtest.jobNotFound", "data": None}), 404
     cancelled = agent_jobs.cancel_job(job_id, user_id=int(g.user_id))
     return jsonify({
@@ -309,156 +260,155 @@ def cancel_strategy_backtest_job(job_id: str):
 @backtest_center_blp.route("/run", methods=["POST"])
 @login_required
 def run_strategy_backtest():
-    billing = None
-    charge: dict[str, Any] = {}
-    user_id = int(g.user_id)
     try:
         payload = request.get_json(silent=True) or {}
-        prepared = _prepare_run(payload, user_id)
-        billing, charge = _consume_backtest_credits(user_id)
-        if charge.get("error") == "insufficient_credits":
-            return jsonify({
-                "code": 0,
-                "msg": "insufficient_credits",
-                "data": {
-                    "error_type": "INSUFFICIENT_CREDITS",
-                    "feature": "backtest",
-                    "current": charge["current"],
-                    "required": charge["required"],
-                    "shortage": charge["shortage"],
-                },
-            }), 402
-        if charge.get("error"):
-            return jsonify({
-                "code": 0,
-                "msg": charge.get("message") or "Failed to deduct credits",
-                "data": {"error_type": "BILLING_ERROR", "feature": "backtest"},
-            }), 500
-
-        run_id, result = _run_prepared(prepared, persist=bool(payload.get("persist", True)))
-        billing_data = {
-            key: charge.get(key)
-            for key in ("enabled", "cost", "charged", "remaining")
-        }
+        receipt = _submit_backtest_job(payload, int(g.user_id))
         return jsonify({
             "code": 1,
-            "msg": "success",
-            "data": {**result, "runId": run_id, "billing": billing_data},
-        })
+            "msg": "common.success",
+            "data": _public_backtest_job(receipt),
+        }), 202
+    except BillingError as exc:
+        return jsonify({
+            "code": 0,
+            "msg": exc.code,
+            "data": {"error_type": exc.code, **exc.details},
+        }), exc.status
     except BacktestRangeLimitError as exc:
-        _refund_backtest_credits(billing, user_id, charge)
         return jsonify({
             "code": 0,
             "msg": "strategyV2.backtestRangeLimit",
             "data": exc.details,
         }), 400
     except ValueError as exc:
-        _refund_backtest_credits(billing, user_id, charge)
         return jsonify({"code": 0, "msg": _public_request_error(exc), "data": None}), 400
     except Exception:
-        _refund_backtest_credits(billing, user_id, charge)
-        logger.exception("Strategy backtest failed")
+        logger.exception("Strategy backtest job submission failed")
         return jsonify({"code": 0, "msg": "strategyV2.backtest.runFailed", "data": None}), 500
 
 
-@backtest_center_blp.route("/factor-research", methods=["POST"])
-@backtest_center_blp.doc(
-    summary="Run factor research with built-in or TA-Lib 0.8.1 factors",
-    description=(
-        "Accepts factorId and optional factorParams. TA-Lib factors use the "
-        "talib: namespace and support explicit output selection for "
-        "multi-output functions."
-    ),
-)
-@login_required
-def run_factor_research():
-    try:
-        payload = request.get_json(silent=True) or {}
-        start_raw = str(payload.get("startDate") or "").strip()
-        end_raw = str(payload.get("endDate") or "").strip()
-        if not start_raw or not end_raw:
-            raise ValueError("strategyV2.dateRangeRequired")
-        factor_id = str(payload.get("factorId") or "momentum_20")
-        factor_params = payload.get("factorParams") if isinstance(payload.get("factorParams"), dict) else {}
-        groups = max(2, min(10, int(payload.get("groups") or 5)))
-        holding_period = max(1, int(payload.get("holdingPeriod") or 5))
-        commission = parse_rate(payload.get("commission"), default=default_commission_if_missing(None))
-        slippage = parse_rate(payload.get("slippage"), default=default_slippage_if_missing(None))
-        neutralize_industry = bool(payload.get("neutralizeIndustry", False))
-        universe_id = _positive_int(payload.get("universeId"))
-        source_id = None
-        source_name = ""
-        code = ""
-        if universe_id:
-            result = get_strategy_backtest_service().research_universe_factor(
-                user_id=int(g.user_id),
-                universe_id=universe_id,
-                frequency=str(payload.get("frequency") or "1d"),
-                start_date=datetime.strptime(start_raw, "%Y-%m-%d"),
-                end_date=datetime.strptime(end_raw, "%Y-%m-%d").replace(hour=23, minute=59, second=59),
-                factor_id=factor_id,
-                factor_params=factor_params,
-                groups=groups,
-                holding_period=holding_period,
-                commission=commission,
-                slippage=slippage,
-                neutralize_industry=neutralize_industry,
-            )
-        else:
-            code, source_id, _strategy_id, source_name = _source(payload, int(g.user_id))
-            if not source_id:
-                raise ValueError("strategyV2.sourceContractRequired")
-            result = get_strategy_backtest_service().research_factor(
-                user_id=int(g.user_id),
-                code=code,
-                start_date=datetime.strptime(start_raw, "%Y-%m-%d"),
-                end_date=datetime.strptime(end_raw, "%Y-%m-%d").replace(hour=23, minute=59, second=59),
-                factor_id=factor_id,
-                factor_params=factor_params,
-                groups=groups,
-                holding_period=holding_period,
-                commission=commission,
-                slippage=slippage,
-                neutralize_industry=neutralize_industry,
-            )
-        manifest = dict(result.get("manifest") or {})
-        universe = dict(result.get("universe") or {})
-        run_id = get_factor_research_repository().persist_run(
-            user_id=int(g.user_id),
-            source_id=source_id,
-            source_name=source_name,
+def _prepare_factor_research_job(payload: dict[str, Any], user_id: int) -> dict[str, Any]:
+    prepared = deepcopy(payload)
+    start_raw = str(payload.get("startDate") or "").strip()
+    end_raw = str(payload.get("endDate") or "").strip()
+    if not start_raw or not end_raw:
+        raise ValueError("strategyV2.dateRangeRequired")
+    datetime.strptime(start_raw, "%Y-%m-%d")
+    datetime.strptime(end_raw, "%Y-%m-%d")
+    universe_id = _positive_int(payload.get("universeId"))
+    source_id = None
+    source_name = ""
+    code = ""
+    if not universe_id:
+        code, source_id, _strategy_id, source_name = _source(payload, user_id)
+        if not source_id:
+            raise ValueError("strategyV2.sourceContractRequired")
+    prepared.update({
+        "code": code,
+        "sourceId": source_id,
+        "sourceName": source_name,
+        "universeId": universe_id,
+        "__user_id": user_id,
+    })
+    return prepared
+
+
+def _run_factor_research_job(payload: dict[str, Any], on_progress=None) -> dict[str, Any]:
+    user_id = int(payload["__user_id"])
+    start_raw = str(payload.get("startDate") or "").strip()
+    end_raw = str(payload.get("endDate") or "").strip()
+    factor_id = str(payload.get("factorId") or "momentum_20")
+    factor_params = payload.get("factorParams") if isinstance(payload.get("factorParams"), dict) else {}
+    groups = max(2, min(10, int(payload.get("groups") or 5)))
+    holding_period = max(1, int(payload.get("holdingPeriod") or 5))
+    commission = parse_rate(payload.get("commission"), default=default_commission_if_missing(None))
+    slippage = parse_rate(payload.get("slippage"), default=default_slippage_if_missing(None))
+    neutralize_industry = bool(payload.get("neutralizeIndustry", False))
+    universe_id = _positive_int(payload.get("universeId"))
+    source_id = _positive_int(payload.get("sourceId"))
+    source_name = str(payload.get("sourceName") or "")
+    code = str(payload.get("code") or "")
+    if on_progress:
+        on_progress({"phase": "factor_research"})
+    if universe_id:
+        result = get_strategy_backtest_service().research_universe_factor(
+            user_id=user_id,
             universe_id=universe_id,
-            universe_name=str(universe.get("name") or universe.get("code") or ""),
-            research_mode="universe" if universe_id else "strategy",
-            market=",".join(manifest.get("markets") or []),
-            timeframe=str(
-                manifest.get("drivingFrequency")
-                or manifest.get("primaryFrequency")
-                or ""
-            ),
-            start_date=start_raw,
-            end_date=end_raw,
+            frequency=str(payload.get("frequency") or "1d"),
+            start_date=datetime.strptime(start_raw, "%Y-%m-%d"),
+            end_date=datetime.strptime(end_raw, "%Y-%m-%d").replace(hour=23, minute=59, second=59),
             factor_id=factor_id,
-            groups=int(result.get("effectiveGroups") or groups),
+            factor_params=factor_params,
+            groups=groups,
             holding_period=holding_period,
             commission=commission,
             slippage=slippage,
             neutralize_industry=neutralize_industry,
-            manifest=manifest,
-            result=result,
-            code=code,
         )
-        return jsonify({"code": 1, "msg": "success", "data": {**result, "runId": run_id}})
-    except BacktestRangeLimitError as exc:
-        return jsonify({
-            "code": 0,
-            "msg": "strategyV2.backtestRangeLimit",
-            "data": exc.details,
-        }), 400
+    else:
+        result = get_strategy_backtest_service().research_factor(
+            user_id=user_id,
+            code=code,
+            start_date=datetime.strptime(start_raw, "%Y-%m-%d"),
+            end_date=datetime.strptime(end_raw, "%Y-%m-%d").replace(hour=23, minute=59, second=59),
+            factor_id=factor_id,
+            factor_params=factor_params,
+            groups=groups,
+            holding_period=holding_period,
+            commission=commission,
+            slippage=slippage,
+            neutralize_industry=neutralize_industry,
+        )
+    manifest = dict(result.get("manifest") or {})
+    universe = dict(result.get("universe") or {})
+    run_id = get_factor_research_repository().persist_run(
+        user_id=user_id,
+        source_id=source_id,
+        source_name=source_name,
+        universe_id=universe_id,
+        universe_name=str(universe.get("name") or universe.get("code") or ""),
+        research_mode="universe" if universe_id else "strategy",
+        market=",".join(manifest.get("markets") or []),
+        timeframe=str(manifest.get("drivingFrequency") or manifest.get("primaryFrequency") or ""),
+        start_date=start_raw,
+        end_date=end_raw,
+        factor_id=factor_id,
+        groups=int(result.get("effectiveGroups") or groups),
+        holding_period=holding_period,
+        commission=commission,
+        slippage=slippage,
+        neutralize_industry=neutralize_industry,
+        manifest=manifest,
+        result=result,
+        code=code,
+    )
+    return {**result, "runId": run_id}
+
+
+@backtest_center_blp.route("/factor-research", methods=["POST"])
+@backtest_center_blp.doc(
+    summary="Queue factor research with built-in or TA-Lib 0.8.1 factors",
+    description="Validates the request and executes factor research in a dedicated Celery worker.",
+)
+@login_required
+def run_factor_research():
+    try:
+        payload = _prepare_factor_research_job(
+            request.get_json(silent=True) or {},
+            int(g.user_id),
+        )
+        receipt = agent_jobs.submit_job(
+            user_id=int(g.user_id),
+            agent_token_id=None,
+            kind="factor_research",
+            request_payload=payload,
+            runner=_run_factor_research_job,
+        )
+        return jsonify({"code": 1, "msg": "common.success", "data": _public_backtest_job(receipt)}), 202
     except ValueError as exc:
         return jsonify({"code": 0, "msg": _public_request_error(exc), "data": None}), 400
     except Exception:
-        logger.exception("Factor research failed")
+        logger.exception("Factor research job submission failed")
         return jsonify({"code": 0, "msg": "strategyV2.backtest.runFailed", "data": None}), 500
 
 
@@ -482,128 +432,136 @@ def list_factor_research_runs():
         return jsonify({"code": 0, "msg": "strategyV2.backtest.runFailed", "data": None}), 500
 
 
-@backtest_center_blp.route("/factor-benchmark", methods=["POST"])
-@backtest_center_blp.doc(
-    summary="Benchmark multiple factors with out-of-sample validation",
-    description=(
-        "Loads a managed universe once, evaluates multiple factors, applies "
-        "out-of-sample validation and Benjamini-Hochberg false-discovery control, "
-        "then persists every successful factor run."
-    ),
-)
-@login_required
-def run_factor_benchmark():
-    try:
-        payload = request.get_json(silent=True) or {}
-        start_raw = str(payload.get("startDate") or "").strip()
-        end_raw = str(payload.get("endDate") or "").strip()
-        universe_id = _positive_int(payload.get("universeId"))
-        if not start_raw or not end_raw:
-            raise ValueError("strategyV2.dateRangeRequired")
-        if not universe_id:
-            raise ValueError("strategyV2.factorResearchUniverseRequired")
-        factors = payload.get("factors")
-        if not isinstance(factors, list):
-            raise ValueError("strategyV2.factorBenchmarkFactorsRequired")
-        groups = max(2, min(10, int(payload.get("groups") or 5)))
-        holding_period = max(1, int(payload.get("holdingPeriod") or 5))
-        commission = parse_rate(
-            payload.get("commission"),
-            default=default_commission_if_missing(None),
-        )
-        slippage = parse_rate(
-            payload.get("slippage"),
-            default=default_slippage_if_missing(None),
-        )
-        neutralize_industry = bool(payload.get("neutralizeIndustry", False))
-        result = get_strategy_backtest_service().benchmark_universe_factors(
-            user_id=int(g.user_id),
+def _prepare_factor_benchmark_job(payload: dict[str, Any], user_id: int) -> dict[str, Any]:
+    prepared = deepcopy(payload)
+    start_raw = str(payload.get("startDate") or "").strip()
+    end_raw = str(payload.get("endDate") or "").strip()
+    universe_id = _positive_int(payload.get("universeId"))
+    if not start_raw or not end_raw:
+        raise ValueError("strategyV2.dateRangeRequired")
+    datetime.strptime(start_raw, "%Y-%m-%d")
+    datetime.strptime(end_raw, "%Y-%m-%d")
+    if not universe_id:
+        raise ValueError("strategyV2.factorResearchUniverseRequired")
+    if not isinstance(payload.get("factors"), list):
+        raise ValueError("strategyV2.factorBenchmarkFactorsRequired")
+    prepared.update({"universeId": universe_id, "__user_id": user_id})
+    return prepared
+
+
+def _run_factor_benchmark_job(payload: dict[str, Any], on_progress=None) -> dict[str, Any]:
+    user_id = int(payload["__user_id"])
+    start_raw = str(payload.get("startDate") or "").strip()
+    end_raw = str(payload.get("endDate") or "").strip()
+    universe_id = int(payload["universeId"])
+    factors = list(payload.get("factors") or [])
+    groups = max(2, min(10, int(payload.get("groups") or 5)))
+    holding_period = max(1, int(payload.get("holdingPeriod") or 5))
+    commission = parse_rate(payload.get("commission"), default=default_commission_if_missing(None))
+    slippage = parse_rate(payload.get("slippage"), default=default_slippage_if_missing(None))
+    neutralize_industry = bool(payload.get("neutralizeIndustry", False))
+    if on_progress:
+        on_progress({"phase": "factor_benchmark"})
+    result = get_strategy_backtest_service().benchmark_universe_factors(
+        user_id=user_id,
+        universe_id=universe_id,
+        frequency=str(payload.get("frequency") or "1d"),
+        start_date=datetime.strptime(start_raw, "%Y-%m-%d"),
+        end_date=datetime.strptime(end_raw, "%Y-%m-%d").replace(hour=23, minute=59, second=59),
+        factors=factors,
+        groups=groups,
+        holding_period=holding_period,
+        commission=commission,
+        slippage=slippage,
+        neutralize_industry=neutralize_industry,
+        train_fraction=float(payload.get("trainFraction") or 0.6),
+        false_discovery_rate=float(payload.get("falseDiscoveryRate") or 0.1),
+        minimum_oos_observations=int(payload.get("minimumOosObservations") or 12),
+        minimum_abs_oos_ic=float(payload.get("minimumAbsOosIc") or 0.02),
+        minimum_coverage=float(payload.get("minimumCoverage") or 0.5),
+    )
+    benchmark_id = uuid4().hex
+    result["benchmarkId"] = benchmark_id
+    benchmark_snapshot = deepcopy(result)
+    benchmark_snapshot.pop("factorResults", None)
+    manifest = dict(result.get("manifest") or {})
+    universe = dict(result.get("universe") or {})
+    ranking_by_factor = {
+        str(item.get("factorId") or ""): item
+        for item in result.get("rankings") or []
+    }
+    run_ids: dict[str, int | None] = {}
+    for factor_result in result.get("factorResults") or []:
+        factor_id = str(factor_result.get("factorId") or "")
+        ranking = ranking_by_factor.get(factor_id, {})
+        factor_result.update({
+            "benchmarkId": benchmark_id,
+            "benchmarkSnapshot": benchmark_snapshot,
+            "benchmarkRank": ranking.get("rank"),
+            "benchmarkClassification": ranking.get("classification"),
+            "benchmarkScore": ranking.get("score"),
+            "benchmarkPValue": ranking.get("pValue"),
+            "benchmarkQValue": ranking.get("qValue"),
+            "manifest": manifest,
+            "universeId": universe_id,
+            "universe": universe,
+            "frequency": result.get("frequency"),
+            "symbolsRequested": result.get("symbolsRequested"),
+            "symbolsUsed": result.get("symbolsUsed"),
+            "symbolsSkipped": result.get("symbolsSkipped"),
+        })
+        run_id = get_factor_research_repository().persist_run(
+            user_id=user_id,
+            source_id=None,
+            source_name="",
             universe_id=universe_id,
-            frequency=str(payload.get("frequency") or "1d"),
-            start_date=datetime.strptime(start_raw, "%Y-%m-%d"),
-            end_date=datetime.strptime(end_raw, "%Y-%m-%d").replace(
-                hour=23, minute=59, second=59
-            ),
-            factors=factors,
-            groups=groups,
+            universe_name=str(universe.get("name") or universe.get("code") or ""),
+            research_mode="benchmark",
+            market=",".join(manifest.get("markets") or []),
+            timeframe=str(result.get("frequency") or ""),
+            start_date=start_raw,
+            end_date=end_raw,
+            factor_id=factor_id,
+            groups=int(factor_result.get("effectiveGroups") or groups),
             holding_period=holding_period,
             commission=commission,
             slippage=slippage,
             neutralize_industry=neutralize_industry,
-            train_fraction=float(payload.get("trainFraction") or 0.6),
-            false_discovery_rate=float(payload.get("falseDiscoveryRate") or 0.1),
-            minimum_oos_observations=int(
-                payload.get("minimumOosObservations") or 5
-            ),
-            minimum_abs_oos_ic=float(payload.get("minimumAbsOosIc") or 0.02),
-            minimum_coverage=float(payload.get("minimumCoverage") or 0.5),
+            manifest=manifest,
+            result=factor_result,
+            code="",
         )
-        benchmark_id = uuid4().hex
-        result["benchmarkId"] = benchmark_id
-        benchmark_snapshot = deepcopy(result)
-        benchmark_snapshot.pop("factorResults", None)
-        manifest = dict(result.get("manifest") or {})
-        universe = dict(result.get("universe") or {})
-        ranking_by_factor = {
-            str(item.get("factorId") or ""): item
-            for item in result.get("rankings") or []
-        }
-        run_ids: dict[str, int | None] = {}
-        for factor_result in result.get("factorResults") or []:
-            factor_id = str(factor_result.get("factorId") or "")
-            ranking = ranking_by_factor.get(factor_id, {})
-            factor_result.update({
-                "benchmarkId": benchmark_id,
-                "benchmarkSnapshot": benchmark_snapshot,
-                "benchmarkRank": ranking.get("rank"),
-                "benchmarkClassification": ranking.get("classification"),
-                "benchmarkScore": ranking.get("score"),
-                "benchmarkPValue": ranking.get("pValue"),
-                "benchmarkQValue": ranking.get("qValue"),
-                "manifest": manifest,
-                "universeId": universe_id,
-                "universe": universe,
-                "frequency": result.get("frequency"),
-                "symbolsRequested": result.get("symbolsRequested"),
-                "symbolsUsed": result.get("symbolsUsed"),
-                "symbolsSkipped": result.get("symbolsSkipped"),
-            })
-            run_id = get_factor_research_repository().persist_run(
-                user_id=int(g.user_id),
-                source_id=None,
-                source_name="",
-                universe_id=universe_id,
-                universe_name=str(universe.get("name") or universe.get("code") or ""),
-                research_mode="benchmark",
-                market=",".join(manifest.get("markets") or []),
-                timeframe=str(result.get("frequency") or ""),
-                start_date=start_raw,
-                end_date=end_raw,
-                factor_id=factor_id,
-                groups=int(factor_result.get("effectiveGroups") or groups),
-                holding_period=holding_period,
-                commission=commission,
-                slippage=slippage,
-                neutralize_industry=neutralize_industry,
-                manifest=manifest,
-                result=factor_result,
-                code="",
-            )
-            run_ids[factor_id] = run_id
-        for ranking in result.get("rankings") or []:
-            ranking["runId"] = run_ids.get(str(ranking.get("factorId") or ""))
-        result.pop("factorResults", None)
-        return jsonify({"code": 1, "msg": "success", "data": result})
-    except BacktestRangeLimitError as exc:
-        return jsonify({
-            "code": 0,
-            "msg": "strategyV2.backtestRangeLimit",
-            "data": exc.details,
-        }), 400
+        run_ids[factor_id] = run_id
+    for ranking in result.get("rankings") or []:
+        ranking["runId"] = run_ids.get(str(ranking.get("factorId") or ""))
+    result.pop("factorResults", None)
+    return result
+
+
+@backtest_center_blp.route("/factor-benchmark", methods=["POST"])
+@backtest_center_blp.doc(
+    summary="Queue a multi-factor benchmark with out-of-sample validation",
+    description="Validates the request and executes the benchmark in a dedicated Celery worker.",
+)
+@login_required
+def run_factor_benchmark():
+    try:
+        payload = _prepare_factor_benchmark_job(
+            request.get_json(silent=True) or {},
+            int(g.user_id),
+        )
+        receipt = agent_jobs.submit_job(
+            user_id=int(g.user_id),
+            agent_token_id=None,
+            kind="factor_benchmark_human",
+            request_payload=payload,
+            runner=_run_factor_benchmark_job,
+        )
+        return jsonify({"code": 1, "msg": "common.success", "data": _public_backtest_job(receipt)}), 202
     except ValueError as exc:
         return jsonify({"code": 0, "msg": _public_request_error(exc), "data": None}), 400
     except Exception:
-        logger.exception("Factor benchmark failed")
+        logger.exception("Factor benchmark job submission failed")
         return jsonify({"code": 0, "msg": "strategyV2.backtest.runFailed", "data": None}), 500
 
 
@@ -666,6 +624,17 @@ def _factor_benchmark_history_items(runs: list[dict[str, Any]]) -> list[dict[str
             str(row.get("classification") or "") in {"alive", "reversed"}
             for row in rankings
         )
+        best_factor_id = summary.get("bestFactorId")
+        best_row = next(
+            (
+                row for row in rankings
+                if row.get("factorId") == best_factor_id
+                and row.get("classification") in {"alive", "reversed", "candidate"}
+            ),
+            None,
+        )
+        if best_row is None:
+            best_factor_id = None
         items.append({
             "id": benchmark_id,
             "benchmark_id": benchmark_id,
@@ -680,10 +649,8 @@ def _factor_benchmark_history_items(runs: list[dict[str, Any]]) -> list[dict[str
             "factor_count": int(summary.get("requestedFactorCount") or len(group)),
             "completed_count": len(rankings) or len(group),
             "validated_count": validated_count,
-            "best_factor_id": summary.get("bestFactorId") or (
-                rankings[0].get("factorId") if rankings else None
-            ),
-            "best_score": rankings[0].get("score") if rankings else None,
+            "best_factor_id": best_factor_id,
+            "best_score": best_row.get("score") if best_row else None,
             "failed_count": len(snapshot.get("errors") or []),
         })
     return sorted(items, key=lambda item: str(item.get("created_at") or ""), reverse=True)

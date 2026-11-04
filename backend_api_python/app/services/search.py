@@ -353,56 +353,6 @@ class GoogleSearchProvider(BaseSearchProvider):
             )
 
 
-class BingSearchProvider(BaseSearchProvider):
-    """Bing Search API 搜索引擎"""
-    
-    def __init__(self, api_key: str):
-        super().__init__([api_key] if api_key else [], "Bing")
-    
-    def _do_search(self, query: str, api_key: str, max_results: int, days: int = 7) -> SearchResponse:
-        """执行 Bing 搜索"""
-        try:
-            url = "https://api.bing.microsoft.com/v7.0/search"
-            headers = {"Ocp-Apim-Subscription-Key": api_key}
-            params = {
-                "q": query,
-                "count": max_results,
-                "textDecorations": True,
-                "textFormat": "HTML"
-            }
-            
-            response = requests.get(url, headers=headers, params=params, timeout=10)
-            response.raise_for_status()
-            data = response.json()
-            
-            results = []
-            if 'webPages' in data and 'value' in data['webPages']:
-                for item in data['webPages']['value']:
-                    results.append(SearchResult(
-                        title=item.get('name', ''),
-                        snippet=item.get('snippet', ''),
-                        url=item.get('url', ''),
-                        source='Bing',
-                        published_date=item.get('datePublished', ''),
-                    ))
-            
-            return SearchResponse(
-                query=query,
-                results=results,
-                provider=self.name,
-                success=True,
-            )
-            
-        except Exception as e:
-            return SearchResponse(
-                query=query,
-                results=[],
-                provider=self.name,
-                success=False,
-                error_message=str(e)
-            )
-
-
 class GDELTSearchProvider(BaseSearchProvider):
     """Free global news fallback backed by the GDELT DOC 2.0 API."""
 
@@ -411,12 +361,13 @@ class GDELTSearchProvider(BaseSearchProvider):
 
     def _do_search(self, query: str, api_key: str, max_results: int, days: int = 7) -> SearchResponse:
         try:
+            effective_max = min(max(max_results, 1), max(GDELTConfig.MAX_RESULTS, 1), 50)
             params = {
                 "query": query,
                 "mode": "artlist",
                 "format": "json",
                 "sort": "datedesc",
-                "maxrecords": min(max(max_results, 1), 50),
+                "maxrecords": effective_max,
                 "timespan": f"{max(1, min(int(days or 7), 90))}d",
             }
             response = requests.get(GDELTConfig.BASE_URL, params=params, timeout=GDELTConfig.TIMEOUT)
@@ -424,7 +375,7 @@ class GDELTSearchProvider(BaseSearchProvider):
             data = response.json()
             articles = data.get("articles") if isinstance(data, dict) else []
             results: List[SearchResult] = []
-            for item in articles[:max_results]:
+            for item in articles[:effective_max]:
                 if not isinstance(item, dict):
                     continue
                 url = item.get("url") or ""
@@ -761,18 +712,13 @@ class SearchService:
             provider_map["google"] = GoogleSearchProvider(google_api_key, google_cx)
             logger.info("Google CSE search is configured")
 
-        bing_api_key = self._search_config_value('bing', 'api_key', 'SEARCH_BING_API_KEY')
-        if bing_api_key:
-            provider_map["bing"] = BingSearchProvider(bing_api_key)
-            logger.info("Bing search is configured")
-
         provider_map["duckduckgo"] = DuckDuckGoSearchProvider()
 
         preferred = self.provider if self.provider in provider_map else ""
         if preferred:
             self._providers.append(provider_map.pop(preferred))
 
-        for key in ("tavily", "searxng", "gdelt", "serpapi", "alpha_vantage", "google", "bing", "duckduckgo"):
+        for key in ("tavily", "searxng", "gdelt", "serpapi", "alpha_vantage", "google", "duckduckgo"):
             provider = provider_map.pop(key, None)
             if provider:
                 self._providers.append(provider)
@@ -790,10 +736,8 @@ class SearchService:
 
         google_api_key = self._search_config_value('google', 'api_key', 'SEARCH_GOOGLE_API_KEY')
         google_cx = self._search_config_value('google', 'cx', 'SEARCH_GOOGLE_CX')
-        bing_api_key = self._search_config_value('bing', 'api_key', 'SEARCH_BING_API_KEY')
         configured = {
             "Google": bool(google_api_key and google_cx),
-            "Bing": bool(bing_api_key),
             "Tavily": bool(APIKeys.TAVILY_API_KEYS),
             "SearXNG": bool(SearXNGConfig.CONFIGURED),
             "SerpAPI": bool(APIKeys.SERPAPI_KEYS),
@@ -811,8 +755,14 @@ class SearchService:
                 "available": bool(active_available.get(name)),
                 "note": _search_provider_note(name, bool(configured.get(name)), name in active_names),
             }
-            for name in ("Tavily", "SearXNG", "GDELT", "SerpAPI", "AlphaVantage", "Google", "Bing", "DuckDuckGo")
+            for name in ("Tavily", "SearXNG", "GDELT", "SerpAPI", "AlphaVantage", "Google", "DuckDuckGo")
         ]
+
+    def _effective_result_limit(self, requested: Optional[int]) -> int:
+        configured = max(1, int(self.max_results or 10))
+        if requested is None:
+            return configured
+        return min(max(1, int(requested)), configured)
     
     def search(self, query: str, num_results: int = None, date_restrict: str = None, days: int = 7) -> List[Dict[str, Any]]:
         """
@@ -827,7 +777,7 @@ class SearchService:
         Returns:
             搜索结果列表
         """
-        limit = num_results if num_results else self.max_results
+        limit = self._effective_result_limit(num_results)
         
         if date_restrict and not days:
             if date_restrict.startswith('d'):
@@ -842,11 +792,12 @@ class SearchService:
     
     def search_research(self, query: str, max_results: int = 5) -> List[Dict[str, Any]]:
         """Use general web engines for filings, company facts and historical research."""
+        limit = self._effective_result_limit(max_results)
         for provider in self._providers:
             if not provider.is_available or provider.name in {"GDELT", "AlphaVantage"}:
                 continue
             try:
-                response = provider.search(query, max_results, days=3650)
+                response = provider.search(query, limit, days=3650)
             except Exception as exc:
                 logger.info("Research search provider %s failed: %s", provider.name, type(exc).__name__)
                 continue
@@ -866,11 +817,12 @@ class SearchService:
         Returns:
             SearchResponse 对象
         """
+        limit = self._effective_result_limit(max_results)
         for provider in self._providers:
             if not provider.is_available:
                 continue
             
-            response = provider.search(query, max_results, days)
+            response = provider.search(query, limit, days)
             
             if response.success and response.results:
                 return response
@@ -893,6 +845,7 @@ class SearchService:
         result_filter: Optional[Callable[[SearchResult], bool]] = None,
     ) -> SearchResponse:
         """Prefer no-key providers before the configured commercial search chain."""
+        limit = self._effective_result_limit(max_results)
         free_names = ("GDELT", "DuckDuckGo")
         providers = [provider for name in free_names for provider in self._providers if provider.name == name]
         providers.extend(provider for provider in self._providers if provider.name not in free_names)
@@ -900,7 +853,7 @@ class SearchService:
             if not provider.is_available:
                 continue
             try:
-                response = provider.search(query, max_results, days)
+                response = provider.search(query, limit, days)
             except Exception as exc:
                 logger.warning("Event search provider %s failed: %s", provider.name, exc)
                 continue
@@ -996,8 +949,6 @@ def _search_provider_note(name: str, configured: bool, registered: bool) -> str:
     """Describe why a search provider can or cannot be used."""
     if name == "Google" and not configured:
         return "Set SEARCH_GOOGLE_API_KEY and SEARCH_GOOGLE_CX to enable Google Custom Search fallback."
-    if name == "Bing" and not configured:
-        return "Set SEARCH_BING_API_KEY to enable Bing fallback."
     if name == "Tavily" and not configured:
         return "Set TAVILY_API_KEYS to enable Tavily AI search."
     if name == "SearXNG" and not configured:

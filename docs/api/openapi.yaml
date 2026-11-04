@@ -2143,8 +2143,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HumanErrorEnvelope'
-        '200':
-          description: OK
+        '202':
+          description: Accepted
           content:
             application/json:
               schema:
@@ -2229,8 +2229,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HumanErrorEnvelope'
-        '200':
-          description: OK
+        '202':
+          description: Accepted
           content:
             application/json:
               schema:
@@ -2249,18 +2249,17 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HumanErrorEnvelope'
-        '200':
-          description: OK
+        '202':
+          description: Accepted
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/HumanSuccessEnvelope'
       tags:
       - Strategy
-      summary: Run factor research with built-in or TA-Lib 0.8.1 factors
-      description: 'Accepts factorId and optional factorParams. TA-Lib factors use
-        the talib: namespace and support explicit output selection for multi-output
-        functions.'
+      summary: Queue factor research with built-in or TA-Lib 0.8.1 factors
+      description: Validates the request and executes factor research in a dedicated
+        Celery worker.
       operationId: postApiBacktestFactorResearch
       x-visibility: internal
   /api/backtest/factor-research/history:
@@ -2292,18 +2291,17 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HumanErrorEnvelope'
-        '200':
-          description: OK
+        '202':
+          description: Accepted
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/HumanSuccessEnvelope'
       tags:
       - Strategy
-      summary: Benchmark multiple factors with out-of-sample validation
-      description: Loads a managed universe once, evaluates multiple factors, applies
-        out-of-sample validation and Benjamini-Hochberg false-discovery control, then
-        persists every successful factor run.
+      summary: Queue a multi-factor benchmark with out-of-sample validation
+      description: Validates the request and executes the benchmark in a dedicated
+        Celery worker.
       operationId: postApiBacktestFactorBenchmark
       x-visibility: internal
   /api/backtest/factor-benchmark/history:

@@ -34,6 +34,7 @@ class PreparedEvolutionEvaluator:
         leverage: float,
         source_id: int,
         strategy_name: str,
+        candidate_limit: int | None = None,
     ) -> None:
         self.user_id = user_id
         self.code = code
@@ -48,14 +49,25 @@ class PreparedEvolutionEvaluator:
 
         program = compile_strategy_v2(code)
         manifest = program.manifest
+        self.strategy_type = manifest.strategy_type
+        self.universe_kind = manifest.universe.kind
         self.driving_frequency = manifest.driving_frequency
         self.warmup_bars = manifest.warmup_bars
-        candidates, _universe_id = backtest_service.resolve_candidates(
+        candidates, universe_id = backtest_service.resolve_candidates(
             user_id=user_id,
             manifest=manifest,
             start_date=start_date,
             end_date=end_date,
         )
+        self.universe_id = universe_id
+        self.universe_size = len(candidates)
+        self.symbol_coverage_estimated = bool(
+            candidate_limit and self.universe_size > int(candidate_limit)
+        )
+        if self.symbol_coverage_estimated:
+            indices = _spread_indices(self.universe_size, int(candidate_limit))
+            candidates = [candidates[index] for index in indices]
+        self.symbols_checked = len(candidates)
         _attach_catalog_products(candidates)
         fetch_starts = {
             frequency: start_date
@@ -77,12 +89,19 @@ class PreparedEvolutionEvaluator:
                 warmup_bars=manifest.warmup_bars,
                 fetch_start=fetch_starts[frequency],
             )
-        frequency_frames, _skipped = backtest_service.fetch_frequency_frames(
+        frequency_frames, skipped = backtest_service.fetch_frequency_frames(
             candidates,
             manifest.frequencies,
             fetch_starts,
             end_date,
         )
+        driving_frames = frequency_frames.get(self.driving_frequency, {})
+        self.symbols_used = len(driving_frames)
+        self.skipped_symbols = len({
+            str(item.get("symbol") or "")
+            for item in skipped
+            if str(item.get("symbol") or "")
+        })
         for frequency, frames in frequency_frames.items():
             for member in candidates:
                 frame = frames.get(str(member.get("key") or ""))
@@ -116,6 +135,18 @@ class PreparedEvolutionEvaluator:
             "observations": tuple(item.to_pydatetime() for item in merged),
             "warmupBars": self.warmup_bars,
             "frequency": self.driving_frequency,
+            "strategyType": self.strategy_type,
+            "universeKind": self.universe_kind,
+            "universeId": self.universe_id,
+            "universeSize": self.universe_size,
+            "symbolsChecked": self.symbols_checked,
+            "symbolsUsed": self.symbols_used,
+            "skippedSymbols": self.skipped_symbols,
+            "symbolCoveragePercent": round(
+                self.symbols_used / self.symbols_checked * 100.0,
+                2,
+            ) if self.symbols_checked else 0.0,
+            "symbolCoverageEstimated": self.symbol_coverage_estimated,
         }
 
     def __call__(
@@ -228,6 +259,14 @@ def _naive_timestamp(value: datetime) -> pd.Timestamp:
     if timestamp.tzinfo is not None:
         timestamp = timestamp.tz_convert("UTC").tz_localize(None)
     return timestamp
+
+
+def _spread_indices(total: int, count: int) -> tuple[int, ...]:
+    if count >= total:
+        return tuple(range(total))
+    if count <= 1:
+        return (0,)
+    return tuple(round(index * (total - 1) / (count - 1)) for index in range(count))
 
 
 class _CachedInstrumentRulesProvider:

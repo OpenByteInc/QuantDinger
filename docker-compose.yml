@@ -71,7 +71,6 @@ x-worker-environment: &worker-environment
   DB_POOL_HEALTH_CHECK: ${DB_POOL_HEALTH_CHECK:-true}
   DB_APPLICATION_NAME: quantdinger-worker
   SKIP_AUTO_MIGRATE: "true"
-  ALLOW_LOCAL_DESKTOP_BROKERS: ${ALLOW_LOCAL_DESKTOP_BROKERS:-true}
   MARKET_CATALOG_AUTO_SYNC: ${MARKET_CATALOG_AUTO_SYNC:-true}
   MARKET_CATALOG_SYNC_INTERVAL_SEC: ${MARKET_CATALOG_SYNC_INTERVAL_SEC:-86400}
   KAFKA_BOOTSTRAP_SERVERS: kafka:9092
@@ -333,8 +332,10 @@ services:
       - PORTFOLIO_MONITOR_DUE_BATCH_LIMIT=${PORTFOLIO_MONITOR_DUE_BATCH_LIMIT:-5}
       - GUNICORN_WORKERS=${GUNICORN_WORKERS:-2}
       - GUNICORN_THREADS=${GUNICORN_THREADS:-4}
-      # IBKR needs local TWS or IB Gateway; set false on SaaS cloud (see env.example).
-      - ALLOW_LOCAL_DESKTOP_BROKERS=${ALLOW_LOCAL_DESKTOP_BROKERS:-true}
+      - GUNICORN_MAX_REQUESTS=${GUNICORN_MAX_REQUESTS:-800}
+      - GUNICORN_MAX_REQUESTS_JITTER=${GUNICORN_MAX_REQUESTS_JITTER:-100}
+      - BACKTEST_KLINE_CACHE_MAX_BYTES=${BACKTEST_KLINE_CACHE_MAX_BYTES:-134217728}
+      - STRATEGY_SHARED_FRAME_CACHE_MAX_BYTES=${STRATEGY_SHARED_FRAME_CACHE_MAX_BYTES:-268435456}
       # Takes precedence over mounted .env (run.py load_dotenv override=False).
       # Include :8000 when using Vite dev server alongside this stack.
       - FRONTEND_URL=${FRONTEND_URL:-http://localhost:8888,http://localhost:8889,http://localhost:8000}
@@ -556,7 +557,7 @@ services:
     image: ${BACKEND_LOCAL_IMAGE:-quantdinger-backend:local}
     container_name: quantdinger-celery-worker
     restart: unless-stopped
-    command: ["celery", "-A", "app.celery_app:celery_app", "worker", "--loglevel=INFO", "-Q", "jobs,ai,maintenance", "--concurrency=${CELERY_CONCURRENCY:-2}"]
+    command: ["celery", "-A", "app.celery_app:celery_app", "worker", "--loglevel=INFO", "-Q", "ai,maintenance", "--concurrency=${CELERY_CONCURRENCY:-2}"]
     depends_on:
       postgres:
         condition: service_healthy
@@ -578,6 +579,43 @@ services:
       - quantdinger-network
     healthcheck:
       test: ["CMD", "python", "-m", "app.commands.worker_health", "celery"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 45s
+
+  celery-backtest-worker:
+    <<: *backend-runtime
+    build: *backend-build
+    image: ${BACKEND_LOCAL_IMAGE:-quantdinger-backend:local}
+    container_name: quantdinger-celery-backtest-worker
+    restart: unless-stopped
+    command: ["celery", "-A", "app.celery_app:celery_app", "worker", "--loglevel=INFO", "-Q", "backtest", "--concurrency=${CELERY_BACKTEST_CONCURRENCY:-1}", "--max-tasks-per-child=1", "--max-memory-per-child=${CELERY_BACKTEST_MAX_MEMORY_KB:-1572864}"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      redis-jobs:
+        condition: service_healthy
+      migration:
+        condition: service_completed_successfully
+    volumes:
+      - backend_logs:/app/logs
+      - backend_data:/app/data
+      - ./.env:/app/.env
+    environment:
+      <<: *worker-environment
+      QD_PROCESS_ROLE: celery
+      DB_APPLICATION_NAME: quantdinger-celery-backtest-worker
+      CELERY_MAX_TASKS_PER_CHILD: 1
+      CELERY_MAX_MEMORY_PER_CHILD_KB: ${CELERY_BACKTEST_MAX_MEMORY_KB:-1572864}
+      BACKTEST_KLINE_CACHE_MAX_BYTES: ${BACKTEST_KLINE_CACHE_MAX_BYTES:-134217728}
+      STRATEGY_SHARED_FRAME_CACHE_MAX_BYTES: ${STRATEGY_SHARED_FRAME_CACHE_MAX_BYTES:-268435456}
+    networks:
+      - quantdinger-network
+    healthcheck:
+      test: ["CMD-SHELL", "kill -0 1"]
       interval: 15s
       timeout: 5s
       retries: 3

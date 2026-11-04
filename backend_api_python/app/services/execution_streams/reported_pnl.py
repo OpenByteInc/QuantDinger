@@ -96,6 +96,21 @@ def websocket_report(events, *, expected, exchange, currency, multiplier=1):
 def fetch_order_report(client, *, exchange, symbol, order_id, expected, timestamp, config):
     from app.services.live_trading.fill_accounting import contract_multiplier
     from app.services.live_trading.symbols import to_okx_swap_inst_id
+    if exchange == "tiger":
+        result = client.get_order_status(order_id)
+        raw = json_object(getattr(result, "raw", {}))
+        pnl = number(raw.get("realized_pnl"))
+        quantity = number(raw.get("filled_qty"))
+        currency = str(raw.get("currency") or "").strip().upper()
+        if pnl is None:
+            return {"status": "unsupported", "reason": "venue_order_pnl_not_provided"}
+        return fill_report(
+            [dict(id=order_id, quantity=quantity, pnl=pnl)],
+            expected=expected,
+            source="rest:order.realized_pnl",
+            currency=currency,
+            basis="venue_defined",
+        )
     quote = symbol.rsplit("/", 1)[-1].split(":", 1)[0].upper() if "/" in symbol else ""
     # Current derivatives clients support linear contracts. Do not label inverse amounts as quote P&L.
     if quote not in {"USDT", "USDC"}:

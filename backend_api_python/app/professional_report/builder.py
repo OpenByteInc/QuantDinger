@@ -612,6 +612,7 @@ def build_professional_report(
     effective_data_tier, tier_warnings = _effective_data_tier(data_tier, observations)
     quality = _quality(snapshot)
     market = str(collector_payload.get("market") or analysis_result.get("market") or "")
+    confidence_calibrated = bool(analysis_result.get("confidence_calibrated", False))
     prebuilt_market_features: dict[str, Any] | None = None
     hard_gate_reasons: list[str] = []
     if market in {"USStock", "HKStock"}:
@@ -798,7 +799,7 @@ def build_professional_report(
             "confidence": confidence,
             "raw_confidence": raw_confidence,
             "confidence_kind": "calibrated_probability"
-            if os.getenv("ENABLE_CONFIDENCE_CALIBRATION", "false").lower() == "true"
+            if confidence_calibrated
             else "model_strength",
             "quality_gate_reasons": gate_reasons,
             "conclusion_strength": quality.get("max_conclusion_strength") or "none",
@@ -823,7 +824,7 @@ def build_professional_report(
             "scoring_version": analysis_result.get("score_source") or "deterministic_objective_v2",
             "report_builder_version": "professional_report_builder_v1.1",
             "llm_role": "evidence_explanation_only",
-            "probabilities_calibrated": os.getenv("ENABLE_CONFIDENCE_CALIBRATION", "false").lower() == "true",
+            "probabilities_calibrated": confidence_calibrated,
             "requested_data_tier": data_tier,
             "effective_data_tier": effective_data_tier,
         },

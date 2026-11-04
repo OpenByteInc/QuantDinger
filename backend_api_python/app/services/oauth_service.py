@@ -504,7 +504,8 @@ class OAuthService:
                         )
                         db.commit()
                         cur.close()
-                        return True, dict(user)
+                        from app.services.user_service import UserService
+                        return True, UserService.normalize_user_record(user)
                     else:
                         # Orphaned OAuth link - remove it
                         cur.execute(
@@ -543,7 +544,8 @@ class OAuthService:
                         )
                         db.commit()
                         cur.close()
-                        return True, dict(existing_user)
+                        from app.services.user_service import UserService
+                        return True, UserService.normalize_user_record(existing_user)
                 
                 # Create new user
                 # Generate unique username from OAuth name or email

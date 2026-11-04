@@ -252,7 +252,8 @@ class CommunityService:
         code_visibility: str = None,  # 'visible' / 'hidden' / None(all)
         min_price: float = None,
         max_price: float = None,
-        sort_by: str = 'score',    # 'score' / 'newest' / 'hot' / 'price_asc' / 'price_desc' / 'rating'
+        sort_by: str = 'score',
+        sort_order: str = None,
         user_id: int = None,       # Current user id, used to mark purchased items.
         accept_language: str = 'en-US',  # Select name_i18n / description_i18n.
         asset_type: str = None,    # 'indicator' / 'script_template' / None(all)
@@ -334,7 +335,9 @@ class CommunityService:
                     f"""
                     SELECT
                         SUM(CASE WHEN COALESCE(i.asset_type, 'indicator') = 'indicator' THEN 1 ELSE 0 END) AS indicator_count,
-                        SUM(CASE WHEN COALESCE(i.asset_type, 'indicator') = 'script_template' THEN 1 ELSE 0 END) AS script_template_count
+                        SUM(CASE WHEN COALESCE(i.asset_type, 'indicator') = 'script_template' THEN 1 ELSE 0 END) AS script_template_count,
+                        SUM(CASE WHEN COALESCE(i.asset_type, 'indicator') = 'indicator' AND i.created_at >= CURRENT_TIMESTAMP - INTERVAL '7 days' THEN 1 ELSE 0 END) AS new_indicator_count,
+                        SUM(CASE WHEN COALESCE(i.asset_type, 'indicator') = 'script_template' AND i.created_at >= CURRENT_TIMESTAMP - INTERVAL '7 days' THEN 1 ELSE 0 END) AS new_script_template_count
                     FROM qd_indicator_codes i
                     WHERE {category_where_sql}
                     """,
@@ -344,6 +347,10 @@ class CommunityService:
                 asset_type_counts = {
                     'indicator': int(category_count_row.get('indicator_count') or 0),
                     'script_template': int(category_count_row.get('script_template_count') or 0),
+                }
+                new_asset_type_counts = {
+                    'indicator': int(category_count_row.get('new_indicator_count') or 0),
+                    'script_template': int(category_count_row.get('new_script_template_count') or 0),
                 }
 
                 _allowed_asset_types = ('indicator', 'script_template')
@@ -374,20 +381,31 @@ class CommunityService:
 
                 where_sql = " AND ".join(where_clauses)
 
-                # SQL-friendly sorts:
+                requested_direction = 'ASC' if str(sort_order or '').lower() == 'asc' else 'DESC'
                 order_map = {
                     'newest': 'i.created_at DESC',
                     'hot': 'i.purchase_count DESC, i.view_count DESC',
                     'price_asc': 'i.price ASC, i.created_at DESC',
                     'price_desc': 'i.price DESC, i.created_at DESC',
-                    'rating': 'i.avg_rating DESC, i.rating_count DESC'
+                    'rating': f'COALESCE(i.avg_rating, 0) {requested_direction}, i.rating_count DESC, i.id DESC',
+                    'views': f'COALESCE(i.view_count, 0) {requested_direction}, i.id DESC',
+                    'installs': f'COALESCE(i.purchase_count, 0) {requested_direction}, i.id DESC',
+                    'users': f'COALESCE(i.purchase_count, 0) {requested_direction}, i.id DESC',
+                    'price': f'COALESCE(i.price, 0) {requested_direction}, i.id DESC',
+                    'random': "md5(CAST(i.id AS TEXT) || CURRENT_DATE::text)"
                 }
 
                 count_sql = f"SELECT COUNT(*) as count FROM qd_indicator_codes i WHERE {where_sql}"
                 cur.execute(count_sql, tuple(params))
                 total = cur.fetchone()['count']
 
-                if sort_by == 'score':
+                kpi_sort_fields = {
+                    'score': 'score',
+                    'annual_return': 'annual_return',
+                    'max_drawdown': 'max_drawdown',
+                    'sharpe': 'sharpe',
+                }
+                if sort_by in kpi_sort_fields:
                     # Score sort path: fetch ALL matching ids, score them,
                     # sort in Python, then refetch full rows for the page.
                     cur.execute(
@@ -405,11 +423,21 @@ class CommunityService:
                     all_assets = [dict(r) for r in (cur.fetchall() or [])]
                     all_ids = [int(r['id']) for r in all_assets]
                     kpi_by_id = fetch_market_asset_kpis(cur, all_assets)
-                    # Tie-break with created_at via id (newer id ≈ newer row)
-                    # so deterministic ordering when many indicators score 0.
+                    kpi_field = kpi_sort_fields[sort_by]
+                    metric_direction = str(sort_order or '').lower()
+                    if metric_direction not in {'asc', 'desc'}:
+                        metric_direction = 'desc'
+
+                    def _catalog_metric(indicator_id):
+                        value = float(kpi_by_id.get(indicator_id, {}).get(kpi_field) or 0)
+                        if kpi_field == 'max_drawdown' and value > 0:
+                            value = -value
+                        return value
+
+                    direction_multiplier = 1 if metric_direction == 'asc' else -1
                     all_ids.sort(
                         key=lambda iid: (
-                            -(kpi_by_id.get(iid, {}).get('score') or 0),
+                            direction_multiplier * _catalog_metric(iid),
                             -iid
                         )
                     )
@@ -420,6 +448,7 @@ class CommunityService:
                             'items': [], 'total': total, 'page': page,
                             'page_size': page_size, 'total_pages': 0,
                             'asset_type_counts': asset_type_counts,
+                            'new_asset_type_counts': new_asset_type_counts,
                         }
                     id_placeholders = ','.join(['?'] * len(page_ids))
                     cur.execute(f"""
@@ -528,6 +557,7 @@ class CommunityService:
                         'rating_count': row['rating_count'] or 0,
                         'view_count': row['view_count'] or 0,
                         'created_at': row['created_at'].isoformat() if row['created_at'] else None,
+                        'updated_at': row['updated_at'].isoformat() if row['updated_at'] else None,
                         'author': {
                             'id': row['author_id'],
                             'username': row['author_username'],
@@ -574,6 +604,7 @@ class CommunityService:
                     'page_size': page_size,
                     'total_pages': (total + page_size - 1) // page_size if total > 0 else 0,
                     'asset_type_counts': asset_type_counts,
+                    'new_asset_type_counts': new_asset_type_counts,
                 }
 
         except Exception as e:
@@ -582,6 +613,7 @@ class CommunityService:
                 'items': [], 'total': 0, 'page': 1, 'page_size': page_size,
                 'total_pages': 0,
                 'asset_type_counts': {'indicator': 0, 'script_template': 0},
+                'new_asset_type_counts': {'indicator': 0, 'script_template': 0},
             }
 
     def publish_script_template_from_strategy(
@@ -2684,7 +2716,9 @@ class CommunityService:
                 if kpi['best_run_id']:
                     cur.execute("""
                         SELECT id, symbol, timeframe, start_date, end_date,
-                               leverage, market_type, manifest_json, result_json
+                               leverage, market_type, commission, slippage,
+                               engine_version, data_kind, total_trades, created_at,
+                               manifest_json, result_json
                         FROM qd_backtest_runs
                         WHERE id = %s
                     """, (kpi['best_run_id'],))
@@ -2709,6 +2743,7 @@ class CommunityService:
                             market_type = 'swap' if leverage > 1 else 'spot'
                         if market_type == 'spot':
                             leverage = 1
+                        data_provenance = rj.get('dataProvenance') or {}
                         start_date = str(best_row.get('start_date') or '') or None
                         end_date = str(best_row.get('end_date') or '') or None
                         duration_days = 0
@@ -2731,6 +2766,13 @@ class CommunityService:
                             'win_rate': float(rj.get('winRate') or 0),
                             'start_date': start_date,
                             'end_date': end_date,
+                            'trade_count': int(rj.get('totalTrades') or best_row.get('total_trades') or 0),
+                            'verified_at': best_row.get('created_at').isoformat() if best_row.get('created_at') else None,
+                            'data_kind': str(best_row.get('data_kind') or data_provenance.get('kind') or ''),
+                            'data_source': str(data_provenance.get('source') or ''),
+                            'commission': float(best_row.get('commission') or 0),
+                            'slippage': float(best_row.get('slippage') or 0),
+                            'engine_version': str(best_row.get('engine_version') or ''),
                         }
 
                 marketplace_contract = None

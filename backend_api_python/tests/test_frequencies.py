@@ -91,9 +91,11 @@ def test_periods_per_year_annualization_factors():
 
     assert periods_per_year("1d", ["USStock"]) == 252.0
     assert periods_per_year("1d", ["Crypto"]) == 365.25
+    assert periods_per_year("1d", ["Crypto", "USStock"]) == 252.0
 
     assert periods_per_year("1h", ["USStock"]) == pytest.approx(252.0 * 6.5 / 1.0)
     assert periods_per_year("1h", ["Crypto"]) == pytest.approx(365.25 * 24.0 / 1.0)
+    assert periods_per_year("1h", ["Crypto", "USStock"]) == pytest.approx(252.0 * 6.5)
     assert periods_per_year("15m", ["USStock"]) == pytest.approx(252.0 * 390.0 / 15.0)
     assert periods_per_year("15m", ["Crypto"]) == pytest.approx(365.25 * 1440.0 / 15.0)
 

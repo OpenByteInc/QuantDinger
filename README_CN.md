@@ -563,8 +563,9 @@ flowchart TD
     O --> T["正常下单并记录提供商不可用"]
 ```
 
-请在**系统设置 → AI / LLM** 中配置 `JEV_API_KEY`、`JEV_BASE_URL`、`JEV_MODEL`
-和 `JEV_TIMEOUT_SECONDS`。TypeSafe 在
+请在**系统设置 → AI / LLM** 中配置 `JEV_ENABLED`、`JEV_API_KEY`、`JEV_BASE_URL`、
+`JEV_MODEL` 和 `JEV_TIMEOUT_SECONDS`。关闭 JEV 后，决策过滤将直接使用当前配置的
+大模型。TypeSafe 在
 [`POST /v1/systemone`](https://docs.typesafe.ai/introduction/quickstart) 中说明了 HTTP 合同。
 
 ## AI Agent 与 MCP

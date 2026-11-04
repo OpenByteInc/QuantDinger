@@ -136,6 +136,19 @@ def test_apply_init_sql_includes_public_universe_expansion(tmp_path, monkeypatch
     assert 'public-universe-expansion-20261024' in applied
     assert 'default-cn-hk-universe-members-20261025' in applied
     assert 'default-global-universe-members-20261025' in applied
+    assert 'remove-manager-role-20261104' in applied
+
+
+def test_remove_manager_role_migration_downgrades_legacy_users():
+    migration_path = (
+        Path(__file__).resolve().parents[1]
+        / 'migrations'
+        / '20261104_remove_manager_role.sql'
+    )
+    migration = migration_path.read_text(encoding='utf-8')
+
+    assert "SET role = 'user'" in migration
+    assert "WHERE role = 'manager'" in migration
 
 
 def test_public_universe_expansion_has_explicit_returning_clause():

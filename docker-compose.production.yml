@@ -44,6 +44,11 @@ services:
     mem_limit: ${CELERY_WORKER_MEMORY_LIMIT:-2g}
     cpus: ${CELERY_WORKER_CPU_LIMIT:-2.0}
 
+  celery-backtest-worker:
+    <<: *locked-backend
+    mem_limit: ${CELERY_BACKTEST_WORKER_MEMORY_LIMIT:-3g}
+    cpus: ${CELERY_BACKTEST_WORKER_CPU_LIMIT:-2.0}
+
   celery-beat:
     <<: *locked-backend
     mem_limit: ${CELERY_BEAT_MEMORY_LIMIT:-512m}

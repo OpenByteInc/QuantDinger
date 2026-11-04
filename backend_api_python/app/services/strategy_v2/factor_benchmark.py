@@ -10,7 +10,18 @@ from typing import Any, Mapping, Sequence
 class FactorBenchmarkEngine:
     """Rank completed factor-research results without re-reading market data."""
 
-    METHODOLOGY_VERSION = 2
+    METHODOLOGY_VERSION = 3
+
+    _CLASSIFICATION_ORDER = {
+        "alive": 0,
+        "reversed": 0,
+        "candidate": 1,
+        "decaying": 2,
+        "dead": 3,
+        "insufficient": 4,
+    }
+
+    _LEADER_CLASSIFICATIONS = {"alive", "reversed", "candidate"}
 
     def run(
         self,
@@ -18,7 +29,7 @@ class FactorBenchmarkEngine:
         *,
         train_fraction: float = 0.6,
         false_discovery_rate: float = 0.1,
-        minimum_oos_observations: int = 5,
+        minimum_oos_observations: int = 12,
         minimum_abs_oos_ic: float = 0.02,
         minimum_coverage: float = 0.5,
         holding_period: int = 5,
@@ -35,11 +46,12 @@ class FactorBenchmarkEngine:
                 result,
                 train_fraction=split,
                 minimum_oos_observations=min_oos,
+                minimum_abs_oos_ic=min_abs_ic,
                 holding_period=holding_period,
             )
             for result in results
         ]
-        q_values = self._benjamini_hochberg([row["pValue"] for row in rows])
+        q_values = self._benjamini_yekutieli([row["pValue"] for row in rows])
         for row, q_value in zip(rows, q_values):
             row["qValue"] = q_value
             row["classification"] = self._classify(
@@ -53,7 +65,7 @@ class FactorBenchmarkEngine:
 
         rows.sort(
             key=lambda item: (
-                item["classification"] == "insufficient",
+                self._CLASSIFICATION_ORDER.get(str(item["classification"]), 99),
                 -float(item["score"]),
                 float(item["qValue"]),
                 str(item["factorId"]),
@@ -71,13 +83,21 @@ class FactorBenchmarkEngine:
             key=lambda item: abs(float(item["testRankIc"])),
             default=None,
         )
+        leader = next(
+            (
+                row for row in rows
+                if row["classification"] in self._LEADER_CLASSIFICATIONS
+            ),
+            None,
+        )
         return {
             "methodologyVersion": self.METHODOLOGY_VERSION,
             "rankings": rows,
             "summary": {
                 "factorCount": len(rows),
                 "counts": counts,
-                "bestFactorId": rows[0]["factorId"] if rows else None,
+                "bestFactorId": leader["factorId"] if leader else None,
+                "bestFactorScore": leader["score"] if leader else None,
                 "positiveOosCount": sum(float(row["testRankIc"]) > 0 for row in rows),
                 "negativeOosCount": sum(float(row["testRankIc"]) < 0 for row in rows),
                 "zeroOosCount": sum(float(row["testRankIc"]) == 0 for row in rows),
@@ -89,7 +109,8 @@ class FactorBenchmarkEngine:
                 "trainFraction": split,
                 "testFraction": 1.0 - split,
                 "falseDiscoveryRate": alpha,
-                "multipleTesting": "benjamini_hochberg",
+                "multipleTesting": "benjamini_yekutieli",
+                "pValueMethod": "student_t",
                 "minimumOosObservations": min_oos,
                 "minimumAbsOosIc": min_abs_ic,
                 "minimumCoverage": min_coverage,
@@ -105,6 +126,7 @@ class FactorBenchmarkEngine:
         *,
         train_fraction: float,
         minimum_oos_observations: int,
+        minimum_abs_oos_ic: float,
         holding_period: int,
     ) -> dict[str, Any]:
         observations = self._ic_observations(result)
@@ -124,12 +146,17 @@ class FactorBenchmarkEngine:
         same_sign = train_ic * test_ic > 0
         retention = (
             min(2.0, abs(test_ic) / abs(train_ic))
-            if same_sign and abs(train_ic) > 1e-12
-            else 0.0
+            if same_sign and abs(train_ic) >= minimum_abs_oos_ic
+            else None
         )
-        direction = "inverse" if full_ic < 0 else "normal"
+        direction = "inverse" if train_ic < 0 else "normal"
         net_return = self._number(result.get("netLongShortReturn"))
-        oriented_return = -net_return if direction == "inverse" else net_return
+        test_start_time = observations[split_index][0] if split_index < len(observations) else None
+        test_net_return = self._oos_long_short_return(
+            result,
+            start_time=test_start_time,
+            inverse=direction == "inverse",
+        )
         return {
             "factorId": str(result.get("factorId") or ""),
             "factorParams": dict(result.get("factorParams") or {}),
@@ -151,8 +178,9 @@ class FactorBenchmarkEngine:
             "coverage": self._number(result.get("coverage")),
             "averageTurnover": self._number(result.get("averageTurnover")),
             "netLongShortReturn": net_return,
-            "orientedNetLongShortReturn": oriented_return,
-            "monotonicity": self._number(result.get("monotonicity")),
+            "testNetLongShortReturn": test_net_return,
+            "orientedNetLongShortReturn": test_net_return,
+            "monotonicity": self._optional_number(result.get("monotonicity")),
             "pointInTimeUniverseApplied": bool(result.get("pointInTimeUniverseApplied")),
         }
 
@@ -190,11 +218,12 @@ class FactorBenchmarkEngine:
 
     @staticmethod
     def _score(row: Mapping[str, Any], false_discovery_rate: float) -> float:
-        if row.get("classification") == "insufficient":
+        if row.get("classification") not in FactorBenchmarkEngine._LEADER_CLASSIFICATIONS:
             return 0.0
-        test_ic = abs(float(row["testRankIc"]))
+        test_ic = abs(float(row["testRankIc"])) if row["sameSign"] else 0.0
         edge = min(1.0, test_ic / 0.08)
-        retention = min(1.0, float(row["oosRetention"])) if row["sameSign"] else 0.0
+        retention_value = FactorBenchmarkEngine._optional_number(row.get("oosRetention"))
+        retention = min(1.0, retention_value) if retention_value is not None else 0.0
         significance = max(
             0.0,
             1.0 - float(row["qValue"]) / max(false_discovery_rate, 1e-12),
@@ -237,7 +266,13 @@ class FactorBenchmarkEngine:
         if len(values) < 2 or deviation <= 1e-12:
             return 0.0 if abs(average) > 1e-12 else 1.0
         statistic = average / (deviation / math.sqrt(len(values)))
-        return min(1.0, max(0.0, math.erfc(abs(statistic) / math.sqrt(2.0))))
+        degrees_of_freedom = len(values) - 1
+        x = degrees_of_freedom / (degrees_of_freedom + statistic * statistic)
+        return FactorBenchmarkEngine._regularized_incomplete_beta(
+            x,
+            degrees_of_freedom / 2.0,
+            0.5,
+        )
 
     @staticmethod
     def _benjamini_hochberg(p_values: Sequence[float]) -> list[float]:
@@ -254,6 +289,113 @@ class FactorBenchmarkEngine:
             running = min(running, candidate)
             adjusted[index] = running
         return adjusted
+
+    @staticmethod
+    def _benjamini_yekutieli(p_values: Sequence[float]) -> list[float]:
+        count = len(p_values)
+        if not count:
+            return []
+        dependency_factor = sum(1.0 / index for index in range(1, count + 1))
+        adjusted = FactorBenchmarkEngine._benjamini_hochberg(p_values)
+        return [min(1.0, value * dependency_factor) for value in adjusted]
+
+    @staticmethod
+    def _regularized_incomplete_beta(x: float, a: float, b: float) -> float:
+        if x <= 0.0:
+            return 0.0
+        if x >= 1.0:
+            return 1.0
+        front = math.exp(
+            math.lgamma(a + b)
+            - math.lgamma(a)
+            - math.lgamma(b)
+            + a * math.log(x)
+            + b * math.log1p(-x)
+        )
+        if x < (a + 1.0) / (a + b + 2.0):
+            value = front * FactorBenchmarkEngine._beta_continued_fraction(a, b, x) / a
+        else:
+            value = 1.0 - (
+                front
+                * FactorBenchmarkEngine._beta_continued_fraction(b, a, 1.0 - x)
+                / b
+            )
+        return min(1.0, max(0.0, value))
+
+    @staticmethod
+    def _beta_continued_fraction(a: float, b: float, x: float) -> float:
+        maximum_iterations = 200
+        epsilon = 3.0e-14
+        minimum = 1.0e-300
+        qab = a + b
+        qap = a + 1.0
+        qam = a - 1.0
+        c = 1.0
+        d = 1.0 - qab * x / qap
+        if abs(d) < minimum:
+            d = minimum
+        d = 1.0 / d
+        result = d
+        for iteration in range(1, maximum_iterations + 1):
+            even = 2 * iteration
+            coefficient = iteration * (b - iteration) * x / (
+                (qam + even) * (a + even)
+            )
+            d = 1.0 + coefficient * d
+            if abs(d) < minimum:
+                d = minimum
+            c = 1.0 + coefficient / c
+            if abs(c) < minimum:
+                c = minimum
+            d = 1.0 / d
+            result *= d * c
+            coefficient = -(a + iteration) * (qab + iteration) * x / (
+                (a + even) * (qap + even)
+            )
+            d = 1.0 + coefficient * d
+            if abs(d) < minimum:
+                d = minimum
+            c = 1.0 + coefficient / c
+            if abs(c) < minimum:
+                c = minimum
+            d = 1.0 / d
+            delta = d * c
+            result *= delta
+            if abs(delta - 1.0) <= epsilon:
+                break
+        return result
+
+    @staticmethod
+    def _oos_long_short_return(
+        result: Mapping[str, Any],
+        *,
+        start_time: str | None,
+        inverse: bool,
+    ) -> float:
+        if not start_time:
+            return 0.0
+        previous_gross = 1.0
+        previous_net = 1.0
+        oriented_nav = 1.0
+        found = False
+        for point in result.get("longShortCurve") or []:
+            if not isinstance(point, Mapping):
+                continue
+            gross_nav = FactorBenchmarkEngine._optional_number(point.get("gross"))
+            net_nav = FactorBenchmarkEngine._optional_number(point.get("net"))
+            if gross_nav is None or net_nav is None or previous_gross <= 0 or previous_net <= 0:
+                continue
+            gross_return = gross_nav / previous_gross - 1.0
+            net_return = net_nav / previous_net - 1.0
+            previous_gross = gross_nav
+            previous_net = net_nav
+            if str(point.get("time") or "") < start_time:
+                continue
+            cost = max(0.0, gross_return - net_return)
+            oriented_return = (-gross_return if inverse else gross_return) - cost
+            oriented_nav *= 1.0 + oriented_return
+            found = True
+        return oriented_nav - 1.0 if found else 0.0
 
     @staticmethod
     def _icir(mean_ic: float, std_ic: float, periods_per_year: float, holding_period: int) -> float:

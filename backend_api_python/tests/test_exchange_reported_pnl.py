@@ -1,5 +1,6 @@
 """Venue P&L must remain independent of strategy P&L and fee calculations."""
 from unittest.mock import MagicMock
+from types import SimpleNamespace
 import pytest
 
 from app.services.execution_streams.reported_pnl import fill_report, fetch_order_report, websocket_report
@@ -126,6 +127,65 @@ def test_spot_and_missing_credentials_do_not_manufacture_realized_pnl(monkeypatc
     result = reconciliation.enrich_reported_order_pnl(rows, user_id=1, trading_config={})
     assert result[0]["exchange_pnl"] == {"status": "not_applicable_spot"}
     assert result[1]["exchange_pnl"] == {"status": "unavailable"}
+
+
+def test_unsupported_venue_is_explicit_and_never_queried(monkeypatch):
+    rows = [dict(row(), exchange_id="alpaca", market_type="usstock")]
+    monkeypatch.setattr(reconciliation, "_load", lambda keys: pytest.fail("Unsupported venues must not be queried"))
+
+    result = reconciliation.enrich_reported_order_pnl(rows, user_id=1, trading_config={})
+
+    assert result[0]["exchange_pnl"] == {"status": "unsupported"}
+    assert reconciliation.supports_reported_order_pnl("alpaca", "usstock") is False
+    assert reconciliation.supports_reported_order_pnl("webull", "usstock") is False
+    assert reconciliation.supports_reported_order_pnl("ibkr", "usstock") is True
+    assert reconciliation.supports_reported_order_pnl("tiger", "usstock") is True
+    assert reconciliation.supports_reported_order_pnl("tiger", "hkstock") is True
+
+
+def test_tiger_reads_order_level_realized_pnl_for_us_and_hk_stocks():
+    client = MagicMock()
+    client.get_order_status.return_value = SimpleNamespace(raw={
+        "filled_qty": "2",
+        "realized_pnl": "-3.25",
+        "currency": "HKD",
+    })
+
+    result = fetch_order_report(
+        client,
+        exchange="tiger",
+        symbol="00700",
+        order_id="123",
+        expected=2,
+        timestamp=1700000000,
+        config={},
+    )
+
+    assert result["amount"] == -3.25
+    assert result["currency"] == "HKD"
+    assert result["source"] == "rest:order.realized_pnl"
+    assert result["fee_basis"] == "venue_defined"
+
+
+def test_tiger_account_without_order_pnl_is_explicitly_unsupported():
+    client = MagicMock()
+    client.get_order_status.return_value = SimpleNamespace(raw={
+        "filled_qty": 2,
+        "realized_pnl": None,
+        "currency": "USD",
+    })
+
+    result = fetch_order_report(
+        client,
+        exchange="tiger",
+        symbol="AAPL",
+        order_id="123",
+        expected=2,
+        timestamp=1700000000,
+        config={},
+    )
+
+    assert result == {"status": "unsupported", "reason": "venue_order_pnl_not_provided"}
 
 
 @pytest.mark.parametrize("exchange", ["binance", "okx", "bybit", "bitget", "gate", "htx"])

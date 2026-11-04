@@ -344,6 +344,12 @@ def _apply_init_sql(logger, *, strict: bool = False):
             _apply_migration_component(
                 conn,
                 logger,
+                name="remove-manager-role-20261104",
+                path=Path(__file__).resolve().parent.parent.parent / "migrations" / "20261104_remove_manager_role.sql",
+            )
+            _apply_migration_component(
+                conn,
+                logger,
                 name="market-symbols-master",
                 path=symbols_sql,
                 baseline_table="qd_market_symbols",

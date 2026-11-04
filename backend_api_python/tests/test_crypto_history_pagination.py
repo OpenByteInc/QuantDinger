@@ -53,6 +53,11 @@ def mock_public_api(client, step, monkeypatch, retained_bars=4000):
         elif venue == 'okx':
             times = ([t for t in all_times if t < params['after']][-count:]
                      if 'after' in params else all_times[-count:])
+        elif venue == 'htx' and client.market_type == 'swap' and 'from' in params:
+            low, high = params['from'] * 1000, params['to'] * 1000
+            assert (high - low) // step + 1 <= 2000
+            assert 'size' not in params
+            times = [t for t in all_times if low <= t <= high]
         else:
             times = all_times[-count:]
         if venue == 'gate':

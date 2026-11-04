@@ -192,6 +192,49 @@ def test_crypto_market_data_ignores_partial_cached_window(monkeypatch):
     assert frame.index.min() == pd.Timestamp("2026-07-01")
 
 
+def test_equity_market_data_ignores_cached_frame_missing_requested_prefix(monkeypatch):
+    partial = pd.DataFrame(
+        {
+            "open": [100.0, 101.0],
+            "high": [101.0, 102.0],
+            "low": [99.0, 100.0],
+            "close": [100.0, 101.0],
+            "volume": [10.0, 11.0],
+        },
+        index=pd.DatetimeIndex(["2026-10-20", "2026-11-02"]),
+    )
+    fresh_rows = [
+        {
+            "time": int(timestamp.timestamp()),
+            "open": 100,
+            "high": 101,
+            "low": 99,
+            "close": 100,
+            "volume": 10,
+        }
+        for timestamp in pd.date_range("2026-05-18", "2026-11-02", freq="1D", tz="UTC")
+    ]
+    calls = []
+    monkeypatch.setattr(market_data._cache, "get", lambda _key: partial)
+    monkeypatch.setattr(market_data._cache, "put", lambda *_args: None)
+    monkeypatch.setattr(
+        market_data.DataSourceFactory,
+        "get_kline",
+        lambda **_kwargs: calls.append(True) or fresh_rows,
+    )
+
+    frame = market_data.load_strategy_frame(
+        "HKStock",
+        "03690",
+        "1d",
+        datetime(2026, 5, 18),
+        datetime(2026, 11, 2),
+    )
+
+    assert calls == [True]
+    assert frame.index.min() == pd.Timestamp("2026-05-18")
+
+
 def test_shared_market_data_collapses_concurrent_identical_fetches(monkeypatch):
     calls = []
 
@@ -671,3 +714,41 @@ def test_gate_hk_stock_shared_cache_uses_trading_calendar_coverage(monkeypatch):
     assert len(first) == 5
     assert second.equals(first)
     assert calls == [True]
+
+
+def test_shared_frame_cache_evicts_by_byte_budget(monkeypatch):
+    frame = pd.DataFrame(
+        {"close": list(range(64))},
+        index=pd.date_range("2026-01-01", periods=64, freq="1min"),
+    )
+    frame_bytes = market_data._frame_bytes(frame)
+    monkeypatch.setattr(market_data, "_SHARED_FRAME_CACHE_MAX_BYTES", frame_bytes + 8)
+
+    market_data._remember_shared_frame(
+        "first", frame, frame.index.min(), frame.index.max()
+    )
+    market_data._remember_shared_frame(
+        "second", frame, frame.index.min(), frame.index.max()
+    )
+
+    assert list(market_data._shared_frames) == ["second"]
+    assert market_data._shared_frames_bytes <= market_data._SHARED_FRAME_CACHE_MAX_BYTES
+
+
+def test_shared_frame_cache_skips_oversized_frame(monkeypatch):
+    frame = pd.DataFrame(
+        {"close": list(range(64))},
+        index=pd.date_range("2026-01-01", periods=64, freq="1min"),
+    )
+    monkeypatch.setattr(
+        market_data,
+        "_SHARED_FRAME_CACHE_MAX_BYTES",
+        market_data._frame_bytes(frame) - 1,
+    )
+
+    market_data._remember_shared_frame(
+        "oversized", frame, frame.index.min(), frame.index.max()
+    )
+
+    assert market_data._shared_frames == {}
+    assert market_data._shared_frames_bytes == 0
