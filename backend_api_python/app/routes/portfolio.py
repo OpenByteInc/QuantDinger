@@ -413,6 +413,14 @@ def add_monitor():
         config = data.get('config') or {}
         notification_config = data.get('notification_config') or {}
         is_active = bool(data.get('is_active', True))
+
+        if not config.get('language'):
+            request_language = (
+                request.headers.get('X-App-Lang')
+                or request.headers.get('Accept-Language')
+                or 'en-US'
+            )
+            config['language'] = request_language.split(',', 1)[0].strip() or 'en-US'
         
         if not name:
             return jsonify({'code': 0, 'msg': 'Monitor name is required', 'data': None}), 400

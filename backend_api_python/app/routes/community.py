@@ -5,12 +5,17 @@ REST endpoints for marketplace listings, purchases, comments, author dashboard,
 and admin review.
 """
 
+from typing import Any
+from uuid import uuid4
+
 from flask import g, jsonify, request
 from app.openapi.blueprint import HumanBlueprint as Blueprint
 
 from app.utils.auth import login_required
 from app.utils.logger import get_logger
 from app.services.community_service import get_community_service
+from app.services.billing_service import get_billing_service
+from app.services.market_share import generate_market_share_draft, normalize_share_format
 from app.services.settings.capabilities import is_marketplace_enabled
 
 logger = get_logger(__name__)
@@ -487,6 +492,131 @@ def get_indicator_performance(indicator_id: int):
     except Exception as e:
         logger.error(f"get_indicator_performance failed: {e}")
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
+
+
+def _consume_market_share_credits(user_id: int, indicator_id: int) -> tuple[Any, dict[str, Any]]:
+    billing = get_billing_service()
+    enabled = bool(billing.is_billing_enabled())
+    cost = max(0, int(billing.get_feature_cost("ai_copilot_chat") or 0))
+    reference_id = f"market_share:{indicator_id}:{uuid4().hex}"
+    charge = {
+        "enabled": enabled,
+        "feature": "ai_copilot_chat",
+        "cost": cost,
+        "charged": 0,
+        "remaining": float(billing.get_user_credits(user_id)),
+        "referenceId": reference_id,
+    }
+    if not enabled or cost <= 0:
+        return billing, charge
+
+    success, message = billing.check_and_consume(user_id, "ai_copilot_chat", reference_id)
+    if not success:
+        current = float(billing.get_user_credits(user_id))
+        if str(message).startswith("insufficient_credits:"):
+            return billing, {
+                **charge,
+                "error": "insufficient_credits",
+                "current": current,
+                "required": cost,
+                "shortage": max(0, cost - current),
+            }
+        return billing, {**charge, "error": "billing_error"}
+    charge["charged"] = cost
+    charge["remaining"] = float(billing.get_user_credits(user_id))
+    return billing, charge
+
+
+def _refund_market_share_credits(
+    billing: Any,
+    user_id: int,
+    charge: dict[str, Any],
+) -> None:
+    cost = int(charge.get("charged") or 0)
+    if not billing or cost <= 0:
+        return
+    refunded, message = billing.add_credits(
+        user_id=user_id,
+        amount=cost,
+        action="refund",
+        remark="market_share_ai_generation_refund",
+        reference_id=str(charge.get("referenceId") or ""),
+    )
+    if not refunded:
+        logger.error("Marketplace share credit refund failed for user %s: %s", user_id, message)
+        return
+    charge["charged"] = 0
+    charge["refunded"] = cost
+    charge["remaining"] = float(billing.get_user_credits(user_id))
+
+
+@community_blp.route("/indicators/<int:indicator_id>/share-draft", methods=["POST"])
+@login_required
+def generate_indicator_share_draft(indicator_id: int):
+    """Generate grounded social copy from a public marketplace listing."""
+    billing = None
+    charge: dict[str, Any] = {}
+    user_id = int(g.user_id)
+    try:
+        payload = request.get_json(silent=True) or {}
+        share_format = normalize_share_format(payload.get("format"))
+        locale = (
+            payload.get("locale")
+            or request.headers.get("X-App-Lang")
+            or request.headers.get("Accept-Language")
+            or "en-US"
+        )
+        service = get_community_service()
+        detail = service.get_indicator_detail(
+            indicator_id,
+            user_id=user_id,
+            accept_language=str(locale),
+            is_admin=_is_admin(),
+            increment_view=False,
+        )
+        if not detail:
+            return jsonify({"code": 0, "msg": "indicator_not_found", "data": None}), 404
+        performance = service.get_indicator_performance(indicator_id)
+
+        billing, charge = _consume_market_share_credits(user_id, indicator_id)
+        if charge.get("error") == "insufficient_credits":
+            return jsonify({
+                "code": 0,
+                "msg": "insufficient_credits",
+                "data": {
+                    "error_type": "INSUFFICIENT_CREDITS",
+                    "feature": "ai_copilot_chat",
+                    "current": charge["current"],
+                    "required": charge["required"],
+                    "shortage": charge["shortage"],
+                },
+            }), 402
+        if charge.get("error"):
+            return jsonify({"code": 0, "msg": "billing_error", "data": None}), 503
+
+        draft = generate_market_share_draft(
+            detail,
+            performance,
+            share_format=share_format,
+            locale=locale,
+        )
+        return jsonify({
+            "code": 1,
+            "msg": "success",
+            "data": {"draft": draft, "billing": charge},
+        })
+    except ValueError as exc:
+        _refund_market_share_credits(billing, user_id, charge)
+        raw_error_key = str(exc)
+        safe_error_keys = {"unsupported_share_format", "listing_name_missing"}
+        error_key = raw_error_key if raw_error_key in safe_error_keys else "ai_share_generation_failed"
+        status = 400 if raw_error_key in safe_error_keys else 502
+        logger.warning("Marketplace share generation rejected: %s", raw_error_key)
+        return jsonify({"code": 0, "msg": error_key, "data": None}), status
+    except Exception as exc:
+        _refund_market_share_credits(billing, user_id, charge)
+        logger.exception("generate_indicator_share_draft failed: %s", exc)
+        return jsonify({"code": 0, "msg": "ai_share_generation_failed", "data": None}), 500
 
 
 # ==========================================

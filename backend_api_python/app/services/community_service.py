@@ -815,6 +815,7 @@ class CommunityService:
         user_id: int = None,
         accept_language: str = 'en-US',
         is_admin: bool = False,
+        increment_view: bool = True,
     ) -> Optional[Dict[str, Any]]:
         """获取指标详情。
 
@@ -937,11 +938,12 @@ class CommunityService:
                             else:
                                 local_copy_missing = True
 
-                cur.execute(
-                    "UPDATE qd_indicator_codes SET view_count = COALESCE(view_count, 0) + 1 WHERE id = ?",
-                    (indicator_id,)
-                )
-                db.commit()
+                if increment_view:
+                    cur.execute(
+                        "UPDATE qd_indicator_codes SET view_count = COALESCE(view_count, 0) + 1 WHERE id = ?",
+                        (indicator_id,)
+                    )
+                    db.commit()
                 cur.close()
                 
                 _src_lang = row.get('source_language') if isinstance(row, dict) else None
@@ -972,7 +974,7 @@ class CommunityService:
                     'purchase_count': row['purchase_count'] or 0,
                     'avg_rating': float(row['avg_rating'] or 0),
                     'rating_count': row['rating_count'] or 0,
-                    'view_count': (row['view_count'] or 0) + 1,
+                    'view_count': (row['view_count'] or 0) + (1 if increment_view else 0),
                     'created_at': row['created_at'].isoformat() if row['created_at'] else None,
                     'updated_at': row['updated_at'].isoformat() if row['updated_at'] else None,
                     'author': {
