@@ -113,3 +113,24 @@ def test_ai_share_validation_rejects_missing_body_and_normalizes_locale():
         assert str(exc) == "ai_share_body_missing"
     else:
         raise AssertionError("missing AI body must be rejected")
+
+
+def test_ai_share_validation_accepts_fenced_json_and_ignores_nonfinite_metrics():
+    draft = validate_market_share_draft(
+        '```json\n{"title":"Measured view","body":"Public facts only.","hashtags":[]}\n```',
+        "short",
+    )
+    evidence = build_public_share_evidence(
+        {
+            "name": "Momentum",
+            "avg_rating": float("nan"),
+            "view_count": float("inf"),
+            "purchase_count": float("-inf"),
+        },
+    )
+
+    assert draft["title"] == "Measured view"
+    assert draft["body"] == "Public facts only."
+    assert "rating" not in evidence
+    assert "views" not in evidence
+    assert "installs" not in evidence

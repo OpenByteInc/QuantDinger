@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from typing import TYPE_CHECKING, Any
 
@@ -181,7 +182,13 @@ def _parse_json_payload(raw: Any) -> dict[str, Any]:
     if isinstance(raw, dict):
         return raw
     text = str(raw or "").strip()
-    text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.IGNORECASE)
+    lowered = text.lower()
+    if lowered.startswith("```json"):
+        text = text[7:].lstrip()
+    elif text.startswith("```"):
+        text = text[3:].lstrip()
+    if text.endswith("```"):
+        text = text[:-3].rstrip()
     try:
         payload = json.loads(text)
     except json.JSONDecodeError:
@@ -210,7 +217,7 @@ def _finite_number(value: Any, *, integer: bool = False) -> int | float | None:
         number = float(value)
     except (TypeError, ValueError):
         return None
-    if number != number or number in (float("inf"), float("-inf")):
+    if not math.isfinite(number):
         return None
     return int(number) if integer else round(number, 6)
 
