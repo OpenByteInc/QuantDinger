@@ -11,6 +11,7 @@ from typing import Any
 
 import requests
 
+from app._version import APP_VERSION
 from app.services.llm import LLMService
 from app.utils.db import get_db_connection
 from app.utils.logger import get_logger
@@ -250,12 +251,17 @@ class AIDecisionFilter:
         label = provider.capitalize()
         model = config["model"].strip() or "jev-latest"
         timeout = max(1.0, min(float(config["timeout_seconds"] or 8), 30.0))
+        headers = {
+            "Authorization": f"Bearer {config['api_key']}",
+            "Content-Type": "application/json",
+        }
+        if provider == "drex":
+            # Nace attributes Drex traffic per client integration from these headers.
+            client = f"quantdinger/{APP_VERSION}"
+            headers.update({"X-Nace-Client": client, "User-Agent": client})
         response = requests.post(
             url,
-            headers={
-                "Authorization": f"Bearer {config['api_key']}",
-                "Content-Type": "application/json",
-            },
+            headers=headers,
             json={
                 "model": model,
                 "state": self._state_payload(request),

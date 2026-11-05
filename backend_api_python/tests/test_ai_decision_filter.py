@@ -188,6 +188,7 @@ def test_jev_rejection_blocks_entry(monkeypatch):
     risk_check = next(item for item in result.checks if item["name"] == "risk_check")
     assert risk_check["confidence"] == 0.9
     assert isinstance(captured["json"]["state"], dict)
+    assert "X-Nace-Client" not in captured["headers"]
 
 
 def test_calibrated_jev_confidence_accepts_clear_entry(monkeypatch):
@@ -369,6 +370,8 @@ def test_drex_rejection_is_audited_as_drex(monkeypatch):
 
     assert captured["url"] == "https://console.nace.ai/v1/systemone"
     assert captured["json"]["model"] == "drex-max-finance"
+    assert captured["headers"]["X-Nace-Client"] == f"quantdinger/{module.APP_VERSION}"
+    assert captured["headers"]["User-Agent"] == f"quantdinger/{module.APP_VERSION}"
     assert result.allowed is False
     assert result.provider == "drex"
     assert result.model == "drex-max-finance"
