@@ -607,9 +607,11 @@ def generate_indicator_share_draft(indicator_id: int):
         })
     except ValueError as exc:
         _refund_market_share_credits(billing, user_id, charge)
-        error_key = str(exc)
-        status = 400 if error_key in {"unsupported_share_format", "listing_name_missing"} else 502
-        logger.warning("Marketplace share generation rejected: %s", error_key)
+        raw_error_key = str(exc)
+        safe_error_keys = {"unsupported_share_format", "listing_name_missing"}
+        error_key = raw_error_key if raw_error_key in safe_error_keys else "ai_share_generation_failed"
+        status = 400 if raw_error_key in safe_error_keys else 502
+        logger.warning("Marketplace share generation rejected: %s", raw_error_key)
         return jsonify({"code": 0, "msg": error_key, "data": None}), status
     except Exception as exc:
         _refund_market_share_credits(billing, user_id, charge)
