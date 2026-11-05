@@ -1219,6 +1219,8 @@ ALTER TABLE qd_indicator_codes ADD COLUMN IF NOT EXISTS marketplace_execution_fr
 ALTER TABLE qd_indicator_codes ADD COLUMN IF NOT EXISTS marketplace_confirmation_frequencies varchar(255) DEFAULT NULL;
 ALTER TABLE qd_indicator_codes ADD COLUMN IF NOT EXISTS marketplace_markets varchar(255) DEFAULT NULL;
 ALTER TABLE qd_indicator_codes ADD COLUMN IF NOT EXISTS marketplace_market_types varchar(255) DEFAULT NULL;
+ALTER TABLE qd_indicator_codes ADD COLUMN IF NOT EXISTS marketplace_kpis jsonb DEFAULT NULL;
+ALTER TABLE qd_indicator_codes ADD COLUMN IF NOT EXISTS marketplace_kpis_updated_at timestamp NULL;
 
 CREATE INDEX IF NOT EXISTS idx_indicator_codes_user_id ON qd_indicator_codes USING btree (user_id);
 CREATE INDEX IF NOT EXISTS idx_indicator_review_status ON qd_indicator_codes USING btree (review_status);

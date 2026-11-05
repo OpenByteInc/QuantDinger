@@ -40,6 +40,10 @@ def build_product_aware_config(
     config = build_exchange_config(credential_id, user_id, overrides or {"market_type": market_type})
     requested = _product_values(source)
     has_identity = any(requested.values())
+    is_regular_crypto_identity = (
+        requested["product_type"] == "crypto"
+        and requested["api_family"] in {"", "spot", "swap"}
+    )
     if not has_identity and not _should_resolve_product(source):
         return config, None
 
@@ -52,7 +56,7 @@ def build_product_aware_config(
         instrument_id=requested["instrument_id"],
     )
     if not product:
-        if has_identity:
+        if has_identity and not is_regular_crypto_identity:
             raise ValueError("strategyV2.equityProductCatalogStale")
         return config, None
     for key in ("product_type", "api_family"):
