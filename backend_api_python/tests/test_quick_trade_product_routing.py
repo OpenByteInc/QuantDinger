@@ -162,3 +162,43 @@ def test_resolve_product_can_fall_back_for_uncatalogued_regular_crypto(monkeypat
 
     assert config["exchange_id"] == "binance"
     assert resolved is None
+
+
+def test_regular_crypto_identity_can_fall_back_when_catalog_refresh_is_in_flight(monkeypatch):
+    monkeypatch.setattr(products, "build_exchange_config", lambda *args, **kwargs: {"exchange_id": "bitget", "market_type": "spot"})
+    monkeypatch.setattr(products, "get_catalog_product", lambda **kwargs: None)
+
+    config, resolved = products.build_product_aware_config(
+        7,
+        11,
+        symbol="ETH/USDT",
+        market_type="spot",
+        source={
+            "instrument_id": "ETHUSDT",
+            "product_type": "crypto",
+            "api_family": "spot",
+            "resolve_product": True,
+        },
+    )
+
+    assert config["exchange_id"] == "bitget"
+    assert resolved is None
+
+
+def test_specialized_equity_identity_still_requires_catalog(monkeypatch):
+    monkeypatch.setattr(products, "build_exchange_config", lambda *args, **kwargs: {"exchange_id": "binance", "market_type": "swap"})
+    monkeypatch.setattr(products, "get_catalog_product", lambda **kwargs: None)
+
+    with pytest.raises(ValueError, match="equityProductCatalogStale"):
+        products.build_product_aware_config(
+            7,
+            11,
+            symbol="QQQ/USDT",
+            market_type="swap",
+            source={
+                "instrument_id": "QQQUSDT",
+                "product_type": "stock_perpetual",
+                "api_family": "swap",
+                "resolve_product": True,
+            },
+        )

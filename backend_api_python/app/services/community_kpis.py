@@ -3,23 +3,56 @@
 from __future__ import annotations
 
 import json
+import math
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
+MARKETPLACE_SCORE_VERSION = 2
+
+
+def _finite_number(value: Any, default: float = 0.0) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    return number if math.isfinite(number) else default
+
+
+def _clamp(value: float, lower: float = 0.0, upper: float = 100.0) -> float:
+    return max(lower, min(upper, value))
 
 
 def _score_result(result: Dict[str, Any]) -> float:
-    trades = float(result.get("totalTrades") or 0)
+    trades = max(0.0, _finite_number(result.get("totalTrades")))
     if trades <= 0:
         return 0.0
-    total_return = float(result.get("totalReturn") or 0)
-    sharpe = float(result.get("sharpeRatio") or 0)
-    drawdown = abs(float(result.get("maxDrawdown") or 0))
-    win_rate = float(result.get("winRate") or 0)
-    score = 50 + total_return * 0.2 + sharpe * 10 + win_rate * 0.1 - drawdown * 0.25
-    return max(0.0, min(100.0, score))
+    total_return = _finite_number(result.get("totalReturn"))
+    sharpe = _finite_number(result.get("sharpeRatio"))
+    drawdown = abs(_finite_number(result.get("maxDrawdown")))
+    win_rate = _finite_number(result.get("winRate"))
+    profit_factor = max(0.0, _finite_number(result.get("profitFactor")))
+
+    return_score = _clamp(
+        50.0 + math.copysign(20.0 * math.log1p(abs(total_return) / 10.0), total_return)
+    )
+    sharpe_score = _clamp(50.0 + sharpe * 20.0)
+    drawdown_score = _clamp(70.0 - drawdown * 1.4)
+    win_rate_score = _clamp(win_rate)
+    profit_factor_score = _clamp(50.0 + 30.0 * math.log(max(profit_factor, 0.05)))
+    evidence_score = _clamp(trades / 30.0 * 100.0)
+
+    weighted_score = (
+        return_score * 0.25
+        + sharpe_score * 0.30
+        + drawdown_score * 0.20
+        + win_rate_score * 0.10
+        + profit_factor_score * 0.10
+        + evidence_score * 0.05
+    )
+    evidence_confidence = 0.65 + 0.35 * min(trades / 30.0, 1.0)
+    return _clamp(weighted_score * evidence_confidence)
 
 
 def parse_backtest_result(raw: str) -> Optional[Dict[str, Any]]:
@@ -42,6 +75,7 @@ def summarise_backtest_runs(runs: List[Dict[str, Any]]) -> Dict[str, Any]:
     stories.
     """
     empty = {
+        "score_version": MARKETPLACE_SCORE_VERSION,
         "score": 0.0,
         "total_return": 0.0,
         "annual_return": 0.0,
@@ -110,6 +144,7 @@ def summarise_backtest_runs(runs: List[Dict[str, Any]]) -> Dict[str, Any]:
         average_loss = abs(float(best_result.get("avgLoss") or best_result.get("avg_loss") or 0))
         profit_loss_ratio = average_win / average_loss if average_loss > 0 else 0.0
     return {
+        "score_version": MARKETPLACE_SCORE_VERSION,
         "score": round(float(best_score or 0), 2),
         "total_return": round(float(best_result.get("totalReturn") or 0), 2),
         "annual_return": round(float(annual_return or 0), 2),
@@ -130,18 +165,44 @@ def summarise_backtest_runs(runs: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
-def fetch_market_asset_kpis(cur: Any, assets: List[Dict[str, Any]]) -> Dict[int, Dict[str, Any]]:
+def _decode_marketplace_kpis(raw: Any) -> Optional[Dict[str, Any]]:
+    if raw is None:
+        return None
+    value = raw
+    if isinstance(raw, str):
+        try:
+            value = json.loads(raw)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return None
+    if not isinstance(value, dict):
+        return None
+    if int(value.get("score_version") or 0) != MARKETPLACE_SCORE_VERSION:
+        return None
+    normalized = summarise_backtest_runs([])
+    normalized.update({key: value[key] for key in normalized if key in value})
+    return normalized
+
+
+def fetch_market_asset_kpis(
+    cur: Any,
+    assets: List[Dict[str, Any]],
+    *,
+    prefer_persisted: bool = True,
+    persist_missing: bool = False,
+) -> Dict[int, Dict[str, Any]]:
     """Load representative KPIs for marketplace assets.
 
     Chart-only indicators do not own backtest records. Script templates and
     bot presets use their persisted source ids because their backtests are
-    stored as strategy-script/strategy runs.
+    stored as strategy-script/strategy runs. Marketplace listings normally
+    use the immutable KPI snapshot created at publication time. Missing legacy
+    snapshots can be rebuilt in batches and persisted once.
     """
     if not assets:
         return {}
 
     output: Dict[int, Dict[str, Any]] = {}
-
+    unresolved_assets: List[Dict[str, Any]] = []
     for asset in assets:
         asset_id = int(asset.get("id") or 0)
         asset_type = asset.get("asset_type") or "indicator"
@@ -150,37 +211,85 @@ def fetch_market_asset_kpis(cur: Any, assets: List[Dict[str, Any]]) -> Dict[int,
         if asset_type == "indicator":
             output[asset_id] = summarise_backtest_runs([])
             continue
+        persisted = _decode_marketplace_kpis(asset.get("marketplace_kpis")) if prefer_persisted else None
+        if persisted is not None:
+            output[asset_id] = persisted
+        else:
+            unresolved_assets.append(asset)
 
-        rows: List[Dict[str, Any]] = []
+    source_ids = sorted({
+        int(asset.get("source_script_source_id") or 0)
+        for asset in unresolved_assets
+        if int(asset.get("source_script_source_id") or 0) > 0
+    })
+    strategy_ids = sorted({
+        int(asset.get("source_strategy_id") or 0)
+        for asset in unresolved_assets
+        if not int(asset.get("source_script_source_id") or 0)
+        and int(asset.get("source_strategy_id") or 0) > 0
+    })
+    rows_by_source: Dict[int, List[Dict[str, Any]]] = {source_id: [] for source_id in source_ids}
+    rows_by_strategy: Dict[int, List[Dict[str, Any]]] = {strategy_id: [] for strategy_id in strategy_ids}
+
+    def load_grouped_runs(column: str, identifiers: List[int], target: Dict[int, List[Dict[str, Any]]]) -> None:
+        if not identifiers:
+            return
+        placeholders = ",".join(["%s"] * len(identifiers))
+        cur.execute(
+            f"""
+            SELECT id, source_id, strategy_id, symbol, timeframe, start_date, end_date,
+                   code_hash, result_json
+            FROM qd_backtest_runs
+            WHERE {column} IN ({placeholders})
+              AND status = 'success'
+              AND result_json IS NOT NULL AND result_json != ''
+            """,
+            tuple(identifiers),
+        )
+        for raw_row in cur.fetchall() or []:
+            row = dict(raw_row)
+            identifier = int(row.get(column) or 0)
+            if identifier in target:
+                target[identifier].append(row)
+
+    loaded_columns = set()
+    for column, identifiers, target in (
+        ("source_id", source_ids, rows_by_source),
+        ("strategy_id", strategy_ids, rows_by_strategy),
+    ):
+        if not identifiers:
+            continue
+        try:
+            load_grouped_runs(column, identifiers, target)
+            loaded_columns.add(column)
+        except Exception:
+            logger.debug("Marketplace KPI batch query failed for %s", column, exc_info=True)
+
+    persistable_ids = []
+    for asset in unresolved_assets:
+        asset_id = int(asset.get("id") or 0)
         source_script_id = int(asset.get("source_script_source_id") or 0)
         source_strategy_id = int(asset.get("source_strategy_id") or 0)
-        try:
-            if source_script_id:
-                cur.execute(
-                    """
-                    SELECT id, symbol, timeframe, start_date, end_date, result_json
-                    FROM qd_backtest_runs
-                    WHERE source_id = %s
-                      AND status = 'success'
-                      AND result_json IS NOT NULL AND result_json != ''
-                    """,
-                    (source_script_id,),
-                )
-                rows = [dict(row) for row in (cur.fetchall() or [])]
-            elif source_strategy_id:
-                cur.execute(
-                    """
-                    SELECT id, symbol, timeframe, start_date, end_date, result_json
-                    FROM qd_backtest_runs
-                    WHERE strategy_id = %s
-                      AND status = 'success'
-                      AND result_json IS NOT NULL AND result_json != ''
-                    """,
-                    (source_strategy_id,),
-                )
-                rows = [dict(row) for row in (cur.fetchall() or [])]
-        except Exception:
-            logger.debug("Marketplace KPI query failed for asset %s", asset_id, exc_info=True)
+        rows = rows_by_source.get(source_script_id, []) if source_script_id else rows_by_strategy.get(source_strategy_id, [])
+        source_code_hash = str(asset.get("source_code_hash") or "").strip()
+        if source_code_hash:
+            rows = [row for row in rows if str(row.get("code_hash") or "").strip() == source_code_hash]
         output[asset_id] = summarise_backtest_runs(rows)
+        identity_column = "source_id" if source_script_id else "strategy_id"
+        if identity_column in loaded_columns:
+            persistable_ids.append(asset_id)
+
+    if persist_missing and persistable_ids:
+        cur.executemany(
+            """
+            UPDATE qd_indicator_codes
+            SET marketplace_kpis = ?::jsonb, marketplace_kpis_updated_at = NOW()
+            WHERE id = ?
+            """,
+            [
+                (json.dumps(output[asset_id], ensure_ascii=False), asset_id)
+                for asset_id in persistable_ids
+            ],
+        )
 
     return {int(asset.get("id") or 0): output.get(int(asset.get("id") or 0), summarise_backtest_runs([])) for asset in assets}

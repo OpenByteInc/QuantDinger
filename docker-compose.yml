@@ -506,8 +506,8 @@ services:
     environment:
       <<: *worker-environment
       QD_PROCESS_ROLE: strategy-evaluator
-      DB_POOL_MIN: 1
-      DB_POOL_MAX: 4
+      DB_POOL_MIN: ${STRATEGY_EVALUATOR_DB_POOL_MIN:-2}
+      DB_POOL_MAX: ${STRATEGY_EVALUATOR_DB_POOL_MAX:-16}
       DB_APPLICATION_NAME: quantdinger-strategy-evaluator
       KAFKA_CLIENT_ID: quantdinger-strategy-evaluator
       KAFKA_STRATEGY_EVALUATOR_GROUP_ID: ${KAFKA_STRATEGY_EVALUATOR_GROUP_ID:-quantdinger-strategy-evaluator-active-v1}

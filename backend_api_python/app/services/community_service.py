@@ -21,6 +21,7 @@ from app.services.strategy_marketplace_contract import (
     compatibility_for_target,
     derive_marketplace_contract,
 )
+from app.services.strategy_v2.contract import strategy_source_code_hash
 from app.services.strategy_v2.instruments import instrument_key_from_metadata
 
 logger = get_logger(__name__)
@@ -266,27 +267,12 @@ class CommunityService:
     ) -> Dict[str, Any]:
         """获取市场上已发布的指标列表
 
-        About ``sort_by='score'`` (the new default):
-            The composite score lives in qd_backtest_runs.result_json, which
-            is opaque to SQL. We can't ORDER BY it cheaply. Instead, when
-            the caller asks for score-sorted results, we:
-              1. Pull the *full set* of approved + published indicators
-                 (id-only, very cheap row).
-              2. Batch-compute their scores via fetch_market_asset_kpis.
-              3. Sort by score in Python.
-              4. Slice [offset:offset+page_size] and re-query the full row
-                 for just that slice.
-
-            For other sort_by values (newest / hot / price / rating), the
-            sort can be done in SQL, so we keep the original cheap path
-            and only batch-compute KPIs for the visible page.
-
-            The trade-off: score-sort is O(N) per request in indicators
-            count, but N here is "how many indicators have ever been
-            published" — currently realistic in the low hundreds. If the
-            community grows past ~5k we'll want to denormalise the score
-            onto qd_indicator_codes via a periodic job; until then this
-            is fine and saves a schema migration.
+        About ``sort_by='score'`` (the default for strategy templates):
+            Marketplace KPIs are snapshotted onto qd_indicator_codes when a
+            strategy is published or republished. Listing requests read that
+            immutable snapshot instead of recalculating every backtest. Rows
+            created before the snapshot column existed are rebuilt in one
+            batch and persisted on their first listing request.
         """
         offset = (page - 1) * page_size
 
@@ -414,7 +400,9 @@ class CommunityService:
                             i.id,
                             COALESCE(i.asset_type, 'indicator') as asset_type,
                             i.source_script_source_id,
-                            i.source_strategy_id
+                            i.source_strategy_id,
+                            i.marketplace_contract_hash as source_code_hash,
+                            i.marketplace_kpis
                         FROM qd_indicator_codes i
                         WHERE {where_sql}
                         """,
@@ -422,7 +410,7 @@ class CommunityService:
                     )
                     all_assets = [dict(r) for r in (cur.fetchall() or [])]
                     all_ids = [int(r['id']) for r in all_assets]
-                    kpi_by_id = fetch_market_asset_kpis(cur, all_assets)
+                    kpi_by_id = fetch_market_asset_kpis(cur, all_assets, persist_missing=True)
                     kpi_field = kpi_sort_fields[sort_by]
                     metric_direction = str(sort_order or '').lower()
                     if metric_direction not in {'asc', 'desc'}:
@@ -457,9 +445,11 @@ class CommunityService:
                             COALESCE(i.is_encrypted, 0) as code_hidden,
                             COALESCE(i.asset_type, 'indicator') as asset_type,
                             i.source_script_source_id, i.source_strategy_id,
+                            i.marketplace_contract_hash as source_code_hash,
                             i.preview_image, i.purchase_count, i.avg_rating, i.rating_count,
                             i.view_count, i.created_at, i.updated_at,
                             i.source_language, i.name_i18n, i.description_i18n,
+                            i.marketplace_kpis,
                             i.marketplace_contract, i.marketplace_binding_mode, i.marketplace_strategy_type,
                             i.marketplace_direction_mode, i.marketplace_execution_mode,
                             i.marketplace_execution_frequency, i.marketplace_confirmation_frequencies,
@@ -484,9 +474,11 @@ class CommunityService:
                             COALESCE(i.is_encrypted, 0) as code_hidden,
                             COALESCE(i.asset_type, 'indicator') as asset_type,
                             i.source_script_source_id, i.source_strategy_id,
+                            i.marketplace_contract_hash as source_code_hash,
                             i.preview_image, i.purchase_count, i.avg_rating, i.rating_count,
                             i.view_count, i.created_at, i.updated_at,
                             i.source_language, i.name_i18n, i.description_i18n,
+                            i.marketplace_kpis,
                             i.marketplace_contract, i.marketplace_binding_mode, i.marketplace_strategy_type,
                             i.marketplace_direction_mode, i.marketplace_execution_mode,
                             i.marketplace_execution_frequency, i.marketplace_confirmation_frequencies,
@@ -502,7 +494,7 @@ class CommunityService:
                     """
                     cur.execute(query_sql, tuple(params + [page_size, offset]))
                     rows = cur.fetchall() or []
-                    page_kpis = fetch_market_asset_kpis(cur, [dict(r) for r in rows])
+                    page_kpis = fetch_market_asset_kpis(cur, [dict(r) for r in rows], persist_missing=True)
 
                 purchased_ids = set()
                 if user_id:
@@ -515,6 +507,7 @@ class CommunityService:
                         )
                         purchased_ids = {r['indicator_id'] for r in (cur.fetchall() or [])}
 
+                db.commit()
                 cur.close()
 
                 items = []
@@ -775,6 +768,18 @@ class CommunityService:
                     )
                     indicator_id = int(cur.lastrowid or 0)
 
+                fetch_market_asset_kpis(
+                    cur,
+                    [{
+                        'id': indicator_id,
+                        'asset_type': 'script_template',
+                        'source_script_source_id': source_id_value,
+                        'source_strategy_id': int(strategy_id or 0) or None,
+                        'source_code_hash': strategy_source_code_hash(code),
+                    }],
+                    prefer_persisted=False,
+                    persist_missing=True,
+                )
                 db.commit()
                 cur.close()
 
@@ -2697,7 +2702,9 @@ class CommunityService:
                         COALESCE(i.asset_type, 'indicator') as asset_type,
                         i.source_script_source_id,
                         i.source_strategy_id,
+                        i.marketplace_contract_hash as source_code_hash,
                         i.code,
+                        i.marketplace_kpis,
                         i.marketplace_contract,
                         ss.param_schema
                     FROM qd_indicator_codes i
@@ -2713,7 +2720,11 @@ class CommunityService:
 
                 # Re-use the list endpoint KPI path so cards and details
                 # use the same representative backtest and never disagree.
-                kpi = fetch_market_asset_kpis(cur, [asset_row]).get(indicator_id, summarise_backtest_runs([]))
+                kpi = fetch_market_asset_kpis(
+                    cur,
+                    [asset_row],
+                    persist_missing=True,
+                ).get(indicator_id, summarise_backtest_runs([]))
                 bt_rows: List[Dict[str, Any]] = []
                 if kpi['best_run_id']:
                     cur.execute("""
@@ -2832,6 +2843,7 @@ class CommunityService:
                 live_win_rate = 0.0
                 live_total_profit = 0.0
 
+                db.commit()
                 cur.close()
 
                 # ---------- Combine ----------

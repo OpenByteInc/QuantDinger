@@ -56,7 +56,13 @@ class _Db:
 def test_publish_persists_derived_contract_and_search_indexes(monkeypatch):
     cursor = _Cursor()
     db = _Db(cursor)
+    snapshot_calls = []
     monkeypatch.setattr(community_service, 'get_db_connection', lambda: db)
+    monkeypatch.setattr(
+        community_service,
+        'fetch_market_asset_kpis',
+        lambda cur, assets, **kwargs: snapshot_calls.append((cur, assets, kwargs)) or {},
+    )
 
     ok, message, data = CommunityService().publish_script_template_from_strategy(
         user_id=9,
@@ -74,8 +80,16 @@ def test_publish_persists_derived_contract_and_search_indexes(monkeypatch):
     assert data['marketplace_contract']['binding_mode'] == 'parameterized'
     assert data['marketplace_contract']['bound_instruments'] == ['USStock:SPY']
     assert db.committed is True
+    assert snapshot_calls[0][1][0]['id'] == 77
+    assert snapshot_calls[0][2] == {'prefer_persisted': False, 'persist_missing': True}
+    assert snapshot_calls[0][1][0]['source_code_hash']
 
-    sql, params = cursor.executions[-1]
+    sql, params = next(
+        (statement, values)
+        for statement, values in cursor.executions
+        if 'marketplace_contract' in statement
+        and ('INSERT INTO qd_indicator_codes' in statement or 'UPDATE qd_indicator_codes' in statement)
+    )
     assert 'marketplace_contract' in sql
     assert 'marketplace_binding_mode' in sql
     assert 'marketplace_execution_frequency' in sql
@@ -89,7 +103,13 @@ def test_republish_updates_listing_resolved_by_source_id(monkeypatch):
     cursor = _Cursor()
     cursor._fetch_results = [{'id': 41}]
     db = _Db(cursor)
+    snapshot_calls = []
     monkeypatch.setattr(community_service, 'get_db_connection', lambda: db)
+    monkeypatch.setattr(
+        community_service,
+        'fetch_market_asset_kpis',
+        lambda cur, assets, **kwargs: snapshot_calls.append((cur, assets, kwargs)) or {},
+    )
 
     ok, message, data = CommunityService().publish_script_template_from_strategy(
         user_id=9,
@@ -105,6 +125,9 @@ def test_republish_updates_listing_resolved_by_source_id(monkeypatch):
     assert message == 'success'
     assert data['indicator_id'] == 41
     assert data['publication_action'] == 'updated'
+    assert snapshot_calls[0][1][0]['id'] == 41
+    assert snapshot_calls[0][2] == {'prefer_persisted': False, 'persist_missing': True}
+    assert snapshot_calls[0][1][0]['source_code_hash']
     statements = [sql for sql, _params in cursor.executions]
     assert any('pg_advisory_xact_lock' in sql for sql in statements)
     assert any('source_script_source_id = ?' in sql and 'SELECT id' in sql for sql in statements)
