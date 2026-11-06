@@ -25,6 +25,7 @@ from app.services.strategy_v2 import (
     FactorResearchRepository,
     StrategyBacktestRepository,
     StrategyV2BacktestService,
+    compile_strategy_v2,
 )
 from app.services.strategy_v2.factor_benchmark import FactorBenchmarkEngine
 from app.utils.auth import login_required
@@ -48,6 +49,8 @@ _PUBLIC_REQUEST_ERROR_KEYS = frozenset({
     "strategyV2.factorResearchNoData",
     "strategyV2.factorResearchUniverseRequired",
     "strategyV2.runIdRequired",
+    "strategyV2.leverageExceedsStrategyLimit",
+    "strategyV2.leverageNotAllowed",
     "strategyV2.sourceContractRequired",
     "strategyV2.sourceNotFound",
     "strategyV2.strategyNotFound",
@@ -114,6 +117,12 @@ def _prepare_run(payload: dict[str, Any], user_id: int) -> dict[str, Any]:
     start_date = datetime.strptime(start_raw, "%Y-%m-%d")
     end_date = datetime.strptime(end_raw, "%Y-%m-%d").replace(hour=23, minute=59, second=59)
     leverage_enabled = bool(payload.get("leverageEnabled", False))
+    leverage = max(1.0, float(payload.get("leverage") or 1)) if leverage_enabled else 1.0
+    manifest = compile_strategy_v2(code).manifest
+    if leverage > 1.0 and not manifest.leverage_allowed:
+        raise ValueError("strategyV2.leverageNotAllowed")
+    if leverage > manifest.max_leverage:
+        raise ValueError("strategyV2.leverageExceedsStrategyLimit")
     return {
         "user_id": user_id,
         "code": code,
@@ -121,7 +130,7 @@ def _prepare_run(payload: dict[str, Any], user_id: int) -> dict[str, Any]:
         "end_date": end_date,
         "initial_capital": float(payload.get("initialCapital") or 10_000),
         "leverage_enabled": leverage_enabled,
-        "leverage": float(payload.get("leverage") or 1),
+        "leverage": leverage,
         "commission": parse_rate(payload.get("commission"), default=default_commission_if_missing(None)),
         "slippage": parse_rate(payload.get("slippage"), default=default_slippage_if_missing(None)),
         "params": dict(payload.get("params") or {}),

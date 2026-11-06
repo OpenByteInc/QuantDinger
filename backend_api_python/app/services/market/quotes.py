@@ -10,6 +10,7 @@ from app.services.market_context import (
     normalize_market_type,
 )
 from app.services.market.symbol_search import find_market_symbol
+from app.services.market.assets import AssetResolutionError, resolve_research_instrument
 from app.utils.cache import CacheManager
 from app.utils.logger import get_logger
 from app.utils.request_guard import RequestGuardError, cache_key, guarded_cached
@@ -417,42 +418,89 @@ def get_price_map(watchlist: list, timeout_sec: int = 30) -> list:
     for item in watchlist:
         market = item.get("market", "")
         symbol = item.get("symbol", "")
+        asset_id = int(item.get("asset_id") or 0)
         exchange_id = item.get("exchange_id", "")
         market_type = item.get("market_type", "")
         instrument_id = item.get("instrument_id", "")
         if market and symbol:
-            future = executor.submit(
-                get_single_price,
-                market,
-                symbol,
-                exchange_id,
-                market_type,
-                instrument_id,
-                resolved_crypto_exchange_id=resolved_crypto_exchange_id,
-            )
-            futures[future] = (market, symbol, exchange_id, market_type, instrument_id)
+            if asset_id > 0:
+                future = executor.submit(
+                    _get_logical_asset_price,
+                    asset_id,
+                    market,
+                    symbol,
+                    resolved_crypto_exchange_id,
+                )
+            else:
+                future = executor.submit(
+                    get_single_price,
+                    market,
+                    symbol,
+                    exchange_id,
+                    market_type,
+                    instrument_id,
+                    resolved_crypto_exchange_id=resolved_crypto_exchange_id,
+                )
+            futures[future] = (market, symbol, exchange_id, market_type, instrument_id, asset_id)
 
     completed = set()
     try:
         for future in as_completed(futures, timeout=timeout_sec):
             completed.add(future)
-            market, symbol, exchange_id, market_type, instrument_id = futures[future]
+            market, symbol, exchange_id, market_type, instrument_id, asset_id = futures[future]
             try:
                 results.append(future.result())
             except Exception as exc:
                 logger.warning("Price fetch failed: %s:%s - %s", market, symbol, exc)
-                results.append(_cached_or_empty(
+                fallback = _cached_or_empty(
                     market, symbol, exchange_id, market_type, "failed", instrument_id=instrument_id,
-                ))
+                )
+                if asset_id > 0:
+                    fallback["asset_id"] = asset_id
+                results.append(fallback)
     except FuturesTimeoutError:
-        for future, (market, symbol, exchange_id, market_type, instrument_id) in futures.items():
+        for future, (market, symbol, exchange_id, market_type, instrument_id, asset_id) in futures.items():
             if future not in completed:
                 logger.warning("Price fetch timed out: %s:%s", market, symbol)
-                results.append(_cached_or_empty(
+                fallback = _cached_or_empty(
                     market, symbol, exchange_id, market_type, "timeout", instrument_id=instrument_id,
-                ))
+                )
+                if asset_id > 0:
+                    fallback["asset_id"] = asset_id
+                results.append(fallback)
 
     return results
+
+
+def _get_logical_asset_price(
+    asset_id: int,
+    market: str,
+    symbol: str,
+    preferred_exchange_id: str,
+) -> dict:
+    try:
+        product = resolve_research_instrument(
+            asset_id,
+            preferred_exchange_id=preferred_exchange_id,
+            preferred_market_type="spot",
+        )
+    except AssetResolutionError as exc:
+        out = empty_price(market, symbol, error=str(exc))
+        out["asset_id"] = asset_id
+        return out
+    result = get_single_price(
+        market,
+        symbol,
+        product.get("exchange_id") or "",
+        product.get("market_type") or "",
+        product.get("instrument_id") or "",
+    )
+    result["asset_id"] = asset_id
+    result["source_exchange_id"] = product.get("exchange_id") or result.get("source_exchange_id") or ""
+    result["source_market_type"] = product.get("market_type") or result.get("source_market_type") or ""
+    result["exchange_id"] = ""
+    result["market_type"] = ""
+    return result
 
 
 def _cached_or_empty(

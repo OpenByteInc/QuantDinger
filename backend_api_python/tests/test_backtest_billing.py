@@ -23,7 +23,12 @@ def test_backtest_submission_delegates_billing_to_job_boundary(monkeypatch):
 
     monkeypatch.setattr(backtest_center.agent_jobs, "submit_job", submit_job)
     receipt = backtest_center._submit_backtest_job({
-        "code": "def initialize(context):\n    pass",
+        "code": (
+            "def initialize(context):\n"
+            "    context.set_universe(['Crypto:BTC/USDT'])\n\n"
+            "def handle_data(context, data):\n"
+            "    pass"
+        ),
         "startDate": "2026-01-01",
         "endDate": "2026-01-31",
     }, 7)

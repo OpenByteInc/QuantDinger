@@ -41,9 +41,12 @@ def is_fatal_exchange_error(msg: str) -> bool:
         "50111",
         "invalid api-key",
         "invalid api key",
+        "api-signature-not-valid",
         "invalid ok-access-key",
         "invalid ip",
         "invalid_ip",
+        "incorrect ip address",
+        "ip地址错误",
         "40018",
         "permissions for action",
         "unauthorized",
@@ -73,6 +76,7 @@ def is_fatal_exchange_error(msg: str) -> bool:
         "no credential",
         "exchange credential",
         "unsupported client for grid",
+        "trading_venue_disabled",
     )
     return any(t in m for t in tokens)
 

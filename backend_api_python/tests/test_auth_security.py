@@ -8,6 +8,7 @@ from flask import Flask, jsonify
 
 from app.config.settings import Config
 from app.services import user_service as user_service_module
+from app.services import auth_session
 from app.services.user_service import UserService
 from app.utils import db as db_module
 from app.utils import auth
@@ -26,6 +27,8 @@ def _claims(**overrides) -> dict:
         "user_id": 1,
         "role": "admin",
         "token_version": 1,
+        "client_type": "pc",
+        "client_token_version": 1,
     }
     claims.update(overrides)
     return claims
@@ -72,6 +75,7 @@ def test_settings_reload_keeps_existing_jwt_valid(monkeypatch):
     monkeypatch.setattr(runtime, "load_dotenv", fake_load)
     runtime.reload_runtime_env()
     monkeypatch.setattr(auth, "_verify_token_version", lambda *_: True)
+    monkeypatch.setattr(auth, "_verify_client_token_version", lambda *_: True)
     monkeypatch.setattr(
         auth,
         "_get_user_auth_state",
@@ -104,8 +108,23 @@ def test_missing_token_version_is_rejected_before_database_check(monkeypatch):
     assert calls == []
 
 
+def test_missing_client_session_claims_are_rejected(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        auth,
+        "_verify_client_token_version",
+        lambda *args: calls.append(args) or True,
+    )
+    claims = _claims()
+    claims.pop("client_token_version")
+
+    assert auth.verify_token(_encode(claims)) is None
+    assert calls == []
+
+
 def test_database_role_overrides_forged_admin_claim(monkeypatch):
     monkeypatch.setattr(auth, "_verify_token_version", lambda *_: True)
+    monkeypatch.setattr(auth, "_verify_client_token_version", lambda *_: True)
     monkeypatch.setattr(
         auth,
         "_get_user_auth_state",
@@ -126,6 +145,7 @@ def test_database_role_overrides_forged_admin_claim(monkeypatch):
 
 def test_token_version_change_during_verification_is_rejected(monkeypatch):
     monkeypatch.setattr(auth, "_verify_token_version", lambda *_: True)
+    monkeypatch.setattr(auth, "_verify_client_token_version", lambda *_: True)
     monkeypatch.setattr(
         auth,
         "_get_user_auth_state",
@@ -138,6 +158,78 @@ def test_token_version_change_during_verification_is_rejected(monkeypatch):
     )
 
     assert auth.verify_token(_encode(_claims(token_version=1))) is None
+
+
+def test_pc_and_mobile_sessions_coexist_while_same_type_replaces_previous(monkeypatch):
+    client_versions = {"pc": 1, "mobile": 1}
+    monkeypatch.setattr(auth, "_verify_token_version", lambda *_: True)
+    monkeypatch.setattr(
+        auth,
+        "_verify_client_token_version",
+        lambda _, client_type, version: client_versions[client_type] == version,
+    )
+    monkeypatch.setattr(
+        auth,
+        "_get_user_auth_state",
+        lambda _: {
+            "username": "member",
+            "role": "user",
+            "status": "active",
+            "token_version": 1,
+        },
+    )
+
+    first_pc = auth.generate_token(1, "member", "user", 1, "pc", 1)
+    mobile = auth.generate_token(1, "member", "user", 1, "mobile", 1)
+
+    assert auth.verify_token(first_pc) is not None
+    assert auth.verify_token(mobile) is not None
+
+    client_versions["pc"] = 2
+    second_pc = auth.generate_token(1, "member", "user", 1, "pc", 2)
+
+    assert auth.verify_token(first_pc) is None
+    assert auth.verify_token(second_pc) is not None
+    assert auth.verify_token(mobile) is not None
+
+    client_versions["mobile"] = 2
+    second_mobile = auth.generate_token(1, "member", "user", 1, "mobile", 2)
+
+    assert auth.verify_token(mobile) is None
+    assert auth.verify_token(second_mobile) is not None
+    assert auth.verify_token(second_pc) is not None
+
+
+def test_login_issuance_replaces_only_the_selected_client_slot(monkeypatch):
+    calls = []
+
+    class FakeUserService:
+        def get_token_version(self, user_id):
+            assert user_id == 9
+            return 7
+
+        def increment_client_token_version(self, user_id, client_type):
+            calls.append((user_id, client_type))
+            return 3
+
+        def must_change_initial_password(self, user_id):
+            return False
+
+    monkeypatch.setattr(user_service_module, "get_user_service", lambda: FakeUserService())
+
+    token, _ = auth_session.issue_login_token(
+        {"id": 9, "username": "member", "role": "user"},
+        9,
+        "member",
+        ["dashboard"],
+        "mobile",
+    )
+    claims = jwt.decode(token, Config.SECRET_KEY, algorithms=["HS256"])
+
+    assert calls == [(9, "mobile")]
+    assert claims["token_version"] == 7
+    assert claims["client_type"] == "mobile"
+    assert claims["client_token_version"] == 3
 
 
 def test_password_reset_invalidates_existing_token(monkeypatch):

@@ -1436,10 +1436,15 @@ def run_single_monitor(
             try:
                 with get_db_connection() as db:
                     cur = db.cursor()
-                    wl_sql = "SELECT 1 FROM qd_watchlist WHERE user_id = ? AND UPPER(symbol) = ?"
+                    wl_sql = """
+                        SELECT 1
+                        FROM qd_watchlist w
+                        JOIN qd_market_assets a ON a.id = w.asset_id
+                        WHERE w.user_id = ? AND UPPER(a.symbol) = ?
+                    """
                     wl_args: list = [monitor_user_id, target_sym]
                     if target_mkt:
-                        wl_sql += " AND market = ?"
+                        wl_sql += " AND a.market = ?"
                         wl_args.append(target_mkt)
                     wl_sql += " LIMIT 1"
                     cur.execute(wl_sql, tuple(wl_args))

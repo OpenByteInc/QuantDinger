@@ -181,9 +181,9 @@ class DiscoveryContext:
         self.warmup_bars = max(0, int(bars or 0))
 
     def allow_leverage(self, max_leverage: object = 1) -> None:
-        value = max(1.0, float(max_leverage or 1.0))
+        value = min(PLATFORM_MAX_LEVERAGE, max(1.0, float(max_leverage or 1.0)))
         self.leverage_allowed = value > 1.0
-        self.max_leverage = PLATFORM_MAX_LEVERAGE if self.leverage_allowed else 1.0
+        self.max_leverage = value if self.leverage_allowed else 1.0
 
     def set_metadata(self, *args: Any, **values: Any) -> None:
         if len(args) == 1 and isinstance(args[0], Mapping):

@@ -1,21 +1,32 @@
+import pytest
+from pathlib import Path
+
 from app.services import user_service
-from app.services.market import symbol_search, watchlist
+from app.services.market import assets, symbol_search, watchlist
 
 
-class _CaptureCursor:
-    def __init__(self):
+class _Cursor:
+    def __init__(self, rows=None):
+        self.rows = list(rows or [])
         self.executed = []
+        self.rowcount = 1
 
     def execute(self, sql, params=None):
         self.executed.append((sql, params))
+
+    def fetchall(self):
+        return list(self.rows)
+
+    def fetchone(self):
+        return self.rows[0] if self.rows else None
 
     def close(self):
         pass
 
 
-class _CaptureConn:
-    def __init__(self):
-        self.cursor_obj = _CaptureCursor()
+class _Connection:
+    def __init__(self, rows=None):
+        self.cursor_obj = _Cursor(rows)
         self.committed = False
 
     def __enter__(self):
@@ -61,169 +72,41 @@ def test_find_market_symbol_accepts_exact_external_match(monkeypatch):
     }
 
 
-def test_add_watchlist_rejects_crypto_symbol_not_in_registry(monkeypatch):
-    monkeypatch.setattr(watchlist, "find_market_symbol", lambda *args, **kwargs: None)
-    monkeypatch.setattr(watchlist, "get_db_connection", lambda: (_ for _ in ()).throw(AssertionError("DB write should not happen")))
-
-    ok, message = watchlist.add_watchlist_item(1, "Crypto", "AAPL")
-
-    assert ok is False
-    assert "AAPL/USDT" in message
-    assert "not found on Crypto" in message
-
-
-def test_add_watchlist_persists_only_after_exact_symbol_match(monkeypatch):
-    conn = _CaptureConn()
+def test_watchlist_persists_only_a_logical_asset(monkeypatch):
+    conn = _Connection()
     monkeypatch.setattr(
         watchlist,
-        "find_market_symbol",
-        lambda market, symbol, **kwargs: {"market": market, "symbol": symbol, "name": "Apple Inc."},
+        "get_market_asset",
+        lambda **kwargs: {
+            "asset_id": 41,
+            "market": "Crypto",
+            "symbol": "BTC/USDT",
+            "product_type": "crypto",
+        },
     )
-    monkeypatch.setattr(watchlist, "persist_seed_name", lambda market, symbol, name: None)
     monkeypatch.setattr(watchlist, "get_db_connection", lambda: conn)
 
-    ok, message = watchlist.add_watchlist_item(1, "USStock", "AAPL")
+    ok, message = watchlist.add_watchlist_item(7, asset_id=41)
 
     assert ok is True
     assert message == "success"
     assert conn.committed is True
-    assert conn.cursor_obj.executed
-    _, params = conn.cursor_obj.executed[0]
-    assert params == (1, "USStock", "AAPL", "Apple Inc.", "", "spot", "", "")
+    sql, params = conn.cursor_obj.executed[0]
+    assert "INSERT INTO qd_watchlist (user_id, asset_id" in " ".join(sql.split())
+    assert "exchange_id" not in sql
+    assert "market_type" not in sql
+    assert params == (7, 41)
 
 
-def test_crypto_hot_symbols_include_default_source_identity(monkeypatch):
-    monkeypatch.setattr(
-        symbol_search,
-        "seed_get_hot_symbols",
-        lambda market, limit: [
-            {"market": "Crypto", "symbol": "BTC/USDT", "name": "Bitcoin"},
-            {"market": "Crypto", "symbol": "MISSING/USDT", "name": "Missing"},
-        ],
-    )
-    monkeypatch.setattr(symbol_search, "default_crypto_exchange_id", lambda: "okx")
-    monkeypatch.setattr(
-        symbol_search,
-        "find_available_crypto_symbol",
-        lambda symbol, **kwargs: (
-            {
-                "market": "Crypto",
-                "symbol": symbol,
-                "name": symbol,
-                "exchange_id": "okx",
-                "market_type": "swap",
-                "instrument_id": "BTC-USDT-SWAP",
-                "settle_currency": "USDT",
-            }
-            if symbol == "BTC/USDT"
-            else None
-        ),
-    )
+def test_watchlist_requires_a_catalog_asset_id():
+    ok, message = watchlist.add_watchlist_item(7)
 
-    rows = symbol_search.get_hot_symbols("Crypto", 10)
-
-    assert rows == [{
-        "market": "Crypto",
-        "symbol": "BTC/USDT",
-        "name": "Bitcoin",
-        "exchange_id": "okx",
-        "market_type": "swap",
-        "instrument_id": "BTC-USDT-SWAP",
-        "settle_currency": "USDT",
-        "asset_class": "crypto",
-        "product_type": "crypto",
-        "api_family": "swap",
-        "underlying_market": "",
-        "underlying_symbol": "",
-        "product_meta": {},
-    }]
+    assert ok is False
+    assert message == "market.assetIdRequired"
 
 
-def test_crypto_add_persists_exact_exchange_binding(monkeypatch):
-    conn = _CaptureConn()
-    monkeypatch.setattr(
-        watchlist,
-        "find_market_symbol",
-        lambda market, symbol, **kwargs: {
-            "market": "Crypto",
-            "symbol": symbol,
-            "name": "Bitcoin",
-            "exchange_id": "okx",
-            "market_type": "swap",
-            "instrument_id": "BTC-USDT-SWAP",
-            "settle_currency": "USDT",
-        },
-    )
-    monkeypatch.setattr(watchlist, "persist_seed_name", lambda market, symbol, name: None)
-    monkeypatch.setattr(watchlist, "get_db_connection", lambda: conn)
-
-    ok, message = watchlist.add_watchlist_item(1, "Crypto", "BTC/USDT")
-
-    assert ok is True
-    assert message == "success"
-    assert len(conn.cursor_obj.executed) == 1
-    insert_sql, insert_params = conn.cursor_obj.executed[0]
-    assert "INSERT INTO qd_watchlist" in insert_sql
-    assert "ON CONFLICT(user_id, market, symbol, exchange_id, market_type, instrument_id) DO UPDATE SET" in " ".join(insert_sql.split())
-    assert insert_params == (
-        1,
-        "Crypto",
-        "BTC/USDT",
-        "Bitcoin",
-        "okx",
-        "swap",
-        "BTC-USDT-SWAP",
-        "USDT",
-    )
-
-
-def test_gate_hk_stock_watchlist_keeps_native_exchange_contract(monkeypatch):
-    conn = _CaptureConn()
-    monkeypatch.setattr(
-        watchlist,
-        "find_market_symbol",
-        lambda market, symbol, **kwargs: {
-            "market": "Crypto",
-            "symbol": "00700/HKD",
-            "name": "Tencent",
-            "exchange_id": "gate",
-            "market_type": "spot",
-            "instrument_id": "00700",
-            "settle_currency": "HKD",
-            "product_type": "direct_equity",
-            "underlying_market": "HKStock",
-            "underlying_symbol": "00700",
-        },
-    )
-    monkeypatch.setattr(watchlist, "persist_seed_name", lambda market, symbol, name: None)
-    monkeypatch.setattr(watchlist, "get_db_connection", lambda: conn)
-
-    ok, message = watchlist.add_watchlist_item(
-        1,
-        "Crypto",
-        "00700/HKD",
-        exchange_id="gate",
-        market_type="spot",
-        instrument_id="00700",
-    )
-
-    assert ok is True
-    assert message == "success"
-    _, params = conn.cursor_obj.executed[0]
-    assert params == (
-        1,
-        "Crypto",
-        "00700/HKD",
-        "Tencent",
-        "gate",
-        "spot",
-        "00700",
-        "HKD",
-    )
-
-
-def test_default_watchlist_seed_uses_market_context_unique_key(monkeypatch):
-    conn = _CaptureConn()
+def test_default_watchlist_seed_resolves_catalog_assets(monkeypatch):
+    conn = _Connection()
     monkeypatch.setattr(
         user_service,
         "_DEFAULT_WATCHLIST",
@@ -233,7 +116,86 @@ def test_default_watchlist_seed_uses_market_context_unique_key(monkeypatch):
     user_service._seed_default_watchlist(conn, 9)
 
     assert conn.committed is True
-    assert len(conn.cursor_obj.executed) == 1
-    insert_sql, insert_params = conn.cursor_obj.executed[0]
-    assert "ON CONFLICT (user_id, market, symbol, exchange_id, market_type, instrument_id) DO NOTHING" in " ".join(insert_sql.split())
-    assert insert_params == (9, "Crypto", "BTC/USDT", "Bitcoin", "", "spot")
+    sql, params = conn.cursor_obj.executed[0]
+    assert "FROM qd_market_assets" in sql
+    assert "ON CONFLICT (user_id, asset_id) DO NOTHING" in " ".join(sql.split())
+    assert params == (9, "Crypto", "BTC/USDT")
+
+
+def test_runtime_resolution_uses_account_exchange_and_requested_product(monkeypatch):
+    conn = _Connection(rows=[{
+        "asset_id": 41,
+        "market": "Crypto",
+        "symbol": "BTC/USDT",
+        "exchange_id": "OKX",
+        "market_type": "swap",
+        "instrument_id": "BTC-USDT-SWAP",
+        "settle_currency": "USDT",
+        "product_type": "crypto",
+        "api_family": "swap",
+        "product_meta": {},
+    }])
+    monkeypatch.setattr(
+        assets,
+        "get_market_asset",
+        lambda **kwargs: {"asset_id": 41, "market": "Crypto", "symbol": "BTC/USDT"},
+    )
+    monkeypatch.setattr(assets, "get_db_connection", lambda: conn)
+
+    product = assets.resolve_runtime_instrument(
+        asset_id=41,
+        exchange_id="okx",
+        market_type="swap",
+    )
+
+    assert product["exchange_id"] == "okx"
+    assert product["market_type"] == "swap"
+    assert product["instrument_id"] == "BTC-USDT-SWAP"
+    _, params = conn.cursor_obj.executed[0]
+    assert params == (41, "okx", "swap")
+
+
+def test_runtime_resolution_fails_closed_when_account_has_no_exact_product(monkeypatch):
+    monkeypatch.setattr(
+        assets,
+        "get_market_asset",
+        lambda **kwargs: {"asset_id": 12, "market": "Crypto", "symbol": "QQQ/USDT"},
+    )
+    monkeypatch.setattr(assets, "get_db_connection", lambda: _Connection())
+
+    with pytest.raises(assets.AssetResolutionError, match="instrumentUnavailableForAccount"):
+        assets.resolve_runtime_instrument(
+            asset_id=12,
+            exchange_id="binance",
+            market_type="swap",
+        )
+
+
+def test_quick_trade_contract_uses_account_venue_not_chart_product_identity():
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "app"
+        / "services"
+        / "quick_trade"
+        / "products.py"
+    ).read_text(encoding="utf-8")
+
+    assert 'account_overrides.pop("exchange_id", None)' in source
+    assert 'exchange_id = str(config.get("exchange_id")' in source
+    assert 'for key in ("instrument_id", "product_type", "api_family")' not in source
+
+
+def test_strategy_deployment_resolves_manifest_against_selected_account():
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "app"
+        / "services"
+        / "strategy_v2"
+        / "deployment.py"
+    ).read_text(encoding="utf-8")
+    method = source[source.index("    def _validate_manifest_products("):]
+    method = method[:method.index("    def _resolve_live_instruments(")]
+
+    assert "exchange_id=exchange_id" in method
+    assert '"exchange_id": exchange_id' in method
+    assert method.count('item.get("exchange_id")') == 1

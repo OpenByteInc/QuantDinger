@@ -5,6 +5,7 @@ from marshmallow import ValidationError
 
 from app.openapi.schemas.high_risk import (
     CredentialCreateRequestSchema,
+    QuickTradeCloseRequestSchema,
     QuickTradeOrderRequestSchema,
 )
 
@@ -106,6 +107,36 @@ def test_quick_trade_contract_accepts_exact_spot_buy_quantity():
     assert loaded["amount"] == 0
     assert loaded["quantity"] == 0.001
     assert loaded["side"] == "buy"
+
+
+def test_quick_trade_contract_preserves_logical_asset_identity():
+    order = QuickTradeOrderRequestSchema().load(
+        {
+            "asset_id": 11,
+            "credential_id": 7,
+            "symbol": "BTC/USDT",
+            "side": "BUY",
+            "order_type": "MARKET",
+            "amount": "100",
+            "market_type": "SWAP",
+            "resolve_product": True,
+        }
+    )
+    close = QuickTradeCloseRequestSchema().load(
+        {
+            "asset_id": 11,
+            "credential_id": 7,
+            "symbol": "BTC/USDT",
+            "market_type": "SWAP",
+            "size": "0.122",
+            "position_side": "LONG",
+            "resolve_product": True,
+        }
+    )
+
+    assert order["asset_id"] == 11
+    assert close["asset_id"] == 11
+    assert close["position_side"] == "long"
 
 
 def test_quick_trade_contract_rejects_ambiguous_spot_sizing():

@@ -55,9 +55,16 @@ class OAuthService:
                     state VARCHAR(128) PRIMARY KEY,
                     provider VARCHAR(20) NOT NULL,
                     redirect TEXT,
+                    client_type VARCHAR(16) NOT NULL DEFAULT 'pc',
                     created_at TIMESTAMP DEFAULT NOW(),
                     expires_at TIMESTAMP NOT NULL
                 )
+                """
+            )
+            cur.execute(
+                """
+                ALTER TABLE qd_oauth_states
+                ADD COLUMN IF NOT EXISTS client_type VARCHAR(16) NOT NULL DEFAULT 'pc'
                 """
             )
             cur.execute(
@@ -67,7 +74,13 @@ class OAuthService:
         except Exception as e:
             logger.debug(f"_ensure_oauth_state_schema: {e}")
 
-    def _oauth_state_save(self, state: str, provider: str, redirect: Optional[str]) -> None:
+    def _oauth_state_save(
+        self,
+        state: str,
+        provider: str,
+        redirect: Optional[str],
+        client_type: str,
+    ) -> None:
         # Store naive UTC for TIMESTAMP WITHOUT TIME ZONE columns.
         exp = (
             datetime.now(timezone.utc) + timedelta(minutes=self._oauth_state_ttl_minutes())
@@ -85,15 +98,18 @@ class OAuthService:
             # table has no "id" column → INSERT fails with UndefinedColumn.
             cur.execute(
                 """
-                INSERT INTO qd_oauth_states (state, provider, redirect, expires_at)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO qd_oauth_states (
+                    state, provider, redirect, client_type, expires_at
+                )
+                VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT (state) DO UPDATE
                   SET provider = EXCLUDED.provider,
                       redirect = EXCLUDED.redirect,
+                      client_type = EXCLUDED.client_type,
                       expires_at = EXCLUDED.expires_at
                 RETURNING state
                 """,
-                (state, provider, red, exp),
+                (state, provider, red, client_type, exp),
             )
             try:
                 cur.fetchone()
@@ -121,6 +137,25 @@ class OAuthService:
         except Exception as e:
             logger.warning(f"OAuth state peek failed: {e}")
             return ""
+
+    def _oauth_state_peek_client_type(self, state: str) -> str:
+        if not state:
+            return "pc"
+        try:
+            with get_db_connection() as db:
+                cur = db.cursor()
+                self._ensure_oauth_state_schema(cur)
+                cur.execute(
+                    "SELECT client_type FROM qd_oauth_states WHERE state = ? AND expires_at > NOW()",
+                    (state,),
+                )
+                row = cur.fetchone()
+                cur.close()
+                value = (row.get("client_type") or "pc").strip().lower() if row else "pc"
+                return value if value in ("pc", "mobile") else "pc"
+        except Exception as e:
+            logger.warning(f"OAuth state client type peek failed: {e}")
+            return "pc"
 
     def _oauth_state_consume(self, state: str, provider: str) -> bool:
         """Delete and validate state in one statement; True iff a row was removed."""
@@ -207,11 +242,20 @@ class OAuthService:
         """Read the redirect URL associated with a pending OAuth state (no deletion)."""
         return self._oauth_state_peek_redirect(state)
 
+    def peek_state_client_type(self, state: str) -> str:
+        """Read the client session class associated with a pending OAuth state."""
+        return self._oauth_state_peek_client_type(state)
+
     # =========================================================================
     # Google OAuth
     # =========================================================================
 
-    def get_google_auth_url(self, state: str = None, redirect_url: str = None) -> Tuple[str, str]:
+    def get_google_auth_url(
+        self,
+        state: str = None,
+        redirect_url: str = None,
+        client_type: str = "pc",
+    ) -> Tuple[str, str]:
         """
         Generate Google OAuth authorization URL.
 
@@ -230,7 +274,7 @@ class OAuthService:
         if redirect_url and self.is_redirect_allowed(redirect_url):
             red = redirect_url.strip()
         try:
-            self._oauth_state_save(state, "google", red or None)
+            self._oauth_state_save(state, "google", red or None, client_type)
         except Exception as e:
             logger.error(f"Failed to persist Google OAuth state: {e}")
             return '', ''
@@ -314,7 +358,12 @@ class OAuthService:
     # GitHub OAuth
     # =========================================================================
     
-    def get_github_auth_url(self, state: str = None, redirect_url: str = None) -> Tuple[str, str]:
+    def get_github_auth_url(
+        self,
+        state: str = None,
+        redirect_url: str = None,
+        client_type: str = "pc",
+    ) -> Tuple[str, str]:
         """
         Generate GitHub OAuth authorization URL.
 
@@ -329,7 +378,7 @@ class OAuthService:
         if redirect_url and self.is_redirect_allowed(redirect_url):
             red = redirect_url.strip()
         try:
-            self._oauth_state_save(state, "github", red or None)
+            self._oauth_state_save(state, "github", red or None, client_type)
         except Exception as e:
             logger.error(f"Failed to persist GitHub OAuth state: {e}")
             return '', ''

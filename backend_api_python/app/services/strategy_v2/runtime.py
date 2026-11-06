@@ -1794,7 +1794,7 @@ class StrategyV2BacktestRunner:
         requested_leverage = max(1.0, float(leverage or 1.0)) if leverage_enabled else 1.0
         if requested_leverage > 1.0 and not self.program.manifest.leverage_allowed:
             raise StrategyV2ContractError("strategyV2.leverageNotAllowed")
-        if requested_leverage > PLATFORM_MAX_LEVERAGE:
+        if requested_leverage > min(PLATFORM_MAX_LEVERAGE, self.program.manifest.max_leverage):
             raise StrategyV2ContractError("strategyV2.leverageExceedsStrategyLimit")
         self.portal = MultiAssetDataPortal(
             frames,

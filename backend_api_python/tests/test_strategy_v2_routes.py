@@ -22,6 +22,35 @@ def test_v2_source_prefers_script_source_code(monkeypatch):
     assert name == "V2"
 
 
+def test_prepare_run_rejects_leverage_above_source_limit():
+    payload = {
+        "code": """
+def initialize(context):
+    context.set_universe(["Crypto:BTC/USDT@swap"])
+    context.allow_leverage(max_leverage=5)
+    context.subscribe(frequency="1h")
+
+def handle_data(context, data):
+    pass
+""",
+        "startDate": "2026-01-01",
+        "endDate": "2026-02-01",
+        "leverageEnabled": True,
+        "leverage": 10,
+    }
+
+    captured_error = None
+    try:
+        backtest_center._prepare_run(payload, 7)
+    except ValueError as exc:
+        captured_error = exc
+        assert str(exc) == "strategyV2.leverageExceedsStrategyLimit"
+    else:
+        raise AssertionError("Expected strategy leverage limit rejection")
+
+    assert backtest_center._public_request_error(captured_error) == "strategyV2.leverageExceedsStrategyLimit"
+
+
 def test_factor_research_forwards_factor_parameters_to_execution_and_storage(app, monkeypatch):
     captured = {}
 
@@ -393,7 +422,14 @@ def test_human_backtest_submission_uses_persisted_async_job(app, monkeypatch):
 
     monkeypatch.setattr(backtest_center.agent_jobs, "submit_job", submit_job)
     payload = {
-        "code": "def initialize(context):\n    pass",
+        "code": """
+def initialize(context):
+    context.set_universe(["Crypto:BTC/USDT@swap"])
+    context.subscribe(frequency="1h")
+
+def handle_data(context, data):
+    pass
+""",
         "startDate": "2026-01-01",
         "endDate": "2026-02-01",
         "initialCapital": 20000,

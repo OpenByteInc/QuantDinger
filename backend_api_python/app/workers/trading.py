@@ -33,6 +33,11 @@ class TradingWorker:
         self.strategy_lease_seconds = max(10, int(os.getenv("STRATEGY_RUNTIME_LEASE_SEC", "30")))
         self.poll_seconds = max(0.1, float(os.getenv("STRATEGY_COMMAND_WORKER_POLL_SEC", "0.5")))
         self.max_attempts = max(1, int(os.getenv("STRATEGY_COMMAND_MAX_ATTEMPTS", "3")))
+        self.restore_max_attempts = max(
+            1,
+            int(os.getenv("STRATEGY_RESTORE_MAX_ATTEMPTS", "5")),
+        )
+        self._restore_failure_counts: dict[int, int] = {}
         self._stop = threading.Event()
         self._last_heartbeat = 0.0
         self._global_lease_key = "trading-global-services"
@@ -118,8 +123,16 @@ class TradingWorker:
 
     def restore_desired_strategies(self) -> None:
         from app.services.strategy import StrategyService
+        from app.services.strategy_lifecycle import maybe_auto_stop_on_exchange_error
 
         rows = StrategyService().get_running_strategies_with_type()
+        desired_ids = {
+            int(row["id"])
+            for row in (rows or [])
+            if int(row.get("id") or 0) > 0
+        }
+        for strategy_id in set(self._restore_failure_counts) - desired_ids:
+            self._restore_failure_counts.pop(strategy_id, None)
         restored = 0
         for row in rows or []:
             if self._stop.is_set():
@@ -145,11 +158,36 @@ class TradingWorker:
                 result = self._start(strategy_id, wait_ready=False)
                 if result.get("runtime_owner") == "trading-worker-pool":
                     self._remote_strategy_ids.add(strategy_id)
+                self._restore_failure_counts.pop(strategy_id, None)
                 restored += int(result.get("status") == "running")
-            except Exception:
-                # A predecessor's lease or a temporary dependency failure must
-                # not erase the persisted intention to run after a restart.
-                logger.warning("Strategy restore will retry: %s", strategy_id, exc_info=True)
+            except Exception as exc:
+                # Retry transient recovery failures, but stop deterministic or
+                # repeatedly failing strategies so recovery cannot loop forever.
+                failures = self._restore_failure_counts.get(strategy_id, 0) + 1
+                self._restore_failure_counts[strategy_id] = failures
+                stopped = maybe_auto_stop_on_exchange_error(
+                    strategy_id,
+                    str(exc),
+                    source="strategy_restore",
+                    consecutive_failures=failures,
+                    consecutive_threshold=self.restore_max_attempts,
+                )
+                if stopped:
+                    self._restore_failure_counts.pop(strategy_id, None)
+                    logger.error(
+                        "Strategy restore stopped after failure: strategy=%s attempts=%s",
+                        strategy_id,
+                        failures,
+                        exc_info=True,
+                    )
+                    continue
+                logger.warning(
+                    "Strategy restore will retry: strategy=%s attempt=%s/%s",
+                    strategy_id,
+                    failures,
+                    self.restore_max_attempts,
+                    exc_info=True,
+                )
         if restored:
             logger.info("Trading runtime restore completed: %s/%s", restored, len(rows or []))
 

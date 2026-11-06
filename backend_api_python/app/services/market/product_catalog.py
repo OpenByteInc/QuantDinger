@@ -7,6 +7,7 @@ from typing import Any
 
 from app.services.live_trading.capabilities import supports_equity_product
 from app.services.market.instrument_products import PRODUCT_CRYPTO
+from app.services.market.assets import resolve_runtime_instrument
 from app.utils.db import get_db_connection
 
 
@@ -21,7 +22,7 @@ def get_catalog_product(
     clauses = ["market = ?", "UPPER(symbol) = UPPER(?)", "is_active = 1"]
     params: list[Any] = [str(market or "").strip(), str(symbol or "").strip()]
     if exchange_id:
-        clauses.append("exchange = ?")
+        clauses.append("LOWER(exchange) = ?")
         params.append(str(exchange_id).strip().lower())
     if market_type:
         clauses.append("market_type = ?")
@@ -34,7 +35,7 @@ def get_catalog_product(
         cur = db.cursor()
         cur.execute(
             f"""
-            SELECT market, symbol, name, exchange AS exchange_id, market_type,
+            SELECT asset_id, market, symbol, name, exchange AS exchange_id, market_type,
                    instrument_id, settle_currency, asset_class, product_type,
                    api_family, underlying_market, underlying_symbol, product_meta,
                    metadata_updated_at
@@ -94,29 +95,21 @@ def validate_runtime_products(
         if not isinstance(stored, dict):
             continue
         product_type = str(stored.get("product_type") or PRODUCT_CRYPTO).strip().lower()
-        if product_type == PRODUCT_CRYPTO:
-            validated.append(dict(stored))
-            continue
-        exchange_id = str(stored.get("exchange_id") or "").strip().lower()
         market_type = str(stored.get("market_type") or "spot").strip().lower()
-        api_family = str(stored.get("api_family") or market_type).strip().lower()
-        if not exchange_id or exchange_id != credential_exchange:
-            raise ValueError("strategyV2.instrumentVenueMismatch")
-        if not supports_equity_product(exchange_id, product_type, market_type, api_family):
-            raise ValueError("strategyV2.equityProductUnsupported")
-        current = get_catalog_product(
+        current = resolve_runtime_instrument(
+            asset_id=int(stored.get("asset_id") or 0),
             market=str(stored.get("market") or "Crypto"),
             symbol=str(stored.get("symbol") or ""),
-            exchange_id=exchange_id,
+            exchange_id=credential_exchange,
             market_type=market_type,
-            instrument_id=str(stored.get("instrument_id") or ""),
+            product_type=product_type,
         )
-        if not current:
-            raise ValueError("strategyV2.equityProductCatalogStale")
-        if (
-            str(current.get("product_type") or PRODUCT_CRYPTO).strip().lower() != product_type
-            or str(current.get("api_family") or market_type).strip().lower() != api_family
+        api_family = str(current.get("api_family") or market_type).strip().lower()
+        if product_type != PRODUCT_CRYPTO and not supports_equity_product(
+            credential_exchange, product_type, market_type, api_family
         ):
+            raise ValueError("strategyV2.equityProductUnsupported")
+        if str(current.get("product_type") or PRODUCT_CRYPTO).strip().lower() != product_type:
             raise ValueError("strategyV2.equityProductContractChanged")
         if not catalog_product_is_tradable(current):
             raise ValueError("strategyV2.equityProductNotTradable")

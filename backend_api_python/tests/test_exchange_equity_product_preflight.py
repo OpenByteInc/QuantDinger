@@ -48,6 +48,7 @@ def _manifest(exchange_id="bybit", market_type="spot"):
 
 def _product(product_type="tokenized_equity"):
     return {
+        "asset_id": 51,
         "instrument_id": "AAPLXUSDT",
         "product_type": product_type,
         "api_family": "spot",
@@ -73,7 +74,7 @@ def test_gate_stock_strategy_api_execution_is_allowed():
 
 
 def test_live_product_preflight_persists_catalog_contract(monkeypatch):
-    monkeypatch.setattr(deployment, "get_catalog_product", lambda **kwargs: _product())
+    monkeypatch.setattr(deployment, "resolve_runtime_instrument", lambda **kwargs: _product())
 
     rows = StrategyV2DeploymentService._validate_manifest_products(
         _manifest(), "bybit", "live",
@@ -81,10 +82,12 @@ def test_live_product_preflight_persists_catalog_contract(monkeypatch):
 
     assert rows == [{
         "market": "Crypto",
+        "asset_id": 51,
         "symbol": "AAPLX/USDT",
         "exchange_id": "bybit",
         "market_type": "spot",
         "instrument_id": "AAPLXUSDT",
+        "settle_currency": "",
         "product_type": "tokenized_equity",
         "api_family": "spot",
         "underlying_market": "USStock",
@@ -93,35 +96,46 @@ def test_live_product_preflight_persists_catalog_contract(monkeypatch):
     }]
 
 
-def test_live_product_preflight_rejects_missing_catalog_product(monkeypatch):
-    monkeypatch.setattr(deployment, "get_catalog_product", lambda **kwargs: None)
+def test_live_product_preflight_rejects_missing_account_product(monkeypatch):
+    monkeypatch.setattr(
+        deployment,
+        "resolve_runtime_instrument",
+        lambda **kwargs: (_ for _ in ()).throw(deployment.AssetResolutionError("strategyV2.instrumentUnavailableForAccount")),
+    )
 
-    with pytest.raises(StrategyV2ContractError, match="strategyV2.instrumentCatalogMissing"):
+    with pytest.raises(StrategyV2ContractError, match="strategyV2.instrumentUnavailableForAccount"):
         StrategyV2DeploymentService._validate_manifest_products(
             _manifest(exchange_id="gate"), "gate", "live",
         )
 
 
-def test_live_product_preflight_rejects_credential_venue_mismatch(monkeypatch):
-    monkeypatch.setattr(deployment, "get_catalog_product", lambda **kwargs: _product())
+def test_live_product_preflight_uses_credential_venue_instead_of_source_venue(monkeypatch):
+    captured = {}
+    def resolve(**kwargs):
+        captured.update(kwargs)
+        return {**_product(), "api_family": "reality"}
+    monkeypatch.setattr(deployment, "resolve_runtime_instrument", resolve)
 
-    with pytest.raises(StrategyV2ContractError, match="strategyV2.instrumentVenueMismatch"):
-        StrategyV2DeploymentService._validate_manifest_products(
-            _manifest(exchange_id="bybit"), "bitget", "live",
-        )
+    rows = StrategyV2DeploymentService._validate_manifest_products(
+        _manifest(exchange_id="bybit"), "bitget", "live",
+    )
+
+    assert captured["exchange_id"] == "bitget"
+    assert rows[0]["exchange_id"] == "bitget"
 
 
-def test_live_product_preflight_requires_explicit_venue_for_equity(monkeypatch):
-    monkeypatch.setattr(deployment, "get_catalog_product", lambda **kwargs: _product())
+def test_live_product_preflight_does_not_require_source_venue(monkeypatch):
+    monkeypatch.setattr(deployment, "resolve_runtime_instrument", lambda **kwargs: _product())
 
-    with pytest.raises(StrategyV2ContractError, match="strategyV2.equityProductVenueRequired"):
-        StrategyV2DeploymentService._validate_manifest_products(
-            _manifest(exchange_id=""), "bybit", "live",
-        )
+    rows = StrategyV2DeploymentService._validate_manifest_products(
+        _manifest(exchange_id=""), "bybit", "live",
+    )
+
+    assert rows[0]["exchange_id"] == "bybit"
 
 
 def test_live_product_preflight_rejects_unsupported_venue_product(monkeypatch):
-    monkeypatch.setattr(deployment, "get_catalog_product", lambda **kwargs: _product())
+    monkeypatch.setattr(deployment, "resolve_runtime_instrument", lambda **kwargs: _product())
 
     with pytest.raises(StrategyV2ContractError, match="strategyV2.equityProductUnsupported"):
         StrategyV2DeploymentService._validate_manifest_products(
@@ -132,7 +146,7 @@ def test_live_product_preflight_rejects_unsupported_venue_product(monkeypatch):
 def test_signal_mode_does_not_require_live_product_catalog(monkeypatch):
     monkeypatch.setattr(
         deployment,
-        "get_catalog_product",
+        "resolve_runtime_instrument",
         lambda **kwargs: (_ for _ in ()).throw(AssertionError("unexpected catalog lookup")),
     )
 
@@ -142,7 +156,7 @@ def test_signal_mode_does_not_require_live_product_catalog(monkeypatch):
 
 
 def test_dynamic_live_universe_uses_resolved_member_products(monkeypatch):
-    monkeypatch.setattr(deployment, "get_catalog_product", lambda **kwargs: _product())
+    monkeypatch.setattr(deployment, "resolve_runtime_instrument", lambda **kwargs: _product())
     members = [{
         "market": "Crypto",
         "symbol": "AAPLX/USDT",
@@ -181,6 +195,29 @@ def test_live_quote_currency_uses_gate_hk_product_metadata():
     assert currency == "HKD"
 
 
+def test_live_quote_currency_uses_account_product_not_source_exchange():
+    currency = StrategyV2DeploymentService._validate_live_quote_currency(
+        markets=("Crypto",),
+        instruments=[{
+            "asset_id": 51,
+            "market": "Crypto",
+            "symbol": "AAPLX/USDT",
+            "exchange_id": "bybit",
+            "market_type": "spot",
+        }],
+        products=[{
+            "asset_id": 51,
+            "symbol": "AAPLX/USDT",
+            "exchange_id": "bitget",
+            "market_type": "spot",
+            "settle_currency": "USD",
+        }],
+        execution_mode="live",
+    )
+
+    assert currency == "USD"
+
+
 def test_live_quote_currency_rejects_mixed_usd_and_hkd_products():
     with pytest.raises(StrategyV2ContractError, match="mixedQuoteCurrencyLiveUnsupported"):
         StrategyV2DeploymentService._validate_live_quote_currency(
@@ -194,11 +231,29 @@ def test_live_quote_currency_rejects_mixed_usd_and_hkd_products():
         )
 
 
+@pytest.mark.parametrize(("market", "symbol", "expected"), [
+    ("USStock", "AAPL", "USD"),
+    ("HKStock", "00700", "HKD"),
+    ("CNStock", "600519.SH", "CNY"),
+    ("Crypto", "BTC/USDT", "USDT"),
+    ("Forex", "EUR/USD", "USD"),
+])
+def test_signal_accounting_currency_follows_the_instrument(market, symbol, expected):
+    currency = StrategyV2DeploymentService._validate_live_quote_currency(
+        markets=(market,),
+        instruments=[{"market": market, "symbol": symbol, "market_type": "spot"}],
+        products=[],
+        execution_mode="signal",
+    )
+
+    assert currency == expected
+
+
 def test_runtime_product_validation_detects_catalog_contract_change(monkeypatch):
     monkeypatch.setattr(
         product_catalog,
-        "get_catalog_product",
-        lambda **kwargs: {**_product(), "api_family": "spot"},
+        "resolve_runtime_instrument",
+        lambda **kwargs: {**_product(product_type="crypto"), "api_family": "reality"},
     )
     stored = [{
         "market": "Crypto",
@@ -217,7 +272,7 @@ def test_runtime_product_validation_detects_catalog_contract_change(monkeypatch)
 def test_runtime_product_validation_rejects_non_tradable_status(monkeypatch):
     monkeypatch.setattr(
         product_catalog,
-        "get_catalog_product",
+        "resolve_runtime_instrument",
         lambda **kwargs: {
             **_product(),
             "api_family": "reality",

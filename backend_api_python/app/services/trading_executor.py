@@ -3176,12 +3176,20 @@ def _runtime_wait_seconds(
         return baseline
     if event_driven:
         try:
-            return max(
+            fallback_wake = max(
                 baseline,
                 min(3600.0, float(os.getenv("BAR_EVENT_FALLBACK_WAKE_SEC", "300"))),
             )
         except (TypeError, ValueError):
-            return max(baseline, 300.0)
+            fallback_wake = max(baseline, 300.0)
+        try:
+            heartbeat_wake = max(
+                baseline,
+                min(60.0, float(os.getenv("STRATEGY_IDLE_HEARTBEAT_SEC", "30"))),
+            )
+        except (TypeError, ValueError):
+            heartbeat_wake = max(baseline, 30.0)
+        return min(fallback_wake, heartbeat_wake)
     if any(str(item.get("market") or "").strip().lower() != "crypto" for item in candidates):
         return baseline
     try:

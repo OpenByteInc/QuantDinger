@@ -65,6 +65,7 @@ def _auth_headers(monkeypatch):
     from app.utils import auth as auth_module
 
     monkeypatch.setattr(auth_module, "_verify_token_version", lambda user_id, token_version: True)
+    monkeypatch.setattr(auth_module, "_verify_client_token_version", lambda *_: True)
     monkeypatch.setattr(
         auth_module,
         "_get_user_auth_state",

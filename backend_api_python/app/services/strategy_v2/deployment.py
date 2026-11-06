@@ -12,7 +12,7 @@ from app.services.live_trading.capabilities import (
     supports_equity_product,
 )
 from app.services.market.instrument_products import PRODUCT_CRYPTO
-from app.services.market.product_catalog import get_catalog_product
+from app.services.market.assets import AssetResolutionError, resolve_runtime_instrument
 from app.services.settings.capabilities import is_live_trading_enabled
 from app.services.strategy_direction import (
     direction_mode_position_side,
@@ -120,7 +120,7 @@ class StrategyV2DeploymentService:
             raise StrategyV2ContractError("strategyV2.leverageCryptoSwapOnly")
         if leverage_enabled and not manifest.leverage_allowed:
             raise StrategyV2ContractError("strategyV2.leverageNotAllowed")
-        if leverage_enabled and leverage > PLATFORM_MAX_LEVERAGE:
+        if leverage_enabled and leverage > min(PLATFORM_MAX_LEVERAGE, manifest.max_leverage):
             raise StrategyV2ContractError("strategyV2.leverageExceedsStrategyLimit")
         leverage = max(1.0, leverage if leverage_enabled else 1.0)
         declared_payload_direction = payload.get("directionMode") or payload.get("direction_mode") or ""
@@ -471,26 +471,23 @@ class StrategyV2DeploymentService:
         for item in instruments:
             if str(item.get("market") or "") != "Crypto":
                 continue
-            declared_exchange = str(item.get("exchange_id") or "").strip().lower()
-            if declared_exchange and declared_exchange != exchange_id:
-                raise StrategyV2ContractError("strategyV2.instrumentVenueMismatch")
-            venue = declared_exchange or exchange_id
             market_type = str(item.get("market_type") or "spot").strip().lower()
             symbol = str(item.get("symbol") or "").strip().upper()
-            product = get_catalog_product(
-                market="Crypto",
-                symbol=symbol,
-                exchange_id=venue,
-                market_type=market_type,
-            )
-            if not product:
-                raise StrategyV2ContractError("strategyV2.instrumentCatalogMissing")
+            try:
+                product = resolve_runtime_instrument(
+                    asset_id=int(item.get("asset_id") or 0),
+                    market="Crypto",
+                    symbol=symbol,
+                    exchange_id=exchange_id,
+                    market_type=market_type,
+                    product_type=str(item.get("product_type") or ""),
+                )
+            except AssetResolutionError as exc:
+                raise StrategyV2ContractError(str(exc)) from exc
             product_type = str(product.get("product_type") or PRODUCT_CRYPTO).strip().lower()
             if product_type != PRODUCT_CRYPTO:
-                if not declared_exchange:
-                    raise StrategyV2ContractError("strategyV2.equityProductVenueRequired")
                 if not supports_equity_product(
-                    venue,
+                    exchange_id,
                     product_type,
                     market_type,
                     str(product.get("api_family") or market_type),
@@ -498,20 +495,22 @@ class StrategyV2DeploymentService:
                     raise StrategyV2ContractError("strategyV2.equityProductUnsupported")
             products.append({
                 "market": "Crypto",
+                "asset_id": int(product.get("asset_id") or 0),
                 "symbol": symbol,
-                "exchange_id": venue,
+                "exchange_id": exchange_id,
                 "market_type": market_type,
                 "instrument_id": str(product.get("instrument_id") or ""),
+                "settle_currency": str(product.get("settle_currency") or ""),
                 "product_type": product_type,
                 "api_family": str(product.get("api_family") or market_type),
                 "underlying_market": str(product.get("underlying_market") or ""),
                 "underlying_symbol": str(product.get("underlying_symbol") or ""),
                 "product_meta": dict(product.get("product_meta") or {}),
             })
-        deduped: dict[tuple[str, str, str], dict[str, Any]] = {}
+        deduped: dict[tuple[int, str, str], dict[str, Any]] = {}
         for item in products:
             key = (
-                str(item.get("symbol") or "").upper(),
+                int(item.get("asset_id") or 0),
                 str(item.get("exchange_id") or "").lower(),
                 str(item.get("market_type") or "spot").lower(),
             )
@@ -543,13 +542,13 @@ class StrategyV2DeploymentService:
         products: list[dict[str, Any]],
         execution_mode: str,
     ) -> str:
-        if execution_mode != "live":
+        if execution_mode not in {"live", "signal"}:
             return ""
         currencies: set[str] = set()
         product_index = {
             (
+                int(item.get("asset_id") or 0),
                 str(item.get("symbol") or "").strip().upper(),
-                str(item.get("exchange_id") or "").strip().lower(),
                 str(item.get("market_type") or "spot").strip().lower(),
             ): item
             for item in products
@@ -564,14 +563,35 @@ class StrategyV2DeploymentService:
             if market == "HKStock":
                 currencies.add("HKD")
                 continue
-            if market != "Crypto":
+            if market in {"CNStock", "AStock"}:
+                currencies.add("CNY")
                 continue
             symbol = str(item.get("symbol") or "").strip().upper()
-            product = product_index.get((
-                symbol,
-                str(item.get("exchange_id") or "").strip().lower(),
-                str(item.get("market_type") or "spot").strip().lower(),
-            )) or {}
+            if market == "Forex":
+                pair = symbol.split(":", 1)[-1].split("@", 1)[0]
+                quote = pair.rsplit("/", 1)[1] if "/" in pair else (pair[-3:] if len(pair) == 6 else "")
+                if quote:
+                    currencies.add(quote)
+                continue
+            if market != "Crypto":
+                continue
+            asset_id = int(item.get("asset_id") or 0)
+            market_type = str(item.get("market_type") or "spot").strip().lower()
+            product = product_index.get((asset_id, symbol, market_type))
+            if not product and asset_id <= 0:
+                product = next(
+                    (
+                        candidate
+                        for (
+                            _candidate_asset_id,
+                            candidate_symbol,
+                            candidate_market_type,
+                        ), candidate in product_index.items()
+                        if candidate_symbol == symbol and candidate_market_type == market_type
+                    ),
+                    {},
+                )
+            product = product or {}
             meta = product.get("product_meta") if isinstance(product.get("product_meta"), dict) else {}
             currency = str(
                 meta.get("settlement_currency")
@@ -587,9 +607,14 @@ class StrategyV2DeploymentService:
                 currencies.add("USD")
             elif market == "HKStock":
                 currencies.add("HKD")
+            elif market in {"CNStock", "AStock"}:
+                currencies.add("CNY")
         if len(currencies) > 1:
-            raise StrategyV2ContractError("strategyV2.mixedQuoteCurrencyLiveUnsupported")
-        return next(iter(currencies), "USDT")
+            if execution_mode == "live":
+                raise StrategyV2ContractError("strategyV2.mixedQuoteCurrencyLiveUnsupported")
+            return ""
+        fallback = "USDT" if len(markets) == 1 and str(markets[0]) == "Crypto" else ""
+        return next(iter(currencies), fallback)
 
     @staticmethod
     def _validate_bot_product_compatibility(

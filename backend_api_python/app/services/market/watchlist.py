@@ -1,27 +1,15 @@
-"""Watchlist business logic."""
+"""Logical-asset watchlist business logic."""
 
 import re
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from typing import Optional
 
-from app.data.market_symbols_seed import get_symbol_name as seed_get_symbol_name
-from app.services.market.symbol_search import find_market_symbol
-from app.services.symbol_name import normalize_crypto_symbol, persist_seed_name, resolve_symbol_name
-from app.services.market_context import MarketContext, SUPPORTED_CRYPTO_EXCHANGE_IDS
+from app.services.market.assets import AssetResolutionError, get_asset_capabilities, get_market_asset
 from app.utils.db import get_db_connection
-from app.utils.logger import get_logger
-
-logger = get_logger(__name__)
 
 VALID_MARKETS = frozenset({
     "Crypto", "USStock", "CNStock", "HKStock", "Forex", "Futures", "MOEX",
 })
 CN_A_SHARE_PATTERN = re.compile(r"^\d{6}$")
-
-_name_resolve_executor = ThreadPoolExecutor(
-    max_workers=4,
-    thread_name_prefix="watchlist-name-resolve",
-)
 
 
 def normalize_symbol(symbol: str) -> str:
@@ -29,7 +17,7 @@ def normalize_symbol(symbol: str) -> str:
 
 
 def validate_watchlist_pair(market: str, symbol: str) -> Optional[str]:
-    """Validate a market/symbol pair before persisting it."""
+    """Validate a market/symbol pair before resolving it to a logical asset."""
     if market not in VALID_MARKETS:
         return f"Unsupported market '{market}'. Must be one of: {', '.join(sorted(VALID_MARKETS))}"
     if not symbol:
@@ -43,132 +31,61 @@ def validate_watchlist_pair(market: str, symbol: str) -> Optional[str]:
     return None
 
 
-def list_watchlist(user_id: int) -> list:
-    """Return watchlist rows with their exact market-data identity."""
+def list_watchlist(user_id: int) -> list[dict]:
+    """Return user-selected logical assets without venue or product bindings."""
     with get_db_connection() as db:
         cur = db.cursor()
         cur.execute(
             """
-            SELECT w.id, w.market, w.symbol, w.name, w.exchange_id, w.market_type,
-                   w.instrument_id, w.settle_currency,
-                   COALESCE(s.asset_class, '') AS asset_class,
-                   COALESCE(s.product_type, '') AS product_type,
-                   COALESCE(s.api_family, '') AS api_family,
-                   COALESCE(s.underlying_market, '') AS underlying_market,
-                   COALESCE(s.underlying_symbol, '') AS underlying_symbol,
-                   COALESCE(s.product_meta, '{}'::jsonb) AS product_meta
+            SELECT w.id, w.asset_id, a.asset_key, a.market, a.symbol, a.name,
+                   a.asset_class, a.product_type, a.underlying_market,
+                   a.underlying_symbol, w.created_at, w.updated_at
             FROM qd_watchlist w
-            LEFT JOIN qd_market_symbols s
-              ON s.market = w.market
-             AND s.symbol = w.symbol
-             AND s.exchange = w.exchange_id
-             AND s.market_type = w.market_type
-             AND s.instrument_id = w.instrument_id
+            JOIN qd_market_assets a ON a.id = w.asset_id AND a.is_active = 1
             WHERE w.user_id = ?
             ORDER BY w.id DESC
             """,
             (user_id,),
         )
-        stored_rows = cur.fetchall() or []
-        rows = []
-        for row in stored_rows:
-            _backfill_row_name(cur, user_id, row)
-            rows.append(row)
-        db.commit()
+        rows = [dict(row) for row in (cur.fetchall() or [])]
         cur.close()
+
+    for row in rows:
+        try:
+            capabilities = get_asset_capabilities(int(row.get("asset_id") or 0))
+        except AssetResolutionError:
+            capabilities = {"market_types": [], "exchange_ids": [], "contexts": []}
+        row["market_types"] = capabilities.get("market_types") or []
+        row["exchange_ids"] = capabilities.get("exchange_ids") or []
+        row["product_count"] = len(capabilities.get("contexts") or [])
     return rows
 
 
 def add_watchlist_item(
     user_id: int,
-    market: str,
-    raw_symbol: str,
-    name_in: str = "",
     *,
-    exchange_id: str = "",
-    market_type: str = "",
-    instrument_id: str = "",
-    settle_currency: str = "",
+    asset_id: int = 0,
 ) -> tuple[bool, str]:
-    """Validate and persist a watchlist item."""
-    market = (market or "").strip()
-    symbol = normalize_symbol(raw_symbol)
-    if not market or not symbol:
-        return False, "Missing market or symbol"
+    """Persist one catalog-backed logical asset."""
+    if int(asset_id or 0) <= 0:
+        return False, "market.assetIdRequired"
 
-    if market == "Crypto":
-        symbol = normalize_crypto_symbol(symbol)
-    context = MarketContext.from_mapping({
-        "market": market,
-        "symbol": symbol,
-        "exchange_id": exchange_id,
-        "market_type": market_type,
-        "instrument_id": instrument_id,
-        "settle_currency": settle_currency,
-    })
-    if market == "Crypto" and context.exchange_id not in SUPPORTED_CRYPTO_EXCHANGE_IDS:
-        return False, f"Unsupported crypto exchange: {context.exchange_id}"
-
-    validation_err = validate_watchlist_pair(market, symbol)
-    if validation_err:
-        logger.info("Rejecting watchlist add for user %s: %s", user_id, validation_err)
-        return False, validation_err
-
-    matched = find_market_symbol(
-        market,
-        symbol,
-        exchange_id=context.exchange_id,
-        market_type=context.market_type,
-    )
-    if not matched:
-        err = (
-            f"Symbol '{symbol}' not found on {market}. "
-            "Please verify the ticker and market, or pick from search results."
-        )
-        logger.info("Rejecting watchlist add for user %s: %s", user_id, err)
-        return False, err
-    matched_instrument_id = str(matched.get("instrument_id") or "").strip()
-    if instrument_id and matched_instrument_id != str(instrument_id).strip():
-        err = f"Instrument '{instrument_id}' does not match {context.exchange_id}:{context.market_type}:{symbol}."
-        logger.info("Rejecting watchlist add for user %s: %s", user_id, err)
-        return False, err
-
-    resolved = (
-        (matched.get("name") or "").strip()
-        or resolve_symbol_name_bounded(market, symbol)
-        or seed_get_symbol_name(market, symbol)
-    )
-    name = (name_in or "").strip() or resolved or symbol
-    persist_seed_name(market, symbol, name)
-    settle_currency = str((matched or {}).get("settle_currency") or context.settle_currency or "").strip().upper()
-    stored_exchange_id = str(matched.get("exchange_id") or context.exchange_id or "").strip().lower()
-    stored_market_type = str(matched.get("market_type") or context.market_type or "spot").strip().lower()
-    stored_instrument_id = matched_instrument_id or str(context.instrument_id or "").strip()
+    try:
+        asset = get_market_asset(asset_id=int(asset_id))
+    except AssetResolutionError as exc:
+        return False, str(exc)
+    if not asset:
+        return False, "market.assetNotFound"
 
     with get_db_connection() as db:
         cur = db.cursor()
         cur.execute(
             """
-            INSERT INTO qd_watchlist (
-                user_id, market, symbol, name, exchange_id, market_type,
-                instrument_id, settle_currency, created_at, updated_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
-            ON CONFLICT(user_id, market, symbol, exchange_id, market_type, instrument_id) DO UPDATE SET
-                name = excluded.name,
-                settle_currency = excluded.settle_currency,
-                updated_at = NOW()
+            INSERT INTO qd_watchlist (user_id, asset_id, created_at, updated_at)
+            VALUES (?, ?, NOW(), NOW())
+            ON CONFLICT (user_id, asset_id) DO UPDATE SET updated_at = NOW()
             """,
-            (
-                user_id,
-                market,
-                symbol,
-                name,
-                stored_exchange_id,
-                stored_market_type,
-                stored_instrument_id,
-                settle_currency,
-            ),
+            (user_id, asset["asset_id"]),
         )
         db.commit()
         cur.close()
@@ -177,135 +94,41 @@ def add_watchlist_item(
 
 def remove_watchlist_item(
     user_id: int,
-    market: str,
-    raw_symbol: str,
     *,
-    exchange_id: str = "",
-    market_type: str = "",
-    instrument_id: str = "",
+    asset_id: int = 0,
 ) -> bool:
-    """Remove one market context, or all legacy contexts when none is supplied."""
-    market = (market or "").strip()
-    raw_symbol = normalize_symbol(raw_symbol)
-    canonical_symbol = normalize_crypto_symbol(raw_symbol) if market == "Crypto" else raw_symbol
+    """Remove one logical asset from the user's watchlist."""
+    resolved_asset_id = int(asset_id or 0)
+    if resolved_asset_id <= 0:
+        return False
 
     with get_db_connection() as db:
         cur = db.cursor()
-        has_market_context = bool(exchange_id or market_type or instrument_id)
-        if market and has_market_context:
-            context = MarketContext.from_mapping({
-                "market": market,
-                "symbol": canonical_symbol,
-                "exchange_id": exchange_id,
-                "market_type": market_type,
-                "instrument_id": instrument_id,
-            })
-            clauses = ["user_id = ?", "market = ?", "symbol = ?"]
-            params = [user_id, market, canonical_symbol]
-            if exchange_id:
-                clauses.append("exchange_id = ?")
-                params.append(context.exchange_id)
-            if market_type:
-                clauses.append("market_type = ?")
-                params.append(context.market_type)
-            if instrument_id:
-                clauses.append("instrument_id = ?")
-                params.append(context.instrument_id)
-            cur.execute(f"DELETE FROM qd_watchlist WHERE {' AND '.join(clauses)}", tuple(params))
-        elif market:
-            cur.execute(
-                "DELETE FROM qd_watchlist WHERE user_id = ? AND market = ? AND symbol = ?",
-                (user_id, market, canonical_symbol),
-            )
-            deleted = cur.rowcount or 0
-            if deleted == 0 and canonical_symbol != raw_symbol:
-                cur.execute(
-                    "DELETE FROM qd_watchlist WHERE user_id = ? AND market = ? AND symbol = ?",
-                    (user_id, market, raw_symbol),
-                )
-        else:
-            logger.info(
-                "remove_watchlist called without market (user=%s, symbol=%s); using legacy symbol-only delete",
-                user_id,
-                raw_symbol,
-            )
-            cur.execute(
-                "DELETE FROM qd_watchlist WHERE user_id = ? AND symbol = ?",
-                (user_id, raw_symbol),
-            )
+        cur.execute(
+            "DELETE FROM qd_watchlist WHERE user_id = ? AND asset_id = ?",
+            (user_id, resolved_asset_id),
+        )
+        deleted = int(cur.rowcount or 0)
         db.commit()
         cur.close()
-    return True
+    return deleted > 0
 
 
-def get_user_watchlist_pairs(user_id: int) -> list:
-    """Return exact market contexts for quote fetching."""
+def get_user_watchlist_pairs(user_id: int) -> list[dict]:
+    """Return logical assets for quote-source resolution."""
     with get_db_connection() as db:
         cur = db.cursor()
         cur.execute(
             """
-            SELECT market, symbol, exchange_id, market_type,
-                   instrument_id, settle_currency
-            FROM qd_watchlist
-            WHERE user_id = ?
+            SELECT a.id AS asset_id, a.market, a.symbol, a.product_type,
+                   a.underlying_market, a.underlying_symbol
+            FROM qd_watchlist w
+            JOIN qd_market_assets a ON a.id = w.asset_id AND a.is_active = 1
+            WHERE w.user_id = ?
+            ORDER BY w.id DESC
             """,
             (user_id,),
         )
-        rows = cur.fetchall() or []
+        rows = [dict(row) for row in (cur.fetchall() or [])]
         cur.close()
-    out = []
-    seen = set()
-    for row in rows:
-        context_key = (
-            row.get("market"), row.get("symbol"), row.get("exchange_id"),
-            row.get("market_type"), row.get("instrument_id"),
-        )
-        if context_key in seen:
-            continue
-        seen.add(context_key)
-        out.append({
-            "market": row.get("market") or "",
-            "symbol": row.get("symbol") or "",
-            "exchange_id": row.get("exchange_id") or "",
-            "market_type": row.get("market_type") or "",
-            "instrument_id": row.get("instrument_id") or "",
-            "settle_currency": row.get("settle_currency") or "",
-        })
-    return out
-
-
-def resolve_symbol_name_bounded(market: str, symbol: str, timeout_sec: float = 4.0) -> Optional[str]:
-    """Resolve a display name with a hard wall-clock cap."""
-    try:
-        future = _name_resolve_executor.submit(resolve_symbol_name, market, symbol)
-        return future.result(timeout=timeout_sec)
-    except FuturesTimeoutError:
-        logger.info(
-            "Symbol name resolve timed out after %.1fs for %s:%s",
-            timeout_sec,
-            market,
-            symbol,
-        )
-        return None
-    except Exception as exc:
-        logger.debug("Symbol name resolve raised for %s:%s: %s", market, symbol, exc)
-        return None
-
-
-def _backfill_row_name(cur, user_id: int, row: dict) -> None:
-    try:
-        market = row.get("market")
-        symbol = row.get("symbol")
-        current_name = (row.get("name") or "").strip()
-        if not market or not symbol or (current_name and current_name != symbol):
-            return
-        resolved = resolve_symbol_name(market, symbol) or seed_get_symbol_name(market, symbol)
-        if resolved and resolved != current_name:
-            row["name"] = resolved
-            cur.execute(
-                "UPDATE qd_watchlist SET name = ?, updated_at = NOW() WHERE id = ? AND user_id = ?",
-                (resolved, row.get("id"), user_id),
-            )
-    except Exception:
-        return
-
+    return rows
