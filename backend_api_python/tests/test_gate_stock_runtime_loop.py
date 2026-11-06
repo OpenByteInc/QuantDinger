@@ -97,8 +97,11 @@ def test_gate_stock_testnet_rejected_before_deployment_is_saved(monkeypatch):
         get_latest_version=lambda *a, **kw: {"id": 11, "code": CODE},
     ))
     monkeypatch.setattr(deployment.StrategyV2DeploymentService, "_credential_exchange", lambda *a: "gate")
-    monkeypatch.setattr(deployment, "get_catalog_product", lambda **kw: {
-        "instrument_id": "NVDA", "api_family": "stock", "product_type": "direct_equity",
+    monkeypatch.setattr(deployment, "resolve_runtime_instrument", lambda **kw: {
+        "asset_id": 101,
+        "instrument_id": "NVDA",
+        "api_family": "stock",
+        "product_type": "direct_equity",
     })
     resolve = Mock(return_value={"exchange_id": "gate", "environment": "testnet"})
     monkeypatch.setattr(exchange_execution, "resolve_exchange_config", resolve)
