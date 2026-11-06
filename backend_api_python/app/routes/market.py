@@ -266,8 +266,9 @@ def asset_capabilities():
             'msg': 'success',
             'data': get_asset_capabilities(asset_id, exchange_id=exchange_id),
         })
-    except AssetResolutionError as e:
-        return jsonify({'code': 0, 'msg': str(e), 'data': None}), 404
+    except AssetResolutionError as exc:
+        logger.warning("asset_capabilities asset resolution failed: %s", exc)
+        return jsonify({'code': 0, 'msg': 'market.assetNotFound', 'data': None}), 404
     except Exception as e:
         logger.error(f"asset_capabilities failed: {str(e)}")
         logger.error(traceback.format_exc())
