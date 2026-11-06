@@ -8,6 +8,8 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import requests
 
+from app.data_sources.candle_calendar import candle_open
+
 
 SUPPORTED_EXCHANGES = ("binance", "bitget", "bybit", "okx", "gate", "htx")
 
@@ -529,6 +531,7 @@ class NativeCryptoPublicClient:
         since: Optional[int] = None,
         limit: int = 300,
         until: Optional[int] = None,
+        closed_only: bool = False,
     ) -> List[List[Any]]:
         if timeframe not in self.timeframes:
             raise NativeCryptoAPIError(f"Unsupported timeframe {timeframe} on {self.id}")
@@ -613,7 +616,7 @@ class NativeCryptoPublicClient:
                 # Bitget returns candles before endTime. Move to the next
                 # interval boundary so the requested final candle is included.
                 params["endTime"] = min(
-                    (page_end // tf_ms + 1) * tf_ms,
+                    candle_open(page_end / 1000, timeframe, self.id, self.market_type) * 1000 + tf_ms,
                     int(since) + max_window_ms,
                     now_ms,
                 )
@@ -625,7 +628,13 @@ class NativeCryptoPublicClient:
             params = {"interval": interval, "limit": min(limit, 1000)}
             if since is not None:
                 params["from"] = int(since // 1000)
-                params["to"] = page_end // 1000
+                # Futures aggregates trades only through `to`, not the whole
+                # candle whose opening timestamp equals `to`.
+                params["to"] = min(
+                    candle_open(page_end / 1000, timeframe, self.id, self.market_type)
+                    + tf_ms // 1000 - 1,
+                    upper_bound // 1000,
+                ) if self.market_type == "swap" else page_end // 1000
                 params.pop("limit", None)
             if self.market_type == "swap":
                 params["contract"] = native
@@ -671,6 +680,13 @@ class NativeCryptoPublicClient:
         else:
             raise ValueError(f"Unsupported crypto exchange: {self.id}")
         lower_bound = int(since) if since is not None else 0
+        if closed_only:
+            unconfirmed = set()
+            if self.id == "okx":
+                unconfirmed = {int(row[0]) for row in rows if len(row) > 8 and str(row[8]) != "1"}
+            elif self.id == "gate" and self.market_type == "spot":
+                unconfirmed = {int(row[0]) * 1000 for row in rows if len(row) > 7 and str(row[7]).lower() != "true"}
+            parsed = [row for row in parsed if row[0] not in unconfirmed and row[0] + tf_ms <= upper_bound]
         unique = {
             int(row[0]): row for row in parsed
             if row and int(row[0]) >= lower_bound

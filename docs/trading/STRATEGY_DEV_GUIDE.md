@@ -393,6 +393,9 @@ Live sessions process each closed bar once and preserve <code>g</code> state whi
 - Real-time prices are reserved for stop loss, take profit, trailing protection, and equity risk. They must not make an unfinished candle look complete or revise a confirmed strategy signal.
 - Multi-timeframe strategies apply the completed-bar rule separately to every timeframe. A lower-timeframe advance never exposes a still-forming four-hour or daily bar.
 - The runtime filters unfinished candles centrally. Strategy source must not drop the final row, guess closure from local wall-clock time, or write a live price into OHLC; those workarounds break parity across backtests, restart replay, and live execution.
+- Candle boundaries follow the selected venue, including its daily timezone and weekly anchor. A close event wakes the runtime; it does not prove that the provider has published the final candle. The runtime checks the latest required candle for every subscribed timeframe, respects explicit provider confirmation, and retries missing data without advancing signal progress. Normal quotes alone do not clear a candle-data fault.
+- US and Hong Kong equities use exchange sessions, holidays, early closes, daylight saving time, and the Hong Kong lunch break. Daily and weekly bars retain the 15-minute post-close data allowance. Aggregated bars must contain all expected constituent bars in their session; they must not bridge a missing bar or use five daily rows as a calendar week. Exchange-listed stock perpetuals and tokenized equities use their venue candle calendar, not the underlying stock-market session calendar.
+- Recovery does not backfill historical real orders. Confirmed-bar deduplication remains in effect, and old cached candle data is not reused across candle-contract revisions.
 - A future tick-driven strategy product needs a separate API, replay model, and contract. Do not simulate it inside ordinary Strategy API V2 source.
 
 ---
@@ -413,6 +416,8 @@ Common context fields:
 | <code>context.data</code> | data view |
 
 Use <code>data.current(symbol, field, frequency="1h")</code> for a current visible value, <code>data.history(symbols, count, fields, frequency="4h")</code> for a selected timeframe, and <code>data[symbol]</code> for the driving timeframe's current visible DataFrame.
+
+Use <code>is_trade()</code> to filter scheduled callbacks. It returns <code>True</code> when the current event timestamp exists in at least one subscribed data frame and <code>False</code> otherwise. It answers “does this event have tradable data?”, not whether an exchange is open, an account may submit orders, or a product is suspended; live eligibility is still validated by deployment and execution layers.
 
 Persist state across callbacks on <code>g</code>:
 
@@ -598,6 +603,15 @@ Common order options:
 | <code>execution_algo</code> | <code>market</code>, <code>limit</code>, or <code>maker_then_market</code> |
 | <code>maker_wait_sec</code> | maker wait before market fallback |
 | <code>maker_offset_bps</code> | maker-price offset in basis points |
+| <code>protection</code> | protection mapping containing the stop, take-profit, trailing, and time fields below |
+| <code>stop_loss_pct</code> | fixed stop-loss decimal ratio from position cost |
+| <code>take_profit_pct</code> | fixed take-profit decimal ratio from position cost |
+| <code>trailing_stop_pct</code> | trailing distance from the subsequent position peak/trough |
+| <code>trailing_activation_pct</code> | profit threshold from position cost that activates trailing |
+| <code>time_limit_seconds</code> | maximum holding time in seconds |
+| <code>trailing_rebase_on_scale_in</code> | whether a same-side scale-in resets trailing state and the holding clock; defaults to <code>True</code> |
+
+<code>type</code> and <code>price</code> are compatibility aliases for <code>order_type</code> and the limit-order <code>limit_price</code>, respectively. New strategies should use the canonical names. The compiler and runtime reject keywords outside this table instead of silently ignoring them.
 
 Example with a stable client reference:
 
@@ -635,7 +649,7 @@ In live execution, an active same-leg request suppresses duplicate requests unti
 
 ## 13. Stop, take-profit, trailing, and time protection
 
-Attach protection to an entry:
+Protection arguments are accepted by all five order helpers, but should be declared on an entry or same-side scale-in. The most direct form uses inline order keywords:
 
 ~~~python
 order_target_percent(
@@ -650,6 +664,22 @@ order_target_percent(
 )
 ~~~
 
+A literal mapping is also supported. Inline fields on the same call override matching values in that mapping:
+
+~~~python
+order_target_percent(
+    g.symbol,
+    0.8,
+    reason="breakout_long_entry",
+    protection={
+        "stop_loss_pct": 0.03,
+        "take_profit_pct": 0.08,
+    },
+    trailing_stop_pct=0.025,
+    trailing_activation_pct=0.02,
+)
+~~~
+
 Or set defaults inside an executable handler/scheduled callback before later entries (do not call this in <code>initialize</code>; manifest discovery does not retain runtime protection state):
 
 ~~~python
@@ -659,7 +689,38 @@ set_default_protection(
 )
 ~~~
 
-Percentage fields are ratios: <code>0.03</code> means 3%. Values are clamped to safe ranges, and negatives become zero.
+<code>set_default_protection</code> applies to later orders that have no effective per-order protection; per-order protection takes precedence. Call <code>set_default_protection()</code> to clear the defaults. If a Crypto swap strategy requests protection, put effective protection directly on every opening leg. AI validation does not treat defaults alone as proof that each swap entry leg is protected.
+
+Parameter contract:
+
+| Parameter | Unit and range | Behavior |
+| --- | --- | --- |
+| <code>stop_loss_pct</code> | decimal ratio, <code>0..1</code> | long trigger is cost × <code>(1-pct)</code>; short trigger is cost × <code>(1+pct)</code> |
+| <code>take_profit_pct</code> | decimal ratio, <code>0..5</code> | long trigger is cost × <code>(1+pct)</code>; short trigger is cost × <code>(1-pct)</code> |
+| <code>trailing_stop_pct</code> | decimal ratio, <code>0..1</code> | after activation, follows the highest price for longs and the lowest price for shorts |
+| <code>trailing_activation_pct</code> | decimal ratio, <code>0..5</code> | favorable move from cost required to activate trailing; activation without a trailing distance creates no protection |
+| <code>time_limit_seconds</code> | non-negative integer seconds | exits after the holding limit; <code>0</code> disables it |
+| <code>trailing_rebase_on_scale_in</code> | boolean, default <code>True</code> | <code>True</code> resets trailing extrema, activation, and the holding clock on a same-side scale-in; <code>False</code> preserves an active trail and the original clock |
+
+All pct values are decimal ratios: <code>0.03</code> means 3%, not 0.03% or 3. A value of <code>0</code> disables that rule. The runtime clamps negative and oversized values to the ranges above, but source and AI-generated strategies should provide valid values rather than rely on correction.
+
+Names must be exact. Strategy API V2 does not accept <code>stop_loss</code>, <code>take_profit</code>, <code>stop_price</code>, or <code>take_profit_price</code> as order arguments; they fail with <code>strategyV2.apiCallInvalid:...:unsupportedArgument:...</code>. Fixed absolute-price protection is not currently part of the Strategy API V2 source contract. Use pct protection or implement an explicit strategy-signal exit.
+
+<code># @param stop_loss_pct ...</code> only declares a run-panel parameter; it does not enable a stop automatically. A handler must read it and pass it to the entry order:
+
+~~~python
+def handle_data(context, data):
+    stop_loss_pct = float(context.params.get("stop_loss_pct", 0.03))
+    if should_enter:
+        order_target_percent(
+            g.symbol,
+            0.5,
+            reason="protected_entry",
+            stop_loss_pct=stop_loss_pct,
+        )
+~~~
+
+Fixed stop/take-profit protection, trailing protection, and signal exits are distinct mechanisms. Only effective order fields or runtime defaults create protection state; a parameter declaration, comment, or ordinary exit condition does not prove that fixed protection is attached. After a protection exit, <code>consume_last_exit_reason(symbol)</code> returns and clears <code>stop_loss</code>, <code>take_profit</code>, <code>trailing_stop</code>, or <code>time_limit</code>.
 
 Backtest behavior:
 

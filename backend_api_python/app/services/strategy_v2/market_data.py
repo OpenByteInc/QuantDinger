@@ -94,11 +94,22 @@ def _last_completed_bar_open(
     ).tz_localize(None)
 
 
-def _market_bar_cutoff(market: str, timeframe: str, *, now=None) -> pd.Timestamp:
+def _market_bar_cutoff(market: str, timeframe: str, *, now=None, exchange_id=None, market_type=None) -> pd.Timestamp:
     if market in {"USStock", "HKStock"} and timeframe == "1d":
         from app.services.market_schedule import equity_daily_bar_cutoff
 
         return equity_daily_bar_cutoff(market, now)
+    if market in {"USStock", "HKStock"} and timeframe == "1w":
+        from app.services.market_schedule import equity_weekly_bar_cutoff
+        return equity_weekly_bar_cutoff(market, now)
+    if market in {"USStock", "HKStock"} and TIMEFRAME_SECONDS.get(timeframe, 86400) < 86400:
+        from app.services.market_schedule import equity_intraday_bar_open
+        return equity_intraday_bar_open(market, TIMEFRAME_SECONDS[timeframe], now)
+    if market.lower() in {"crypto", "cryptocurrency"}:
+        from app.data_sources.candle_calendar import candle_origin
+        current = _normalize_utc_datetime(now or datetime.now(timezone.utc))
+        origin = candle_origin(timeframe, exchange_id or "", market_type or "spot")
+        return _last_completed_bar_open(TIMEFRAME_SECONDS[timeframe], now=current - timedelta(seconds=origin)) + pd.Timedelta(seconds=origin)
     return _last_completed_bar_open(TIMEFRAME_SECONDS.get(timeframe, 86400), now=now)
 
 
@@ -172,7 +183,7 @@ def _load_strategy_frame_uncached(
     timeframe_seconds = TIMEFRAME_SECONDS.get(normalized_timeframe, 86400)
     provider_timeframe = PROVIDER_TIMEFRAMES.get(normalized_timeframe, normalized_timeframe)
     data_market = equity_data_market(market, product, resolved_api_family)
-    closed_bar_cutoff = _market_bar_cutoff(data_market, normalized_timeframe)
+    closed_bar_cutoff = _market_bar_cutoff(data_market, normalized_timeframe, exchange_id=exchange_id, market_type=market_type)
     cutoff_utc = closed_bar_cutoff.to_pydatetime().replace(tzinfo=timezone.utc)
     provider_end_utc = min(end_utc, cutoff_utc)
     total_seconds = max(1.0, (provider_end_utc - start_utc).total_seconds())
@@ -180,7 +191,7 @@ def _load_strategy_frame_uncached(
     after_time = int((start_utc - timedelta(seconds=timeframe_seconds)).timestamp())
     before_time = int((provider_end_utc + timedelta(seconds=timeframe_seconds)).timestamp())
     cache_key = ":".join((
-        "session-calendar-v2",
+        "confirmed-candle-calendar-v3",
         str(market),
         str(symbol),
         str(timeframe),
@@ -235,6 +246,11 @@ def _load_strategy_frame_uncached(
                 requested_start,
                 coverage_end,
                 timeframe_seconds,
+            )
+        if cache_is_usable and requested_end >= closed_bar_cutoff and data_market in {"Crypto", "Cryptocurrency", "USStock", "HKStock"}:
+            from app.services.strategy_runtime.candle_readiness import frame_covers_bar
+            cache_is_usable = frame_covers_bar(
+                cached, {"market": data_market}, normalized_timeframe, closed_bar_cutoff,
             )
         if cache_is_usable:
             return cached.copy()
@@ -624,7 +640,9 @@ def load_strategy_frame(
         market, symbol, exchange_id=exchange_id, market_type=market_type, instrument_id=instrument_id,
     )
     data_market = equity_data_market(market, product, str(api_family or ""))
-    closed_cutoff = _market_bar_cutoff(data_market, normalized_timeframe)
+    from app.services.strategy_runtime.candle_readiness import frame_covers_bar
+    readiness_member = dict(product or {}, market=data_market, exchange_id=exchange_id or "", market_type=market_type or "spot")
+    closed_cutoff = _market_bar_cutoff(data_market, normalized_timeframe, exchange_id=exchange_id, market_type=market_type)
     coverage_end = min(requested_end, closed_cutoff)
     live_request = _is_live_request(
         requested_end,
@@ -679,6 +697,10 @@ def load_strategy_frame(
                     coverage_end,
                     timeframe_seconds,
                 )
+                if live_request and data_market in {"USStock", "HKStock"}:
+                    cached_result_is_usable = cached_result_is_usable and frame_covers_bar(
+                        cached_result, readiness_member, normalized_timeframe, closed_cutoff,
+                    )
             if cached_result_is_usable:
                 entry.last_access = time.monotonic()
                 return cached_result
@@ -754,10 +776,10 @@ def load_strategy_frame(
         merged = merged[merged.index >= requested_start - overlap]
         actual_start = merged.index.min()
         actual_end = merged.index.max()
-        incomplete_equity_daily = (
-            data_market in {"USStock", "HKStock"} and normalized_timeframe == "1d"
+        incomplete_equity_window = (
+            data_market in {"USStock", "HKStock"}
             and live_request
-            and equity_bar_session_date(actual_end, data_market) < equity_bar_session_date(coverage_end, data_market)
+            and not frame_covers_bar(merged, readiness_member, normalized_timeframe, closed_cutoff)
         )
         complete_equity_window = bool(
             equity_market
@@ -777,7 +799,7 @@ def load_strategy_frame(
             )
         cached_coverage_end = (
                 coverage_end
-                if complete_equity_window and not incomplete_equity_daily
+                if complete_equity_window and not incomplete_equity_window
                 else actual_end
                 if continuous_crypto_market or equity_market
                 else max(actual_end, coverage_end)

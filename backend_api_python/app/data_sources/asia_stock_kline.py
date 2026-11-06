@@ -145,7 +145,7 @@ _TD_INTERVAL_MAP = {
     "15m": "15min",
     "30m": "30min",
     "1H": "1h",
-    "4H": "4h",
+    "4H": "1h",
     "1D": "1day",
     "1W": "1week",
 }
@@ -231,6 +231,8 @@ def fetch_twelvedata_klines(
 
     symbol, exchange = _td_symbol_and_exchange(tencent_code, is_hk)
     merge_factor = _MERGE_FACTOR_MAP.get(timeframe, 1)
+    if is_hk and timeframe in {"1H", "4H"}:
+        interval, merge_factor = "30min", 2 if timeframe == "1H" else 8
     params: Dict[str, Any] = {
         "symbol": symbol,
         "exchange": exchange,
@@ -242,6 +244,8 @@ def fetch_twelvedata_klines(
     }
     if before_time:
         end_dt = datetime.fromtimestamp(int(before_time))
+        if is_hk:
+            end_dt = pd.Timestamp(int(before_time), unit="s", tz="UTC").tz_convert("Asia/Hong_Kong")
         params["end_date"] = end_dt.strftime("%Y-%m-%d %H:%M:%S")
 
     url = "https://api.twelvedata.com/time_series"
@@ -290,7 +294,10 @@ def fetch_twelvedata_klines(
             dt_str = v.get("datetime", "")
             for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
                 try:
-                    ts = int(datetime.strptime(dt_str, fmt).timestamp())
+                    parsed_time = datetime.strptime(dt_str, fmt)
+                    if is_hk:
+                        parsed_time = pd.Timestamp(parsed_time).tz_localize("Asia/Hong_Kong")
+                    ts = int(parsed_time.timestamp())
                     break
                 except ValueError:
                     continue
@@ -316,7 +323,7 @@ def fetch_twelvedata_klines(
 
     out.sort(key=lambda x: x["time"])
     if merge_factor > 1 and out:
-        out = _merge_every_n_sorted_bars(out, merge_factor)
+        out = _merge_session_bars(out, timeframe, is_hk, source_seconds=1800 if is_hk and timeframe in {"1H", "4H"} else None)
     logger.debug("TwelveData returned %d bars for %s/%s tf=%s", len(out), symbol, exchange, timeframe)
     return out
 
@@ -483,7 +490,7 @@ def fetch_yfinance_klines(
 
     bars = _bars_from_yfinance_df(df)
     if merge_factor > 1 and bars:
-        bars = _merge_every_n_sorted_bars(bars, merge_factor)
+        bars = _merge_session_bars(bars, timeframe, is_hk)
     logger.debug("yfinance returned %d bars for %s tf=%s", len(bars), yf_sym, timeframe)
     return bars
 
@@ -513,7 +520,7 @@ def _min_bar_window(
     return start.strftime(fmt), end.strftime(fmt)
 
 
-def _bars_from_ak_min_df(df: Any) -> List[Dict[str, Any]]:
+def _bars_from_ak_min_df(df: Any, *, is_hk: bool = False, period_seconds: int = 0) -> List[Dict[str, Any]]:
     if df is None or getattr(df, "empty", True):
         return []
     cols = [str(x) for x in df.columns]
@@ -536,6 +543,9 @@ def _bars_from_ak_min_df(df: Any) -> List[Dict[str, Any]]:
     for _, row in df.iterrows():
         try:
             t = pd.Timestamp(row[time_c])
+            if is_hk:
+                t = t.tz_localize("Asia/Hong_Kong") if t.tzinfo is None else t
+                t -= pd.Timedelta(seconds=period_seconds)
             ts = int(t.timestamp())
             o, c, h, low, v = float(row[c_open]), float(row[c_close]), float(row[c_high]), float(row[c_low]), float(row[c_vol])
             out.append({
@@ -550,6 +560,15 @@ def _bars_from_ak_min_df(df: Any) -> List[Dict[str, Any]]:
             continue
     out.sort(key=lambda x: x["time"])
     return out
+
+
+def _merge_session_bars(bars, timeframe, is_hk, *, source_seconds=None):
+    if not is_hk:
+        return _merge_every_n_sorted_bars(bars, _MERGE_FACTOR_MAP.get(timeframe, 1))
+    from app.services.market_schedule import resample_equity_klines
+    source_seconds = source_seconds or (3600 if timeframe == "4H" else 60)
+    target_seconds = {"1H": 3600, "4H": 14400, "3m": 180}[timeframe]
+    return resample_equity_klines(bars, "HKStock", source_seconds, target_seconds)
 
 
 def _merge_every_n_sorted_bars(bars: List[Dict[str, Any]], n: int) -> List[Dict[str, Any]]:
@@ -587,6 +606,8 @@ def fetch_akshare_minute_klines(
         return []
 
     p = _minute_period_str(timeframe)
+    if is_hk and timeframe in {"1H", "4H"}:
+        p = "30"
     if p is None:
         return []
     try:
@@ -597,6 +618,11 @@ def fetch_akshare_minute_klines(
 
     sym = ak_hk_code_from_tencent(tencent_code) if is_hk else ak_a_code_from_tencent(tencent_code)
     sd, ed = _min_bar_window(timeframe, limit, before_time, after_time)
+    if is_hk:
+        if before_time is not None:
+            ed = pd.Timestamp(before_time, unit="s", tz="UTC").tz_convert("Asia/Hong_Kong").strftime("%Y-%m-%d %H:%M:%S")
+        if after_time is not None:
+            sd = pd.Timestamp(after_time, unit="s", tz="UTC").tz_convert("Asia/Hong_Kong").strftime("%Y-%m-%d %H:%M:%S")
     adj = "" if p == "1" else "qfq"
 
     df: Any = None
@@ -625,10 +651,12 @@ def fetch_akshare_minute_klines(
             logger.warning("AkShare minute K-line failed %s tf=%s sym=%s: %s", tencent_code, timeframe, sym, e)
             return []
 
-    bars = _bars_from_ak_min_df(df)
+    bars = _bars_from_ak_min_df(df, is_hk=is_hk, period_seconds=int(p) * 60)
     merge_factor = _MERGE_FACTOR_MAP.get(timeframe, 1)
+    if is_hk and timeframe in {"1H", "4H"}:
+        merge_factor = 2 if timeframe == "1H" else 8
     if merge_factor > 1 and bars:
-        bars = _merge_every_n_sorted_bars(bars, merge_factor)
+        bars = _merge_session_bars(bars, timeframe, is_hk, source_seconds=int(p) * 60)
     return bars
 
 
