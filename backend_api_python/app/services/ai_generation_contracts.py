@@ -87,7 +87,7 @@ Return Python source only. Do not use markdown fences or explanatory prose.
 ## Orders and positions
 - Order-helper signatures are exact: `order(symbol, amount)`, `order_value(symbol, value)`, `order_target(symbol, amount)`, `order_target_value(symbol, value)`, and `order_target_percent(symbol, percent)`.
 - These are runtime-bound global helpers. Never pass `context` as their first argument. Optional execution and protection values must be keyword arguments after the two required arguments.
-- `get_position(symbol)` returns a `Position` object; swap code adds the optional keyword `position_side`. Read `position.amount`, `position.avg_cost`, and `position.last_price` directly; never use dictionary membership, subscripting, `.get(...)`, or `getattr(...)` on it.
+- `get_position(symbol)` returns a `Position` object. For Crypto swaps, omit `position_side` only in `one_way` mode; pass the matching `position_side="long"` or `position_side="short"` in `long_only`, `short_only`, `both`, or `neutral` modes. Read `position.amount`, `position.avg_cost`, and `position.last_price` directly; never use dictionary membership, subscripting, `.get(...)`, or `getattr(...)` on it.
 - A `Position` has no `.quantity` or `.cost_basis`; use `.amount` and `.avg_cost`.
 - Use `get_positions(...)` when a dictionary of multiple positions is required.
 - A string argument to `get_position` returns a Position even when flat (`amount == 0`); omitted or iterable symbols return a dictionary. For hedged positions, `get_positions()` keys include `::long`/`::short`; read one leg with `get_position(symbol, position_side=...)`.
@@ -187,7 +187,7 @@ SCRIPT_STRATEGY_REPAIR_REQUIREMENTS = """# Strategy API V2 repair requirements
 - Order helpers return `None` unless `client_order_id` is supplied. Retain explicit references for status checks; neither a reference nor a cancel request proves a completed fill.
 - Use `data.current(symbol, field="close", frequency=None)` for a current scalar field. Replace every `get_current_data` call; that API does not exist.
 - Enforce exact order signatures such as `order_target_percent(symbol, percent)` and never pass `context` to a global order helper.
-- Treat `get_position(symbol)` as a `Position` object with direct `.amount`, `.avg_cost`, and `.last_price` attributes; swap code adds `position_side` as a keyword. Never treat it as a dictionary or use `getattr`.
+- Treat `get_position(symbol)` as a `Position` object with direct `.amount`, `.avg_cost`, and `.last_price` attributes. For Crypto swaps, omit `position_side` only in `one_way` mode and pass the explicit long or short leg in every directional/hedged mode. Never treat it as a dictionary or use `getattr`.
 - Replace legacy `.quantity` and `.cost_basis` position access with `.amount` and `.avg_cost`.
 - Preserve completed-data-only execution and remove look-ahead.
 - Do not remove the final history row as a candle-close workaround; the runtime supplies completed bars and keeps real-time prices outside the strategy OHLC frame.

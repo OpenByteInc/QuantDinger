@@ -559,6 +559,26 @@ _ORDER_API_ARGUMENTS = {
     "order_target_percent": ("symbol", "percent"),
 }
 
+_ORDER_API_OPTION_NAMES = {
+    "client_order_id",
+    "execution_algo",
+    "limit_price",
+    "maker_offset_bps",
+    "maker_wait_sec",
+    "order_type",
+    "position_side",
+    "price",
+    "protection",
+    "reason",
+    "stop_loss_pct",
+    "take_profit_pct",
+    "time_limit_seconds",
+    "trailing_activation_pct",
+    "trailing_rebase_on_scale_in",
+    "trailing_stop_pct",
+    "type",
+}
+
 _UNSUPPORTED_STRATEGY_API_NAMES = {
     "get_current_data": "data.current",
 }
@@ -931,6 +951,11 @@ def _validate_order_call(
 ) -> None:
     required = _ORDER_API_ARGUMENTS[call_name]
     keywords = _call_keywords(node)
+    unsupported = sorted(set(keywords) - set(required) - _ORDER_API_OPTION_NAMES)
+    if unsupported:
+        raise StrategyV2ContractError(
+            f"strategyV2.apiCallInvalid:{call_name}:unsupportedArgument:{unsupported[0]}"
+        )
     if len(node.args) > 2:
         raise StrategyV2ContractError(
             f"strategyV2.apiCallInvalid:{call_name}:expectedSymbolAndValue"

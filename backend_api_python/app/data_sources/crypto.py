@@ -501,11 +501,14 @@ class CryptoDataSource(BaseDataSource):
         limit: int,
         before_time: Optional[int] = None,
         after_time: Optional[int] = None,
+        *,
+        closed_only: bool = False,
     ) -> List[Dict[str, Any]]:
         """获取加密货币K线数据"""
         self._clear_last_failure()
         klines = []
         symbol_pair = ""
+        candle_options = {"closed_only": True} if closed_only else {}
 
         # A public source is cached and reused by chart/backtest/signal
         # runtimes. Once its configured venue has failed and another venue has
@@ -530,7 +533,7 @@ class CryptoDataSource(BaseDataSource):
             preferred_rows = type(self).for_exchange(
                 preferred_exchange,
                 fallback_market_type,
-            ).get_kline(symbol, timeframe, limit, before_time, after_time)
+            ).get_kline(symbol, timeframe, limit, before_time, after_time, **candle_options)
             if preferred_rows:
                 return preferred_rows
             # The promoted provider has also become unavailable. Clear it and
@@ -591,6 +594,7 @@ class CryptoDataSource(BaseDataSource):
             ohlcv = self._fetch_ohlcv(
                 symbol_pair, fetch_exchange_timeframe, fetch_limit,
                 before_time, fetch_qd_timeframe, after_time,
+                **candle_options,
             )
 
             if not ohlcv:
@@ -728,6 +732,7 @@ class CryptoDataSource(BaseDataSource):
                         limit,
                         before_time,
                         after_time,
+                        **candle_options,
                     )
                     if fallback_rows:
                         self._preferred_public_exchange_id = exchange_id
@@ -825,6 +830,8 @@ class CryptoDataSource(BaseDataSource):
         before_time: Optional[int],
         timeframe: str,
         after_time: Optional[int] = None,
+        *,
+        closed_only: bool = False,
     ) -> List:
         """获取OHLCV数据（支持分页获取完整数据）"""
         try:
@@ -949,6 +956,7 @@ class CryptoDataSource(BaseDataSource):
                                     since=current_since,
                                     limit=request_limit,
                                     until=end_ms,
+                                    **({"closed_only": True} if closed_only else {}),
                                 )
                             else:
                                 batch = self.exchange.fetch_ohlcv(
@@ -1000,7 +1008,8 @@ class CryptoDataSource(BaseDataSource):
                 ohlcv = sorted(by_ts.values(), key=lambda r: r[0])
                 if not ohlcv:
                     return self._fetch_ohlcv_fallback(
-                        symbol_pair, exchange_timeframe, limit, before_time, timeframe, after_time
+                        symbol_pair, exchange_timeframe, limit, before_time, timeframe, after_time,
+                        **({"closed_only": True} if closed_only else {}),
                     )
                 # Never attach an old partial page across an unreported gap. Only
                 # validate the returned chart tail, not its extra warmup buffer.
@@ -1046,7 +1055,10 @@ class CryptoDataSource(BaseDataSource):
                 # rejecting the request outright or silently truncating, which
                 # downstream code then interprets as "empty data".
                 safe_limit = min(int(limit), self._SINGLE_FETCH_HARD_CAP)
-                ohlcv = self.exchange.fetch_ohlcv(symbol_pair, exchange_timeframe, limit=safe_limit)
+                ohlcv = self.exchange.fetch_ohlcv(
+                    symbol_pair, exchange_timeframe, limit=safe_limit,
+                    **({"closed_only": True} if closed_only and isinstance(self.exchange, NativeCryptoPublicClient) else {}),
+                )
 
             return ohlcv
 
@@ -1077,7 +1089,8 @@ class CryptoDataSource(BaseDataSource):
             logger.warning(f"Exchange fetch_ohlcv failed: {str(e)}; trying fallback")
             self._set_last_failure(e, symbol=symbol_pair, timeframe=timeframe)
             return self._fetch_ohlcv_fallback(
-                symbol_pair, exchange_timeframe, limit, before_time, timeframe, after_time
+                symbol_pair, exchange_timeframe, limit, before_time, timeframe, after_time,
+                **({"closed_only": True} if closed_only else {}),
             )
     
     def _fetch_ohlcv_fallback(
@@ -1088,6 +1101,8 @@ class CryptoDataSource(BaseDataSource):
         before_time: Optional[int],
         timeframe: str,
         after_time: Optional[int] = None,
+        *,
+        closed_only: bool = False,
     ) -> List:
         """备用获取方法"""
         # An explicit historical window must never be replaced with a recent
@@ -1121,7 +1136,10 @@ class CryptoDataSource(BaseDataSource):
             # exactly when it mattered. Cap it so we at least return one valid
             # page of data, which downstream callers can then handle gracefully.
             safe_limit = min(int(limit), self._SINGLE_FETCH_HARD_CAP)
-            ohlcv = self.exchange.fetch_ohlcv(symbol_pair, exchange_timeframe, since=since, limit=safe_limit)
+            ohlcv = self.exchange.fetch_ohlcv(
+                symbol_pair, exchange_timeframe, since=since, limit=safe_limit,
+                **({"closed_only": True} if closed_only and isinstance(self.exchange, NativeCryptoPublicClient) else {}),
+            )
             if ohlcv:
                 return ohlcv
         except Exception as e:
@@ -1137,6 +1155,7 @@ class CryptoDataSource(BaseDataSource):
                 symbol_pair,
                 exchange_timeframe,
                 limit=min(int(limit), self._SINGLE_FETCH_HARD_CAP),
+                **({"closed_only": True} if closed_only and isinstance(self.exchange, NativeCryptoPublicClient) else {}),
             )
             if recent:
                 logger.warning(

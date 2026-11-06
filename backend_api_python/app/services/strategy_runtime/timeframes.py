@@ -56,13 +56,23 @@ def live_history_days(
     return days
 
 
-def completed_bar_token(frequency: str, now: datetime | None = None) -> int:
+def completed_bar_token(frequency: str, now: datetime | None = None, *, venue: str = "", market_type: str = "spot") -> int:
     """Return a stable token for the latest fully completed UTC candle."""
     current = now or datetime.now(timezone.utc)
     if current.tzinfo is None:
         current = current.replace(tzinfo=timezone.utc)
     seconds = max(1, frequency_seconds(frequency))
-    return int(current.timestamp()) // seconds - 1
+    from app.data_sources.candle_calendar import candle_origin
+    origin = candle_origin(frequency, venue, market_type)
+    return int((current.timestamp() - origin) // seconds) - 1
+
+
+def completed_bar_close(frequency: str, token: int, *, venue: str = "", market_type: str = "spot") -> datetime:
+    from app.data_sources.candle_calendar import candle_origin
+    return datetime.fromtimestamp(
+        (token + 1) * frequency_seconds(frequency) + candle_origin(frequency, venue, market_type),
+        timezone.utc,
+    )
 
 
 def seconds_until_next_completed_bar(
@@ -70,6 +80,8 @@ def seconds_until_next_completed_bar(
     now: datetime | None = None,
     *,
     grace_seconds: float = 0.25,
+    venue: str = "",
+    market_type: str = "spot",
 ) -> float:
     """Return the delay until the next UTC candle can be treated as closed."""
     current = now or datetime.now(timezone.utc)
@@ -77,7 +89,9 @@ def seconds_until_next_completed_bar(
         current = current.replace(tzinfo=timezone.utc)
     seconds = max(1, frequency_seconds(frequency))
     timestamp = current.timestamp()
-    next_boundary = (math.floor(timestamp / seconds) + 1) * seconds
+    from app.data_sources.candle_calendar import candle_origin
+    origin = candle_origin(frequency, venue, market_type)
+    next_boundary = (math.floor((timestamp - origin) / seconds) + 1) * seconds + origin
     return max(0.0, next_boundary - timestamp + max(0.0, float(grace_seconds or 0.0)))
 
 

@@ -178,6 +178,23 @@ def handle_data(context, data):
         compile_strategy_v2(code)
 
 
+def test_contract_rejects_unsupported_order_protection_keyword():
+    code = '''
+def initialize(context):
+    context.set_universe(["Crypto:BTC/USDT@swap"])
+    context.subscribe(frequency="1m")
+
+def handle_data(context, data):
+    order_target_percent("Crypto:BTC/USDT@swap", 0.1, stop_loss=75000)
+'''
+
+    with pytest.raises(
+        StrategyV2ContractError,
+        match="strategyV2.apiCallInvalid:order_target_percent:unsupportedArgument:stop_loss",
+    ):
+        compile_strategy_v2(code)
+
+
 def test_contract_rejects_symbol_index_on_single_history_dataframe():
     code = '''
 def initialize(context):
