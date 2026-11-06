@@ -86,7 +86,7 @@ def test_all_constituents_must_have_previous_session_data():
 
 def test_daily_loader_includes_yesterdays_session_and_excludes_unfinished_today(monkeypatch):
     market_data.clear_shared_strategy_frame_cache()
-    monkeypatch.setattr(market_data, "_market_bar_cutoff", lambda *_: equity_daily_bar_cutoff("USStock", utc("2026-09-18T14:00")))
+    monkeypatch.setattr(market_data, "_market_bar_cutoff", lambda *_, **kwargs: equity_daily_bar_cutoff("USStock", utc("2026-09-18T14:00")))
     monkeypatch.setattr(market_data._cache, "get", lambda *_: None)
     monkeypatch.setattr(market_data._cache, "put", lambda *_: None)
     times = ["2026-09-16T13:30", "2026-09-17T13:30", "2026-09-18T13:30"]
@@ -149,7 +149,7 @@ def test_daily_entry_sizes_from_current_quote_without_changing_signal_candle():
 
 def test_delayed_daily_provider_is_retried_in_shared_cache(monkeypatch):
     market_data.clear_shared_strategy_frame_cache()
-    monkeypatch.setattr(market_data, "_market_bar_cutoff", lambda *_: equity_daily_bar_cutoff("USStock", utc("2026-09-18T14:00")))
+    monkeypatch.setattr(market_data, "_market_bar_cutoff", lambda *_, **kwargs: equity_daily_bar_cutoff("USStock", utc("2026-09-18T14:00")))
     calls = []
 
     def fetch(*args, **kwargs):
@@ -237,7 +237,7 @@ def test_token_equity_candles_are_not_replaced_with_underlying_stock_calendar(fa
 
 def test_hk_loader_excludes_intraday_candle_labelled_at_local_midnight(monkeypatch):
     market_data.clear_shared_strategy_frame_cache()
-    monkeypatch.setattr(market_data, "_market_bar_cutoff", lambda *_: equity_daily_bar_cutoff("HKStock", utc("2026-09-18T01:35")))
+    monkeypatch.setattr(market_data, "_market_bar_cutoff", lambda *_, **kwargs: equity_daily_bar_cutoff("HKStock", utc("2026-09-18T01:35")))
     monkeypatch.setattr(market_data._cache, "get", lambda *_: None)
     monkeypatch.setattr(market_data._cache, "put", lambda *_: None)
     times = ["2026-09-16T16:00", "2026-09-17T16:00"]

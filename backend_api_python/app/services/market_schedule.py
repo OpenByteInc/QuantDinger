@@ -45,6 +45,139 @@ def equity_daily_bar_cutoff(market: str, now: Optional[datetime] = None) -> pd.T
     return day + pd.Timedelta(days=1) - pd.Timedelta(microseconds=1)
 
 
+def _equity_week_sessions(market: str, label):
+    day = pd.Timestamp(label).tz_localize(None).normalize()
+    monday = day - pd.Timedelta(days=day.weekday())
+    return _calendar(market).sessions_in_range(monday, monday + pd.Timedelta(days=6))
+
+
+def equity_weekly_bar_cutoff(market: str, now: Optional[datetime] = None) -> pd.Timestamp:
+    current = _utc(now)
+    session = latest_completed_session(market, current, data_delay_minutes=15)
+    sessions = _equity_week_sessions(market, session)
+    if _python_utc(_calendar(market).session_close(sessions[-1])) + timedelta(minutes=15) > current:
+        sessions = _equity_week_sessions(market, session - timedelta(days=7))
+    label = pd.Timestamp(sessions[-1]).tz_localize(None).normalize()
+    if market == "HKStock":
+        label = label.tz_localize("Asia/Hong_Kong").tz_convert("UTC").tz_localize(None)
+    return label + pd.Timedelta(days=1) - pd.Timedelta(microseconds=1)
+
+
+def equity_intraday_bar_open(market: str, seconds: int, now: Optional[datetime] = None) -> pd.Timestamp:
+    """Find the last completed regular-session bar, including shortened tails."""
+    current = _utc(now)
+    calendar = _calendar(market)
+    sessions = calendar.sessions_in_range(
+        pd.Timestamp((current - timedelta(days=20)).date()), pd.Timestamp(current.date())
+    )
+    for session in reversed(sessions):
+        opens, closes = _python_utc(calendar.session_open(session)), _python_utc(calendar.session_close(session))
+        breaks = calendar.session_break_start(session), calendar.session_break_end(session)
+        segments = [(opens, closes)] if pd.isna(breaks[0]) else [
+            (opens, _python_utc(breaks[0])), (_python_utc(breaks[1]), closes)
+        ]
+        for segment_start, end in reversed(segments):
+            # Provider intraday grids remain anchored to the session open,
+            # including buckets that overlap the end of the lunch break.
+            start = opens
+            if current >= end:
+                index = max(0, int(((end - start).total_seconds() - 1) // seconds))
+            elif current >= start + timedelta(seconds=seconds):
+                index = int((current - start).total_seconds() // seconds) - 1
+            else:
+                continue
+            bar_start = start + timedelta(seconds=index * seconds)
+            if bar_start + timedelta(seconds=seconds) <= segment_start:
+                continue
+            bar_end = bar_start + timedelta(seconds=seconds)
+            closed_at = max(min(bar_end, b) for a, b in segments if bar_start < b and bar_end > a)
+            if closed_at > current:
+                continue
+            return pd.Timestamp(bar_start).tz_localize(None)
+    raise MarketScheduleError("portfolio.noCompletedMarketSession")
+
+
+def filter_closed_equity_klines(rows, timeframe: str, market: str, now: Optional[datetime] = None):
+    """Use exchange sessions, not label plus 24 hours, to confirm equity bars."""
+    from app.data_sources.base import timeframe_seconds
+    current = _utc(now)
+    seconds = timeframe_seconds(timeframe)
+    calendar = _calendar(market)
+    accepted = {}
+    for row in rows or []:
+        stamp = pd.Timestamp(int(row["time"]), unit="ms" if int(row["time"]) > 10_000_000_000 else "s", tz="UTC")
+        day = pd.Timestamp(equity_bar_session_date(stamp, market))
+        if seconds >= 604800:
+            sessions = _equity_week_sessions(market, day)
+            if not len(sessions):
+                continue
+            closes = _python_utc(calendar.session_close(sessions[-1])) + timedelta(minutes=15)
+        elif seconds >= 86400:
+            if not calendar.is_session(day):
+                continue
+            closes = _python_utc(calendar.session_close(day)) + timedelta(minutes=15)
+        else:
+            if not calendar.is_session(day):
+                continue
+            opens, end = calendar.session_open(day), calendar.session_close(day)
+            break_start, break_end = calendar.session_break_start(day), calendar.session_break_end(day)
+            segments = [(opens, end)] if pd.isna(break_start) else [(opens, break_start), (break_end, end)]
+            bar_end = stamp + pd.Timedelta(seconds=seconds)
+            intersections = [min(bar_end, b) for a, b in segments if stamp < b and bar_end > a]
+            if not intersections:
+                continue
+            closes = _python_utc(max(intersections))
+        if closes <= current:
+            accepted[row["time"]] = row
+    return [accepted[key] for key in sorted(accepted)]
+
+
+def resample_equity_klines(rows, market: str, source_seconds: int, target_seconds: int):
+    """Aggregate complete calendar buckets using only expected trading intervals."""
+    calendar = _calendar(market)
+    buckets = {}
+    expected = {}
+    for row in rows or []:
+        stamp = pd.Timestamp(int(row["time"]), unit="s", tz="UTC")
+        day = pd.Timestamp(equity_bar_session_date(stamp, market))
+        if not calendar.is_session(day):
+            continue
+        if target_seconds == 604800 and source_seconds == 86400:
+            sessions = _equity_week_sessions(market, day)
+            start = day - pd.Timedelta(days=day.weekday())
+            key = int(start.tz_localize(calendar.tz).timestamp())
+            expected[key] = {session.date() for session in sessions}
+            source_key = day.date()
+        else:
+            opens, closes = calendar.session_open(day), calendar.session_close(day)
+            break_start, break_end = calendar.session_break_start(day), calendar.session_break_end(day)
+            segments = [(opens, closes)] if pd.isna(break_start) else [(opens, break_start), (break_end, closes)]
+            source_end = stamp + pd.Timedelta(seconds=source_seconds)
+            if stamp < opens or not any(stamp < b and source_end > a for a, b in segments):
+                continue
+            offset = int((stamp - opens).total_seconds()) // target_seconds * target_seconds
+            start = opens + pd.Timedelta(seconds=offset)
+            end = min(start + pd.Timedelta(seconds=target_seconds), closes)
+            key = int(start.timestamp())
+            expected[key] = {
+                value for value in range(key, int(end.timestamp()), source_seconds)
+                if any(value < int(b.timestamp()) and value + source_seconds > int(a.timestamp()) for a, b in segments)
+            }
+            source_key = int(stamp.timestamp())
+        buckets.setdefault(key, {})[source_key] = row
+    merged = []
+    for key, bucket in sorted(buckets.items()):
+        if not expected[key].issubset(bucket):
+            continue
+        chunk = [bucket[item] for item in sorted(expected[key])]
+        merged.append({
+            "time": key, "open": chunk[0]["open"], "close": chunk[-1]["close"],
+            "high": max(row["high"] for row in chunk), "low": min(row["low"] for row in chunk),
+            "volume": round(sum(row.get("volume", 0) for row in chunk), 2),
+        })
+    return merged
+
+
 def equity_daily_execution_session(market: str, regular_only: bool = True, now: Optional[datetime] = None) -> Optional[datetime]:
     """Use the next regular open for brokers, or completed reference data for venues."""
     current = _utc(now)

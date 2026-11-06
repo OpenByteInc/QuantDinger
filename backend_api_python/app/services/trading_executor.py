@@ -1059,13 +1059,14 @@ class TradingExecutor:
             )
             next_signal_poll = 0.0
             next_position_mark_at = 0.0
-            last_signal_bar_token: int | None = None
+            last_signal_bar_token = None
             last_processed_frame_timestamp: pd.Timestamp | None = None
             initial_frames_pending = True
             stale_price_logged = False
             consecutive_errors = 0
             last_market_data_failure_key = ""
             last_market_data_log_at = 0.0
+            signal_data_error = ""
             strategy_name = str(strategy.get("strategy_name") or f"strategy_{strategy_id}")
             notification_config = _json_object(strategy.get("notification_config"))
             leverage = max(1.0, float(trading_config.get("leverage") or strategy.get("leverage") or 1))
@@ -1358,20 +1359,39 @@ class TradingExecutor:
                         from app.services.market_schedule import equity_daily_execution_session
 
                         signal_session = equity_daily_execution_session(*daily_policy) if daily_policy else None
-                        current_bar_token = completed_bar_token(frequency)
+                        from app.services.strategy_runtime.candle_readiness import (
+                            candles_settling, runtime_frames_ready, signal_bar_targets,
+                        )
+                        signal_members = [
+                            member for member in candidates
+                            if str(member.get("key") or "") in ready_universe_symbols
+                        ]
+                        current_bar_token = signal_bar_targets(signal_members, frequency, frames)
                         if signal_session is not None:
                             current_bar_token = int(signal_session.timestamp())
                         has_new_closed_bar = (
                             initial_frames_pending
                             or current_bar_token != last_signal_bar_token
-                        ) and (not daily_policy or signal_session is not None)
+                        ) and (not daily_policy or signal_session is not None) and not candles_settling(signal_members, frequency, frames)
                         if has_new_closed_bar:
                             # Startup already warmed the complete frame bundle.
                             # Every later trigger extends the shared cache only
                             # for the newly completed candle window.
-                            if not initial_frames_pending or daily_policy:
+                            if not initial_frames_pending or daily_policy or not runtime_frames_ready(frequency_frames, signal_members):
                                 frequency_frames = fetch_runtime_frames()
                                 frames = frequency_frames[frequency]
+                                signal_members = [
+                                    member for member in candidates
+                                    if str(member.get("key") or "") in ready_universe_symbols
+                                ]
+                            if not runtime_frames_ready(frequency_frames, signal_members):
+                                raise MarketDataUnavailableError(classify_market_data_failure(
+                                    "Incomplete K-line history: latest closed candle is not ready",
+                                    exchange_id=str(primary.get("exchange_id") or ""),
+                                    market_type=str(primary.get("market_type") or ""),
+                                    symbol=str(primary.get("symbol") or ""), timeframe=frequency,
+                                ))
+                            signal_data_error = ""
                             daily_members = [
                                 member
                                 for member in candidates
@@ -1501,8 +1521,8 @@ class TradingExecutor:
                         last_prices,
                         pending_count,
                         loop_latency_ms=int((time.monotonic() - cycle_started) * 1000),
-                        status="healthy" if active_prices else "degraded",
-                        last_error="" if active_prices else "live_price_stale",
+                        status="healthy" if active_prices and not signal_data_error else "degraded",
+                        last_error=signal_data_error or ("" if active_prices else "live_price_stale"),
                         price_source=str(price_feed_meta.get("source") or "exchange_rest"),
                         price_age_ms=int(price_feed_meta.get("age_ms") or 0),
                         trigger_mode=(
@@ -1533,7 +1553,7 @@ class TradingExecutor:
                         self._mark_stopped(strategy_id)
                         break
                     consecutive_errors = 0
-                    if last_market_data_failure_key:
+                    if last_market_data_failure_key and not signal_data_error:
                         append_strategy_log(strategy_id, "info", "Market data feed recovered")
                         last_market_data_failure_key = ""
                         last_market_data_log_at = 0.0
@@ -1553,6 +1573,7 @@ class TradingExecutor:
                             failure.timeframe,
                             failure.technical_detail,
                         ))
+                        signal_data_error = f"marketData.{failure.code}"
                         logger.warning(
                             "Strategy %s market data unavailable (%s): %s",
                             strategy_id,

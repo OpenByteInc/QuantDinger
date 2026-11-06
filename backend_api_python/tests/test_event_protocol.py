@@ -70,6 +70,30 @@ def test_stock_bar_partition_keeps_same_equity_isolated_by_provider():
     assert ":alpaca:" in alpaca.partition_key
 
 
+def test_exchange_stock_perpetual_uses_continuous_crypto_clock():
+    stream = BarStreamKey.from_member(
+        {
+            "market": "Crypto",
+            "underlying_market": "USStock",
+            "api_family": "swap",
+            "product_type": "stock_perpetual",
+            "market_type": "swap",
+            "instrument_id": "AAPLUSDT",
+            "symbol": "AAPL/USDT",
+            "exchange_id": "gate",
+        },
+        "1d",
+    )
+
+    assert stream.market == "Crypto"
+    assert supports_bar_close_events("1d", [{
+        "market": "Crypto",
+        "underlying_market": "USStock",
+        "api_family": "swap",
+        "product_type": "stock_perpetual",
+    }])
+
+
 def test_order_events_partition_by_execution_account():
     intent = OrderIntentEventV1.create(
         exchange_id="binance",

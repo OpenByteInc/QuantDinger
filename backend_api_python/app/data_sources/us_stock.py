@@ -515,9 +515,13 @@ class USStockDataSource(BaseDataSource):
                     if after_time is None and before_time is None:
                         klines = self._fetch_nasdaq_intraday_chart(symbol, timeframe, effective_limit)
                 else:
-                    klines = self._fetch_nasdaq_historical(symbol, start_date, end_date, effective_limit)
+                    klines = self._fetch_nasdaq_historical(
+                        symbol, start_date, end_date,
+                        effective_limit * 5 if timeframe == '1W' else effective_limit,
+                    )
                     if timeframe == '1W' and klines:
-                        klines = self._merge_every_n_sorted_bars(klines, 5)
+                        from app.services.market_schedule import resample_equity_klines
+                        klines = resample_equity_klines(klines, "USStock", 86400, 604800)
             df = None
             if not klines:
                 df = self._fetch_yfinance(symbol, interval, start_date, end_date)

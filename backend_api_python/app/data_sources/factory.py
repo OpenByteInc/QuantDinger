@@ -268,10 +268,16 @@ class DataSourceFactory:
         try:
             assert_fd_available(f"market-data kline {m}:{symbol}")
             source = cls._resolve_source(m, exchange_id=exchange_id, market_type=market_type)
-            klines = source.get_kline(symbol, timeframe, limit, before_time, after_time)
+            from app.data_sources.crypto import CryptoDataSource
+            candle_options = {"closed_only": True} if closed_only and isinstance(source, CryptoDataSource) else {}
+            klines = source.get_kline(symbol, timeframe, limit, before_time, after_time, **candle_options)
 
             if closed_only:
-                klines = filter_closed_klines(klines, timeframe)
+                if m in {"USStock", "HKStock"}:
+                    from app.services.market_schedule import filter_closed_equity_klines
+                    klines = filter_closed_equity_klines(klines, timeframe, m)
+                else:
+                    klines = filter_closed_klines(klines, timeframe)
 
             klines.sort(key=lambda x: x['time'])
             failure = None

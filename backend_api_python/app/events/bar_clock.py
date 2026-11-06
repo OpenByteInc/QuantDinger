@@ -10,8 +10,8 @@ from datetime import datetime, timezone
 
 from app.events.bus import EventBus, EventSubscription
 from app.events.protocol import EventEnvelope, MarketBarClosedV1
-from app.services.market_schedule import is_equity_bar_close
-from app.services.strategy_runtime.timeframes import completed_bar_token, seconds_until_next_completed_bar
+from app.services.market_schedule import equity_data_market, is_equity_bar_close
+from app.services.strategy_runtime.timeframes import completed_bar_token, completed_bar_close, seconds_until_next_completed_bar
 from app.services.strategy_v2.frequencies import frequency_seconds, normalize_frequency
 from app.utils.logger import get_logger
 
@@ -36,7 +36,12 @@ class BarStreamKey:
         *,
         default_venue: str = "",
     ) -> "BarStreamKey":
-        market = str(member.get("underlying_market") or member.get("market") or "unknown").strip()
+        source_market = str(member.get("market") or "unknown").strip()
+        market = equity_data_market(
+            source_market,
+            member,
+            str(member.get("api_family") or ""),
+        )
         venue = str(
             member.get("exchange_id")
             or member.get("data_source")
@@ -131,7 +136,7 @@ class MarketBarCloseClock:
         )
         with self._lock:
             self._ref_counts[key] = self._ref_counts.get(key, 0) + 1
-            self._last_tokens.setdefault(key, completed_bar_token(key.timeframe, self._now()))
+            self._last_tokens.setdefault(key, completed_bar_token(key.timeframe, self._now(), venue=key.venue, market_type=key.market_type))
             if self._autostart:
                 self._start_locked()
             self._wake.set()
@@ -159,7 +164,7 @@ class MarketBarCloseClock:
         published = 0
         session_boundaries: dict[tuple[str, datetime], bool] = {}
         for key in keys:
-            token = completed_bar_token(key.timeframe, current)
+            token = completed_bar_token(key.timeframe, current, venue=key.venue, market_type=key.market_type)
             with self._lock:
                 previous = self._last_tokens.get(key)
                 if previous is None:
@@ -168,10 +173,7 @@ class MarketBarCloseClock:
                 if token <= previous:
                     continue
                 self._last_tokens[key] = token
-            closed_at = datetime.fromtimestamp(
-                (token + 1) * frequency_seconds(key.timeframe),
-                tz=timezone.utc,
-            )
+            closed_at = completed_bar_close(key.timeframe, token, venue=key.venue, market_type=key.market_type)
             session_key = (key.market, closed_at)
             actionable = session_boundaries.get(session_key)
             if actionable is None:
@@ -237,6 +239,8 @@ class MarketBarCloseClock:
                         key.timeframe,
                         self._now(),
                         grace_seconds=self.grace_seconds,
+                        venue=key.venue,
+                        market_type=key.market_type,
                     )
                     for key in keys
                 )
@@ -256,8 +260,11 @@ def supports_bar_close_events(frequency: str, candidates: list[dict[str, object]
     ):
         return False
     has_equity = any(
-        str(item.get("underlying_market") or item.get("market") or "") in stock_markets
-        or str(item.get("api_family") or "").strip().lower() == "stock"
+        equity_data_market(
+            str(item.get("market") or ""),
+            item,
+            str(item.get("api_family") or ""),
+        ) in stock_markets
         for item in candidates
     )
     return not (has_equity and frequency_seconds(frequency) >= 86_400)

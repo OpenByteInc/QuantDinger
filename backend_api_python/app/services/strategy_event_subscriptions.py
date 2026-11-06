@@ -22,6 +22,35 @@ def strategy_shard(strategy_id: int, shard_count: int | None = None) -> int:
 
 
 class StrategyEventSubscriptionRepository:
+    def active_bar_routes(self) -> list[dict[str, str]]:
+        """Return distinct bar routes still referenced by running strategies."""
+        with get_db_connection() as db:
+            cur = db.cursor()
+            try:
+                cur.execute(
+                    """
+                    SELECT DISTINCT subscription.partition_key, subscription.timeframe
+                    FROM qd_strategy_event_subscriptions AS subscription
+                    JOIN qd_strategies_trading AS strategy
+                      ON strategy.id = subscription.strategy_id
+                    WHERE subscription.event_type = %s
+                      AND strategy.status = 'running'
+                    ORDER BY subscription.partition_key
+                    """,
+                    (MarketBarClosedV1.event_type,),
+                )
+                rows: list[dict[str, Any]] = cur.fetchall() or []
+            finally:
+                cur.close()
+        return [
+            {
+                "partition_key": str(row.get("partition_key") or ""),
+                "timeframe": str(row.get("timeframe") or ""),
+            }
+            for row in rows
+            if str(row.get("partition_key") or "").strip()
+        ]
+
     def replace_bar_streams(
         self,
         strategy_id: int,
