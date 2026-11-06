@@ -305,6 +305,28 @@ def test_htx_spot_subscribes_known_symbols_after_authentication():
     }
 
 
+def test_htx_authentication_failures_pause_after_limit(monkeypatch):
+    monkeypatch.setenv("EXECUTION_STREAM_AUTH_MAX_FAILURES", "3")
+    adapter, states = _adapter(HtxExecutionAdapter, market_type="spot")
+
+    for _ in range(3):
+        ws = FakeSocket()
+        adapter.handle_control(
+            ws,
+            {
+                "action": "req",
+                "ch": "auth",
+                "code": 403,
+                "message": "Incorrect IP address",
+            },
+        )
+        assert ws.closed
+
+    assert states == ["error", "error", "paused"]
+    assert adapter._auth_paused is True
+    assert adapter._stop.is_set()
+
+
 def test_alpaca_listens_for_trade_updates_after_authorization():
     adapter, _states = _adapter(AlpacaExecutionAdapter, market_type="usstock")
     assert adapter.on_open_messages()[0]["action"] == "auth"

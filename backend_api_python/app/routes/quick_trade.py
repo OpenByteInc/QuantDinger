@@ -717,6 +717,7 @@ def get_balance():
             return qt_rej
         product_args = {
             "symbol": request.args.get("symbol", "").strip(),
+            "asset_id": request.args.get("asset_id", "").strip(),
             "instrument_id": request.args.get("instrument_id", "").strip(),
             "product_type": request.args.get("product_type", "").strip(),
             "api_family": request.args.get("api_family", "").strip(),

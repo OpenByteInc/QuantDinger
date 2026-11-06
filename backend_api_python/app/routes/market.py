@@ -5,12 +5,16 @@ Provides watchlist, market metadata, symbol search, and pricing helpers for the 
 from flask import g, jsonify, request
 from app.openapi.blueprint import HumanBlueprint as Blueprint
 import traceback
-import json
 
 from app.utils.logger import get_logger
 from app.utils.config_loader import load_addon_config
 from app.utils.auth import login_required
 from app.services.market.quotes import get_price_map, get_single_price
+from app.services.market.assets import (
+    AssetResolutionError,
+    get_asset_capabilities,
+    search_market_assets,
+)
 from app.services.market.symbol_search import (
     get_crypto_symbol_capabilities,
     get_hot_symbols as search_hot_symbols,
@@ -199,11 +203,18 @@ def get_hot_symbols():
 
 @market_blp.route('/symbols/capabilities', methods=['GET'])
 def get_symbol_capabilities():
-    """Return exact product availability for one crypto symbol and venue."""
+    """Return exact product availability for one logical asset."""
     try:
+        asset_id = int(request.args.get('asset_id') or request.args.get('assetId') or 0)
         market = (request.args.get('market') or '').strip()
         symbol = normalize_symbol(request.args.get('symbol', ''))
         exchange_id = (request.args.get('exchange_id') or request.args.get('exchangeId') or '').strip()
+        if asset_id > 0:
+            return jsonify({
+                'code': 1,
+                'msg': 'success',
+                'data': get_asset_capabilities(asset_id, exchange_id=exchange_id),
+            })
         if market != 'Crypto' or not symbol:
             return jsonify({'code': 1, 'msg': 'success', 'data': {
                 'symbol': symbol,
@@ -218,6 +229,47 @@ def get_symbol_capabilities():
         })
     except Exception as e:
         logger.error(f"get_symbol_capabilities failed: {str(e)}")
+        logger.error(traceback.format_exc())
+        return jsonify({'code': 0, 'msg': 'internal_server_error', 'data': None}), 500
+
+
+@market_blp.route('/assets/search', methods=['GET'])
+def search_assets():
+    """Search the logical asset catalog used by user watchlists."""
+    try:
+        market = (request.args.get('market') or '').strip()
+        keyword = (request.args.get('keyword') or '').strip()
+        limit = int(request.args.get('limit') or 20)
+        if not market or not keyword:
+            return jsonify({'code': 1, 'msg': 'success', 'data': []})
+        return jsonify({
+            'code': 1,
+            'msg': 'success',
+            'data': search_market_assets(market=market, keyword=keyword, limit=limit),
+        })
+    except Exception as e:
+        logger.error(f"search_assets failed: {str(e)}")
+        logger.error(traceback.format_exc())
+        return jsonify({'code': 0, 'msg': 'internal_server_error', 'data': []}), 500
+
+
+@market_blp.route('/assets/capabilities', methods=['GET'])
+def asset_capabilities():
+    """Return venue and product availability for one logical asset."""
+    try:
+        asset_id = int(request.args.get('asset_id') or request.args.get('assetId') or 0)
+        exchange_id = (request.args.get('exchange_id') or request.args.get('exchangeId') or '').strip()
+        if asset_id <= 0:
+            return jsonify({'code': 0, 'msg': 'market.assetIdRequired', 'data': None}), 400
+        return jsonify({
+            'code': 1,
+            'msg': 'success',
+            'data': get_asset_capabilities(asset_id, exchange_id=exchange_id),
+        })
+    except AssetResolutionError as e:
+        return jsonify({'code': 0, 'msg': str(e), 'data': None}), 404
+    except Exception as e:
+        logger.error(f"asset_capabilities failed: {str(e)}")
         logger.error(traceback.format_exc())
         return jsonify({'code': 0, 'msg': 'internal_server_error', 'data': None}), 500
 
@@ -242,13 +294,7 @@ def add_watchlist():
         data = request.get_json() or {}
         ok, message = add_watchlist_item(
             g.user_id,
-            (data.get('market') or '').strip(),
-            normalize_symbol(data.get('symbol')),
-            (data.get('name') or '').strip(),
-            exchange_id=(data.get('exchange_id') or data.get('exchangeId') or '').strip(),
-            market_type=(data.get('market_type') or data.get('marketType') or '').strip(),
-            instrument_id=(data.get('instrument_id') or data.get('instrumentId') or '').strip(),
-            settle_currency=(data.get('settle_currency') or data.get('settleCurrency') or '').strip(),
+            asset_id=int(data.get('asset_id') or data.get('assetId') or 0),
         )
         if not ok:
             return jsonify({'code': 0, 'msg': message, 'data': None}), 400
@@ -264,16 +310,12 @@ def remove_watchlist():
     """Remove a symbol from watchlist for the current user."""
     try:
         data = request.get_json() or {}
-        raw_symbol = normalize_symbol(data.get('symbol'))
-        if not raw_symbol:
-            return jsonify({'code': 0, 'msg': 'Missing symbol', 'data': None}), 400
+        asset_id = int(data.get('asset_id') or data.get('assetId') or 0)
+        if asset_id <= 0:
+            return jsonify({'code': 0, 'msg': 'market.assetIdRequired', 'data': None}), 400
         remove_watchlist_item(
             g.user_id,
-            (data.get('market') or '').strip(),
-            raw_symbol,
-            exchange_id=(data.get('exchange_id') or data.get('exchangeId') or '').strip(),
-            market_type=(data.get('market_type') or data.get('marketType') or '').strip(),
-            instrument_id=(data.get('instrument_id') or data.get('instrumentId') or '').strip(),
+            asset_id=asset_id,
         )
         return jsonify({'code': 1, 'msg': 'success', 'data': None})
     except Exception as e:
@@ -287,18 +329,6 @@ def get_watchlist_prices():
     """Get realtime prices for the current user's watchlist."""
     try:
         user_id = g.user_id
-        legacy_param = request.args.get('watchlist')
-        if legacy_param:
-            try:
-                legacy_count = len(json.loads(legacy_param) or [])
-            except Exception:
-                legacy_count = -1
-            logger.debug(
-                "watchlist/prices: ignoring legacy client-supplied list (len=%s, user=%s)",
-                legacy_count,
-                user_id,
-            )
-
         cache_id = cache_key("watchlist_prices", user_id, default_crypto_exchange_id())
 
         def _compute():

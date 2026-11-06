@@ -641,6 +641,26 @@ def handle_data(context, data):
         raise AssertionError("Expected leverage policy rejection")
 
 
+def test_runtime_rejects_leverage_above_strategy_declared_limit():
+    code = """
+def initialize(context):
+    context.set_universe(["Crypto:BTC/USDT@okx:swap"])
+    context.allow_leverage(max_leverage=5)
+    context.subscribe(frequency="1d")
+
+def handle_data(context, data):
+    pass
+"""
+    with pytest.raises(ValueError, match="strategyV2.leverageExceedsStrategyLimit"):
+        StrategyV2BacktestRunner(
+            code=code,
+            frames={"Crypto:BTC/USDT@okx:swap": _frame([100, 101])},
+            initial_capital=10000,
+            leverage_enabled=True,
+            leverage=10,
+        )
+
+
 def test_runtime_helpers_and_logger_are_supported():
     code = """
 def initialize(context):

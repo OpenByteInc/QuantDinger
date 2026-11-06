@@ -39,17 +39,18 @@ _DEFAULT_WATCHLIST = [
 def _seed_default_watchlist(db, user_id: int):
     """Insert a starter watchlist for brand-new users (FTUE)."""
     cur = db.cursor()
-    for market, symbol, name in _DEFAULT_WATCHLIST:
+    for market, symbol, _name in _DEFAULT_WATCHLIST:
         cur.execute(
             """
-            INSERT INTO qd_watchlist (
-                user_id, market, symbol, name, exchange_id, market_type,
-                instrument_id, created_at, updated_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, '', NOW(), NOW())
-            ON CONFLICT (user_id, market, symbol, exchange_id, market_type, instrument_id) DO NOTHING
+            INSERT INTO qd_watchlist (user_id, asset_id, created_at, updated_at)
+            SELECT ?, a.id, NOW(), NOW()
+            FROM qd_market_assets a
+            WHERE a.market = ? AND UPPER(a.symbol) = UPPER(?) AND a.is_active = 1
+            ORDER BY CASE WHEN a.product_type = 'crypto' THEN 0 ELSE 1 END, a.id
+            LIMIT 1
+            ON CONFLICT (user_id, asset_id) DO NOTHING
             """,
-            (user_id, market, symbol, name, "", "spot"),
+            (user_id, market, symbol),
         )
     db.commit()
     cur.close()
@@ -740,6 +741,56 @@ class UserService:
         except Exception as e:
             logger.error(f"increment_token_version failed: {e}")
             return 1
+
+    def get_client_token_version(self, user_id: int, client_type: str) -> int:
+        """Return the current version for one client session slot."""
+        try:
+            with get_db_connection() as db:
+                cur = db.cursor()
+                cur.execute(
+                    """
+                    SELECT token_version
+                    FROM qd_user_client_sessions
+                    WHERE user_id = ? AND client_type = ?
+                    """,
+                    (user_id, client_type),
+                )
+                row = cur.fetchone()
+                cur.close()
+                return int(row.get('token_version') or 0) if row else 0
+        except Exception as e:
+            logger.error(f"get_client_token_version failed: {e}")
+            return 0
+
+    def increment_client_token_version(self, user_id: int, client_type: str) -> int:
+        """Replace the active session in one client slot and return its version."""
+        try:
+            with get_db_connection() as db:
+                cur = db.cursor()
+                cur.execute(
+                    """
+                    INSERT INTO qd_user_client_sessions (
+                        user_id, client_type, token_version, updated_at
+                    )
+                    VALUES (?, ?, 1, NOW())
+                    ON CONFLICT (user_id, client_type) DO UPDATE
+                    SET token_version = qd_user_client_sessions.token_version + 1,
+                        updated_at = NOW()
+                    RETURNING token_version
+                    """,
+                    (user_id, client_type),
+                )
+                row = cur.fetchone()
+                db.commit()
+                cur.close()
+                version = int(row.get('token_version') or 0) if row else 0
+                if version < 1:
+                    raise RuntimeError("Client session version was not returned")
+                logger.info("Incremented %s client token version for user %s", client_type, user_id)
+                return version
+        except Exception as e:
+            logger.error(f"increment_client_token_version failed: {e}")
+            return 0
     
     def create_user(self, data: Dict[str, Any] = None, **kwargs) -> Optional[int]:
         """

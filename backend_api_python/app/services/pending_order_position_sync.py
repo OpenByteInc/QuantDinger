@@ -994,6 +994,18 @@ class PendingOrderPositionSyncMixin:
                                 set_exchange_sync_backoff(cache_key, seconds=_position_sync_fd_backoff_sec())
                                 _activate_position_sync_fd_backoff(str(e))
                                 return
+                            if is_fatal_exchange_error(str(e)):
+                                logger.error(
+                                    "[PositionSync] Strategy %s fatal spot wallet error; auto-stopping. error=%s",
+                                    sid,
+                                    e,
+                                )
+                                auto_stop_live_strategy(
+                                    int(sid),
+                                    str(e),
+                                    source="position_sync_spot_wallet",
+                                )
+                                continue
                             logger.error(
                                 f"[PositionSync] Strategy {sid} spot wallet sync failed: {e}",
                                 exc_info=True,

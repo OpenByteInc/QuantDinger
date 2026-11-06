@@ -475,7 +475,7 @@ def rebalance(context, data):
     assert manifest.universe.reference == "POOL:sp500"
 
 
-def test_manifest_enables_platform_leverage_policy():
+def test_manifest_preserves_declared_leverage_limit():
     code = """
 def initialize(context):
     context.set_universe(["Crypto:BTC/USDT@okx:swap"])
@@ -489,7 +489,7 @@ def handle_data(context, data):
 
     assert manifest.strategy_type == "cta"
     assert manifest.leverage_allowed is True
-    assert manifest.max_leverage == 100
+    assert manifest.max_leverage == 5
     assert manifest.primary_frequency == "1h"
 
 
@@ -618,7 +618,7 @@ def handle_data(context, data):
     manifest = compile_strategy_v2(code).manifest
 
     assert manifest.leverage_allowed is True
-    assert manifest.max_leverage == 100
+    assert manifest.max_leverage == 20
     assert manifest.universe.instruments[0].exchange_id == ""
     assert manifest.universe.instruments[0].market_type == "swap"
 

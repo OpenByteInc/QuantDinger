@@ -246,6 +246,48 @@ def test_migration_component_baselines_existing_large_catalogue(tmp_path):
     assert conn.commits == 1
 
 
+def test_migration_component_baselines_when_target_schema_already_exists(tmp_path):
+    sql_path = tmp_path / 'logical-assets.sql'
+    sql_path.write_text('SELECT legacy_watchlist_columns();', encoding='utf-8')
+    conn = _MigrationConn(rows=[None, {'column_exists': True}])
+
+    result = db_module._apply_migration_component(
+        conn,
+        logging.getLogger('test'),
+        name='logical-market-assets-20261105',
+        path=sql_path,
+        baseline_table='qd_watchlist',
+        baseline_column='asset_id',
+    )
+
+    statements = [sql for sql, _params in conn.cursor_obj.calls]
+    assert result == 'baselined'
+    assert 'SELECT legacy_watchlist_columns();' not in statements
+    assert any('information_schema.columns' in sql for sql in statements)
+    assert any('INSERT INTO qd_bootstrap_migrations' in sql for sql in statements)
+    assert conn.commits == 1
+
+
+def test_migration_component_applies_when_target_schema_is_legacy(tmp_path):
+    sql_path = tmp_path / 'logical-assets.sql'
+    sql_path.write_text('SELECT migrate_legacy_watchlist();', encoding='utf-8')
+    conn = _MigrationConn(rows=[None, {'column_exists': False}])
+
+    result = db_module._apply_migration_component(
+        conn,
+        logging.getLogger('test'),
+        name='logical-market-assets-20261105',
+        path=sql_path,
+        baseline_table='qd_watchlist',
+        baseline_column='asset_id',
+    )
+
+    statements = [sql for sql, _params in conn.cursor_obj.calls]
+    assert result == 'applied'
+    assert 'SELECT migrate_legacy_watchlist();' in statements
+    assert conn.commits == 1
+
+
 def test_migration_component_sets_bounded_database_timeouts(tmp_path, monkeypatch):
     sql_path = tmp_path / 'schema.sql'
     sql_path.write_text('SELECT 42;', encoding='utf-8')
@@ -349,6 +391,7 @@ def test_bootstrap_applies_execution_accounting_after_schema(monkeypatch):
     assert names[3] == "ai-decision-billing-20260920"
     assert names[4] == "quick-trade-client-order-id-20260926"
     assert names[5] == "signal-virtual-account-20260926"
+    assert "client-scoped-sessions-20261106" in names
     assert "qd_exchange_order_pnl" in calls[2]["path"].read_text(encoding="utf-8")
     assert "billing_json" in calls[3]["path"].read_text(encoding="utf-8")
     assert "qd_quick_trades" in calls[4]["path"].read_text(encoding="utf-8")

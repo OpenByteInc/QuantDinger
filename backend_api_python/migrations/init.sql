@@ -33,6 +33,17 @@ CREATE TABLE IF NOT EXISTS qd_users (
 
 CREATE INDEX IF NOT EXISTS idx_users_referred_by ON qd_users(referred_by);
 
+CREATE TABLE IF NOT EXISTS qd_user_client_sessions (
+    user_id INTEGER NOT NULL REFERENCES qd_users(id) ON DELETE CASCADE,
+    client_type VARCHAR(16) NOT NULL CHECK (client_type IN ('pc', 'mobile')),
+    token_version INTEGER NOT NULL DEFAULT 0,
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (user_id, client_type)
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_client_sessions_updated_at
+    ON qd_user_client_sessions(updated_at);
+
 -- Note: Admin user is created automatically by the application on startup
 -- using ADMIN_USER and ADMIN_PASSWORD from environment variables
 
@@ -229,6 +240,7 @@ CREATE TABLE IF NOT EXISTS qd_oauth_states (
     state VARCHAR(128) PRIMARY KEY,
     provider VARCHAR(20) NOT NULL,
     redirect TEXT,
+    client_type VARCHAR(16) NOT NULL DEFAULT 'pc',
     created_at TIMESTAMP DEFAULT NOW(),
     expires_at TIMESTAMP NOT NULL
 );
@@ -1419,34 +1431,60 @@ CREATE INDEX IF NOT EXISTS idx_qd_ai_workspace_changes_thread ON qd_ai_workspace
 -- 10. Watchlist
 -- =============================================================================
 
+CREATE OR REPLACE FUNCTION qd_market_asset_key(
+  p_market TEXT,
+  p_symbol TEXT,
+  p_product_type TEXT DEFAULT '',
+  p_underlying_market TEXT DEFAULT '',
+  p_underlying_symbol TEXT DEFAULT ''
+) RETURNS TEXT
+LANGUAGE SQL
+IMMUTABLE
+AS $$
+  SELECT LOWER(TRIM(COALESCE(p_market, ''))) || ':' ||
+         UPPER(TRIM(COALESCE(p_symbol, ''))) || ':' ||
+         CASE
+           WHEN TRIM(COALESCE(p_market, '')) = 'Crypto'
+             THEN COALESCE(NULLIF(LOWER(TRIM(COALESCE(p_product_type, ''))), ''), 'crypto')
+           ELSE LOWER(TRIM(COALESCE(p_market, '')))
+         END ||
+         CASE
+           WHEN TRIM(COALESCE(p_market, '')) = 'Crypto'
+                AND COALESCE(NULLIF(LOWER(TRIM(COALESCE(p_product_type, ''))), ''), 'crypto') <> 'crypto'
+             THEN ':' || LOWER(TRIM(COALESCE(p_underlying_market, ''))) ||
+                  ':' || UPPER(TRIM(COALESCE(p_underlying_symbol, '')))
+           ELSE ''
+         END;
+$$;
+
+CREATE TABLE IF NOT EXISTS qd_market_assets (
+    id BIGSERIAL PRIMARY KEY,
+    asset_key VARCHAR(320) NOT NULL UNIQUE,
+    market VARCHAR(50) NOT NULL,
+    symbol VARCHAR(50) NOT NULL,
+    name VARCHAR(255) NOT NULL DEFAULT '',
+    asset_class VARCHAR(32) NOT NULL DEFAULT '',
+    product_type VARCHAR(32) NOT NULL DEFAULT '',
+    underlying_market VARCHAR(32) NOT NULL DEFAULT '',
+    underlying_symbol VARCHAR(50) NOT NULL DEFAULT '',
+    is_active INTEGER NOT NULL DEFAULT 1,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_market_assets_lookup
+  ON qd_market_assets(market, UPPER(symbol), product_type, is_active);
+
 CREATE TABLE IF NOT EXISTS qd_watchlist (
     id SERIAL PRIMARY KEY,
     user_id INTEGER DEFAULT 1 REFERENCES qd_users(id) ON DELETE CASCADE,
-    market VARCHAR(50) NOT NULL,
-    symbol VARCHAR(50) NOT NULL,
-    name VARCHAR(100) DEFAULT '',
-    exchange_id VARCHAR(50) NOT NULL DEFAULT '',
-    market_type VARCHAR(20) NOT NULL DEFAULT 'spot',
-    instrument_id VARCHAR(120) NOT NULL DEFAULT '',
-    settle_currency VARCHAR(20) NOT NULL DEFAULT '',
+    asset_id BIGINT NOT NULL REFERENCES qd_market_assets(id) ON DELETE CASCADE,
     created_at TIMESTAMP DEFAULT NOW(),
     updated_at TIMESTAMP DEFAULT NOW(),
-    CONSTRAINT uq_watchlist_market_context UNIQUE(
-        user_id, market, symbol, exchange_id, market_type, instrument_id
-    )
+    CONSTRAINT uq_watchlist_user_asset UNIQUE(user_id, asset_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_watchlist_user_id ON qd_watchlist(user_id);
-
-ALTER TABLE qd_watchlist ADD COLUMN IF NOT EXISTS exchange_id VARCHAR(50) NOT NULL DEFAULT '';
-ALTER TABLE qd_watchlist ADD COLUMN IF NOT EXISTS market_type VARCHAR(20) NOT NULL DEFAULT 'spot';
-ALTER TABLE qd_watchlist ADD COLUMN IF NOT EXISTS instrument_id VARCHAR(120) NOT NULL DEFAULT '';
-ALTER TABLE qd_watchlist ADD COLUMN IF NOT EXISTS settle_currency VARCHAR(20) NOT NULL DEFAULT '';
-ALTER TABLE qd_watchlist DROP CONSTRAINT IF EXISTS qd_watchlist_user_id_market_symbol_key;
-ALTER TABLE qd_watchlist DROP CONSTRAINT IF EXISTS uq_watchlist_asset;
-DROP INDEX IF EXISTS uq_watchlist_asset;
-CREATE UNIQUE INDEX IF NOT EXISTS uq_watchlist_market_context
-  ON qd_watchlist(user_id, market, symbol, exchange_id, market_type, instrument_id);
 
 -- =============================================================================
 -- 10A. Strategy universes and point-in-time membership
@@ -2102,6 +2140,7 @@ CREATE INDEX IF NOT EXISTS idx_position_monitors_user_id ON qd_position_monitors
 
 CREATE TABLE IF NOT EXISTS qd_market_symbols (
     id SERIAL PRIMARY KEY,
+    asset_id BIGINT REFERENCES qd_market_assets(id) ON DELETE RESTRICT,
     market VARCHAR(50) NOT NULL,
     symbol VARCHAR(50) NOT NULL,
     name VARCHAR(255) DEFAULT '',
@@ -2153,6 +2192,7 @@ ALTER TABLE qd_market_symbols ADD COLUMN IF NOT EXISTS underlying_market VARCHAR
 ALTER TABLE qd_market_symbols ADD COLUMN IF NOT EXISTS underlying_symbol VARCHAR(50) NOT NULL DEFAULT '';
 ALTER TABLE qd_market_symbols ADD COLUMN IF NOT EXISTS product_meta JSONB NOT NULL DEFAULT '{}'::jsonb;
 ALTER TABLE qd_market_symbols ADD COLUMN IF NOT EXISTS metadata_updated_at TIMESTAMPTZ;
+ALTER TABLE qd_market_symbols ADD COLUMN IF NOT EXISTS asset_id BIGINT REFERENCES qd_market_assets(id) ON DELETE RESTRICT;
 UPDATE qd_market_symbols SET asset_class = 'equity'
 WHERE market IN ('CNStock', 'HKStock', 'USStock', 'MOEX') AND asset_class = 'crypto';
 UPDATE qd_market_symbols SET asset_class = 'forex'
@@ -2175,6 +2215,52 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_market_symbols_venue_instrument
   ON qd_market_symbols(market, symbol, exchange, market_type, instrument_id);
 CREATE INDEX IF NOT EXISTS idx_market_symbols_product_catalog
   ON qd_market_symbols(market, exchange, market_type, product_type, is_active);
+CREATE INDEX IF NOT EXISTS idx_market_symbols_asset_context
+  ON qd_market_symbols(asset_id, exchange, market_type, is_active);
+
+CREATE OR REPLACE FUNCTION qd_assign_market_asset()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  v_key TEXT;
+  v_asset_id BIGINT;
+  v_product_type TEXT;
+BEGIN
+  v_product_type := CASE
+    WHEN NEW.market = 'Crypto'
+      THEN COALESCE(NULLIF(LOWER(TRIM(COALESCE(NEW.product_type, ''))), ''), 'crypto')
+    ELSE LOWER(NEW.market)
+  END;
+  v_key := qd_market_asset_key(
+    NEW.market, NEW.symbol, v_product_type,
+    NEW.underlying_market, NEW.underlying_symbol
+  );
+  INSERT INTO qd_market_assets (
+    asset_key, market, symbol, name, asset_class, product_type,
+    underlying_market, underlying_symbol, is_active
+  ) VALUES (
+    v_key, NEW.market, UPPER(NEW.symbol), COALESCE(NEW.name, ''),
+    COALESCE(NEW.asset_class, ''), v_product_type,
+    COALESCE(NEW.underlying_market, ''), UPPER(COALESCE(NEW.underlying_symbol, '')), 1
+  )
+  ON CONFLICT (asset_key) DO UPDATE SET
+    name = CASE WHEN EXCLUDED.name <> '' THEN EXCLUDED.name ELSE qd_market_assets.name END,
+    asset_class = CASE WHEN EXCLUDED.asset_class <> '' THEN EXCLUDED.asset_class ELSE qd_market_assets.asset_class END,
+    is_active = 1,
+    updated_at = NOW()
+  RETURNING id INTO v_asset_id;
+  NEW.asset_id := v_asset_id;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_market_symbols_asset ON qd_market_symbols;
+CREATE TRIGGER trg_market_symbols_asset
+BEFORE INSERT OR UPDATE OF market, symbol, name, asset_class, product_type,
+  underlying_market, underlying_symbol
+ON qd_market_symbols
+FOR EACH ROW EXECUTE FUNCTION qd_assign_market_asset();
 
 UPDATE qd_market_symbols
 SET is_active = 0
@@ -2377,6 +2463,45 @@ WHERE legacy.market = 'CNStock'
   AND canonical.market_type = legacy.market_type
   AND canonical.instrument_id = legacy.instrument_id;
 
+INSERT INTO qd_market_assets (
+  asset_key, market, symbol, name, asset_class, product_type,
+  underlying_market, underlying_symbol, is_active
+)
+SELECT DISTINCT ON (asset_key)
+       asset_key, market, symbol, name, asset_class, product_type,
+       underlying_market, underlying_symbol, 1
+FROM (
+  SELECT qd_market_asset_key(
+           market, symbol, product_type, underlying_market, underlying_symbol
+         ) AS asset_key,
+         market, UPPER(symbol) AS symbol, COALESCE(name, '') AS name,
+         COALESCE(asset_class, '') AS asset_class,
+         CASE WHEN market = 'Crypto'
+              THEN COALESCE(NULLIF(LOWER(product_type), ''), 'crypto')
+              ELSE LOWER(market)
+         END AS product_type,
+         COALESCE(underlying_market, '') AS underlying_market,
+         UPPER(COALESCE(underlying_symbol, '')) AS underlying_symbol,
+         metadata_updated_at, id
+  FROM qd_market_symbols
+) catalog
+ORDER BY asset_key, metadata_updated_at DESC NULLS LAST, id DESC
+ON CONFLICT (asset_key) DO UPDATE SET
+  name = CASE WHEN EXCLUDED.name <> '' THEN EXCLUDED.name ELSE qd_market_assets.name END,
+  asset_class = CASE WHEN EXCLUDED.asset_class <> '' THEN EXCLUDED.asset_class ELSE qd_market_assets.asset_class END,
+  is_active = 1,
+  updated_at = NOW();
+
+UPDATE qd_market_symbols s
+SET asset_id = a.id
+FROM qd_market_assets a
+WHERE s.asset_id IS NULL
+  AND a.asset_key = qd_market_asset_key(
+    s.market, s.symbol, s.product_type, s.underlying_market, s.underlying_symbol
+  );
+
+ALTER TABLE qd_market_symbols ALTER COLUMN asset_id SET NOT NULL;
+
 -- =============================================================================
 -- 19.5. Analysis Memory (Fast AI Analysis Memory System)
 -- =============================================================================
@@ -2428,11 +2553,10 @@ BEGIN
 END $$;
 
 -- =============================================================================
--- 20. Migration: Add token_version for single-client login
+-- 20. Migration: Add account-wide token security version
 -- =============================================================================
--- This migration adds token_version column for enforcing single-client login.
--- When a user logs in from a new device, the token_version is incremented,
--- invalidating all previous tokens and forcing other sessions to logout.
+-- This version invalidates every session after account security changes such
+-- as password resets. Per-client replacement is stored separately.
 
 DO $$
 BEGIN
