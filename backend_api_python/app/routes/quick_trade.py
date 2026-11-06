@@ -31,7 +31,6 @@ from app.openapi.schemas.high_risk import (
     QuickTradeOrderRequestSchema,
     QuickTradeProtectionRequestSchema,
 )
-
 from app.utils.db import get_db_connection
 from app.utils.logger import get_logger
 from app.utils.auth import login_required

@@ -210,6 +210,12 @@ components:
           type: string
           maxLength: 4096
           nullable: true
+        client_type:
+          type: string
+          default: pc
+          enum:
+          - pc
+          - mobile
       required:
       - password
       additionalProperties: false
@@ -286,6 +292,12 @@ components:
           type: string
           default: ''
           maxLength: 64
+        client_type:
+          type: string
+          default: pc
+          enum:
+          - pc
+          - mobile
       required:
       - code
       - email
@@ -486,6 +498,10 @@ components:
     QuickTradeOrderRequest:
       type: object
       properties:
+        asset_id:
+          type: integer
+          default: 0
+          minimum: 0
         credential_id:
           type: integer
           minimum: 1
@@ -583,6 +599,10 @@ components:
     QuickTradeCloseRequest:
       type: object
       properties:
+        asset_id:
+          type: integer
+          default: 0
+          minimum: 0
         order_type:
           type: string
           default: market
@@ -2700,6 +2720,66 @@ paths:
       tags:
       - Market
       operationId: getApiMarketSymbolsHot
+      x-visibility: public
+  /api/market/symbols/capabilities:
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      summary: Return exact product availability for one logical asset.
+      tags:
+      - Market
+      operationId: getApiMarketSymbolsCapabilities
+      x-visibility: public
+  /api/market/assets/search:
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      summary: Search the logical asset catalog used by user watchlists.
+      tags:
+      - Market
+      operationId: getApiMarketAssetsSearch
+      x-visibility: public
+  /api/market/assets/capabilities:
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      summary: Return venue and product availability for one logical asset.
+      tags:
+      - Market
+      operationId: getApiMarketAssetsCapabilities
       x-visibility: public
   /api/market/watchlist/get:
     get:
@@ -8267,6 +8347,39 @@ paths:
       tags:
       - Community
       operationId: getApiCommunityIndicatorsIndicatorIdPerformance
+      parameters:
+      - name: indicator_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      x-visibility: public
+    parameters:
+    - in: path
+      name: indicator_id
+      required: true
+      schema:
+        type: integer
+        minimum: 0
+  /api/community/indicators/{indicator_id}/share-draft:
+    post:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      summary: Generate grounded social copy from a public marketplace listing.
+      tags:
+      - Community
+      operationId: postApiCommunityIndicatorsIndicatorIdShareDraft
       parameters:
       - name: indicator_id
         in: path
