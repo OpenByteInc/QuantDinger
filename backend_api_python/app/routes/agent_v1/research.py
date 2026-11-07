@@ -16,6 +16,7 @@ from app.services.market.watchlist import (
     list_watchlist,
     remove_watchlist_item,
 )
+from app.services.market.assets import search_market_assets
 from app.services.universe import UniverseError, UniverseService
 from app.services.strategy_v2 import StrategyV2BacktestService
 from app.utils.agent_auth import (
@@ -59,7 +60,7 @@ def _run_factor_benchmark(payload: dict, on_progress=None):
         neutralize_industry=bool(payload.get("neutralizeIndustry", False)),
         train_fraction=float(payload.get("trainFraction") or 0.6),
         false_discovery_rate=float(payload.get("falseDiscoveryRate") or 0.1),
-        minimum_oos_observations=int(payload.get("minimumOosObservations") or 5),
+        minimum_oos_observations=int(payload.get("minimumOosObservations") or 12),
         minimum_abs_oos_ic=float(payload.get("minimumAbsOosIc") or 0.02),
         minimum_coverage=float(payload.get("minimumCoverage") or 0.5),
     )
@@ -200,25 +201,31 @@ def get_research_watchlist():
     return envelope({"items": items, "next_cursor": next_cursor, "total": len(rows)})
 
 
+@agent_v1_bp.route("/research/assets", methods=["GET"])
+@agent_required(SCOPE_R)
+def search_research_assets():
+    market = str(request.args.get("market") or "").strip()
+    keyword = str(request.args.get("keyword") or "").strip()
+    if not market or not keyword:
+        return error(400, "market and keyword are required")
+    limit = clip_int(request.args.get("limit"), default=20, lo=1, hi=100)
+    return envelope({"items": search_market_assets(market=market, keyword=keyword, limit=limit)})
+
+
 @agent_v1_bp.route("/research/watchlist", methods=["POST"])
 @agent_required(SCOPE_W)
 def add_research_watchlist():
     body, err = get_json_or_400()
     if err:
         return err
+    asset_id = int(body.get("asset_id") or body.get("assetId") or 0)
     ok, message = add_watchlist_item(
         current_user_id(),
-        str(body.get("market") or ""),
-        str(body.get("symbol") or ""),
-        str(body.get("name") or ""),
-        exchange_id=str(body.get("exchange_id") or ""),
-        market_type=str(body.get("market_type") or ""),
-        instrument_id=str(body.get("instrument_id") or ""),
-        settle_currency=str(body.get("settle_currency") or ""),
+        asset_id=asset_id,
     )
     if not ok:
         return error(400, message)
-    return envelope({"market": body.get("market"), "symbol": body.get("symbol")}, message="added")
+    return envelope({"asset_id": asset_id}, message="added")
 
 
 @agent_v1_bp.route("/research/watchlist", methods=["DELETE"])
@@ -227,9 +234,8 @@ def delete_research_watchlist():
     body, err = get_json_or_400()
     if err:
         return err
-    market = str(body.get("market") or "").strip()
-    symbol = str(body.get("symbol") or "").strip()
-    if not market or not symbol:
-        return error(400, "market and symbol are required")
-    remove_watchlist_item(current_user_id(), market, symbol)
-    return envelope({"market": market, "symbol": symbol}, message="removed")
+    asset_id = int(body.get("asset_id") or body.get("assetId") or 0)
+    if asset_id <= 0:
+        return error(400, "market.assetIdRequired")
+    remove_watchlist_item(current_user_id(), asset_id=asset_id)
+    return envelope({"asset_id": asset_id}, message="removed")

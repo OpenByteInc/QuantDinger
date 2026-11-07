@@ -1,5 +1,8 @@
 from app.services.fast_analysis import FastAnalysisService
-from app.services.fast_analysis_formatters import build_trend_outlook_summary
+from app.services.fast_analysis_formatters import (
+    build_crypto_factor_summary_code,
+    build_trend_outlook_summary,
+)
 from app.services.fast_analysis_policy import should_override_with_consensus
 
 
@@ -101,3 +104,20 @@ def test_mild_direction_is_presented_without_changing_hold_action():
     summary = build_trend_outlook_summary(outlook, "zh-CN")
 
     assert "轻微利多·观望" in summary
+
+
+def test_crypto_factor_summary_code_is_language_neutral():
+    summary = build_crypto_factor_summary_code({
+        "volume_change_24h": 12.5,
+        "signals": {
+            "derivatives_bias": "neutral",
+            "flow_bias": "bullish",
+            "squeeze_risk": "low",
+        },
+    })
+
+    assert summary == {
+        "volume_state": "expanding",
+        "bias": "bullish",
+        "crowding": "low",
+    }

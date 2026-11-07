@@ -16,7 +16,7 @@
 - `FRONTEND_URL` 与实际 Web/H5 域名一致。
 - 个人部署使用 `self_hosted`；多用户托管才使用 `saas`。
 - 不需要公开注册时设置 `ENABLE_REGISTRATION=false`。
-- 服务器无法访问本地桌面券商时设置 `ALLOW_LOCAL_DESKTOP_BROKERS=false`。
+- 服务器无法访问 TWS 或 IB Gateway 时，在“系统设置 > 支持市场”中关闭 IBKR。
 - 修改 `.env` 后用 `docker compose up -d` 重建受影响服务。
 
 ## 3. AI 与行情数据

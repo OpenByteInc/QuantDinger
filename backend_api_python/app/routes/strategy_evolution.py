@@ -18,6 +18,39 @@ logger = get_logger(__name__)
 strategy_evolution_blp = Blueprint("strategy_evolution", __name__)
 _service: StrategyEvolutionService | None = None
 
+_PUBLIC_VALIDATION_MESSAGES = {
+    code: code
+    for code in (
+        "strategyEvolution.dateRangeInvalid",
+        "strategyEvolution.endDateRequired",
+        "strategyEvolution.methodUnsupported",
+        "strategyEvolution.observationRangeTooShort",
+        "strategyEvolution.parameterChoicesRequired",
+        "strategyEvolution.parameterLimitExceeded",
+        "strategyEvolution.parameterNameRequired",
+        "strategyEvolution.parameterNotDeclared",
+        "strategyEvolution.parameterNotOptimizable",
+        "strategyEvolution.parameterRangeInvalid",
+        "strategyEvolution.parameterRangeOutsideDeclaration",
+        "strategyEvolution.parameterRangeUndeclared",
+        "strategyEvolution.parametersRequired",
+        "strategyEvolution.parameterStepInvalid",
+        "strategyEvolution.parameterTypeUnsupported",
+        "strategyEvolution.sourceCodeRequired",
+        "strategyEvolution.sourceNotFound",
+        "strategyEvolution.sourceRequired",
+        "strategyEvolution.startDateRequired",
+    )
+}
+
+
+def _public_validation_message(exc: ValueError) -> str:
+    key = exc.args[0] if exc.args else None
+    return _PUBLIC_VALIDATION_MESSAGES.get(
+        key,
+        "strategyEvolution.runFailed",
+    )
+
 
 def get_strategy_evolution_service() -> StrategyEvolutionService:
     global _service
@@ -39,7 +72,7 @@ def get_strategy_evolution_parameter_space():
         )
         return jsonify({"code": 1, "msg": "common.success", "data": data})
     except ValueError as exc:
-        return jsonify({"code": 0, "msg": str(exc), "data": None}), 400
+        return jsonify({"code": 0, "msg": _public_validation_message(exc), "data": None}), 400
 
 
 @strategy_evolution_blp.route("/estimate", methods=["POST"])
@@ -49,7 +82,26 @@ def estimate_strategy_evolution():
         payload = request.get_json(silent=True) or {}
         return jsonify({"code": 1, "msg": "common.success", "data": get_strategy_evolution_service().estimate(payload)})
     except ValueError as exc:
-        return jsonify({"code": 0, "msg": str(exc), "data": None}), 400
+        return jsonify({"code": 0, "msg": _public_validation_message(exc), "data": None}), 400
+
+
+@strategy_evolution_blp.route("/preflight", methods=["POST"])
+@login_required
+def preflight_strategy_evolution():
+    try:
+        payload = request.get_json(silent=True) or {}
+        data = get_strategy_evolution_service().preflight(
+            user_id=int(g.user_id),
+            payload=payload,
+        )
+        return jsonify({"code": 1, "msg": "common.success", "data": data})
+    except BacktestRangeLimitError as exc:
+        return jsonify({"code": 0, "msg": "strategyV2.backtestRangeLimit", "data": exc.details}), 400
+    except ValueError as exc:
+        return jsonify({"code": 0, "msg": _public_validation_message(exc), "data": None}), 400
+    except Exception:
+        logger.exception("Strategy evolution preflight failed")
+        return jsonify({"code": 0, "msg": "strategyEvolution.preflightFailed", "data": None}), 500
 
 
 @strategy_evolution_blp.route("/run", methods=["POST"])
@@ -67,9 +119,9 @@ def run_strategy_evolution():
         )
         return jsonify({"code": 1, "msg": "common.success", "data": _public_job(receipt)}), 202
     except BacktestRangeLimitError as exc:
-        return jsonify({"code": 0, "msg": str(exc), "data": exc.details}), 400
+        return jsonify({"code": 0, "msg": "strategyV2.backtestRangeLimit", "data": exc.details}), 400
     except ValueError as exc:
-        return jsonify({"code": 0, "msg": str(exc), "data": None}), 400
+        return jsonify({"code": 0, "msg": _public_validation_message(exc), "data": None}), 400
     except Exception:
         logger.exception("Strategy evolution failed")
         return jsonify({"code": 0, "msg": "strategyEvolution.runFailed", "data": None}), 500

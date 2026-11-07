@@ -6,7 +6,10 @@ import pytest
 
 from app.services.live_trading import position_ownership as ownership
 from app.services.live_trading.account_positions import reconcile_strategy_vs_account
-from app.services.strategy_lifecycle import maybe_auto_stop_on_exchange_error
+from app.services.strategy_lifecycle import (
+    is_fatal_exchange_error,
+    maybe_auto_stop_on_exchange_error,
+)
 from app.workers.trading import TradingWorker
 
 
@@ -76,6 +79,19 @@ def test_recoverable_position_rejections_keep_runtime_alive(monkeypatch, reason)
     stop.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    "reason",
+    (
+        "TRADING_VENUE_DISABLED",
+        "HTX spot error: api-signature-not-valid",
+        "Signature not valid: Incorrect IP address",
+        "IP地址错误",
+    ),
+)
+def test_permanent_venue_and_credential_errors_are_fatal(reason):
+    assert is_fatal_exchange_error(reason)
+
+
 def _worker(monkeypatch):
     monkeypatch.setenv("STRATEGY_DISTRIBUTED_BAR_ENABLED", "false")
     service = SimpleNamespace(
@@ -119,6 +135,49 @@ def test_database_recovery_failure_does_not_crash_worker(monkeypatch):
     worker._restore_if_due(force=True)
     worker._restore_if_due(force=True)
     assert service.get_running_strategies_with_type.call_count == 2
+
+
+def test_permanent_restore_failure_stops_without_unbounded_retries(monkeypatch):
+    worker, _service = _worker(monkeypatch)
+    worker._start = Mock(side_effect=RuntimeError("TRADING_VENUE_DISABLED"))
+    auto_stop = Mock()
+    monkeypatch.setattr(
+        "app.services.strategy_lifecycle.auto_stop_live_strategy",
+        auto_stop,
+    )
+
+    worker.restore_desired_strategies()
+
+    auto_stop.assert_called_once_with(
+        7,
+        "TRADING_VENUE_DISABLED",
+        source="strategy_restore",
+    )
+    assert worker._restore_failure_counts == {}
+
+
+def test_transient_restore_failure_stops_after_configured_limit(monkeypatch):
+    monkeypatch.setenv("STRATEGY_RESTORE_MAX_ATTEMPTS", "5")
+    worker, _service = _worker(monkeypatch)
+    worker._start = Mock(side_effect=RuntimeError("temporary exchange outage"))
+    auto_stop = Mock()
+    monkeypatch.setattr(
+        "app.services.strategy_lifecycle.auto_stop_live_strategy",
+        auto_stop,
+    )
+
+    for _ in range(4):
+        worker.restore_desired_strategies()
+    auto_stop.assert_not_called()
+
+    worker.restore_desired_strategies()
+
+    auto_stop.assert_called_once_with(
+        7,
+        "Repeated exchange errors (5): temporary exchange outage",
+        source="strategy_restore",
+    )
+    assert worker._restore_failure_counts == {}
 
 
 def test_recovery_does_not_overtake_a_queued_stop(monkeypatch):

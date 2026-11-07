@@ -35,6 +35,10 @@ from app.utils.db_postgres import (
 # that loudly at boot instead of silently spamming worker logs forever.
 _CRITICAL_TABLES = (
     'qd_users',
+    'qd_user_client_sessions',
+    'qd_market_assets',
+    'qd_market_symbols',
+    'qd_watchlist',
     'pending_orders',
     'qd_strategy_equity_snapshots',
     'qd_strategy_positions',
@@ -115,6 +119,10 @@ def _resolve_strategy_templates_sql_path() -> Path:
     return Path(__file__).resolve().parent.parent.parent / 'migrations' / 'strategy_v2_templates.sql'
 
 
+def _resolve_logical_market_assets_sql_path() -> Path:
+    return Path(__file__).resolve().parent.parent.parent / 'migrations' / '20261105_logical_market_assets.sql'
+
+
 _BOOTSTRAP_LEDGER_SQL = """
 CREATE TABLE IF NOT EXISTS qd_bootstrap_migrations (
     name VARCHAR(120) PRIMARY KEY,
@@ -181,6 +189,27 @@ def _table_row_count(cur, table: str) -> int:
     return int(row[0] or 0)
 
 
+def _table_has_column(cur, table: str, column: str) -> bool:
+    cur.execute(
+        """
+        SELECT EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = current_schema()
+              AND table_name = %s
+              AND column_name = %s
+        ) AS column_exists
+        """,
+        (table, column),
+    )
+    row = cur.fetchone()
+    if not row:
+        return False
+    if isinstance(row, dict):
+        return bool(row.get("column_exists"))
+    return bool(row[0])
+
+
 def _apply_migration_component(
     conn,
     logger,
@@ -189,6 +218,7 @@ def _apply_migration_component(
     path: Path,
     baseline_table: str = "",
     baseline_min_rows: int = 1,
+    baseline_column: str = "",
 ) -> str:
     """Apply one bootstrap component once per content checksum.
 
@@ -209,7 +239,22 @@ def _apply_migration_component(
             _migration_progress(f"{name}: unchanged, skipped")
             return "skipped"
 
-        if not applied_checksum and baseline_table:
+        if not applied_checksum and baseline_table and baseline_column:
+            if _table_has_column(cur, baseline_table, baseline_column):
+                _record_applied_checksum(cur, name, checksum)
+                conn.commit()
+                logger.info(
+                    "Baselined migration component %s from existing %s.%s schema",
+                    name,
+                    baseline_table,
+                    baseline_column,
+                )
+                _migration_progress(
+                    f"{name}: target schema already present, baselined"
+                )
+                return "baselined"
+
+        if not applied_checksum and baseline_table and not baseline_column:
             existing_rows = _table_row_count(cur, baseline_table)
             if existing_rows >= baseline_min_rows:
                 _record_applied_checksum(cur, name, checksum)
@@ -267,6 +312,7 @@ def _apply_init_sql(logger, *, strict: bool = False):
     try:
         symbols_sql = _resolve_market_symbols_sql_path()
         templates_sql = _resolve_strategy_templates_sql_path()
+        logical_assets_sql = _resolve_logical_market_assets_sql_path()
         with get_db_connection() as conn:
             cur = conn.cursor()
             try:
@@ -340,6 +386,26 @@ def _apply_init_sql(logger, *, strict: bool = False):
                 logger,
                 name="default-global-universe-members-20261025",
                 path=Path(__file__).resolve().parent.parent.parent / "migrations" / "20261025_default_global_universe_members.sql",
+            )
+            _apply_migration_component(
+                conn,
+                logger,
+                name="remove-manager-role-20261104",
+                path=Path(__file__).resolve().parent.parent.parent / "migrations" / "20261104_remove_manager_role.sql",
+            )
+            _apply_migration_component(
+                conn,
+                logger,
+                name="logical-market-assets-20261105",
+                path=logical_assets_sql,
+                baseline_table="qd_watchlist",
+                baseline_column="asset_id",
+            )
+            _apply_migration_component(
+                conn,
+                logger,
+                name="client-scoped-sessions-20261106",
+                path=Path(__file__).resolve().parent.parent.parent / "migrations" / "20261106_client_scoped_sessions.sql",
             )
             _apply_migration_component(
                 conn,

@@ -32,13 +32,53 @@ def test_bybit_xstock_spot_product_keeps_multiplier():
 
 def test_bybit_equity_swap_is_stock_perpetual():
     profile = classify_instrument_product(
-        {"base": "AAPL", "info": {"category": "tradfi"}},
+        {
+            "base": "AAPL",
+            "info": {
+                "symbolType": "stock",
+                "underlyingTicker": "AAPL",
+                "marketRegion": "US",
+            },
+        },
         exchange_id="bybit",
         market_type="swap",
     )
 
     assert profile.product_type == PRODUCT_STOCK_PERPETUAL
     assert profile.underlying_symbol == "AAPL"
+
+
+def test_binance_tradfi_equity_is_stock_perpetual():
+    profile = classify_instrument_product(
+        {
+            "base": "AAPL",
+            "info": {
+                "contractType": "TRADIFI_PERPETUAL",
+                "underlyingType": "EQUITY",
+            },
+        },
+        exchange_id="binance",
+        market_type="swap",
+    )
+
+    assert profile.product_type == PRODUCT_STOCK_PERPETUAL
+    assert profile.underlying_symbol == "AAPL"
+
+
+def test_binance_tradfi_commodity_is_not_stock_perpetual():
+    profile = classify_instrument_product(
+        {
+            "base": "XAU",
+            "info": {
+                "contractType": "TRADIFI_PERPETUAL",
+                "underlyingType": "COMMODITY",
+            },
+        },
+        exchange_id="binance",
+        market_type="swap",
+    )
+
+    assert profile.product_type == PRODUCT_CRYPTO
 
 
 def test_binance_hong_kong_equity_swap_maps_numeric_ticker_to_hk_stock():
@@ -188,6 +228,41 @@ def test_unverified_htx_symbol_fails_closed_as_crypto():
 
     assert profile.product_type == PRODUCT_CRYPTO
     assert profile.underlying_symbol == ""
+
+
+def test_htx_official_stock_label_is_stock_perpetual():
+    profile = classify_instrument_product(
+        {
+            "base": "AAPL",
+            "info": {
+                "business_type": "swap",
+                "contract_type": "swap",
+                "tradfi_labels": ["Stocks"],
+            },
+        },
+        exchange_id="htx",
+        market_type="swap",
+    )
+
+    assert profile.product_type == PRODUCT_STOCK_PERPETUAL
+    assert profile.underlying_symbol == "AAPL"
+
+
+def test_htx_official_metal_label_is_not_stock_perpetual():
+    profile = classify_instrument_product(
+        {
+            "base": "XAU",
+            "info": {
+                "business_type": "swap",
+                "contract_type": "swap",
+                "tradfi_labels": ["Metals"],
+            },
+        },
+        exchange_id="htx",
+        market_type="swap",
+    )
+
+    assert profile.product_type == PRODUCT_CRYPTO
 
 
 def test_ordinary_crypto_remains_crypto():

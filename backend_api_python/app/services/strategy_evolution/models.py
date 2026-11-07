@@ -60,10 +60,10 @@ class SearchParameter:
 class EvolutionConfig:
     method: str = "tpe"
     trials: int = 64
-    folds: int = 4
+    folds: int = 1
     train_ratio: float = 0.7
     blind_ratio: float = 0.15
-    embargo_bars: int = 1
+    embargo_bars: int = 0
     seed: int = 42
     auto_prune: bool = False
     monte_carlo_paths: int = 1000
@@ -91,7 +91,7 @@ class EvolutionConfig:
         return cls(
             method=method,
             trials=trials,
-            folds=max(4, min(10, int(values.get("folds") or 4))),
+            folds=1,
             train_ratio=max(0.55, min(0.85, float(values.get("trainRatio") or 0.7))),
             blind_ratio=max(0.0, min(0.3, float(values.get("blindRatio") if values.get("blindRatio") is not None else 0.15))),
             embargo_bars=max(
@@ -103,7 +103,7 @@ class EvolutionConfig:
                         if values.get("embargoBars") is not None
                         else values.get("embargoDays")
                         if values.get("embargoDays") is not None
-                        else 1
+                        else 0
                     ),
                 ),
             ),

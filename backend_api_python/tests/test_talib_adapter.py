@@ -11,6 +11,8 @@ from app.services.factors.talib_adapter import (
     compute_talib_factor,
     compute_talib_indicator,
     list_talib_factors,
+    TalibFactorError,
+    talib_warmup_bars,
 )
 
 
@@ -90,3 +92,16 @@ def test_sma_explicit_timeperiod_takes_precedence_over_alias():
     expected = compute_talib_indicator("SMA", frame, {"timeperiod": 60})
 
     pd.testing.assert_series_equal(actual, expected)
+
+
+def test_factor_does_not_reuse_stale_value_when_latest_output_is_invalid():
+    frame = _frame()
+    frame["close"] = 0.5
+    frame.loc[frame.index[-1], "close"] = 2.0
+    with pytest.raises(TalibFactorError, match="factor.insufficientHistory"):
+        compute_talib_factor("ACOS", frame)
+
+
+def test_warmup_uses_requested_parameters_and_includes_current_bar():
+    assert talib_warmup_bars("talib:SMA", {"timeperiod": 100}) == 100
+    assert talib_warmup_bars("talib:RSI", {"period": 30}) == 31

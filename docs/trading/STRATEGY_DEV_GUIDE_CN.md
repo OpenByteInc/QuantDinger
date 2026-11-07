@@ -318,6 +318,8 @@ def handle_data(context, data):
 - <code>set_warmup(n)</code> 对每个已订阅周期都请求至少相应的预热窗口；策略仍须分别检查每个 DataFrame 的长度。
 - 回测日期范围必须同时满足所有周期的数据源限制；任一必需周期缺失的标的不会以不完整周期集合继续运行。
 - 各数据源的历史深度限制仍分别生效。分钟线通常比日线、周线保留时间短，所以 <code>5m + 1w</code> 虽然是合法组合，回测区间仍可能需要按 5 分钟数据的可用范围缩短；加密货币、股票和外汇数据源的历史深度也可能不同。
+- 加密货币历史行情包含回测开始前的预热窗口，并按各接口允许的单页上限分页获取。单次请求的根数上限不是整个回测的根数上限。Bitget 历史请求使用 V3 历史接口，每页最多 100 根，单页查询时间跨度不超过 90 天。
+- 分页不能突破交易所实际保留的历史范围。当前适配器只能从 HTX 现货接口取得最近 2000 根 K 线；HTX USDT 永续则使用首尾都包含的 <code>from</code>/<code>to</code> 历史分页。历史不完整时会拒绝使用；对于明确指定交易所的标的，不会改用最新一页或其他交易所的行情代替。
 - 清单中的 <code>primaryFrequency</code> 为首个声明周期的兼容字段；调度、执行时钟和绩效年化使用 <code>drivingFrequency</code>。
 - <code>data.history(..., frequency="4h")</code>、<code>data.current(..., frequency="4h")</code>、<code>indicator(..., frequency="4h")</code> 和 <code>factor(..., frequency="4h")</code> 同样支持显式周期。<code>data[symbol]</code> 默认使用驱动周期。
 
@@ -393,6 +395,9 @@ def initialize(context):
 - 实时价格仅供止损、止盈、追踪止损和权益风控使用；它不能把一根尚未收盘的 K 线伪装成完成 bar，也不能改变已经确认的策略信号。
 - 多周期策略对每个周期分别执行已完成 K 线约束；低周期推进不会提前暴露仍在形成中的 4 小时线或日线。
 - 运行时会统一过滤未收盘 K 线。策略源码不要自行删除最后一行、用本机时间猜测收盘，或把实时价格写入 OHLC；这些补丁会破坏回测、重启重放和实盘的一致性。
+- K 线边界遵循所选交易所的日线时区和周线起点。闭合事件仅用于唤醒运行时，不代表行情源已经发布最终 K 线；运行时会逐一检查所有订阅周期的最新必需 K 线，尊重行情源显式闭合确认，缺失时重试而不推进信号处理进度。仅有报价正常不能清除 K 线数据故障。
+- 美股和港股遵循交易日历、节假日、提前收市、夏令时及港股午休；日线和周线保留收市后 15 分钟的数据等待时间。聚合 K 线必须包含该交易时段内全部应有的子 K 线，不能跨缺口拼接，也不能把固定 5 根日线当作自然周。加密交易所的股票永续合约和代币化股票遵循所在交易所的 K 线日历，不套用标的股票市场的休市日历。
+- 行情恢复不会补发历史实盘订单；已确认 K 线的去重仍然有效，K 线契约版本变更后不复用旧版行情缓存。
 - 如果产品以后提供独立的逐 tick 策略契约，应使用单独的 API、回测模型和文档；不要在普通 Strategy API V2 源码中自行模拟。
 
 ---
@@ -413,6 +418,8 @@ def initialize(context):
 | <code>context.data</code> | 数据视图 |
 
 <code>data.current(symbol, field, frequency="1h")</code> 读取当前可见值；<code>data.history(symbols, count, fields, frequency="4h")</code> 读取指定周期历史；<code>data[symbol]</code> 返回驱动周期的当前可见 DataFrame。
+
+<code>is_trade()</code> 用于定时回调中的事件过滤：当前事件时间戳只要存在于至少一个已订阅数据帧就返回 <code>True</code>，否则返回 <code>False</code>。它判断的是“当前事件是否有可交易数据”，不是交易所是否开市、账户是否可下单或产品是否暂停；这些实盘资格仍由部署和执行层校验。
 
 跨回调状态放在 <code>g</code>：
 
@@ -494,6 +501,20 @@ scores = get_factors(symbols, ["momentum_20", "volatility_20"])
 ~~~
 
 TA-Lib 0.8.1 指标在生成代码、因子库和因子投研中使用明确的 <code>talib:</code> 命名空间。当平台原生因子与 TA-Lib 存在同名指标时，这一规则可以保持原有策略行为稳定。多输出指标可在 <code>factor</code> 调用中通过 <code>output</code> 选择结果；<code>indicator</code> 会返回全部输出列。0.8.1 因子目录共包含 201 个函数，其中新增 40 个，包括 <code>SUPERTREND</code>、<code>KDJ</code>、<code>HMA</code>、<code>VWAP</code>、<code>DONCHIAN</code> 和 <code>PERCENTRANK</code>。
+
+### 自定义公式因子
+
+“因子库 → 新建因子”直接提供编写契约与三个可用示例。这是受限表达式语言，不是 Python/Pine 脚本。只写一条公式，最多 2000 字符、120 个语法树节点，例如：
+
+```text
+momentum(period=lookback) / max(realized_volatility(period=vol_window), floor)
+```
+
+默认参数为 `{"lookback":20,"vol_window":20,"floor":0.0001}`，只接受有限数值或布尔值，名称须为合法变量名。OHLCV 字段是当前 K 线的标量，历史通过已注册因子读取。参数必须具名，不能写 `momentum(20)`；扩展库使用 `factor("talib:RSI", timeperiod=14)` 或 `factor("qlib:alpha158:IMAX20")`，公式内部不传标的。输出必须是一个有限数值，布尔转为 0/1。数学函数包括 `abs`、`min`、`max`、`log`、`log1p`、`sqrt`、`clip`；禁止导入、赋值、循环、属性、下标、文件/网络访问和嵌套自定义因子。
+
+验证只检查结构、依赖、参数声明和最低历史长度，不验证实际行情数据或盈利能力。保存后的私有因子当前列为组合/横截面策略使用；通过“复制调用”取得所属账户的 `custom:<id>` 调用。运行环境兼容不代表数据就绪：VWAP 等额外字段必须真实存在，不用 OHLCV 估算替代。TA-Lib ACOS/ASIN 要求输入在 [-1,1]。TA-Lib 和自建因子原始字段的最新值无效时会报错，不会悄悄沿用旧值。
+
+Qlib IMAX/IMIN 是从窗口最老一根开始的 1 基位置，相同极值取第一个，不是距极值的天数；IMXD 是两者之差。RSQR 对平盘/近似平盘遵循 Qlib 的标准差容差并视为未定义。使用旧版反向位置或平盘结果的研究、回测应在升级后重跑；不会自动重写已保存结果。
 
 基本面：
 
@@ -584,6 +605,15 @@ order_target_percent(
 | <code>execution_algo</code> | <code>market</code>、<code>limit</code> 或 <code>maker_then_market</code> |
 | <code>maker_wait_sec</code> | maker 等待多久后回退为市价 |
 | <code>maker_offset_bps</code> | maker 价格偏移，单位为基点 |
+| <code>protection</code> | 保护参数映射；可包含本节列出的止损、止盈、追踪和时间字段 |
+| <code>stop_loss_pct</code> | 相对持仓成本的固定止损小数比率 |
+| <code>take_profit_pct</code> | 相对持仓成本的固定止盈小数比率 |
+| <code>trailing_stop_pct</code> | 相对持仓后续峰值/谷值的追踪距离 |
+| <code>trailing_activation_pct</code> | 相对持仓成本的追踪激活盈利阈值 |
+| <code>time_limit_seconds</code> | 持仓最长保留秒数 |
+| <code>trailing_rebase_on_scale_in</code> | 同方向加仓时是否重置追踪状态和持仓计时，默认 <code>True</code> |
+
+<code>type</code> 和 <code>price</code> 是分别对应 <code>order_type</code> 和限价 <code>limit_price</code> 的兼容别名；新策略应使用规范名称。编译器和运行时都会拒绝表外关键字，而不是静默忽略。
 
 使用稳定客户端引用的示例：
 
@@ -621,7 +651,7 @@ def monitor_entry(cancel_requested):
 
 ## 13. 止损、止盈、追踪和时间保护
 
-随开仓声明：
+保护参数可以传给全部五个订单函数，但应随开仓或同方向加仓声明。最直接的写法是把字段作为订单关键字传入：
 
 ~~~python
 order_target_percent(
@@ -636,6 +666,22 @@ order_target_percent(
 )
 ~~~
 
+也可以使用一个字面量映射；同一次调用中的内联字段会覆盖映射中的同名字段：
+
+~~~python
+order_target_percent(
+    g.symbol,
+    0.8,
+    reason="breakout_long_entry",
+    protection={
+        "stop_loss_pct": 0.03,
+        "take_profit_pct": 0.08,
+    },
+    trailing_stop_pct=0.025,
+    trailing_activation_pct=0.02,
+)
+~~~
+
 或在可执行处理器/定时回调中、下单之前设置后续开仓的默认保护（不要在 <code>initialize</code> 中调用；清单发现阶段不会保留运行时保护状态）：
 
 ~~~python
@@ -645,7 +691,38 @@ set_default_protection(
 )
 ~~~
 
-所有 pct 都使用小数比率，<code>0.03</code> 表示 3%。保护值会限制在安全范围内；负值按 0 处理。
+<code>set_default_protection</code> 会作用于之后没有有效逐单保护的订单；逐单保护优先。需要清除默认值时调用 <code>set_default_protection()</code>。Crypto swap 策略如果声明需要保护，建议在每个开仓腿的订单上直接传入有效保护；AI 验证不会只凭默认保护推断每条开仓腿都已受保护。
+
+参数契约：
+
+| 参数 | 单位和范围 | 行为 |
+| --- | --- | --- |
+| <code>stop_loss_pct</code> | 小数比率，<code>0..1</code> | 多头触发价为成本价 × <code>(1-pct)</code>，空头为成本价 × <code>(1+pct)</code> |
+| <code>take_profit_pct</code> | 小数比率，<code>0..5</code> | 多头触发价为成本价 × <code>(1+pct)</code>，空头为成本价 × <code>(1-pct)</code> |
+| <code>trailing_stop_pct</code> | 小数比率，<code>0..1</code> | 激活后，多头跟随最高价、空头跟随最低价 |
+| <code>trailing_activation_pct</code> | 小数比率，<code>0..5</code> | 从成本价开始计算的盈利激活阈值；只有它而没有追踪距离不会产生保护 |
+| <code>time_limit_seconds</code> | 非负整数秒 | 达到持仓时限后退出；<code>0</code> 表示关闭 |
+| <code>trailing_rebase_on_scale_in</code> | 布尔值，默认 <code>True</code> | <code>True</code> 在同方向加仓时重置追踪峰谷、激活状态和持仓计时；<code>False</code> 保留已经激活的追踪状态和原计时 |
+
+所有 pct 都是小数比率：<code>0.03</code> 表示 3%，不是 0.03% 或 3。<code>0</code> 会关闭相应规则。运行时会把负值归零并把过大值限制到上表范围，但策略源码和 AI 生成结果不应依赖这种纠正；应直接提供范围内的值。
+
+字段名必须精确。Strategy API V2 不接受 <code>stop_loss</code>、<code>take_profit</code>、<code>stop_price</code> 或 <code>take_profit_price</code> 作为订单参数；这些写法会以 <code>strategyV2.apiCallInvalid:...:unsupportedArgument:...</code> 拒绝。固定绝对价格保护目前不是 Strategy API V2 的源码契约，应改用 pct 保护，或在策略信号逻辑中显式退出。
+
+<code># @param stop_loss_pct ...</code> 只会声明运行面板参数，不会自动启用止损。处理器必须读取它并传给开仓订单：
+
+~~~python
+def handle_data(context, data):
+    stop_loss_pct = float(context.params.get("stop_loss_pct", 0.03))
+    if should_enter:
+        order_target_percent(
+            g.symbol,
+            0.5,
+            reason="protected_entry",
+            stop_loss_pct=stop_loss_pct,
+        )
+~~~
+
+固定止损/止盈、追踪保护和信号离场是不同机制。只有订单上的有效字段或运行时默认保护会建立保护状态；参数声明、注释或普通离场条件都不能证明已经附加固定保护。保护离场后可用 <code>consume_last_exit_reason(symbol)</code> 读取并清除 <code>stop_loss</code>、<code>take_profit</code>、<code>trailing_stop</code> 或 <code>time_limit</code> 原因。
 
 回测规则：
 

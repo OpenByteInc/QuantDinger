@@ -52,15 +52,24 @@ def _configure_jwt_secret_warnings() -> None:
     _jwt_secret_warning_configured = True
 
 
-def generate_token(user_id: int, username: str, role: str = 'user', token_version: int = 1) -> str:
+def generate_token(
+    user_id: int,
+    username: str,
+    role: str = 'user',
+    token_version: int = 1,
+    client_type: str = 'pc',
+    client_token_version: int = 1,
+) -> str:
     """
     Generate JWT token with user information.
     
     Args:
         user_id: User ID
         username: Username
-        role: User role (admin/manager/user/viewer)
-        token_version: Token version for single-client enforcement
+        role: User role (admin/user/viewer)
+        token_version: Account-wide security version
+        client_type: Session slot, either pc or mobile
+        client_token_version: Version within the selected session slot
     
     Returns:
         JWT token string
@@ -74,7 +83,9 @@ def generate_token(user_id: int, username: str, role: str = 'user', token_versio
             'sub': username,
             'user_id': user_id,
             'role': role,
-            'token_version': token_version,  # 用于单一客户端登录控制
+            'token_version': token_version,
+            'client_type': client_type,
+            'client_token_version': client_token_version,
         }
         return jwt.encode(
             payload,
@@ -103,12 +114,22 @@ def verify_token(token: str) -> dict:
             Config.SECRET_KEY,
             algorithms=['HS256'],
             options={
-                'require': ['exp', 'iat', 'sub', 'user_id', 'token_version'],
+                'require': [
+                    'exp',
+                    'iat',
+                    'sub',
+                    'user_id',
+                    'token_version',
+                    'client_type',
+                    'client_token_version',
+                ],
             },
         )
 
         user_id = payload.get('user_id')
         token_version = payload.get('token_version')
+        client_type = payload.get('client_type')
+        client_token_version = payload.get('client_token_version')
 
         if (
             not isinstance(user_id, int)
@@ -117,8 +138,20 @@ def verify_token(token: str) -> dict:
             or not isinstance(token_version, int)
             or isinstance(token_version, bool)
             or token_version < 1
+            or client_type not in ('pc', 'mobile')
+            or not isinstance(client_token_version, int)
+            or isinstance(client_token_version, bool)
+            or client_token_version < 1
         ):
-            logger.debug("Token contains invalid user_id or token_version")
+            logger.debug("Token contains invalid account or client session claims")
+            return None
+
+        if not _verify_client_token_version(user_id, client_type, client_token_version):
+            logger.debug(
+                "Client token version mismatch for user %s in %s slot",
+                user_id,
+                client_type,
+            )
             return None
 
         # Keep the session-version check in one independently testable
@@ -154,8 +187,14 @@ def verify_token(token: str) -> dict:
             logger.warning("Rejecting user %s with invalid database token_version", user_id)
             return None
 
-        role = auth_user.get('role')
-        if role not in ('admin', 'manager', 'user', 'viewer'):
+        if not _verify_client_token_version(user_id, client_type, client_token_version):
+            logger.debug("Client token version changed during verification for user %s", user_id)
+            return None
+
+        from app.services.user_service import UserService
+
+        role = UserService.normalize_role(auth_user.get('role'))
+        if role not in ('admin', 'user', 'viewer'):
             logger.warning("Rejecting user %s with invalid database role", user_id)
             return None
 
@@ -196,17 +235,7 @@ def _get_user_auth_state(user_id: int) -> dict:
 
 
 def _verify_token_version(user_id: int, token_version: int) -> bool:
-    """
-    验证 token 版本是否与数据库中存储的版本匹配。
-    用于实现单一客户端登录（踢出重复登录）。
-    
-    Args:
-        user_id: 用户ID
-        token_version: Token中的版本号
-    
-    Returns:
-        True if version matches, False otherwise
-    """
+    """Verify the account-wide security version."""
     row = _get_user_auth_state(user_id)
     if not row:
         return False
@@ -216,6 +245,37 @@ def _verify_token_version(user_id: int, token_version: int) -> bool:
     try:
         return int(token_version) == int(db_token_version)
     except (TypeError, ValueError):
+        return False
+
+
+def _verify_client_token_version(
+    user_id: int,
+    client_type: str,
+    client_token_version: int,
+) -> bool:
+    """Verify the version for one desktop or mobile session slot."""
+    try:
+        from app.utils.db import get_db_connection
+
+        with get_db_connection() as db:
+            cur = db.cursor()
+            cur.execute(
+                """
+                SELECT token_version
+                FROM qd_user_client_sessions
+                WHERE user_id = ? AND client_type = ?
+                """,
+                (user_id, client_type),
+            )
+            row = cur.fetchone()
+            cur.close()
+            if not row:
+                return False
+            return int(client_token_version) == int(row.get('token_version') or 0)
+    except (TypeError, ValueError):
+        return False
+    except Exception as e:
+        logger.error(f"_verify_client_token_version failed: {e}")
         return False
 
 
@@ -254,7 +314,7 @@ def login_required(f):
             return jsonify({'code': 401, 'msg': 'Token invalid or expired', 'data': None}), 401
         
         verified_role = payload.get('_verified_user_role')
-        if verified_role not in ('admin', 'manager', 'user', 'viewer'):
+        if verified_role not in ('admin', 'user', 'viewer'):
             logger.warning("Verified token missing authoritative database role")
             return jsonify({'code': 401, 'msg': 'Token invalid or expired', 'data': None}), 401
 
@@ -278,20 +338,6 @@ def admin_required(f):
         role = getattr(g, 'user_role', None)
         if role != 'admin':
             return jsonify({'code': 403, 'msg': 'Admin access required', 'data': None}), 403
-        return f(*args, **kwargs)
-    return decorated
-
-
-def manager_required(f):
-    """
-    Decorator that requires manager or admin role.
-    Must be used after @login_required.
-    """
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        role = getattr(g, 'user_role', None)
-        if role not in ('admin', 'manager'):
-            return jsonify({'code': 403, 'msg': 'Manager access required', 'data': None}), 403
         return f(*args, **kwargs)
     return decorated
 

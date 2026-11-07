@@ -3,7 +3,8 @@
 Live execution from agents requires *all* of the following:
   1. Token has scope `T`.
   2. Token has `paper_only=false` (operator must flip explicitly).
-  3. Server-side env `AGENT_LIVE_TRADING_ENABLED=true` (deployment kill switch).
+  3. Global live execution is enabled with `LIVE_TRADING_ENABLED=true`.
+  4. Agent live execution is enabled with `AGENT_LIVE_TRADING_ENABLED=true`.
 
 Until live is unlocked, this endpoint records orders to `qd_agent_paper_orders`
 using the latest market price as the simulated fill — so AI workflows can
@@ -17,6 +18,7 @@ import uuid
 from typing import Any
 
 from app.services.kline import KlineService
+from app.services.settings.capabilities import is_live_trading_enabled
 from app.utils.agent_auth import (
     SCOPE_T, agent_required, current_token, current_user_id,
     instrument_allowed, market_allowed, paper_only, with_idempotency,
@@ -38,7 +40,8 @@ _ORDER_FIELDS = {
 
 
 def _live_trading_kill_switch() -> bool:
-    return os.getenv("AGENT_LIVE_TRADING_ENABLED", "false").lower() in ("1", "true", "yes")
+    agent_enabled = os.getenv("AGENT_LIVE_TRADING_ENABLED", "false").lower() in ("1", "true", "yes")
+    return is_live_trading_enabled() and agent_enabled
 
 
 def _last_price(market: str, symbol: str) -> float | None:
@@ -470,13 +473,12 @@ def place_order():
                 "previous": existing.get("result"),
             }, message="idempotent replay")
 
-    # Live trading is hard-gated. Even with paper_only=false on the token, the
-    # operator must enable AGENT_LIVE_TRADING_ENABLED to actually route to
-    # exchange clients — keeping a final environment-level kill switch.
+    # Live trading is hard-gated. Even with paper_only=false on the token, both
+    # deployment switches must allow live execution before exchange clients are used.
     if not paper_only() and not _live_trading_kill_switch():
         return error(
             501,
-            "Live agent trading is disabled by AGENT_LIVE_TRADING_ENABLED",
+            "Live agent trading requires LIVE_TRADING_ENABLED and AGENT_LIVE_TRADING_ENABLED",
             http=501,
         )
 

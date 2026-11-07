@@ -21,7 +21,7 @@ SaaS 不是打开一个环境变量就完成的部署方式。它是在生产部
 QUANTDINGER_DEPLOYMENT_MODE=saas
 FRONTEND_URL=https://app.example.com,https://m.example.com
 ENABLE_REGISTRATION=true
-ALLOW_LOCAL_DESKTOP_BROKERS=false
+ENABLED_TRADING_VENUES=alpaca,tiger,webull,binance,okx,bybit,bitget,gate,htx
 BILLING_ENABLED=true
 ```
 
@@ -71,4 +71,3 @@ BILLING_ENABLED=true
 建议按“内部管理员 → 邀请用户 → 小规模付费 → 公开注册”逐级开放。每一级都要观察登录失败率、API 延迟、队列积压、数据库连接、支付失败和交易异常，再决定是否扩大流量。
 
 上线后设置见[部署后首次设置](../getting-started/POST_INSTALL_SETUP_CN.md)，常见安装问题见[安装 FAQ](INSTALLATION_FAQ_CN.md)。
-

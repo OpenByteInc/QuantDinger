@@ -40,6 +40,20 @@ def _parse_positive_int(value) -> int:
         return 0
 
 
+def _user_list_options():
+    """Collect the shared user-list filters from the current request."""
+    user_id = _parse_positive_int(request.args.get('user_id'))
+    return {
+        'search': request.args.get('search', '', type=str),
+        'user_id': user_id if user_id > 0 else None,
+        'role': request.args.get('role', '', type=str),
+        'status': request.args.get('status', '', type=str),
+        'vip_status': request.args.get('vip_status', '', type=str),
+        'sort_by': request.args.get('sort_by', '', type=str),
+        'sort_order': request.args.get('sort_order', '', type=str),
+    }
+
+
 def _ensure_chart_templates_column():
     """Back-compatible wrapper for older route-local callers."""
     ensure_chart_templates_column()
@@ -59,18 +73,20 @@ def list_users():
         page_size: int (default 20, max 100)
         search: str (optional, search by username/email/nickname/id)
         user_id: int (optional, exact user id filter)
+        role: str (optional)
+        status: str (optional, active or disabled)
+        vip_status: str (optional, active or inactive)
+        sort_by: str (optional, credits)
+        sort_order: str (optional, asc or desc)
     """
     try:
         page = request.args.get('page', 1, type=int)
         page_size = request.args.get('page_size', 20, type=int)
-        search = request.args.get('search', '', type=str)
-        user_id = _parse_positive_int(request.args.get('user_id'))
-        if user_id <= 0:
-            user_id = None
         page_size = min(100, max(1, page_size))
+        options = _user_list_options()
         
         result = get_user_service().list_users(
-            page=page, page_size=page_size, search=search, user_id=user_id,
+            page=page, page_size=page_size, **options,
         )
         
         return jsonify({
@@ -89,11 +105,7 @@ def list_users():
 def export_users():
     """Export all users as an Excel-friendly CSV file (admin only)."""
     try:
-        search = request.args.get('search', '', type=str)
-        user_id = _parse_positive_int(request.args.get('user_id'))
-        if user_id <= 0:
-            user_id = None
-        users = get_user_service().list_all_users_for_export(search=search, user_id=user_id)
+        users = get_user_service().list_all_users_for_export(**_user_list_options())
 
         output = StringIO()
         output.write('\ufeff')

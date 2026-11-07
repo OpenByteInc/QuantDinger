@@ -17,12 +17,14 @@ from app.openapi.schemas.high_risk import (
 from app.config.settings import Config
 from app.services.auth_session import (
     build_frontend_login_redirect,
+    get_login_client_type,
     get_client_ip,
     get_user_agent,
     issue_login_token,
+    normalize_client_type,
     touch_last_login,
 )
-from app.utils.auth import generate_token, login_required, authenticate_legacy
+from app.utils.auth import login_required, authenticate_legacy
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -72,12 +74,18 @@ def _build_userinfo(user: dict, user_id: int, username: str) -> dict:
     }
 
 
-def _issue_login_token(user: dict, user_id: int, username: str) -> tuple:
+def _issue_login_token(
+    user: dict,
+    user_id: int,
+    username: str,
+    client_type: str = 'pc',
+) -> tuple:
     return issue_login_token(
         user,
         user_id,
         username,
         _get_permissions(user.get('role', 'admin')),
+        client_type,
     )
 
 def _touch_last_login(user_id: int) -> None:
@@ -168,6 +176,7 @@ def login(data):
         password = data.get('password')
         turnstile_token = data.get('turnstile_token')
         turnstile_clearance = data.get('turnstile_clearance')
+        client_type = get_login_client_type(data)
         
         if not username or not password:
             return jsonify({'code': 400, 'msg': 'Missing username/email or password', 'data': None}), 400
@@ -262,7 +271,7 @@ def login(data):
             logger.error(f"MFA check failed after password authentication: {e}")
             return jsonify({'code': 0, 'msg': 'MFA service unavailable', 'data': None}), 503
 
-        token, userinfo = _issue_login_token(user, int(user_id), username)
+        token, userinfo = _issue_login_token(user, int(user_id), username, client_type)
         
         if not token:
             return jsonify({'code': 500, 'msg': 'Token generation error', 'data': None}), 500
@@ -280,7 +289,7 @@ def login(data):
             action='login_success',
             ip_address=ip_address,
             user_agent=user_agent,
-            extra_details={'method': 'password'},
+            extra_details={'method': 'password', 'client_type': client_type},
         )
 
         return jsonify({
@@ -307,6 +316,7 @@ def verify_login_mfa():
         data = request.get_json() or {}
         challenge_id = data.get('challenge_id') or ''
         code = data.get('code') or ''
+        client_type = get_login_client_type(data)
 
         from app.services.mfa_service import get_mfa_service
         from app.services.security_service import get_security_service
@@ -329,7 +339,7 @@ def verify_login_mfa():
             return jsonify({'code': 0, 'msg': 'User not found or disabled', 'data': None}), 403
 
         username = user.get('username') or ''
-        token, userinfo = _issue_login_token(user, int(user_id), username)
+        token, userinfo = _issue_login_token(user, int(user_id), username, client_type)
         if not token:
             return jsonify({'code': 500, 'msg': 'Token generation error', 'data': None}), 500
 
@@ -341,7 +351,7 @@ def verify_login_mfa():
             action='mfa_login_success',
             ip_address=ip_address,
             user_agent=user_agent,
-            extra_details={'method': 'password_totp'},
+            extra_details={'method': 'password_totp', 'client_type': client_type},
         )
         security.log_security_event(
             'mfa_success',
@@ -400,6 +410,7 @@ def login_with_code():
         email = (data.get('email') or '').strip().lower()
         code = data.get('code', '').strip()
         referral_code = data.get('referral_code', '').strip()
+        client_type = get_login_client_type(data)
         
         # Validate inputs
         if not email or not email_service.is_valid_email(email):
@@ -535,19 +546,11 @@ def login_with_code():
                 logger.error(f"MFA check failed after email-code authentication: {e}")
                 return jsonify({'code': 0, 'msg': 'MFA service unavailable', 'data': None}), 503
         
-        # Increment token_version (invalidates old sessions for single-client login)
-        try:
-            new_token_version = user_service.increment_token_version(user['id'])
-        except Exception as e:
-            logger.warning(f"Failed to increment token_version: {e}")
-            new_token_version = 1
-        
-        # Generate token with new token_version
-        token = generate_token(
-            user_id=user['id'],
-            username=user['username'],
-            role=user.get('role', 'user'),
-            token_version=new_token_version
+        token, userinfo = _issue_login_token(
+            user,
+            int(user['id']),
+            user['username'],
+            client_type,
         )
         
         if not token:
@@ -578,7 +581,11 @@ def login_with_code():
             action='login_via_code',
             ip_address=ip_address,
             user_agent=user_agent,
-            extra_details={'method': 'email_code', 'is_new_user': bool(is_new_user)},
+            extra_details={
+                'method': 'email_code',
+                'is_new_user': bool(is_new_user),
+                'client_type': client_type,
+            },
         )
 
         return jsonify({
@@ -587,18 +594,7 @@ def login_with_code():
             'data': {
                 'token': token,
                 'is_new_user': is_new_user,
-                'userinfo': {
-                    'id': user['id'],
-                    'username': user['username'],
-                    'nickname': user.get('nickname', user['username']),
-                    'email': user.get('email'),
-                    'avatar': user.get('avatar', '/avatar2.jpg'),
-                    'timezone': str(user.get('timezone') or '').strip(),
-                    'role': {
-                        'id': user.get('role', 'user'),
-                        'permissions': _get_permissions(user.get('role', 'user'))
-                    }
-                }
+                'userinfo': userinfo
             }
         })
         
@@ -743,6 +739,7 @@ def register(data):
         username = (data.get('username') or '').strip()
         password = data.get('password', '')
         referral_code = data.get('referral_code', '').strip()
+        client_type = get_login_client_type(data)
         
         # Validate inputs
         if not email or not email_service.is_valid_email(email):
@@ -839,19 +836,22 @@ def register(data):
         security.log_security_event('register', user_id, ip_address, user_agent, 
                                    {'email': email, 'referred_by': referred_by})
         
-        # Auto login after registration (get token_version for new user)
-        try:
-            new_token_version = user_service.get_token_version(user_id)
-        except Exception as e:
-            logger.warning(f"Failed to get token_version: {e}")
-            new_token_version = 1
-        
-        token = generate_token(
-            user_id=user_id, 
-            username=username, 
-            role='user',
-            token_version=new_token_version
+        created_user = user_service.get_user_by_id(user_id) or {
+            'id': user_id,
+            'username': username,
+            'nickname': username,
+            'email': email,
+            'role': 'user',
+        }
+        token, userinfo = _issue_login_token(
+            created_user,
+            int(user_id),
+            username,
+            client_type,
         )
+
+        if not token:
+            return jsonify({'code': 500, 'msg': 'Token generation error', 'data': None}), 500
 
         # Update last login time (auto-login after registration)
         try:
@@ -877,18 +877,7 @@ def register(data):
             'msg': 'Registration successful',
             'data': {
                 'token': token,
-                'userinfo': {
-                    'id': user_id,
-                    'username': username,
-                    'nickname': username,
-                    'email': email,
-                    'avatar': '/avatar2.jpg',
-                    'timezone': '',
-                    'role': {
-                        'id': 'user',
-                        'permissions': _get_permissions('user')
-                    }
-                }
+                'userinfo': userinfo
             }
         })
         
@@ -1042,7 +1031,11 @@ def oauth_google():
             return jsonify({'code': 0, 'msg': 'Google OAuth is not configured', 'data': None}), 400
 
         redirect_url = (request.args.get('redirect') or '').strip()
-        auth_url, state = oauth.get_google_auth_url(redirect_url=redirect_url)
+        client_type = normalize_client_type(request.args.get('client_type'))
+        auth_url, state = oauth.get_google_auth_url(
+            redirect_url=redirect_url,
+            client_type=client_type,
+        )
         return redirect(auth_url)
 
     except Exception as e:
@@ -1067,6 +1060,7 @@ def oauth_google_callback():
         # Peek the per-state redirect (set when the flow was initiated) before
         # handle_* consumes the state; fall back to default FRONTEND_URL.
         state_redirect = oauth.peek_state_redirect(state) if state else ''
+        client_type = oauth.peek_state_client_type(state) if state else 'pc'
         frontend_url = state_redirect or oauth.frontend_url
 
         if error:
@@ -1087,22 +1081,15 @@ def oauth_google_callback():
             error_msg = user_result.get('error', 'user_creation_failed')
             return redirect(_build_frontend_login_redirect(frontend_url, oauth_error=error_msg))
         
-        # Increment token_version (invalidates old sessions for single-client login)
-        from app.services.user_service import get_user_service
-        user_service = get_user_service()
-        try:
-            new_token_version = user_service.increment_token_version(user_result['id'])
-        except Exception as e:
-            logger.warning(f"Failed to increment token_version: {e}")
-            new_token_version = 1
-        
-        # Generate token with new token_version
-        token = generate_token(
-            user_id=user_result['id'],
-            username=user_result['username'],
-            role=user_result.get('role', 'user'),
-            token_version=new_token_version
+        token, _ = _issue_login_token(
+            user_result,
+            int(user_result['id']),
+            user_result['username'],
+            client_type,
         )
+
+        if not token:
+            return redirect(_build_frontend_login_redirect(frontend_url, oauth_error='session_error'))
         
         from app.services.login_notify import notify_successful_login
         notify_successful_login(
@@ -1110,7 +1097,11 @@ def oauth_google_callback():
             action='oauth_login',
             ip_address=ip_address,
             user_agent=user_agent,
-            extra_details={'provider': 'google', 'method': 'oauth'},
+            extra_details={
+                'provider': 'google',
+                'method': 'oauth',
+                'client_type': client_type,
+            },
         )
 
         # Redirect to frontend with token
@@ -1138,7 +1129,11 @@ def oauth_github():
             return jsonify({'code': 0, 'msg': 'GitHub OAuth is not configured', 'data': None}), 400
 
         redirect_url = (request.args.get('redirect') or '').strip()
-        auth_url, state = oauth.get_github_auth_url(redirect_url=redirect_url)
+        client_type = normalize_client_type(request.args.get('client_type'))
+        auth_url, state = oauth.get_github_auth_url(
+            redirect_url=redirect_url,
+            client_type=client_type,
+        )
         return redirect(auth_url)
 
     except Exception as e:
@@ -1161,6 +1156,7 @@ def oauth_github_callback():
         error = request.args.get('error')
 
         state_redirect = oauth.peek_state_redirect(state) if state else ''
+        client_type = oauth.peek_state_client_type(state) if state else 'pc'
         frontend_url = state_redirect or oauth.frontend_url
 
         if error:
@@ -1181,22 +1177,15 @@ def oauth_github_callback():
             error_msg = user_result.get('error', 'user_creation_failed')
             return redirect(_build_frontend_login_redirect(frontend_url, oauth_error=error_msg))
         
-        # Increment token_version (invalidates old sessions for single-client login)
-        from app.services.user_service import get_user_service
-        user_service = get_user_service()
-        try:
-            new_token_version = user_service.increment_token_version(user_result['id'])
-        except Exception as e:
-            logger.warning(f"Failed to increment token_version: {e}")
-            new_token_version = 1
-        
-        # Generate token with new token_version
-        token = generate_token(
-            user_id=user_result['id'],
-            username=user_result['username'],
-            role=user_result.get('role', 'user'),
-            token_version=new_token_version
+        token, _ = _issue_login_token(
+            user_result,
+            int(user_result['id']),
+            user_result['username'],
+            client_type,
         )
+
+        if not token:
+            return redirect(_build_frontend_login_redirect(frontend_url, oauth_error='session_error'))
         
         from app.services.login_notify import notify_successful_login
         notify_successful_login(
@@ -1204,7 +1193,11 @@ def oauth_github_callback():
             action='oauth_login',
             ip_address=ip_address,
             user_agent=user_agent,
-            extra_details={'provider': 'github', 'method': 'oauth'},
+            extra_details={
+                'provider': 'github',
+                'method': 'oauth',
+                'client_type': client_type,
+            },
         )
 
         # Redirect to frontend with token

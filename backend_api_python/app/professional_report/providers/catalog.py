@@ -14,7 +14,7 @@ from typing import Iterable, Mapping
 SUPPORTED_MARKETS = frozenset({"USStock", "HKStock", "Crypto", "Forex", "Futures"})
 SUPPORTED_TIERS = frozenset({"community", "professional"})
 SUPPORTED_COST_LEVELS = frozenset({"free", "low", "medium", "high", "enterprise"})
-SUPPORTED_INTEGRATION_STATUSES = frozenset({"active", "planned"})
+SUPPORTED_INTEGRATION_STATUSES = frozenset({"active"})
 
 CAPABILITY_ALIASES = {
     "quotes": "market_data",
@@ -46,7 +46,7 @@ class ProviderSpec:
     license_warning: str = ""
     default_priority: int = 100
     require_all_env_keys: bool = False
-    integration_status: str = "planned"
+    integration_status: str = "active"
 
     def __post_init__(self) -> None:
         if not self.key or not self.name:
@@ -195,20 +195,6 @@ PROVIDER_CATALOG: tuple[ProviderSpec, ...] = (
         integration_status="active",
     ),
     ProviderSpec(
-        key="hkex_public",
-        name="HKEX Public Information",
-        tier="community",
-        markets=frozenset({"HKStock"}),
-        capabilities=frozenset({"filings", "corporate_actions", "short_data", "fund_flows"}),
-        keyless=True,
-        cost_level="free",
-        license_warning=(
-            "Public pages are useful for source verification, not bulk commercial redistribution; "
-            "use licensed HKEX feeds or Data Marketplace products in production."
-        ),
-        default_priority=5,
-    ),
-    ProviderSpec(
         key="eastmoney_hk",
         name="Eastmoney Hong Kong via AkShare",
         tier="community",
@@ -301,108 +287,8 @@ PROVIDER_CATALOG: tuple[ProviderSpec, ...] = (
         default_priority=10,
         integration_status="active",
     ),
-    ProviderSpec(
-        key="defillama",
-        name="DefiLlama",
-        tier="community",
-        markets=frozenset({"Crypto"}),
-        capabilities=frozenset({"on_chain", "fund_flows"}),
-        keyless=True,
-        cost_level="free",
-        license_warning="Treat methodology and protocol mappings as third-party estimates and attribute the source.",
-        default_priority=15,
-    ),
     # Optional professional sources.  Selecting one never implies that the
     # configured commercial contract includes display or redistribution rights.
-    ProviderSpec(
-        key="massive",
-        name="Massive (Polygon.io)",
-        tier="professional",
-        markets=frozenset({"USStock"}),
-        capabilities=frozenset(
-            {"market_data", "options", "corporate_actions", "fundamentals", "filings", "short_data"}
-        ),
-        api_env_keys=("MASSIVE_API_KEY", "POLYGON_API_KEY"),
-        cost_level="high",
-        license_warning=(
-            "Individual plans are not licensed for professional/customer-facing use; obtain the "
-            "appropriate Business or Enterprise display and redistribution rights."
-        ),
-        default_priority=10,
-    ),
-    ProviderSpec(
-        key="intrinio",
-        name="Intrinio",
-        tier="professional",
-        markets=frozenset({"USStock"}),
-        capabilities=frozenset(
-            {"market_data", "options", "fundamentals", "analyst_estimates", "news", "corporate_actions"}
-        ),
-        api_env_keys=("INTRINIO_API_KEY",),
-        cost_level="high",
-        license_warning=(
-            "Commercial display, raw redistribution, exchange data, estimates, and news rights are "
-            "separate entitlements; verify the contracted feed bundle."
-        ),
-        default_priority=20,
-    ),
-    ProviderSpec(
-        key="hkex_data_marketplace",
-        name="HKEX Data Marketplace",
-        tier="professional",
-        markets=frozenset({"HKStock"}),
-        capabilities=frozenset(
-            {"market_data", "options", "corporate_actions", "filings", "short_data", "fund_flows"}
-        ),
-        api_env_keys=("HKEX_DATA_MARKETPLACE_USERNAME", "HKEX_DATA_MARKETPLACE_PASSWORD"),
-        cost_level="medium",
-        license_warning=(
-            "Purchase the matching dataset and usage rights; an end-user subscription does not "
-            "automatically grant external redistribution rights."
-        ),
-        default_priority=10,
-        require_all_env_keys=True,
-    ),
-    ProviderSpec(
-        key="hkex_omd_iis",
-        name="HKEX OMD / IIS",
-        tier="professional",
-        markets=frozenset({"HKStock"}),
-        capabilities=frozenset({"market_data", "options", "filings"}),
-        api_env_keys=("HKEX_OMD_LICENSE_ID", "HKEX_IIS_LICENSE_ID"),
-        cost_level="enterprise",
-        license_warning=(
-            "Requires the relevant HKEX vendor/end-user licence, connection approval, subscriber "
-            "reporting, and any applicable display or redistribution fees."
-        ),
-        default_priority=20,
-    ),
-    ProviderSpec(
-        key="lseg",
-        name="LSEG Data & Analytics",
-        tier="professional",
-        markets=frozenset({"USStock", "HKStock"}),
-        capabilities=frozenset({"market_data", "fundamentals", "analyst_estimates", "news", "macro"}),
-        api_env_keys=("LSEG_CLIENT_ID", "LSEG_CLIENT_SECRET"),
-        cost_level="enterprise",
-        license_warning=(
-            "Standard news and data-feed licences are commonly internal-only; external reports, "
-            "derived data, AI use, and redistribution require explicit contractual rights."
-        ),
-        default_priority=30,
-        require_all_env_keys=True,
-    ),
-    ProviderSpec(
-        key="kaiko",
-        name="Kaiko",
-        tier="professional",
-        markets=frozenset({"Crypto"}),
-        capabilities=frozenset({"market_data", "derivatives"}),
-        api_env_keys=("KAIKO_API_KEY",),
-        cost_level="enterprise",
-        license_warning="Confirm venue-level display, derived-data, redistribution, and historical retention rights.",
-        default_priority=10,
-    ),
     ProviderSpec(
         key="coinglass",
         name="CoinGlass",
@@ -414,17 +300,6 @@ PROVIDER_CATALOG: tuple[ProviderSpec, ...] = (
         license_warning="API history, rate limits, caching, external display and redistribution depend on the plan.",
         default_priority=15,
         integration_status="active",
-    ),
-    ProviderSpec(
-        key="coin_metrics",
-        name="Coin Metrics",
-        tier="professional",
-        markets=frozenset({"Crypto"}),
-        capabilities=frozenset({"market_data", "on_chain", "fund_flows"}),
-        api_env_keys=("COINMETRICS_API_KEY",),
-        cost_level="enterprise",
-        license_warning="Community endpoints and institutional feeds have different commercial and redistribution rights.",
-        default_priority=20,
     ),
     ProviderSpec(
         key="cryptoquant",

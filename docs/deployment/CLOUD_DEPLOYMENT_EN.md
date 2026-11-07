@@ -88,7 +88,7 @@ Edit `.env` before first start:
 ADMIN_USER=your_admin_user
 ADMIN_PASSWORD=your_strong_password
 FRONTEND_URL=https://app.example.com,https://m.example.com
-ALLOW_LOCAL_DESKTOP_BROKERS=false
+ENABLED_TRADING_VENUES=alpaca,tiger,webull,binance,okx,bybit,bitget,gate,htx
 ```
 
 The bootstrap script generates `POSTGRES_PASSWORD`, `SECRET_KEY`, and
@@ -157,7 +157,7 @@ Edit `.env`:
 ADMIN_USER=your_admin_user
 ADMIN_PASSWORD=your_strong_password
 FRONTEND_URL=https://app.example.com,https://m.example.com
-ALLOW_LOCAL_DESKTOP_BROKERS=false
+ENABLED_TRADING_VENUES=alpaca,tiger,webull,binance,okx,bybit,bitget,gate,htx
 ```
 
 Start:

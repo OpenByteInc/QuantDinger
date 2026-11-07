@@ -57,7 +57,120 @@ def test_settings_values_does_not_treat_password_default_as_configured(client, m
     assert data["ADMIN_PASSWORD_configured"] is False
 
 
-def test_secret_key_save_requires_restart_without_hot_reload(client, monkeypatch):
+def test_secret_key_is_not_exposed_in_settings_schema():
+    import app.routes.settings as settings_route
+
+    exposed_keys = {
+        item["key"]
+        for group in settings_route.CONFIG_SCHEMA.values()
+        for item in group["items"]
+    }
+
+    assert "SECRET_KEY" not in exposed_keys
+
+
+def test_admin_account_settings_are_all_basic_fields():
+    import app.routes.settings as settings_route
+
+    auth_group = settings_route._effective_schema({})["auth"]
+    items = {item["key"]: item for item in auth_group["items"]}
+
+    assert auth_group["title"] == "settings.group.auth"
+    assert auth_group["icon"] == "user"
+    assert set(items) == {"ADMIN_USER", "ADMIN_PASSWORD", "ADMIN_EMAIL"}
+    assert all(not item["is_advanced"] for item in items.values())
+
+
+def test_ai_settings_expose_only_effective_controls_in_the_right_groups():
+    import app.routes.settings as settings_route
+
+    schema = settings_route._effective_schema({})
+    ai_keys = {item["key"] for item in schema["ai"]["items"]}
+    network_keys = {item["key"] for item in schema["network"]["items"]}
+
+    assert "JEV_ENABLED" in ai_keys
+    assert "SEC_EDGAR_USER_AGENT" not in ai_keys
+    assert "LLM_PROXY_URL" not in ai_keys
+    assert "LLM_USE_SYSTEM_PROXY" not in ai_keys
+    assert {"LLM_PROXY_URL", "LLM_USE_SYSTEM_PROXY"}.issubset(network_keys)
+
+
+def test_live_trading_settings_expose_only_order_execution_defaults():
+    import app.routes.settings as settings_route
+
+    trading_keys = {
+        item["key"]
+        for item in settings_route._effective_schema({})["trading"]["items"]
+    }
+
+    assert trading_keys == {
+        "AGENT_LIVE_TRADING_ENABLED",
+        "MAKER_WAIT_SEC",
+        "MAKER_OFFSET_BPS",
+    }
+    assert "ALLOW_LOCAL_DESKTOP_BROKERS" not in trading_keys
+    assert "ENABLE_PENDING_ORDER_WORKER" not in trading_keys
+    assert "DISABLE_RESTORE_RUNNING_STRATEGIES" not in trading_keys
+
+
+def test_fixed_token_identifiers_are_read_only_deployment_settings():
+    import app.routes.settings as settings_route
+
+    billing_items = {
+        item["key"]: item
+        for item in settings_route._effective_schema(
+            {"BILLING_ENABLED": "true"}
+        )["billing"]["items"]
+    }
+
+    for key in settings_route.FIXED_TOKEN_IDENTIFIERS:
+        assert billing_items[key]["readonly"] is True
+        assert billing_items[key]["source"] == "deployment"
+        assert key in settings_route.DEPLOYMENT_ONLY_SETTINGS
+
+    assert billing_items["USDT_TRC20_ADDRESS"].get("readonly") is not True
+    assert billing_items["USDC_ERC20_ADDRESS"].get("readonly") is not True
+
+
+def test_fixed_token_identifier_cannot_be_saved_from_settings(client, monkeypatch):
+    import app.routes.settings as settings_route
+    import app.utils.auth as auth_mod
+
+    monkeypatch.setattr(auth_mod, "verify_token", lambda token: {
+        "sub": "admin",
+        "user_id": 1,
+        "role": "admin",
+        "_verified_username": "admin",
+        "_verified_user_role": "admin",
+    })
+    monkeypatch.setattr(
+        settings_route,
+        "read_env_file",
+        lambda: {"USDT_ERC20_CONTRACT": "official-contract"},
+    )
+    writes = []
+    monkeypatch.setattr(
+        settings_route,
+        "write_env_file",
+        lambda values: writes.append(values),
+    )
+
+    response = client.post(
+        "/api/settings/save",
+        headers={"Authorization": "Bearer token"},
+        json={"billing": {"USDT_ERC20_CONTRACT": "attacker-contract"}},
+    )
+
+    assert response.status_code == 400
+    assert response.get_json() == {
+        "code": 0,
+        "msg": "settings.deploymentOnlySetting",
+        "data": {"keys": ["USDT_ERC20_CONTRACT"]},
+    }
+    assert writes == []
+
+
+def test_secret_key_cannot_be_saved_from_settings(client, monkeypatch):
     import app.routes.settings as settings_route
     import app.utils.auth as auth_mod
 
@@ -81,27 +194,11 @@ def test_secret_key_save_requires_restart_without_hot_reload(client, monkeypatch
         lambda: {"SECRET_KEY": "current-persisted-secret"},
     )
 
-    written = {}
-    runtime_calls = []
+    writes = []
     monkeypatch.setattr(
         settings_route,
         "write_env_file",
-        lambda values: written.update(values) is None,
-    )
-    monkeypatch.setattr(
-        settings_route,
-        "clear_config_cache",
-        lambda: runtime_calls.append("clear"),
-    )
-    monkeypatch.setattr(
-        settings_route,
-        "reload_runtime_env",
-        lambda: runtime_calls.append("reload"),
-    )
-    monkeypatch.setattr(
-        settings_route,
-        "refresh_runtime_services",
-        lambda: runtime_calls.append("refresh"),
+        lambda values: writes.append(values),
     )
 
     resp = client.post(
@@ -110,15 +207,14 @@ def test_secret_key_save_requires_restart_without_hot_reload(client, monkeypatch
         json={"auth": {"SECRET_KEY": "next-persisted-secret"}},
     )
 
-    assert resp.status_code == 200
+    assert resp.status_code == 400
     payload = resp.get_json()
-    assert payload["code"] == 1
-    assert written["SECRET_KEY"] == "next-persisted-secret"
-    assert payload["data"]["requires_restart"] is True
-    assert payload["data"]["restart_required_keys"] == ["SECRET_KEY"]
-    assert payload["data"]["hot_reloaded"] is False
-    assert payload["data"]["services_refreshed"] is False
-    assert runtime_calls == []
+    assert payload == {
+        "code": 0,
+        "msg": "settings.deploymentOnlySetting",
+        "data": {"keys": ["SECRET_KEY"]},
+    }
+    assert writes == []
 
 
 def test_ai_setting_save_hot_reloads_without_restarting(client, monkeypatch):

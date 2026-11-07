@@ -620,6 +620,22 @@
         }
       }
     },
+    "/api/agent/v1/research/assets": {
+      "get": {
+        "summary": "Search the canonical market asset registry",
+        "description": "Finds tenant-visible assets by market and keyword before adding an asset to a watchlist or strategy universe.",
+        "x-scope-class": "R",
+        "parameters": [
+          { "in": "query", "name": "market", "required": true, "schema": { "type": "string" } },
+          { "in": "query", "name": "keyword", "required": true, "schema": { "type": "string" } },
+          { "in": "query", "name": "limit", "required": false, "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 20 } }
+        ],
+        "responses": {
+          "200": { "description": "Matching canonical assets" },
+          "400": { "description": "Market or keyword is missing" }
+        }
+      }
+    },
     "/api/agent/v1/research/watchlist": {
       "get": {
         "summary": "List tenant watchlist",
@@ -634,14 +650,36 @@
         "summary": "Add a validated watchlist item",
         "x-scope-class": "W",
         "parameters": [{ "in": "header", "name": "Idempotency-Key", "required": true, "schema": { "type": "string", "maxLength": 120 } }],
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object" } } } },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["asset_id"],
+                "properties": { "asset_id": { "type": "integer", "minimum": 1 } }
+              }
+            }
+          }
+        },
         "responses": { "200": { "description": "Added" } }
       },
       "delete": {
         "summary": "Remove a watchlist item",
         "x-scope-class": "W",
         "parameters": [{ "in": "header", "name": "Idempotency-Key", "required": true, "schema": { "type": "string", "maxLength": 120 } }],
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object" } } } },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["asset_id"],
+                "properties": { "asset_id": { "type": "integer", "minimum": 1 } }
+              }
+            }
+          }
+        },
         "responses": { "200": { "description": "Removed" } }
       }
     },

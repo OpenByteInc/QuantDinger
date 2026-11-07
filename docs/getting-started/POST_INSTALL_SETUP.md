@@ -11,7 +11,7 @@ Sign in with the installer-created administrator, verify the email, replace any 
 - Match `FRONTEND_URL` to the real web and H5 origins.
 - Use `self_hosted` for personal systems and `saas` only for multi-user hosting.
 - Set `ENABLE_REGISTRATION=false` when public registration is unnecessary.
-- Set `ALLOW_LOCAL_DESKTOP_BROKERS=false` when the server cannot reach desktop brokers.
+- Disable IBKR under **System Settings > Supported Markets** when the server cannot reach TWS or IB Gateway.
 - After `.env` changes, run `docker compose up -d` to recreate affected services.
 
 ## 3. AI and market data

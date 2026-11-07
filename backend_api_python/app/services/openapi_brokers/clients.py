@@ -281,6 +281,7 @@ class TigerClient:
             "remaining_qty": getattr(order, "remaining", None),
             "filled_avg_price": getattr(order, "avg_fill_price", None),
             "limit_price": getattr(order, "limit_price", None),
+            "realized_pnl": getattr(order, "realized_pnl", None),
             "commission": commission,
             "commission_ccy": next(iter(fees), contract.get("currency") or "USD"),
             "fee_breakdown": fees,

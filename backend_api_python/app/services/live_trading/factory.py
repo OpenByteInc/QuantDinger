@@ -446,8 +446,7 @@ def create_alpaca_client(exchange_config: Dict[str, Any]):
     - base_url:   Optional official Alpaca URL retained for stored-config compatibility
 
     Unlike IBKR, Alpaca is stateless REST — no terminal/gateway needed,
-    so it's the recommended USStock broker on cloud / SaaS deployments where
-    ALLOW_LOCAL_DESKTOP_BROKERS is false.
+    so it's the recommended USStock broker on cloud / SaaS deployments.
     """
     global AlpacaClient, AlpacaConfig
 

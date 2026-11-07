@@ -11,6 +11,7 @@ class LoginRequestSchema(Schema):
     password = fields.String(required=True, validate=validate.Length(min=1, max=1024))
     turnstile_token = fields.String(allow_none=True, validate=validate.Length(max=4096))
     turnstile_clearance = fields.String(allow_none=True, validate=validate.Length(max=4096))
+    client_type = fields.String(load_default="pc", validate=validate.OneOf(["pc", "mobile"]))
 
     @validates_schema
     def validate_identity(self, data, **kwargs):
@@ -24,6 +25,7 @@ class RegisterRequestSchema(Schema):
     username = fields.String(required=True, validate=validate.Length(min=3, max=30))
     password = fields.String(required=True, validate=validate.Length(min=1, max=1024))
     referral_code = fields.String(load_default="", validate=validate.Length(max=64))
+    client_type = fields.String(load_default="pc", validate=validate.OneOf(["pc", "mobile"]))
 
 
 class ResetPasswordRequestSchema(Schema):
@@ -113,6 +115,7 @@ class BillingOrderRequestSchema(Schema):
 
 
 class QuickTradeOrderRequestSchema(Schema):
+    asset_id = fields.Integer(load_default=0, validate=validate.Range(min=0))
     credential_id = fields.Integer(required=True, validate=validate.Range(min=1))
     symbol = fields.String(required=True, validate=validate.Length(min=1, max=64))
     side = fields.String(required=True, validate=validate.OneOf(("buy", "sell")))
@@ -164,6 +167,7 @@ class QuickTradeOrderRequestSchema(Schema):
 
 
 class QuickTradeCloseRequestSchema(Schema):
+    asset_id = fields.Integer(load_default=0, validate=validate.Range(min=0))
     order_type = fields.String(load_default="market", validate=validate.OneOf(("market", "limit")))
     price = fields.Float(load_default=0, validate=validate.Range(min=0))
     credential_id = fields.Integer(required=True, validate=validate.Range(min=1))

@@ -136,6 +136,19 @@ def test_apply_init_sql_includes_public_universe_expansion(tmp_path, monkeypatch
     assert 'public-universe-expansion-20261024' in applied
     assert 'default-cn-hk-universe-members-20261025' in applied
     assert 'default-global-universe-members-20261025' in applied
+    assert 'remove-manager-role-20261104' in applied
+
+
+def test_remove_manager_role_migration_downgrades_legacy_users():
+    migration_path = (
+        Path(__file__).resolve().parents[1]
+        / 'migrations'
+        / '20261104_remove_manager_role.sql'
+    )
+    migration = migration_path.read_text(encoding='utf-8')
+
+    assert "SET role = 'user'" in migration
+    assert "WHERE role = 'manager'" in migration
 
 
 def test_public_universe_expansion_has_explicit_returning_clause():
@@ -230,6 +243,48 @@ def test_migration_component_baselines_existing_large_catalogue(tmp_path):
     assert result == 'baselined'
     assert 'SELECT dangerous_large_seed();' not in statements
     assert any('INSERT INTO qd_bootstrap_migrations' in sql for sql in statements)
+    assert conn.commits == 1
+
+
+def test_migration_component_baselines_when_target_schema_already_exists(tmp_path):
+    sql_path = tmp_path / 'logical-assets.sql'
+    sql_path.write_text('SELECT legacy_watchlist_columns();', encoding='utf-8')
+    conn = _MigrationConn(rows=[None, {'column_exists': True}])
+
+    result = db_module._apply_migration_component(
+        conn,
+        logging.getLogger('test'),
+        name='logical-market-assets-20261105',
+        path=sql_path,
+        baseline_table='qd_watchlist',
+        baseline_column='asset_id',
+    )
+
+    statements = [sql for sql, _params in conn.cursor_obj.calls]
+    assert result == 'baselined'
+    assert 'SELECT legacy_watchlist_columns();' not in statements
+    assert any('information_schema.columns' in sql for sql in statements)
+    assert any('INSERT INTO qd_bootstrap_migrations' in sql for sql in statements)
+    assert conn.commits == 1
+
+
+def test_migration_component_applies_when_target_schema_is_legacy(tmp_path):
+    sql_path = tmp_path / 'logical-assets.sql'
+    sql_path.write_text('SELECT migrate_legacy_watchlist();', encoding='utf-8')
+    conn = _MigrationConn(rows=[None, {'column_exists': False}])
+
+    result = db_module._apply_migration_component(
+        conn,
+        logging.getLogger('test'),
+        name='logical-market-assets-20261105',
+        path=sql_path,
+        baseline_table='qd_watchlist',
+        baseline_column='asset_id',
+    )
+
+    statements = [sql for sql, _params in conn.cursor_obj.calls]
+    assert result == 'applied'
+    assert 'SELECT migrate_legacy_watchlist();' in statements
     assert conn.commits == 1
 
 
@@ -336,6 +391,7 @@ def test_bootstrap_applies_execution_accounting_after_schema(monkeypatch):
     assert names[3] == "ai-decision-billing-20260920"
     assert names[4] == "quick-trade-client-order-id-20260926"
     assert names[5] == "signal-virtual-account-20260926"
+    assert "client-scoped-sessions-20261106" in names
     assert "qd_exchange_order_pnl" in calls[2]["path"].read_text(encoding="utf-8")
     assert "billing_json" in calls[3]["path"].read_text(encoding="utf-8")
     assert "qd_quick_trades" in calls[4]["path"].read_text(encoding="utf-8")

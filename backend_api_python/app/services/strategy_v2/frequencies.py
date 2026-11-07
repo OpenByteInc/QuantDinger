@@ -71,7 +71,8 @@ def driving_frequency(values: Iterable[object], *, default: str = "1d") -> str:
 
 def periods_per_year(frequency: object, markets: Iterable[str]) -> float:
     normalized = normalize_frequency(frequency)
-    is_crypto = "Crypto" in set(markets)
+    normalized_markets = {str(item) for item in markets if str(item)}
+    is_crypto = normalized_markets == {"Crypto"}
     trading_days = 365.25 if is_crypto else 252.0
     if normalized in {"1mo", "1month"}:
         return 12.0

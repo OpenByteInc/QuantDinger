@@ -145,6 +145,188 @@ def test_virtual_limit_matcher_uses_fresh_price_and_preserves_limit(monkeypatch)
     assert executions[0][1]["_virtual_fill_price"] <= row["limit_price"]
 
 
+def test_equity_virtual_order_does_not_match_while_market_is_closed(monkeypatch):
+    from app.services import virtual_trading
+
+    row = {
+        "id": 8,
+        "user_id": 7,
+        "strategy_id": 3,
+        "strategy_run_id": 4,
+        "pending_order_id": 14,
+        "order_intent_id": 22,
+        "symbol": "USStock:AAPL",
+        "action": "open_long",
+        "order_type": "limit",
+        "requested_qty": 2,
+        "limit_price": 195,
+        "slippage_rate": 0.0005,
+        "strategy_market_category": "USStock",
+        "payload_json": "{}",
+    }
+
+    class Cursor:
+        def execute(self, *args, **kwargs):
+            return None
+
+        def fetchall(self):
+            return [row]
+
+        def close(self):
+            return None
+
+    class Connection:
+        def cursor(self):
+            return Cursor()
+
+    @contextmanager
+    def connection():
+        yield Connection()
+
+    monkeypatch.setattr(virtual_trading, "get_db_connection", connection)
+    monkeypatch.setattr(virtual_trading, "is_equity_market_open", lambda market: False)
+    monkeypatch.setattr(
+        virtual_trading,
+        "execute_virtual_signal_order",
+        lambda *_: pytest.fail("closed equity market must not fill"),
+    )
+
+    assert match_virtual_limit_orders(3, {"USStock:AAPL": 194}, strategy_run_id=4) == []
+
+
+def test_deferred_equity_market_order_matches_after_market_reopens(monkeypatch):
+    from app.services import virtual_trading
+
+    row = {
+        "id": 9,
+        "user_id": 7,
+        "strategy_id": 3,
+        "strategy_run_id": 4,
+        "pending_order_id": 15,
+        "order_intent_id": 23,
+        "symbol": "HKStock:00700",
+        "action": "open_long",
+        "order_type": "market",
+        "requested_qty": 100,
+        "limit_price": 0,
+        "slippage_rate": 0.0005,
+        "strategy_market_category": "HKStock",
+        "payload_json": "{}",
+    }
+
+    class Cursor:
+        def execute(self, *args, **kwargs):
+            return None
+
+        def fetchall(self):
+            return [row]
+
+        def close(self):
+            return None
+
+    class Connection:
+        def cursor(self):
+            return Cursor()
+
+    @contextmanager
+    def connection():
+        yield Connection()
+
+    executions = []
+    monkeypatch.setattr(virtual_trading, "get_db_connection", connection)
+    monkeypatch.setattr(virtual_trading, "is_equity_market_open", lambda market: True)
+    monkeypatch.setattr(
+        virtual_trading,
+        "execute_virtual_signal_order",
+        lambda order, payload: executions.append((order, payload)) or {"status": "filled"},
+    )
+
+    matched = match_virtual_limit_orders(3, {"HKStock:00700": 400}, strategy_run_id=4)
+
+    assert matched == [{"status": "filled"}]
+    assert executions[0][1]["order_type"] == "market"
+    assert executions[0][1]["_virtual_fill_price"] == pytest.approx(400.2)
+
+
+def test_closed_equity_market_order_is_persisted_open_instead_of_filled(monkeypatch):
+    from app.services import virtual_trading
+
+    class Cursor:
+        def __init__(self):
+            self.query = ""
+
+        def execute(self, query, params=()):
+            self.query = " ".join(str(query).split())
+
+        def fetchone(self):
+            if "FROM qd_strategies_trading" in self.query:
+                return {
+                    "id": 3,
+                    "user_id": 7,
+                    "execution_mode": "signal",
+                    "initial_capital": 100000,
+                    "exchange_config": {},
+                    "trading_config": {},
+                    "market_type": "spot",
+                    "leverage": 1,
+                    "market_category": "USStock",
+                }
+            if "FROM qd_strategy_virtual_orders" in self.query:
+                return {}
+            if "FROM qd_strategy_virtual_accounts" in self.query:
+                return {"initial_cash": 100000}
+            if "INSERT INTO qd_strategy_virtual_orders" in self.query:
+                return {"id": 91}
+            return {}
+
+        def close(self):
+            return None
+
+    class Connection:
+        def cursor(self):
+            return Cursor()
+
+        def commit(self):
+            return None
+
+    @contextmanager
+    def connection():
+        yield Connection()
+
+    monkeypatch.setattr(virtual_trading, "get_db_connection", connection)
+    monkeypatch.setattr(virtual_trading, "is_equity_market_open", lambda market: False)
+
+    result = execute_virtual_signal_order(
+        {
+            "id": 14,
+            "user_id": 7,
+            "strategy_id": 3,
+            "strategy_run_id": 4,
+            "execution_mode": "signal",
+            "symbol": "USStock:AAPL",
+            "signal_type": "open_long",
+            "amount": 2,
+            "price": 195,
+            "order_type": "market",
+        },
+        {
+            "strategy_id": 3,
+            "strategy_run_id": 4,
+            "execution_mode": "signal",
+            "symbol": "USStock:AAPL",
+            "signal_type": "open_long",
+            "amount": 2,
+            "price": 195,
+            "order_type": "market",
+        },
+    )
+
+    assert result["status"] == "open"
+    assert result["fill_quantity"] == 0
+    assert result["fill_price"] == 0
+    assert result["deferred_reason"] == "market_closed"
+
+
 def test_virtual_position_mark_uses_strategy_scoped_price_and_updates_short_pnl(monkeypatch):
     from app.services import virtual_trading
 

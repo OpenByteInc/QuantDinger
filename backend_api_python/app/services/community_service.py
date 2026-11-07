@@ -21,6 +21,7 @@ from app.services.strategy_marketplace_contract import (
     compatibility_for_target,
     derive_marketplace_contract,
 )
+from app.services.strategy_v2.contract import strategy_source_code_hash
 from app.services.strategy_v2.instruments import instrument_key_from_metadata
 
 logger = get_logger(__name__)
@@ -252,7 +253,8 @@ class CommunityService:
         code_visibility: str = None,  # 'visible' / 'hidden' / None(all)
         min_price: float = None,
         max_price: float = None,
-        sort_by: str = 'score',    # 'score' / 'newest' / 'hot' / 'price_asc' / 'price_desc' / 'rating'
+        sort_by: str = 'score',
+        sort_order: str = None,
         user_id: int = None,       # Current user id, used to mark purchased items.
         accept_language: str = 'en-US',  # Select name_i18n / description_i18n.
         asset_type: str = None,    # 'indicator' / 'script_template' / None(all)
@@ -265,27 +267,12 @@ class CommunityService:
     ) -> Dict[str, Any]:
         """获取市场上已发布的指标列表
 
-        About ``sort_by='score'`` (the new default):
-            The composite score lives in qd_backtest_runs.result_json, which
-            is opaque to SQL. We can't ORDER BY it cheaply. Instead, when
-            the caller asks for score-sorted results, we:
-              1. Pull the *full set* of approved + published indicators
-                 (id-only, very cheap row).
-              2. Batch-compute their scores via fetch_market_asset_kpis.
-              3. Sort by score in Python.
-              4. Slice [offset:offset+page_size] and re-query the full row
-                 for just that slice.
-
-            For other sort_by values (newest / hot / price / rating), the
-            sort can be done in SQL, so we keep the original cheap path
-            and only batch-compute KPIs for the visible page.
-
-            The trade-off: score-sort is O(N) per request in indicators
-            count, but N here is "how many indicators have ever been
-            published" — currently realistic in the low hundreds. If the
-            community grows past ~5k we'll want to denormalise the score
-            onto qd_indicator_codes via a periodic job; until then this
-            is fine and saves a schema migration.
+        About ``sort_by='score'`` (the default for strategy templates):
+            Marketplace KPIs are snapshotted onto qd_indicator_codes when a
+            strategy is published or republished. Listing requests read that
+            immutable snapshot instead of recalculating every backtest. Rows
+            created before the snapshot column existed are rebuilt in one
+            batch and persisted on their first listing request.
         """
         offset = (page - 1) * page_size
 
@@ -334,7 +321,9 @@ class CommunityService:
                     f"""
                     SELECT
                         SUM(CASE WHEN COALESCE(i.asset_type, 'indicator') = 'indicator' THEN 1 ELSE 0 END) AS indicator_count,
-                        SUM(CASE WHEN COALESCE(i.asset_type, 'indicator') = 'script_template' THEN 1 ELSE 0 END) AS script_template_count
+                        SUM(CASE WHEN COALESCE(i.asset_type, 'indicator') = 'script_template' THEN 1 ELSE 0 END) AS script_template_count,
+                        SUM(CASE WHEN COALESCE(i.asset_type, 'indicator') = 'indicator' AND i.created_at >= CURRENT_TIMESTAMP - INTERVAL '7 days' THEN 1 ELSE 0 END) AS new_indicator_count,
+                        SUM(CASE WHEN COALESCE(i.asset_type, 'indicator') = 'script_template' AND i.created_at >= CURRENT_TIMESTAMP - INTERVAL '7 days' THEN 1 ELSE 0 END) AS new_script_template_count
                     FROM qd_indicator_codes i
                     WHERE {category_where_sql}
                     """,
@@ -344,6 +333,10 @@ class CommunityService:
                 asset_type_counts = {
                     'indicator': int(category_count_row.get('indicator_count') or 0),
                     'script_template': int(category_count_row.get('script_template_count') or 0),
+                }
+                new_asset_type_counts = {
+                    'indicator': int(category_count_row.get('new_indicator_count') or 0),
+                    'script_template': int(category_count_row.get('new_script_template_count') or 0),
                 }
 
                 _allowed_asset_types = ('indicator', 'script_template')
@@ -374,20 +367,31 @@ class CommunityService:
 
                 where_sql = " AND ".join(where_clauses)
 
-                # SQL-friendly sorts:
+                requested_direction = 'ASC' if str(sort_order or '').lower() == 'asc' else 'DESC'
                 order_map = {
                     'newest': 'i.created_at DESC',
                     'hot': 'i.purchase_count DESC, i.view_count DESC',
                     'price_asc': 'i.price ASC, i.created_at DESC',
                     'price_desc': 'i.price DESC, i.created_at DESC',
-                    'rating': 'i.avg_rating DESC, i.rating_count DESC'
+                    'rating': f'COALESCE(i.avg_rating, 0) {requested_direction}, i.rating_count DESC, i.id DESC',
+                    'views': f'COALESCE(i.view_count, 0) {requested_direction}, i.id DESC',
+                    'installs': f'COALESCE(i.purchase_count, 0) {requested_direction}, i.id DESC',
+                    'users': f'COALESCE(i.purchase_count, 0) {requested_direction}, i.id DESC',
+                    'price': f'COALESCE(i.price, 0) {requested_direction}, i.id DESC',
+                    'random': "md5(CAST(i.id AS TEXT) || CURRENT_DATE::text)"
                 }
 
                 count_sql = f"SELECT COUNT(*) as count FROM qd_indicator_codes i WHERE {where_sql}"
                 cur.execute(count_sql, tuple(params))
                 total = cur.fetchone()['count']
 
-                if sort_by == 'score':
+                kpi_sort_fields = {
+                    'score': 'score',
+                    'annual_return': 'annual_return',
+                    'max_drawdown': 'max_drawdown',
+                    'sharpe': 'sharpe',
+                }
+                if sort_by in kpi_sort_fields:
                     # Score sort path: fetch ALL matching ids, score them,
                     # sort in Python, then refetch full rows for the page.
                     cur.execute(
@@ -396,7 +400,9 @@ class CommunityService:
                             i.id,
                             COALESCE(i.asset_type, 'indicator') as asset_type,
                             i.source_script_source_id,
-                            i.source_strategy_id
+                            i.source_strategy_id,
+                            i.marketplace_contract_hash as source_code_hash,
+                            i.marketplace_kpis
                         FROM qd_indicator_codes i
                         WHERE {where_sql}
                         """,
@@ -404,12 +410,22 @@ class CommunityService:
                     )
                     all_assets = [dict(r) for r in (cur.fetchall() or [])]
                     all_ids = [int(r['id']) for r in all_assets]
-                    kpi_by_id = fetch_market_asset_kpis(cur, all_assets)
-                    # Tie-break with created_at via id (newer id ≈ newer row)
-                    # so deterministic ordering when many indicators score 0.
+                    kpi_by_id = fetch_market_asset_kpis(cur, all_assets, persist_missing=True)
+                    kpi_field = kpi_sort_fields[sort_by]
+                    metric_direction = str(sort_order or '').lower()
+                    if metric_direction not in {'asc', 'desc'}:
+                        metric_direction = 'desc'
+
+                    def _catalog_metric(indicator_id):
+                        value = float(kpi_by_id.get(indicator_id, {}).get(kpi_field) or 0)
+                        if kpi_field == 'max_drawdown' and value > 0:
+                            value = -value
+                        return value
+
+                    direction_multiplier = 1 if metric_direction == 'asc' else -1
                     all_ids.sort(
                         key=lambda iid: (
-                            -(kpi_by_id.get(iid, {}).get('score') or 0),
+                            direction_multiplier * _catalog_metric(iid),
                             -iid
                         )
                     )
@@ -420,6 +436,7 @@ class CommunityService:
                             'items': [], 'total': total, 'page': page,
                             'page_size': page_size, 'total_pages': 0,
                             'asset_type_counts': asset_type_counts,
+                            'new_asset_type_counts': new_asset_type_counts,
                         }
                     id_placeholders = ','.join(['?'] * len(page_ids))
                     cur.execute(f"""
@@ -428,9 +445,11 @@ class CommunityService:
                             COALESCE(i.is_encrypted, 0) as code_hidden,
                             COALESCE(i.asset_type, 'indicator') as asset_type,
                             i.source_script_source_id, i.source_strategy_id,
+                            i.marketplace_contract_hash as source_code_hash,
                             i.preview_image, i.purchase_count, i.avg_rating, i.rating_count,
                             i.view_count, i.created_at, i.updated_at,
                             i.source_language, i.name_i18n, i.description_i18n,
+                            i.marketplace_kpis,
                             i.marketplace_contract, i.marketplace_binding_mode, i.marketplace_strategy_type,
                             i.marketplace_direction_mode, i.marketplace_execution_mode,
                             i.marketplace_execution_frequency, i.marketplace_confirmation_frequencies,
@@ -455,9 +474,11 @@ class CommunityService:
                             COALESCE(i.is_encrypted, 0) as code_hidden,
                             COALESCE(i.asset_type, 'indicator') as asset_type,
                             i.source_script_source_id, i.source_strategy_id,
+                            i.marketplace_contract_hash as source_code_hash,
                             i.preview_image, i.purchase_count, i.avg_rating, i.rating_count,
                             i.view_count, i.created_at, i.updated_at,
                             i.source_language, i.name_i18n, i.description_i18n,
+                            i.marketplace_kpis,
                             i.marketplace_contract, i.marketplace_binding_mode, i.marketplace_strategy_type,
                             i.marketplace_direction_mode, i.marketplace_execution_mode,
                             i.marketplace_execution_frequency, i.marketplace_confirmation_frequencies,
@@ -473,7 +494,7 @@ class CommunityService:
                     """
                     cur.execute(query_sql, tuple(params + [page_size, offset]))
                     rows = cur.fetchall() or []
-                    page_kpis = fetch_market_asset_kpis(cur, [dict(r) for r in rows])
+                    page_kpis = fetch_market_asset_kpis(cur, [dict(r) for r in rows], persist_missing=True)
 
                 purchased_ids = set()
                 if user_id:
@@ -486,6 +507,7 @@ class CommunityService:
                         )
                         purchased_ids = {r['indicator_id'] for r in (cur.fetchall() or [])}
 
+                db.commit()
                 cur.close()
 
                 items = []
@@ -528,6 +550,7 @@ class CommunityService:
                         'rating_count': row['rating_count'] or 0,
                         'view_count': row['view_count'] or 0,
                         'created_at': row['created_at'].isoformat() if row['created_at'] else None,
+                        'updated_at': row['updated_at'].isoformat() if row['updated_at'] else None,
                         'author': {
                             'id': row['author_id'],
                             'username': row['author_username'],
@@ -574,6 +597,7 @@ class CommunityService:
                     'page_size': page_size,
                     'total_pages': (total + page_size - 1) // page_size if total > 0 else 0,
                     'asset_type_counts': asset_type_counts,
+                    'new_asset_type_counts': new_asset_type_counts,
                 }
 
         except Exception as e:
@@ -582,6 +606,7 @@ class CommunityService:
                 'items': [], 'total': 0, 'page': 1, 'page_size': page_size,
                 'total_pages': 0,
                 'asset_type_counts': {'indicator': 0, 'script_template': 0},
+                'new_asset_type_counts': {'indicator': 0, 'script_template': 0},
             }
 
     def publish_script_template_from_strategy(
@@ -743,6 +768,18 @@ class CommunityService:
                     )
                     indicator_id = int(cur.lastrowid or 0)
 
+                fetch_market_asset_kpis(
+                    cur,
+                    [{
+                        'id': indicator_id,
+                        'asset_type': 'script_template',
+                        'source_script_source_id': source_id_value,
+                        'source_strategy_id': int(strategy_id or 0) or None,
+                        'source_code_hash': strategy_source_code_hash(code),
+                    }],
+                    prefer_persisted=False,
+                    persist_missing=True,
+                )
                 db.commit()
                 cur.close()
 
@@ -783,6 +820,7 @@ class CommunityService:
         user_id: int = None,
         accept_language: str = 'en-US',
         is_admin: bool = False,
+        increment_view: bool = True,
     ) -> Optional[Dict[str, Any]]:
         """获取指标详情。
 
@@ -905,11 +943,12 @@ class CommunityService:
                             else:
                                 local_copy_missing = True
 
-                cur.execute(
-                    "UPDATE qd_indicator_codes SET view_count = COALESCE(view_count, 0) + 1 WHERE id = ?",
-                    (indicator_id,)
-                )
-                db.commit()
+                if increment_view:
+                    cur.execute(
+                        "UPDATE qd_indicator_codes SET view_count = COALESCE(view_count, 0) + 1 WHERE id = ?",
+                        (indicator_id,)
+                    )
+                    db.commit()
                 cur.close()
                 
                 _src_lang = row.get('source_language') if isinstance(row, dict) else None
@@ -940,7 +979,7 @@ class CommunityService:
                     'purchase_count': row['purchase_count'] or 0,
                     'avg_rating': float(row['avg_rating'] or 0),
                     'rating_count': row['rating_count'] or 0,
-                    'view_count': (row['view_count'] or 0) + 1,
+                    'view_count': (row['view_count'] or 0) + (1 if increment_view else 0),
                     'created_at': row['created_at'].isoformat() if row['created_at'] else None,
                     'updated_at': row['updated_at'].isoformat() if row['updated_at'] else None,
                     'author': {
@@ -2663,7 +2702,9 @@ class CommunityService:
                         COALESCE(i.asset_type, 'indicator') as asset_type,
                         i.source_script_source_id,
                         i.source_strategy_id,
+                        i.marketplace_contract_hash as source_code_hash,
                         i.code,
+                        i.marketplace_kpis,
                         i.marketplace_contract,
                         ss.param_schema
                     FROM qd_indicator_codes i
@@ -2679,12 +2720,18 @@ class CommunityService:
 
                 # Re-use the list endpoint KPI path so cards and details
                 # use the same representative backtest and never disagree.
-                kpi = fetch_market_asset_kpis(cur, [asset_row]).get(indicator_id, summarise_backtest_runs([]))
+                kpi = fetch_market_asset_kpis(
+                    cur,
+                    [asset_row],
+                    persist_missing=True,
+                ).get(indicator_id, summarise_backtest_runs([]))
                 bt_rows: List[Dict[str, Any]] = []
                 if kpi['best_run_id']:
                     cur.execute("""
                         SELECT id, symbol, timeframe, start_date, end_date,
-                               leverage, market_type, manifest_json, result_json
+                               leverage, market_type, commission, slippage,
+                               engine_version, data_kind, total_trades, created_at,
+                               manifest_json, result_json
                         FROM qd_backtest_runs
                         WHERE id = %s
                     """, (kpi['best_run_id'],))
@@ -2709,6 +2756,7 @@ class CommunityService:
                             market_type = 'swap' if leverage > 1 else 'spot'
                         if market_type == 'spot':
                             leverage = 1
+                        data_provenance = rj.get('dataProvenance') or {}
                         start_date = str(best_row.get('start_date') or '') or None
                         end_date = str(best_row.get('end_date') or '') or None
                         duration_days = 0
@@ -2731,6 +2779,13 @@ class CommunityService:
                             'win_rate': float(rj.get('winRate') or 0),
                             'start_date': start_date,
                             'end_date': end_date,
+                            'trade_count': int(rj.get('totalTrades') or best_row.get('total_trades') or 0),
+                            'verified_at': best_row.get('created_at').isoformat() if best_row.get('created_at') else None,
+                            'data_kind': str(best_row.get('data_kind') or data_provenance.get('kind') or ''),
+                            'data_source': str(data_provenance.get('source') or ''),
+                            'commission': float(best_row.get('commission') or 0),
+                            'slippage': float(best_row.get('slippage') or 0),
+                            'engine_version': str(best_row.get('engine_version') or ''),
                         }
 
                 marketplace_contract = None
@@ -2788,6 +2843,7 @@ class CommunityService:
                 live_win_rate = 0.0
                 live_total_profit = 0.0
 
+                db.commit()
                 cur.close()
 
                 # ---------- Combine ----------

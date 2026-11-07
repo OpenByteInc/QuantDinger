@@ -87,7 +87,7 @@ Return Python source only. Do not use markdown fences or explanatory prose.
 ## Orders and positions
 - Order-helper signatures are exact: `order(symbol, amount)`, `order_value(symbol, value)`, `order_target(symbol, amount)`, `order_target_value(symbol, value)`, and `order_target_percent(symbol, percent)`.
 - These are runtime-bound global helpers. Never pass `context` as their first argument. Optional execution and protection values must be keyword arguments after the two required arguments.
-- `get_position(symbol)` returns a `Position` object; swap code adds the optional keyword `position_side`. Read `position.amount`, `position.avg_cost`, and `position.last_price` directly; never use dictionary membership, subscripting, `.get(...)`, or `getattr(...)` on it.
+- `get_position(symbol)` returns a `Position` object. For Crypto swaps, omit `position_side` only in `one_way` mode; pass the matching `position_side="long"` or `position_side="short"` in `long_only`, `short_only`, `both`, or `neutral` modes. Read `position.amount`, `position.avg_cost`, and `position.last_price` directly; never use dictionary membership, subscripting, `.get(...)`, or `getattr(...)` on it.
 - A `Position` has no `.quantity` or `.cost_basis`; use `.amount` and `.avg_cost`.
 - Use `get_positions(...)` when a dictionary of multiple positions is required.
 - A string argument to `get_position` returns a Position even when flat (`amount == 0`); omitted or iterable symbols return a dictionary. For hedged positions, `get_positions()` keys include `::long`/`::short`; read one leg with `get_position(symbol, position_side=...)`.
@@ -187,7 +187,7 @@ SCRIPT_STRATEGY_REPAIR_REQUIREMENTS = """# Strategy API V2 repair requirements
 - Order helpers return `None` unless `client_order_id` is supplied. Retain explicit references for status checks; neither a reference nor a cancel request proves a completed fill.
 - Use `data.current(symbol, field="close", frequency=None)` for a current scalar field. Replace every `get_current_data` call; that API does not exist.
 - Enforce exact order signatures such as `order_target_percent(symbol, percent)` and never pass `context` to a global order helper.
-- Treat `get_position(symbol)` as a `Position` object with direct `.amount`, `.avg_cost`, and `.last_price` attributes; swap code adds `position_side` as a keyword. Never treat it as a dictionary or use `getattr`.
+- Treat `get_position(symbol)` as a `Position` object with direct `.amount`, `.avg_cost`, and `.last_price` attributes. For Crypto swaps, omit `position_side` only in `one_way` mode and pass the explicit long or short leg in every directional/hedged mode. Never treat it as a dictionary or use `getattr`.
 - Replace legacy `.quantity` and `.cost_basis` position access with `.amount` and `.avg_cost`.
 - Preserve completed-data-only execution and remove look-ahead.
 - Do not remove the final history row as a candle-close workaround; the runtime supplies completed bars and keeps real-time prices outside the strategy OHLC frame.
@@ -225,16 +225,23 @@ INDICATOR_SYSTEM_CONTRACT = """# QuantDinger chart indicator contract
 - Every plot and signal data list must have exactly `len(df)` values. Use `None` for sparse values and never emit NaN or infinity.
 - Plot types are `line`, `bar`, `circle`, and `cloud`; `histogram`/`column` alias to bar, `lamp`/`dot`/`point`/`scatter` alias to circle, and `band`/`fill_between`/`fill-between` alias to cloud. Set `overlay` explicitly. All non-overlay plots from one indicator share one pane.
 - A line, bar, or circle point may be a scalar or `{'value': number, 'color': '#RRGGBB', 'size': number}` for per-bar style. Prefer the canonical `value`, `color`, and `size` keys.
+- Translate Pine `plotshape`, labels, diamonds, and other sparse price events to `signals`, not to `circle` plots. Circle plots are numeric indicator series or lamp rows; using several sparse circles for event annotations can intentionally activate the lamp-belt pane.
 - A cloud point must be `None` or `{'upper': number, 'lower': number, 'color': '#RRGGBB'}`. The cloud data list must have `len(df)` entries. Use `None` to break warm-up, neutral, or invalid regions. The renderer orders crossing boundaries automatically. Use `opacity` from `0.02` through `0.30`; use `title=False` when the cloud should not add a legend item.
 - Translate Pine `fill()` between two numeric series to one `cloud` plot. For a continuous per-bar band or trend cloud, never emit one `zone` or box layer per bar.
 - A signal is active when its `data` list contains a finite non-zero numeric marker price for that bar. This finite numeric value format is preferred for consistent preview and notification monitoring. Static `text` or `textData` labels never activate a signal on their own.
 - Signals may set `renderMode` to `events`, `points`, or `state`; prefer sparse numeric event arrays unless the requested visual is explicitly a continuous condition.
-- Signal names are dynamic: use a stable `text` label or a per-bar `textData` label. The `type` field controls marker orientation and does not restrict signal names to Buy, Sell, Long Entry, or Long Exit.
+- Signal names are dynamic: use a stable `text` label or a per-bar `textData` label. The `type` field controls marker orientation and does not restrict signal names to Buy, Sell, Long Entry, or Long Exit. Emit canonical `type='buy'` for Pine `labelup`/up markers and `type='sell'` for Pine `labeldown`/down markers; never emit `type='up'` or `type='down'`.
 - Prefer one-bar edge events for markers and notifications. Do not repeat a persistent state on every bar.
-- Layers support sparse `zone`, `line`, and `label` annotations. Do not invent Pine-only linefill, table, polyline, candle, background-color, bar-color, object-ID, or mutation contracts.
+- Layers support sparse `zone`, `line`, and `label` annotations. A canonical zone layer is `{'type': 'zone', 'startIndex': int, 'endIndex': int, 'top': number, 'bottom': number}` with optional `color`, `fillColor`, `borderColor`, `opacity`, `borderSize`, `dashed`, `text`, and `extendRight`; use `top`/`bottom`, never cloud-only `upper`/`lower`, for zone bounds. Keep each historical Pine `box.new` object as one sparse zone instead of connecting successive boxes with continuous line plots. When Pine mutates the current box, compute that box's final color, border, and dashed state. Translate Pine sloped `line.new` drawings to line layers with `startIndex`, `endIndex`, `startPrice`, `endPrice`, `dashed`, and `extendRight=True`; use bounded `extendBars` only when the source explicitly requests a fixed bar count. Do not invent Pine-only linefill, table, polyline, candle, background-color, bar-color, object-ID, or mutation contracts.
+- Stateful Pine drawings must be translated as a chronological single-pass object state machine. A `var box` or `var line` handle refers only to the most recently assigned object: freeze the previous object's endpoint and style when the handle is reassigned, and apply later `set_*` mutations only to the object currently referenced by that handle.
+- Preserve Pine drawing limits in global creation order. For `max_boxes_count`, `max_lines_count`, or a requested layer cap, merge support, resistance, bullish, bearish, and other objects by creation sequence before retaining the newest objects; never concatenate objects by semantic type and then tail-slice the grouped list.
+- When Pine combines a solid historical trend plot with a dashed `line.new(..., extend=extend.right)` projection, emit both parts: keep the confirmed history as a solid plot and add a dashed line layer whose two source points preserve the exact slope and whose `extendRight=True` projects to the visible pane edge without adding a distant autoscale point. Do not approximate the projection with a horizontal ray, a fixed arbitrary bar count, or a per-bar polyline.
 - The runtime is single-symbol and single-timeframe. Do not emulate `request.security()`, other `request.*()` APIs, network access, Pine `barstate.*`, or tick rollback.
 - Translate common Pine calculation semantics with pandas/numpy; do not claim Pine syntax/API compatibility or assume a Pine-compatible `ta.*` namespace exists.
-- Avoid look-ahead: no negative shift, future `iloc`, centered rolling, or future-row reads.
+- Avoid look-ahead in signals and calculations: no negative shift, future `iloc`, centered rolling, or future-row reads. Pine pivot backpainting is a visual exception only when the source explicitly enables it: expose the original backpaint parameter, write already-confirmed pivot visuals to their historical display indexes, and keep breakout events on their actual confirmation/current bars. Never let backpainted display values drive alerts or strategy logic.
+- Preserve Pine plot offsets and repainting behavior explicitly. If the native plot contract has no direct offset field, construct an aligned output array of exactly `len(df)` rather than silently changing a backpainted plot into a current-bar projection. Apply a plot's offset only to that plot; do not move independent `plotshape` signals unless the source applies an offset to them too.
+- Match Pine numerical semantics, including Wilder/RMA seeding for `ta.atr`, population variance where Pine uses biased variance, warm-up bars, and `na` propagation. Do not assume pandas `ewm(..., adjust=False)` has the same initial seed as Pine RMA.
+- Use canonical renderer style fields such as `lineWidth`, not undeclared aliases such as `width`.
 - Return valid Python only, without markdown fences or prose.
 """
 
@@ -257,6 +264,13 @@ INDICATOR_REPAIR_REQUIREMENTS = """# Indicator repair requirements
 - Keep the chart-only indicator contract intact.
 - Remove all strategy, backtest, scheduling, position, leverage, and order behavior.
 - Convert any old execution signals to chart-only sparse marker arrays.
+- Normalize Pine up/labelup markers to canonical `type='buy'` and down/labeldown markers to canonical `type='sell'`; do not leave `type='up'` or `type='down'` in generated output.
+- Replace sparse event-shaped `circle` plots with price-anchored `signals`; do not change renderer or plot contracts to accommodate the wrong output shape.
+- Preserve explicit Pine backpaint/offset behavior as display-only aligned arrays while keeping events on confirmation bars, and convert requested sloped `extend.right` lines to bounded dashed line layers.
+- Repair Pine ATR translations to use Wilder/RMA seeding rather than a differently seeded pandas EWM approximation.
+- Replace plot `width` with canonical `lineWidth`.
+- Repair every zone layer to use numeric `top` and `bottom` bounds; `upper` and `lower` are reserved for cloud plot points. Do not add continuous level plots that connect separate Pine box objects, and preserve each box's final mutated fill, border, and dashed state.
+- Repair stateful Pine box and line conversions as a chronological object state machine. Reassigning a Pine handle freezes the previous object, later mutations affect only the current object, and any object cap is applied after globally sorting all object types by creation sequence.
 - Ensure declared parameter defaults exactly match `params.get(...)` fallbacks.
 - Ensure metadata globals, `df = df.copy()`, and `output` exist.
 - Ensure every plot and marker array has exactly `len(df)` values.

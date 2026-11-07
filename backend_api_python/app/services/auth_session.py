@@ -9,6 +9,21 @@ from app.utils.auth import generate_token
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
+CLIENT_TYPES = frozenset({"pc", "mobile"})
+
+
+def normalize_client_type(value, default: str = "pc") -> str:
+    """Normalize a client session class, falling back to the desktop slot."""
+    normalized = str(value or "").strip().lower()
+    if normalized in CLIENT_TYPES:
+        return normalized
+    return default
+
+
+def get_login_client_type(data: dict = None) -> str:
+    """Resolve the login client class from a request body or header."""
+    body_value = (data or {}).get("client_type")
+    return normalize_client_type(body_value or request.headers.get("X-Client-Type"))
 
 
 def build_frontend_login_redirect(frontend_url: str, **params) -> str:
@@ -88,6 +103,7 @@ def build_userinfo(user: dict, user_id: int, username: str, permissions: list) -
         "id": user.get("id") or user.get("user_id", user_id),
         "username": user.get("username", username),
         "nickname": user.get("nickname", "User"),
+        "email": user.get("email"),
         "avatar": user.get("avatar", "/avatar2.jpg"),
         "timezone": str(user.get("timezone") or "").strip(),
         "role": {
@@ -98,21 +114,35 @@ def build_userinfo(user: dict, user_id: int, username: str, permissions: list) -
     }
 
 
-def issue_login_token(user: dict, user_id: int, username: str, permissions: list) -> tuple:
-    """Increment token version, issue JWT, and build userinfo."""
+def issue_login_token(
+    user: dict,
+    user_id: int,
+    username: str,
+    permissions: list,
+    client_type: str = "pc",
+) -> tuple:
+    """Replace one client session slot, issue JWT, and build userinfo."""
     from app.services.user_service import get_user_service
 
+    client_type = normalize_client_type(client_type)
+    service = get_user_service()
     try:
-        token_version = get_user_service().increment_token_version(user_id)
+        token_version = service.get_token_version(user_id)
+        client_token_version = service.increment_client_token_version(user_id, client_type)
     except Exception as exc:
-        logger.warning("Failed to increment token_version: %s", exc)
-        token_version = 1
+        logger.warning("Failed to replace %s client session: %s", client_type, exc)
+        client_token_version = 0
+
+    if client_token_version < 1:
+        return None, build_userinfo(user, user_id, username, permissions)
 
     token = generate_token(
         user_id=user_id,
         username=user.get("username", username),
         role=user.get("role", "admin"),
         token_version=token_version,
+        client_type=client_type,
+        client_token_version=client_token_version,
     )
     return token, build_userinfo(user, user_id, username, permissions)
 

@@ -3,7 +3,11 @@ from datetime import datetime, timezone
 import pandas as pd
 import pytest
 
-from app.services.market_schedule import equity_daily_bar_cutoff, equity_daily_execution_session
+from app.services.market_schedule import (
+    equity_daily_bar_cutoff,
+    equity_daily_execution_session,
+    is_equity_market_open,
+)
 from app.services.strategy_runtime.timeframes import daily_equity_execution_policy, equity_daily_frames_ready
 from app.services.strategy_v2 import market_data
 
@@ -43,6 +47,20 @@ def test_execution_window_dst_holidays_and_early_close(now, expected):
     assert (session.date().isoformat() if session else None) == expected
 
 
+@pytest.mark.parametrize("now, expected", [
+    ("2026-09-18T13:29:59", False),
+    ("2026-09-18T13:30:00", True),
+    ("2026-09-18T19:59:59", True),
+    ("2026-09-18T20:00:00", False),
+    ("2026-09-19T15:00:00", False),
+    ("2026-11-27T17:59:59", True),
+    ("2026-11-27T18:00:00", False),
+    ("2026-12-25T15:00:00", False),
+])
+def test_us_regular_market_session_gate(now, expected):
+    assert is_equity_market_open("USStock", utc(now)) is expected
+
+
 def test_crypto_cutoff_and_custom_schedules_are_unchanged():
     now = utc("2026-09-18T00:00:02")
     assert market_data._market_bar_cutoff("Crypto", "1d", now=now) == pd.Timestamp("2026-09-17")
@@ -68,7 +86,7 @@ def test_all_constituents_must_have_previous_session_data():
 
 def test_daily_loader_includes_yesterdays_session_and_excludes_unfinished_today(monkeypatch):
     market_data.clear_shared_strategy_frame_cache()
-    monkeypatch.setattr(market_data, "_market_bar_cutoff", lambda *_: equity_daily_bar_cutoff("USStock", utc("2026-09-18T14:00")))
+    monkeypatch.setattr(market_data, "_market_bar_cutoff", lambda *_, **kwargs: equity_daily_bar_cutoff("USStock", utc("2026-09-18T14:00")))
     monkeypatch.setattr(market_data._cache, "get", lambda *_: None)
     monkeypatch.setattr(market_data._cache, "put", lambda *_: None)
     times = ["2026-09-16T13:30", "2026-09-17T13:30", "2026-09-18T13:30"]
@@ -131,7 +149,7 @@ def test_daily_entry_sizes_from_current_quote_without_changing_signal_candle():
 
 def test_delayed_daily_provider_is_retried_in_shared_cache(monkeypatch):
     market_data.clear_shared_strategy_frame_cache()
-    monkeypatch.setattr(market_data, "_market_bar_cutoff", lambda *_: equity_daily_bar_cutoff("USStock", utc("2026-09-18T14:00")))
+    monkeypatch.setattr(market_data, "_market_bar_cutoff", lambda *_, **kwargs: equity_daily_bar_cutoff("USStock", utc("2026-09-18T14:00")))
     calls = []
 
     def fetch(*args, **kwargs):
@@ -163,6 +181,25 @@ def test_delayed_daily_provider_is_retried_in_shared_cache(monkeypatch):
 def test_hk_execution_lunch_break_half_day_and_holidays(now, expected):
     session = equity_daily_execution_session("HKStock", now=utc(now))
     assert (session.date().isoformat() if session else None) == expected
+
+
+@pytest.mark.parametrize("now, expected", [
+    ("2026-09-18T01:29:59", False),
+    ("2026-09-18T01:30:00", True),
+    ("2026-09-18T03:59:59", True),
+    ("2026-09-18T04:00:00", False),
+    ("2026-09-18T04:59:59", False),
+    ("2026-09-18T05:00:00", True),
+    ("2026-09-18T08:00:00", False),
+    ("2026-09-19T02:00:00", False),
+    ("2026-12-25T02:00:00", False),
+])
+def test_hk_regular_market_session_gate(now, expected):
+    assert is_equity_market_open("HKStock", utc(now)) is expected
+
+
+def test_non_equity_market_session_gate_is_continuous():
+    assert is_equity_market_open("Crypto", utc("2026-09-19T02:00:00")) is True
 
 
 def test_hk_daily_candle_date_is_hong_kong_date_not_utc_date():
@@ -200,7 +237,7 @@ def test_token_equity_candles_are_not_replaced_with_underlying_stock_calendar(fa
 
 def test_hk_loader_excludes_intraday_candle_labelled_at_local_midnight(monkeypatch):
     market_data.clear_shared_strategy_frame_cache()
-    monkeypatch.setattr(market_data, "_market_bar_cutoff", lambda *_: equity_daily_bar_cutoff("HKStock", utc("2026-09-18T01:35")))
+    monkeypatch.setattr(market_data, "_market_bar_cutoff", lambda *_, **kwargs: equity_daily_bar_cutoff("HKStock", utc("2026-09-18T01:35")))
     monkeypatch.setattr(market_data._cache, "get", lambda *_: None)
     monkeypatch.setattr(market_data._cache, "put", lambda *_: None)
     times = ["2026-09-16T16:00", "2026-09-17T16:00"]

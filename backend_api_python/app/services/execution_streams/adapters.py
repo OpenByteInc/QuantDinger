@@ -7,6 +7,7 @@ import gzip
 import hashlib
 import hmac
 import json
+import os
 import ssl
 import threading
 import time
@@ -86,6 +87,12 @@ class PrivateWebSocketAdapter:
         self._ws: Any = None
         self._connected = False
         self._reconnects = 0
+        self._auth_failures = 0
+        self._auth_failure_limit = max(
+            1,
+            int(os.getenv("EXECUTION_STREAM_AUTH_MAX_FAILURES", "5")),
+        )
+        self._auth_paused = False
         self._last_error = ""
         self._last_message_at = 0.0
 
@@ -136,8 +143,31 @@ class PrivateWebSocketAdapter:
 
     def mark_ready(self) -> None:
         self._connected = True
+        self._auth_failures = 0
+        self._auth_paused = False
         self._last_error = ""
         self.on_state("connected", "", self._reconnects > 0)
+
+    def authentication_failed(self, ws: Any, message: str) -> None:
+        self._connected = False
+        self._last_error = str(message or "authentication failed")
+        self._auth_failures += 1
+        if self._auth_failures >= self._auth_failure_limit:
+            self._auth_paused = True
+            self._stop.set()
+            logger.error(
+                "Private execution stream paused after authentication failures: stream=%s attempts=%s error=%s",
+                self.stream_key,
+                self._auth_failures,
+                self._last_error,
+            )
+            self.on_state("paused", self._last_error, False)
+        else:
+            self.on_state("error", self._last_error, False)
+        try:
+            ws.close()
+        except Exception:
+            pass
 
     def parse(self, payload: Dict[str, Any]) -> List[ExecutionEvent]:
         raise NotImplementedError
@@ -235,6 +265,8 @@ class PrivateWebSocketAdapter:
 
                 def _close(_ws, _code, reason):
                     self._connected = False
+                    if self._auth_paused:
+                        return
                     close_reason = str(reason or self._last_error or "")
                     self.on_state("disconnected", close_reason, False)
 
@@ -384,15 +416,10 @@ class BinanceExecutionAdapter(PrivateWebSocketAdapter):
             else:
                 error = payload.get("error")
                 message = error.get("msg") if isinstance(error, dict) else error
-                self.on_state(
-                    "error",
+                self.authentication_failed(
+                    ws,
                     f"Binance user stream subscription failed: {message or payload}",
-                    False,
                 )
-                try:
-                    ws.close()
-                except Exception:
-                    pass
             return True
         return super().handle_control(ws, payload)
 
@@ -417,8 +444,8 @@ class OkxExecutionAdapter(PrivateWebSocketAdapter):
 
     def url(self) -> str:
         if exchange_trading_environment(self.config, "okx") != "live":
-            return "wss://wspap.okx.com:8443/ws/v5/private"
-        return "wss://ws.okx.com:8443/ws/v5/private"
+            return "wss://wspap.okx.com/ws/v5/private"
+        return "wss://ws.okx.com/ws/v5/private"
 
     def on_open_messages(self) -> List[Dict[str, Any]]:
         timestamp = str(int(time.time()))
@@ -442,7 +469,7 @@ class OkxExecutionAdapter(PrivateWebSocketAdapter):
                 self.mark_ready()
                 ws.send(json.dumps({"op": "subscribe", "args": [{"channel": "orders", "instType": "ANY"}]}))
             else:
-                self.on_state("error", f"OKX login failed: {payload}", False)
+                self.authentication_failed(ws, f"OKX login failed: {payload}")
             return True
         return super().handle_control(ws, payload)
 
@@ -489,7 +516,10 @@ class BybitExecutionAdapter(PrivateWebSocketAdapter):
                 self.mark_ready()
                 ws.send(json.dumps({"op": "subscribe", "args": ["execution"]}))
             else:
-                self.on_state("error", f"Bybit authentication failed: {payload}", False)
+                self.authentication_failed(
+                    ws,
+                    f"Bybit authentication failed: {payload}",
+                )
             return True
         return super().handle_control(ws, payload)
 
@@ -537,7 +567,7 @@ class BitgetExecutionAdapter(PrivateWebSocketAdapter):
                     "args": [{"instType": "UTA", "topic": "fill"}],
                 }))
             else:
-                self.on_state("error", f"Bitget login failed: {payload}", False)
+                self.authentication_failed(ws, f"Bitget login failed: {payload}")
             return True
         return super().handle_control(ws, payload)
 
@@ -621,13 +651,19 @@ class GateExecutionAdapter(PrivateWebSocketAdapter):
             if str(header.get("status") or "") == "200" and uid and not errors:
                 ws.send(json.dumps(self._subscription("futures.usertrades", user_id=uid)))
             else:
-                self.on_state("error", f"Gate futures authentication failed: {payload}", False)
+                self.authentication_failed(
+                    ws,
+                    f"Gate futures authentication failed: {payload}",
+                )
             return True
         if payload.get("event") == "subscribe":
             if not payload.get("error"):
                 self.mark_ready()
             else:
-                self.on_state("error", f"Gate subscription failed: {payload}", False)
+                self.authentication_failed(
+                    ws,
+                    f"Gate subscription failed: {payload}",
+                )
             return True
         return super().handle_control(ws, payload)
 
@@ -687,7 +723,10 @@ class HtxExecutionAdapter(PrivateWebSocketAdapter):
                 for message in self._subscription_messages():
                     ws.send(json.dumps(message))
             else:
-                self.on_state("error", f"HTX spot authentication failed: {payload}", False)
+                self.authentication_failed(
+                    ws,
+                    f"HTX spot authentication failed: {payload}",
+                )
             return True
         if payload.get("op") == "auth":
             if int(payload.get("err-code") or 0) == 0:
@@ -695,7 +734,10 @@ class HtxExecutionAdapter(PrivateWebSocketAdapter):
                 for message in self._subscription_messages():
                     ws.send(json.dumps(message))
             else:
-                self.on_state("error", f"HTX futures authentication failed: {payload}", False)
+                self.authentication_failed(
+                    ws,
+                    f"HTX futures authentication failed: {payload}",
+                )
             return True
         if payload.get("op") == "ping":
             ws.send(json.dumps({"op": "pong", "ts": payload.get("ts")}))
@@ -731,7 +773,10 @@ class AlpacaExecutionAdapter(PrivateWebSocketAdapter):
                 self.mark_ready()
                 ws.send(json.dumps({"action": "listen", "data": {"streams": ["trade_updates"]}}))
             else:
-                self.on_state("error", f"Alpaca authentication failed: {payload}", False)
+                self.authentication_failed(
+                    ws,
+                    f"Alpaca authentication failed: {payload}",
+                )
             return True
         return super().handle_control(ws, payload)
 

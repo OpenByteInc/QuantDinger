@@ -6,7 +6,6 @@ from flask import Flask, g
 from app.routes import quick_trade
 from app.services.live_trading import fee_quote
 from app.services.pending_orders import live_order_phases
-from app.services.quick_trade import products
 
 
 class _Cursor:
@@ -71,7 +70,14 @@ def test_cancel_limit_order_uses_owned_record_and_reconciles_fill(monkeypatch):
         return {"status": "cancelled"}
 
     monkeypatch.setattr(quick_trade, "get_db_connection", fake_connection)
-    monkeypatch.setattr(products, "build_exchange_config", lambda *args, **kwargs: {"market_type": "swap"})
+    monkeypatch.setattr(
+        quick_trade,
+        "_build_product_aware_config",
+        lambda *args, **kwargs: (
+            {"exchange_id": "okx", "market_type": "swap"},
+            {"product_type": "crypto"},
+        ),
+    )
     monkeypatch.setattr(quick_trade, "create_exchange_client", lambda *args, **kwargs: client)
     monkeypatch.setattr(live_order_phases, "cancel_live_limit_order", fake_cancel)
     monkeypatch.setattr(

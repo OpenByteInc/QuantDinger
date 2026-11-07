@@ -513,11 +513,14 @@ class UniverseService:
             if universe.get("universe_type") == "watchlist":
                 cur.execute(
                     """
-                    SELECT market, symbol, name, exchange_id, market_type,
-                           instrument_id, settle_currency
-                    FROM qd_watchlist
-                    WHERE user_id = ?
-                    ORDER BY market, symbol, exchange_id, market_type, instrument_id
+                    SELECT a.id AS asset_id, a.market, a.symbol, a.name,
+                           a.product_type, a.underlying_market, a.underlying_symbol,
+                           '' AS exchange_id, '' AS market_type,
+                           '' AS instrument_id, '' AS settle_currency
+                    FROM qd_watchlist w
+                    JOIN qd_market_assets a ON a.id = w.asset_id AND a.is_active = 1
+                    WHERE w.user_id = ?
+                    ORDER BY a.market, a.symbol, a.product_type
                     """,
                     (int(user_id),),
                 )

@@ -215,6 +215,15 @@ def test_bitget_demo_and_live_use_matching_private_websocket_hosts():
     assert live.url() == "wss://ws.bitget.com/v3/ws/private"
 
 
+def test_okx_demo_and_live_use_port_443_private_websocket_hosts():
+    demo, _states = _adapter(OkxExecutionAdapter)
+    live, _states = _adapter(OkxExecutionAdapter)
+    live.config["environment"] = "live"
+
+    assert demo.url() == "wss://wspap.okx.com/ws/v5/private"
+    assert live.url() == "wss://ws.okx.com/ws/v5/private"
+
+
 def test_bybit_subscribes_only_after_successful_authentication():
     adapter, _states = _adapter(BybitExecutionAdapter)
     ws = FakeSocket()
@@ -294,6 +303,28 @@ def test_htx_spot_subscribes_known_symbols_after_authentication():
         "trade.clearing#btcusdt",
         "trade.clearing#ethusdt",
     }
+
+
+def test_htx_authentication_failures_pause_after_limit(monkeypatch):
+    monkeypatch.setenv("EXECUTION_STREAM_AUTH_MAX_FAILURES", "3")
+    adapter, states = _adapter(HtxExecutionAdapter, market_type="spot")
+
+    for _ in range(3):
+        ws = FakeSocket()
+        adapter.handle_control(
+            ws,
+            {
+                "action": "req",
+                "ch": "auth",
+                "code": 403,
+                "message": "Incorrect IP address",
+            },
+        )
+        assert ws.closed
+
+    assert states == ["error", "error", "paused"]
+    assert adapter._auth_paused is True
+    assert adapter._stop.is_set()
 
 
 def test_alpaca_listens_for_trade_updates_after_authorization():

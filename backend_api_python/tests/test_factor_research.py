@@ -371,7 +371,7 @@ def test_factor_research_reduces_groups_for_small_cross_sections():
 
     assert result["effectiveGroups"] == 3
     assert result["requestedGroups"] == 5
-    assert result["methodologyVersion"] == 2
+    assert result["methodologyVersion"] == 3
     assert "groupsReduced" in result["sampleDiagnostics"]["warnings"]
     assert result["executionAssumptions"]["periodsPerYear"] == pytest.approx(365.25)
 
@@ -397,6 +397,18 @@ def test_factor_research_sizes_groups_from_usable_factor_cross_section():
 
     assert result["effectiveGroups"] == 2
     assert result["sampleDiagnostics"]["medianCrossSectionSize"] == 4
+    assert result["monotonicity"] is None
+    assert result["executionAssumptions"]["longShortGrossExposure"] == 2.0
+    assert result["executionAssumptions"]["longShortCapitalConvention"] == "one_unit_per_leg"
+
+
+def test_factor_research_icir_uses_observed_research_frequency():
+    periods = FactorResearchEngine._observed_periods_per_year(
+        ["2025-01-01", "2025-07-02", "2026-01-01"],
+        fallback=73.05,
+    )
+
+    assert periods == pytest.approx(2.0, rel=0.01)
 
 
 def test_factor_research_warmup_bars_handles_shorthand_and_custom_multistage_factors():

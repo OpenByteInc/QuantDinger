@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 from unittest.mock import Mock
+from datetime import datetime, timezone
 import time
 
 import pandas as pd
@@ -30,7 +31,27 @@ def handle_data(context, data):
 
 
 @pytest.mark.parametrize("account_options", [{}, {"environment": "testnet"}, {"enable_demo_trading": True}])
-def test_gate_stock_complete_live_loop_uses_exchange_quotes(monkeypatch, account_options):
+@pytest.mark.parametrize("data_mode", ["current", "stale", "recover"])
+def test_gate_stock_complete_live_loop_uses_exchange_quotes(monkeypatch, account_options, data_mode):
+    from app.services.strategy_runtime import candle_readiness
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 9, 14, 15, 0, 5, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(candle_readiness, "datetime", Clock)
+    monkeypatch.setattr(runtime, "datetime", Clock)
+    sessions = []
+    session_type = runtime.StrategyV2LiveSession
+
+    def create_session(**kwargs):
+        session = session_type(**kwargs)
+        session.process = Mock(wraps=session.process)
+        sessions.append(session)
+        return session
+
+    monkeypatch.setattr(runtime, "StrategyV2LiveSession", create_session)
     product = {
         "symbol": "NVDA/USD", "exchange_id": "gate", "market_type": "spot",
         "instrument_id": "NVDA", "product_type": "direct_equity", "api_family": "stock",
@@ -62,17 +83,27 @@ def test_gate_stock_complete_live_loop_uses_exchange_quotes(monkeypatch, account
     store.load.return_value = {}
     monkeypatch.setattr(runtime, "RuntimeStateStore", lambda **kw: store)
     monkeypatch.setattr(runtime, "persist_cancellations", lambda *a: None)
-    monkeypatch.setattr(runtime, "time", SimpleNamespace(monotonic=time.monotonic, sleep=lambda _: None, time=time.time))
+    monotonic = [time.monotonic()]
+    monkeypatch.setattr(runtime, "time", SimpleNamespace(monotonic=lambda: monotonic[0], sleep=lambda _: None, time=time.time))
     frame = pd.DataFrame(
         {"open": 200., "high": 201., "low": 199., "close": 200., "volume": 1.},
         index=pd.date_range("2026-09-14 14:00", periods=60, freq="min", tz="UTC"),
     )
-    monkeypatch.setattr(runtime.StrategyV2BacktestService, "fetch_frequency_frames", lambda *a, **kw: ({"1m": {SYMBOL: frame}}, []))
+    stale_frame = frame.copy()
+    stale_frame.index -= pd.Timedelta(minutes=1)
+    fetches = []
+
+    def fetch_frames(*args, **kwargs):
+        fetches.append(1)
+        ready = data_mode == "current" or (data_mode == "recover" and len(fetches) >= 3)
+        return {"1m": {SYMBOL: frame if ready else stale_frame}}, []
+
+    monkeypatch.setattr(runtime.StrategyV2BacktestService, "fetch_frequency_frames", fetch_frames)
     request = Mock(return_value=(200, {"data": {"bids": [{"p": "210.1"}], "asks": [{"p": "210.3"}]}}, ""))
     monkeypatch.setattr(GateStockClient, "_request", request)
 
     for _delay in executor._run_strategy_loop(1):
-        pass
+        monotonic[0] += 10
 
     if account_options:
         assert executor._last_exit_reason == {1: "strategyV2.gateStockTestnetUnsupported"}
@@ -84,7 +115,21 @@ def test_gate_stock_complete_live_loop_uses_exchange_quotes(monkeypatch, account
     assert executor._last_exit_reason == {}, logs
     assert len(heartbeats) == 4, logs
     assert all(prices.get(SYMBOL) == 210.2 for prices, _ in heartbeats[1:]), logs
-    assert all(meta["status"] == "healthy" for _, meta in heartbeats[1:]), logs
+    if data_mode == "current":
+        assert all(meta["status"] == "healthy" for _, meta in heartbeats[1:]), logs
+        assert sessions[0].process.call_count == 1
+    elif data_mode == "stale":
+        assert all(meta["status"] == "degraded" for _, meta in heartbeats[1:]), logs
+        assert all(meta["last_error"] == "marketData.incomplete_market_data" for _, meta in heartbeats[1:])
+        assert sessions[0].last_processed is None
+        sessions[0].process.assert_not_called()
+        submit.assert_not_called()
+        assert len(fetches) >= 3
+    else:
+        assert heartbeats[1][1]["status"] == "degraded"
+        assert heartbeats[-1][1]["status"] == "healthy"
+        assert sessions[0].process.call_count == 1
+        assert sessions[0].last_processed == frame.index[-1]
     assert request.call_count == 1
 
 
@@ -97,8 +142,11 @@ def test_gate_stock_testnet_rejected_before_deployment_is_saved(monkeypatch):
         get_latest_version=lambda *a, **kw: {"id": 11, "code": CODE},
     ))
     monkeypatch.setattr(deployment.StrategyV2DeploymentService, "_credential_exchange", lambda *a: "gate")
-    monkeypatch.setattr(deployment, "get_catalog_product", lambda **kw: {
-        "instrument_id": "NVDA", "api_family": "stock", "product_type": "direct_equity",
+    monkeypatch.setattr(deployment, "resolve_runtime_instrument", lambda **kw: {
+        "asset_id": 101,
+        "instrument_id": "NVDA",
+        "api_family": "stock",
+        "product_type": "direct_equity",
     })
     resolve = Mock(return_value={"exchange_id": "gate", "environment": "testnet"})
     monkeypatch.setattr(exchange_execution, "resolve_exchange_config", resolve)

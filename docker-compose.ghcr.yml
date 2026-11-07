@@ -276,7 +276,10 @@ services:
       - PORTFOLIO_MONITOR_DUE_BATCH_LIMIT=${PORTFOLIO_MONITOR_DUE_BATCH_LIMIT:-5}
       - GUNICORN_WORKERS=${GUNICORN_WORKERS:-2}
       - GUNICORN_THREADS=${GUNICORN_THREADS:-4}
-      - ALLOW_LOCAL_DESKTOP_BROKERS=${ALLOW_LOCAL_DESKTOP_BROKERS:-true}
+      - GUNICORN_MAX_REQUESTS=${GUNICORN_MAX_REQUESTS:-800}
+      - GUNICORN_MAX_REQUESTS_JITTER=${GUNICORN_MAX_REQUESTS_JITTER:-100}
+      - BACKTEST_KLINE_CACHE_MAX_BYTES=${BACKTEST_KLINE_CACHE_MAX_BYTES:-134217728}
+      - STRATEGY_SHARED_FRAME_CACHE_MAX_BYTES=${STRATEGY_SHARED_FRAME_CACHE_MAX_BYTES:-268435456}
       - FRONTEND_URL=${FRONTEND_URL:-http://localhost:8888,http://localhost:8889}
     networks:
       - quantdinger-network
@@ -319,7 +322,6 @@ services:
       - DB_POOL_MAX=${TRADING_DB_POOL_MAX:-32}
       - DB_APPLICATION_NAME=quantdinger-trading
       - SKIP_AUTO_MIGRATE=true
-      - ALLOW_LOCAL_DESKTOP_BROKERS=${ALLOW_LOCAL_DESKTOP_BROKERS:-true}
       - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
       - KAFKA_CLIENT_ID=quantdinger-trading
     networks:
@@ -494,7 +496,7 @@ services:
     pull_policy: always
     container_name: quantdinger-celery-worker
     restart: unless-stopped
-    command: ["celery", "-A", "app.celery_app:celery_app", "worker", "--loglevel=INFO", "-Q", "jobs,ai,maintenance", "--concurrency=${CELERY_CONCURRENCY:-2}"]
+    command: ["celery", "-A", "app.celery_app:celery_app", "worker", "--loglevel=INFO", "-Q", "ai,maintenance", "--concurrency=${CELERY_CONCURRENCY:-2}"]
     depends_on:
       postgres:
         condition: service_healthy
@@ -528,6 +530,60 @@ services:
       - quantdinger-network
     healthcheck:
       test: ["CMD", "python", "-m", "app.commands.worker_health", "celery"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 45s
+
+  celery-backtest-worker:
+    <<: *backend-runtime
+    image: ${BACKEND_IMAGE:-ghcr.io/openbyteinc/quantdinger-backend}:${BACKEND_TAG:-${IMAGE_TAG:-latest}}
+    pull_policy: always
+    container_name: quantdinger-celery-backtest-worker
+    restart: unless-stopped
+    command: ["celery", "-A", "app.celery_app:celery_app", "worker", "--loglevel=INFO", "-Q", "backtest", "--concurrency=${CELERY_BACKTEST_CONCURRENCY:-1}", "--max-tasks-per-child=1", "--max-memory-per-child=${CELERY_BACKTEST_MAX_MEMORY_KB:-1572864}"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      redis-jobs:
+        condition: service_healthy
+      migration:
+        condition: service_completed_successfully
+    volumes:
+      - backend_logs:/app/logs
+      - backend_data:/app/data
+      - ./.env:/app/.env
+    environment:
+      - QD_PROCESS_ROLE=celery
+      - LOG_FORMAT=${LOG_FORMAT:-json}
+      - CELERY_TASKS_ENABLED=true
+      - CELERY_REDIS_HOST=redis-jobs
+      - CELERY_REDIS_PORT=6379
+      - CELERY_REDIS_PASSWORD=${CELERY_REDIS_PASSWORD:-}
+      - CELERY_BROKER_DB=0
+      - CELERY_RESULT_DB=1
+      - CELERY_BROKER_URL=${CELERY_BROKER_URL:-}
+      - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND:-}
+      - CELERY_MAX_TASKS_PER_CHILD=1
+      - CELERY_MAX_MEMORY_PER_CHILD_KB=${CELERY_BACKTEST_MAX_MEMORY_KB:-1572864}
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-quantdinger}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required; run the QuantDinger installer or scripts/bootstrap_env.py before docker compose}@postgres:5432/${POSTGRES_DB:-quantdinger}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      - REDIS_CACHE_NAMESPACE=${REDIS_CACHE_NAMESPACE:-quantdinger:cache:v1}
+      - CACHE_ENABLED=true
+      - BACKTEST_KLINE_CACHE_MAX_BYTES=${BACKTEST_KLINE_CACHE_MAX_BYTES:-134217728}
+      - STRATEGY_SHARED_FRAME_CACHE_MAX_BYTES=${STRATEGY_SHARED_FRAME_CACHE_MAX_BYTES:-268435456}
+      - DB_POOL_MIN=${WORKER_DB_POOL_MIN:-2}
+      - DB_POOL_MAX=${WORKER_DB_POOL_MAX:-12}
+      - DB_APPLICATION_NAME=quantdinger-celery-backtest-worker
+      - SKIP_AUTO_MIGRATE=true
+    networks:
+      - quantdinger-network
+    healthcheck:
+      test: ["CMD-SHELL", "kill -0 1"]
       interval: 15s
       timeout: 5s
       retries: 3

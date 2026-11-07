@@ -18,6 +18,31 @@ def safe_float_price(value: Any, default: Optional[float] = None) -> Optional[fl
         return default
 
 
+def build_crypto_factor_summary_code(crypto_factors: Dict[str, Any]) -> Dict[str, str]:
+    """Return language-neutral tokens for client-side crypto summary localization."""
+    if not crypto_factors:
+        return {}
+    signals = crypto_factors.get("signals") or {}
+    volume_state = str(signals.get("volume_state") or "").lower()
+    if volume_state not in {"expanding", "shrinking", "stable", "unknown"}:
+        change = safe_float_price(crypto_factors.get("volume_change_24h"))
+        volume_state = (
+            "unknown" if change is None else
+            "expanding" if change > 0 else
+            "shrinking" if change < 0 else
+            "stable"
+        )
+    derivatives = str(signals.get("derivatives_bias") or "neutral").lower()
+    flow = str(signals.get("flow_bias") or "neutral").lower()
+    bias = derivatives if derivatives in {"bullish", "bearish"} else flow
+    if bias not in {"bullish", "bearish"}:
+        bias = "neutral"
+    crowding = str(signals.get("squeeze_risk") or "unknown").lower()
+    if crowding not in {"high", "medium", "low"}:
+        crowding = "unknown"
+    return {"volume_state": volume_state, "bias": bias, "crowding": crowding}
+
+
 def build_trend_outlook_summary(trend_outlook: Dict[str, Any], language: str) -> str:
     """Build the legacy API summary string for a multi-horizon trend outlook."""
     if not trend_outlook:

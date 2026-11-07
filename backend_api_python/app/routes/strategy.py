@@ -50,6 +50,7 @@ from app.services.strategy_ai_workspace import (
 )
 from app.services.strategy import StrategyLimitExceeded, redact_strategy_row
 from app.services.strategy_daily_pnl import load_strategy_daily_metrics
+from app.services.settings.capabilities import is_live_trading_enabled
 from app.services.strategy_runtime.bot_type import resolve_bot_type
 from app.services.strategy_runtime.health import load_runtime_health
 from app.services.strategy_v2 import compile_strategy_v2
@@ -133,7 +134,22 @@ def _attach_runtime_health(rows, *, user_id: int | None = None, client_timezone:
         for row in items
         if int(row.get("id") or 0) > 0
     }
-    health = load_runtime_health(statuses, strategy_statuses=statuses)
+    started_ats = {
+        int(row.get("id") or 0): row.get("updated_at")
+        for row in items
+        if int(row.get("id") or 0) > 0
+    }
+    execution_modes = {
+        int(row.get("id") or 0): str(row.get("execution_mode") or "")
+        for row in items
+        if int(row.get("id") or 0) > 0
+    }
+    health = load_runtime_health(
+        statuses,
+        strategy_statuses=statuses,
+        strategy_started_ats=started_ats,
+        strategy_execution_modes=execution_modes,
+    )
     for row in items:
         runtime_health = health.get(int(row.get("id") or 0), {})
         row["runtime_health"] = runtime_health
@@ -232,6 +248,8 @@ def start_strategy(strategy_id: int):
     row = _strategy(strategy_id)
     if not row:
         return _error("strategyV2.strategyNotFound", 404)
+    if str(row.get("execution_mode") or "signal").strip().lower() == "live" and not is_live_trading_enabled():
+        return _error("strategyV2.liveTradingDisabled", 403)
     service = get_strategy_service()
     try:
         if not service.update_strategy_status(strategy_id, "running", user_id=int(g.user_id)):

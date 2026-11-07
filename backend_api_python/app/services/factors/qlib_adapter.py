@@ -244,7 +244,10 @@ def _linear_stats(values: pd.Series) -> tuple[float, float, float]:
     fitted = slope * x + intercept
     residual = float(y[-1] - fitted[-1])
     total = float(np.sum((y - y.mean()) ** 2))
-    r_squared = 1.0 if total <= EPSILON else 1.0 - float(np.sum((y - fitted) ** 2)) / total
+    r_squared = (
+        float("nan") if np.isclose(values.std(), 0, atol=2e-5)
+        else 1.0 - float(np.sum((y - fitted) ** 2)) / total
+    )
     return float(slope), float(r_squared), residual
 
 
@@ -266,10 +269,10 @@ def _alpha158_rolling_features(size: int) -> list[QlibFeature]:
     current_close = lambda frame: _latest(frame, "close")
     current_volume = lambda frame: _latest(frame, "volume")
 
-    def days_since_extreme(values: pd.Series, mode: str) -> float:
+    def extreme_position(values: pd.Series, mode: str) -> float:
         array = values.to_numpy(dtype=float)
         index = int(np.nanargmax(array) if mode == "max" else np.nanargmin(array))
-        return float(len(array) - 1 - index) / float(size)
+        return float(index + 1) / float(size)
 
     def signed_change_share(frame: pd.DataFrame, positive: bool, field: str = "close") -> float:
         changes = _changes(frame, field, size)
@@ -308,9 +311,9 @@ def _alpha158_rolling_features(size: int) -> list[QlibFeature]:
         ("QTLD", f"Quantile($close,{size},0.2)/$close", "price", ("close",), lambda frame: _ratio(close(frame).quantile(0.2), current_close(frame))),
         ("RANK", f"Rank($close,{size})", "price", ("close",), lambda frame: float(close(frame).rank(pct=True).iloc[-1])),
         ("RSV", f"($close-Min($low,{size}))/(Max($high,{size})-Min($low,{size})+1e-12)", "momentum", fields_ohlc, lambda frame: _ratio(current_close(frame) - low(frame).min(), high(frame).max() - low(frame).min())),
-        ("IMAX", f"IdxMax($high,{size})/{size}", "trend", ("high",), lambda frame: days_since_extreme(high(frame), "max")),
-        ("IMIN", f"IdxMin($low,{size})/{size}", "trend", ("low",), lambda frame: days_since_extreme(low(frame), "min")),
-        ("IMXD", f"(IdxMax($high,{size})-IdxMin($low,{size}))/{size}", "trend", ("high", "low"), lambda frame: days_since_extreme(high(frame), "max") - days_since_extreme(low(frame), "min")),
+        ("IMAX", f"IdxMax($high,{size})/{size}", "trend", ("high",), lambda frame: extreme_position(high(frame), "max")),
+        ("IMIN", f"IdxMin($low,{size})/{size}", "trend", ("low",), lambda frame: extreme_position(low(frame), "min")),
+        ("IMXD", f"(IdxMax($high,{size})-IdxMin($low,{size}))/{size}", "trend", ("high", "low"), lambda frame: extreme_position(high(frame), "max") - extreme_position(low(frame), "min")),
         ("CORR", f"Corr($close,Log($volume+1),{size})", "volume", ("close", "volume"), lambda frame: price_volume_corr(frame, False)),
         ("CORD", f"Corr($close/Ref($close,1),Log($volume/Ref($volume,1)+1),{size})", "volume", ("close", "volume"), lambda frame: price_volume_corr(frame, True)),
         ("CNTP", f"Mean($close>Ref($close,1),{size})", "momentum", ("close",), lambda frame: up_down_share(frame, True)),

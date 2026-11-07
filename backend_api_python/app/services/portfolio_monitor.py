@@ -21,6 +21,12 @@ from app.services.kline import KlineService
 from app.services.billing_service import get_billing_service
 from app.services.portfolio_monitor_i18n import get_alert_message, get_alert_title
 from app.services.portfolio_monitor_notifications import resolve_notification_delivery
+from app.services.portfolio_monitor_report import (
+    collect_professional_reports,
+    get_professional_report,
+    render_professional_html,
+    render_professional_telegram,
+)
 from app.utils.json_helpers import safe_json_loads
 from app.utils.resource_guard import is_fd_cooldown_active, fd_cooldown_remaining
 
@@ -114,6 +120,20 @@ def _monitor_report_texts(language: str = "") -> Dict[str, str]:
         "generated_at": "Generated at",
         "disclaimer": "For research reference only. Not investment advice.",
         "analysis_failed": "Analysis failed",
+        "professional_report": "Professional Analysis Report",
+        "market_bias": "Market bias",
+        "data_quality": "Data quality",
+        "data_coverage": "Coverage",
+        "data_freshness": "Freshness",
+        "conclusion_strength": "Conclusion strength",
+        "analysis_dimensions": "Analysis dimensions",
+        "scenario_analysis": "Scenario analysis",
+        "risk_plan": "Risk plan",
+        "stop_loss": "Stop loss",
+        "take_profit": "Take profit",
+        "risk_reward": "Net risk/reward",
+        "recommended_position": "Recommended position",
+        "estimated_cost": "Estimated cost",
     }
     overrides = {
         "zh-CN": {
@@ -127,6 +147,11 @@ def _monitor_report_texts(language: str = "") -> Dict[str, str]:
             "risk_report": "风险评估", "overview_report": "市场概览", "click_expand": "展开查看",
             "user_focus": "用户关注点", "generated_at": "生成时间", "disclaimer": "仅供研究参考，不构成投资建议。",
             "analysis_failed": "分析失败",
+            "professional_report": "专业分析报告", "market_bias": "市场倾向", "data_quality": "数据质量",
+            "data_coverage": "数据覆盖率", "data_freshness": "数据新鲜度", "conclusion_strength": "结论强度",
+            "analysis_dimensions": "分析维度", "scenario_analysis": "情景分析", "risk_plan": "风险计划",
+            "stop_loss": "止损", "take_profit": "止盈", "risk_reward": "净风险收益比",
+            "recommended_position": "建议仓位", "estimated_cost": "预估成本",
         },
         "zh-TW": {
             "title": "AI 定時分析報告", "subtitle": "由 QuantDinger 快速 AI 分析引擎生成", "kicker": "定時 AI 監控",
@@ -139,6 +164,11 @@ def _monitor_report_texts(language: str = "") -> Dict[str, str]:
             "risk_report": "風險評估", "overview_report": "市場概覽", "click_expand": "展開查看",
             "user_focus": "使用者關注點", "generated_at": "生成時間", "disclaimer": "僅供研究參考，不構成投資建議。",
             "analysis_failed": "分析失敗",
+            "professional_report": "專業分析報告", "market_bias": "市場傾向", "data_quality": "資料品質",
+            "data_coverage": "資料覆蓋率", "data_freshness": "資料新鮮度", "conclusion_strength": "結論強度",
+            "analysis_dimensions": "分析維度", "scenario_analysis": "情境分析", "risk_plan": "風險計畫",
+            "stop_loss": "停損", "take_profit": "停利", "risk_reward": "淨風險報酬比",
+            "recommended_position": "建議部位", "estimated_cost": "預估成本",
         },
         "ja": {"buy": "強気", "sell": "弱気", "hold": "中立", "ai_recommendations": "AI 見通し", "ai_decision": "AI 見通し"},
         "ko": {"buy": "강세", "sell": "약세", "hold": "중립", "ai_recommendations": "AI 전망", "ai_decision": "AI 전망"},
@@ -338,6 +368,7 @@ def _analyze_single_position(pos: Dict[str, Any], language: str, user_id: int = 
             'fundamental_score': scores.get('fundamental', 50),
             'sentiment_score': scores.get('sentiment', 50),
             'key_reasons': analysis_result.get('reasons', []),
+            'professional_report': analysis_result.get('professional_report'),
             'error': analysis_result.get('error')
         }
         logger.info(f"Fast analysis completed for {market}:{symbol}: {analysis_result.get('decision', 'N/A')}")
@@ -581,6 +612,26 @@ def _build_html_report(
         .qd-footer .time { margin-bottom: 4px; }
         .qd-footer .disclaimer { opacity: 0.8; }
         .qd-error { margin: 14px 16px; border: 1px solid rgba(239,68,68,0.3); border-radius: 8px; padding: 12px; background: rgba(239,68,68,0.08); color: #b91c1c; font-size: 13px; }
+        @media (prefers-color-scheme: dark) {
+            .qd-report { background: #171717; color: #f5f5f5; border-color: #343434; }
+            .qd-header { border-color: #343434; background: linear-gradient(135deg, #262626, #1c1c1c); }
+            .qd-header h1, .qd-section-title, .qd-stat-card .value, .qd-pos-symbol .name,
+            .qd-pos-stats .stat .value, .qd-pos-reasoning .label,
+            .qd-collapsible-header .title { color: #f5f5f5; }
+            .qd-header .subtitle, .qd-header-panel .label, .qd-stat-card .label,
+            .qd-rec-card .label, .qd-pos-symbol .market, .qd-pos-decision .confidence,
+            .qd-pos-stats .stat .label, .qd-footer { color: #a3a3a3; }
+            .qd-header-panel, .qd-stat-card, .qd-rec-card, .qd-position,
+            .qd-pos-stats .stat, .qd-collapsible-content { background: #242424; border-color: #343434; }
+            .qd-section, .qd-pos-header, .qd-pos-reasoning, .qd-collapsible-header {
+                background: #202020; border-color: #343434;
+            }
+            .qd-pos-stats { background: #404040; }
+            .qd-pos-reasoning .text, .qd-collapsible-content { color: #d4d4d4; }
+            .qd-rec-card.buy { background: linear-gradient(180deg, rgba(34,197,94,.12), #242424 74%); }
+            .qd-rec-card.sell { background: linear-gradient(180deg, rgba(239,68,68,.13), #242424 74%); }
+            .qd-rec-card.hold { background: linear-gradient(180deg, rgba(234,179,8,.13), #242424 74%); }
+        }
         @media (max-width: 600px) {
             .qd-report { padding: 10px; border-radius: 0; }
             .qd-header { display: block; padding: 16px; }
@@ -805,14 +856,19 @@ def _build_html_report(
                     </div>
         '''
         
-        # Reasoning summary
-        if reasoning:
+        professional_report = get_professional_report(pa)
+
+        # Legacy summaries remain available for historical analysis payloads.
+        if reasoning and not professional_report:
             html += f'''
                     <div class="qd-pos-reasoning">
                         <div class="label">{texts['reasoning']}</div>
                         <div class="text">{reasoning[:500]}{'...' if len(reasoning) > 500 else ''}</div>
                     </div>
             '''
+
+        if professional_report:
+            html += render_professional_html(professional_report, texts)
         
         # Generate unique ID for collapsible sections (use symbol hash to avoid special chars)
         section_id_base = hashlib.md5(
@@ -821,7 +877,7 @@ def _build_html_report(
         ).hexdigest()[:8]
         
         # Collapsible: Trader Analysis
-        if trader_reasoning:
+        if trader_reasoning and not professional_report:
             trader_id = f"trader_{section_id_base}"
             html += f'''
                     <div class="qd-collapsible">
@@ -835,7 +891,7 @@ def _build_html_report(
             '''
         
         # Collapsible: Market Overview
-        if overview_report:
+        if overview_report and not professional_report:
             overview_id = f"overview_{section_id_base}"
             html += f'''
                     <div class="qd-collapsible">
@@ -849,7 +905,7 @@ def _build_html_report(
             '''
         
         # Collapsible: Risk Assessment
-        if risk_report:
+        if risk_report and not professional_report:
             risk_id = f"risk_{section_id_base}"
             html += f'''
                     <div class="qd-collapsible">
@@ -941,6 +997,14 @@ def _build_telegram_report(
         reasoning = str(pa.get('reasoning') or '').strip()
         if reasoning:
             lines.append(reasoning[:150] + ('...' if len(reasoning) > 150 else ''))
+        professional_report = get_professional_report(pa)
+        if professional_report:
+            lines.extend(
+                render_professional_telegram(
+                    professional_report,
+                    _monitor_report_texts(language),
+                )[1:]
+            )
 
     if held:
         lines.extend(["", "<b>Holdings</b>"])
@@ -987,6 +1051,14 @@ def _build_batch_telegram_report(
             label = analysis.get('name') or analysis.get('symbol') or '-'
             price = float(analysis.get('current_price') or 0)
             section_lines.append(f"{label}: {labels.get(decision, decision)}, ${price:,.2f}, conf {analysis.get('confidence', 50)}%")
+            professional_report = get_professional_report(analysis)
+            if professional_report:
+                section_lines.extend(
+                    render_professional_telegram(
+                        professional_report,
+                        _monitor_report_texts(language),
+                    )[1:]
+                )
 
     buy_count = len([p for p in all_analyses if p.get('final_decision') == 'BUY'])
     sell_count = len([p for p in all_analyses if p.get('final_decision') == 'SELL'])
@@ -1075,6 +1147,12 @@ def _send_batch_notification(
 
     html_report = _build_batch_html_report(successful, language)
     telegram_report = _build_batch_telegram_report(successful, language)
+    professional_reports = [
+        report
+        for item in successful
+        for report in collect_professional_reports(item.get('position_analyses') or [])
+    ]
+    report_version = 'professional_report_v1' if professional_reports else 'legacy_monitor_report_v1'
 
     try:
         notifier = SignalNotifier()
@@ -1091,7 +1169,12 @@ def _send_batch_notification(
                             VALUES (?, NULL, ?, ?, ?, ?, ?, ?, NOW())
                             """,
                             (user_id, 'PORTFOLIO', 'ai_monitor', 'browser', title, html_report,
-                             json.dumps({'batch': True, 'count': len(successful)}, ensure_ascii=False, default=str)),
+                             json.dumps({
+                                 'batch': True,
+                                 'count': len(successful),
+                                 'report_version': report_version,
+                                 'professional_reports': professional_reports,
+                             }, ensure_ascii=False, default=str)),
                         )
                         db.commit()
                         cur.close()
@@ -1118,6 +1201,8 @@ def _send_batch_notification(
                             payload={
                                 'type': 'portfolio_monitor_batch',
                                 'monitors': [r.get('_meta', {}).get('monitor_name') for r in successful],
+                                'report_version': report_version,
+                                'professional_reports': professional_reports,
                                 'html_report': html_report,
                             },
                             token_override=targets.get('webhook_token') or None,
@@ -1205,6 +1290,12 @@ def _send_monitor_notification(
         
         # Generate reports for different channels
         html_report = result.get('analysis', '')  # This is already HTML from _build_html_report
+        result['professional_reports'] = collect_professional_reports(position_analyses or [])
+        result['report_version'] = (
+            'professional_report_v1'
+            if result['professional_reports']
+            else 'legacy_monitor_report_v1'
+        )
         
         # Generate Telegram-specific report if we have the data
         telegram_report = ''
@@ -1269,6 +1360,8 @@ def _send_monitor_notification(
                             payload={
                                 'type': 'portfolio_monitor',
                                 'monitor_name': monitor_name,
+                                'report_version': result.get('report_version'),
+                                'professional_reports': result.get('professional_reports', []),
                                 'result': result,
                                 'html_report': html_report
                             },
@@ -1343,10 +1436,15 @@ def run_single_monitor(
             try:
                 with get_db_connection() as db:
                     cur = db.cursor()
-                    wl_sql = "SELECT 1 FROM qd_watchlist WHERE user_id = ? AND UPPER(symbol) = ?"
+                    wl_sql = """
+                        SELECT 1
+                        FROM qd_watchlist w
+                        JOIN qd_market_assets a ON a.id = w.asset_id
+                        WHERE w.user_id = ? AND UPPER(a.symbol) = ?
+                    """
                     wl_args: list = [monitor_user_id, target_sym]
                     if target_mkt:
-                        wl_sql += " AND market = ?"
+                        wl_sql += " AND a.market = ?"
                         wl_args.append(target_mkt)
                     wl_sql += " LIMIT 1"
                     cur.execute(wl_sql, tuple(wl_args))

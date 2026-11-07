@@ -4,7 +4,11 @@ import pandas as pd
 import pytest
 
 from app.services.instrument_rules import InstrumentRules
-from app.services.strategy_v2 import StrategyV2BacktestRunner, StrategyV2LiveSession
+from app.services.strategy_v2 import (
+    StrategyV2BacktestRunner,
+    StrategyV2ContractError,
+    StrategyV2LiveSession,
+)
 from app.services.strategy_v2.data import MultiAssetDataPortal
 from app.services.strategy_v2.models import ScheduleSpec
 from app.services.strategy_v2.runtime import MultiAssetSimulationBroker, OrderIntent, Position
@@ -107,6 +111,82 @@ def test_data_portal_caches_timestamps_and_slices_point_in_time_history():
     assert portal.timestamps is cached_timestamps
     assert list(previous.index) == list(cached_timestamps[498:500])
     assert list(current.index) == list(cached_timestamps[499:501])
+
+
+def test_legacy_swap_position_lookup_returns_the_only_open_directional_leg():
+    symbol = "Crypto:BTC/USDT@swap"
+    code = f'''
+def initialize(context):
+    context.set_universe(["{symbol}"])
+    context.subscribe(frequency="1m")
+    context.set_metadata(direction_mode="long_only")
+
+def handle_data(context, data):
+    pass
+'''
+    session = StrategyV2LiveSession(
+        code=code,
+        frames={symbol: _frame([100, 101])},
+        initial_capital=1000,
+    )
+    session.synchronize_positions({
+        f"{symbol}::long": {
+            "amount": 2,
+            "position_side": "long",
+            "avg_cost": 100,
+            "last_price": 101,
+        },
+    })
+
+    position = session.context.get_position(symbol)
+
+    assert position.amount == 2
+    assert position.position_side == "long"
+
+
+def test_legacy_swap_position_lookup_requires_side_when_both_legs_are_open():
+    symbol = "Crypto:BTC/USDT@swap"
+    code = f'''
+def initialize(context):
+    context.set_universe(["{symbol}"])
+    context.subscribe(frequency="1m")
+    context.set_metadata(direction_mode="both")
+
+def handle_data(context, data):
+    pass
+'''
+    session = StrategyV2LiveSession(
+        code=code,
+        frames={symbol: _frame([100, 101])},
+        initial_capital=1000,
+    )
+    session.synchronize_positions({
+        f"{symbol}::long": {"amount": 2, "position_side": "long"},
+        f"{symbol}::short": {"amount": 1, "position_side": "short"},
+    })
+
+    with pytest.raises(StrategyV2ContractError, match="strategyV2.positionSideRequired"):
+        session.context.get_position(symbol)
+
+
+def test_runtime_rejects_dynamic_unsupported_order_keyword():
+    symbol = "Crypto:BTC/USDT@swap"
+    code = f'''
+def initialize(context):
+    context.set_universe(["{symbol}"])
+    context.subscribe(frequency="1m")
+
+def handle_data(context, data):
+    pass
+'''
+    session = StrategyV2LiveSession(
+        code=code,
+        frames={symbol: _frame([100, 101])},
+        initial_capital=1000,
+    )
+
+    with pytest.raises(StrategyV2ContractError, match="unsupportedArgument:stop_loss"):
+        session.context.order_target_percent(symbol, 0.1, **{"stop_loss": 95})
 
 
 def test_multi_asset_strategy_controls_symbols_and_rebalances_without_ui_market_fields():
@@ -639,6 +719,26 @@ def handle_data(context, data):
         assert str(exc) == "strategyV2.leverageNotAllowed"
     else:
         raise AssertionError("Expected leverage policy rejection")
+
+
+def test_runtime_rejects_leverage_above_strategy_declared_limit():
+    code = """
+def initialize(context):
+    context.set_universe(["Crypto:BTC/USDT@okx:swap"])
+    context.allow_leverage(max_leverage=5)
+    context.subscribe(frequency="1d")
+
+def handle_data(context, data):
+    pass
+"""
+    with pytest.raises(ValueError, match="strategyV2.leverageExceedsStrategyLimit"):
+        StrategyV2BacktestRunner(
+            code=code,
+            frames={"Crypto:BTC/USDT@okx:swap": _frame([100, 101])},
+            initial_capital=10000,
+            leverage_enabled=True,
+            leverage=10,
+        )
 
 
 def test_runtime_helpers_and_logger_are_supported():

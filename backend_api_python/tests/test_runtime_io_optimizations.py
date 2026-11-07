@@ -103,6 +103,7 @@ def test_active_runtime_keeps_risk_tick(monkeypatch):
 def test_idle_stock_runtime_uses_event_fallback_wake(monkeypatch):
     monkeypatch.setenv("BAR_IDLE_SCHEDULER_ENABLED", "1")
     monkeypatch.setenv("BAR_EVENT_FALLBACK_WAKE_SEC", "300")
+    monkeypatch.setenv("STRATEGY_IDLE_HEARTBEAT_SEC", "30")
 
     wait_seconds = _runtime_wait_seconds(
         risk_tick=1.0,
@@ -117,7 +118,28 @@ def test_idle_stock_runtime_uses_event_fallback_wake(monkeypatch):
         event_driven=True,
     )
 
-    assert wait_seconds == 300.0
+    assert wait_seconds == 30.0
+
+
+def test_event_fallback_can_wake_faster_than_idle_heartbeat(monkeypatch):
+    monkeypatch.setenv("BAR_IDLE_SCHEDULER_ENABLED", "1")
+    monkeypatch.setenv("BAR_EVENT_FALLBACK_WAKE_SEC", "8")
+    monkeypatch.setenv("STRATEGY_IDLE_HEARTBEAT_SEC", "30")
+
+    wait_seconds = _runtime_wait_seconds(
+        risk_tick=1.0,
+        frequency="1h",
+        candidates=[{"market": "Crypto"}],
+        bot_type="",
+        positions={},
+        order_statuses={},
+        protected=set(),
+        pending_count=0,
+        market_ready=True,
+        event_driven=True,
+    )
+
+    assert wait_seconds == 8.0
 
 
 def test_event_driven_runtime_with_position_keeps_risk_tick(monkeypatch):

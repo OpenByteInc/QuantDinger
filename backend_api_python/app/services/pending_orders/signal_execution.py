@@ -70,6 +70,7 @@ def dispatch_virtual_signal_order(
             "mode": "signal",
             "virtual_order_id": int(virtual_fill.get("virtual_order_id") or 0),
             "virtual_fill_price": float(virtual_fill.get("fill_price") or 0.0),
+            "deferred_reason": str(virtual_fill.get("deferred_reason") or ""),
         },
     )
 
@@ -77,6 +78,7 @@ def dispatch_virtual_signal_order(
     ok_channels = [channel for channel, result in results.items() if (result or {}).get("ok")]
     fail_channels = [channel for channel, result in results.items() if not (result or {}).get("ok")]
     virtual_status = str(virtual_fill.get("status") or "filled").strip().lower()
+    deferred_reason = str(virtual_fill.get("deferred_reason") or "").strip().lower()
     virtual_note = f"virtual_{virtual_status}={int(virtual_fill.get('virtual_order_id') or 0)}"
 
     if ok_channels:
@@ -84,11 +86,12 @@ def dispatch_virtual_signal_order(
         if fail_channels:
             note += f";fail={','.join(fail_channels)}"
         level = "signal"
-        message = (
-            "strategyRuntime.virtualLimitOrderOpened"
-            if virtual_status == "open"
-            else "strategyRuntime.virtualFillCompleted"
-        )
+        if deferred_reason == "market_closed":
+            message = "strategyRuntime.virtualOrderDeferredMarketClosed"
+        elif virtual_status == "open":
+            message = "strategyRuntime.virtualLimitOrderOpened"
+        else:
+            message = "strategyRuntime.virtualFillCompleted"
     else:
         first_error = next(
             (
@@ -100,11 +103,12 @@ def dispatch_virtual_signal_order(
         )
         note = f"{virtual_note};notify_failed={first_error or 'no_channel'}"
         level = "warning"
-        message = (
-            "strategyRuntime.virtualLimitOrderOpenedNotificationFailed"
-            if virtual_status == "open"
-            else "strategyRuntime.virtualFillNotificationFailed"
-        )
+        if deferred_reason == "market_closed":
+            message = "strategyRuntime.virtualOrderDeferredMarketClosedNotificationFailed"
+        elif virtual_status == "open":
+            message = "strategyRuntime.virtualLimitOrderOpenedNotificationFailed"
+        else:
+            message = "strategyRuntime.virtualFillNotificationFailed"
 
     worker._mark_sent(
         order_id=order_id,

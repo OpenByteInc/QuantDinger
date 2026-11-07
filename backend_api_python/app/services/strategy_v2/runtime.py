@@ -47,6 +47,26 @@ _PROTECTION_EXIT_REASONS = frozenset({
     "time_limit",
 })
 
+_ORDER_OPTION_NAMES = frozenset({
+    "client_order_id",
+    "execution_algo",
+    "limit_price",
+    "maker_offset_bps",
+    "maker_wait_sec",
+    "order_type",
+    "position_side",
+    "price",
+    "protection",
+    "reason",
+    "stop_loss_pct",
+    "take_profit_pct",
+    "time_limit_seconds",
+    "trailing_activation_pct",
+    "trailing_rebase_on_scale_in",
+    "trailing_stop_pct",
+    "type",
+})
+
 
 def _backtest_time_iso(value: Any) -> str:
     """Serialize the UTC-naive market index as an unambiguous UTC instant."""
@@ -373,6 +393,25 @@ class StrategyRuntimeContext:
             current = self.portfolio.positions.get(leg_key)
             if current is not None:
                 return current
+            if not _normalize_position_side(position_side):
+                leg_prefix = f"{key}::"
+                matching_legs = [
+                    position
+                    for stored_key, position in self.portfolio.positions.items()
+                    if stored_key.startswith(leg_prefix)
+                    and _normalize_position_side(stored_key[len(leg_prefix):])
+                ]
+                open_legs = [
+                    position
+                    for position in matching_legs
+                    if abs(float(position.amount or 0.0)) > 1e-12
+                ]
+                if len(open_legs) == 1:
+                    return open_legs[0]
+                if len(open_legs) > 1:
+                    raise StrategyV2ContractError("strategyV2.positionSideRequired")
+                if len(matching_legs) == 1:
+                    return matching_legs[0]
             try:
                 last_price = self.portal.current(key, "close", 0.0)
             except Exception:
@@ -589,6 +628,11 @@ class StrategyRuntimeContext:
         value: object,
         kwargs: Mapping[str, Any],
     ) -> str | None:
+        unsupported = sorted(set(kwargs) - _ORDER_OPTION_NAMES)
+        if unsupported:
+            raise StrategyV2ContractError(
+                f"strategyV2.apiCallInvalid:{kind}:unsupportedArgument:{unsupported[0]}"
+            )
         key = self.portal.resolve_key(symbol)
         try:
             number = float(value)
@@ -1794,7 +1838,7 @@ class StrategyV2BacktestRunner:
         requested_leverage = max(1.0, float(leverage or 1.0)) if leverage_enabled else 1.0
         if requested_leverage > 1.0 and not self.program.manifest.leverage_allowed:
             raise StrategyV2ContractError("strategyV2.leverageNotAllowed")
-        if requested_leverage > PLATFORM_MAX_LEVERAGE:
+        if requested_leverage > min(PLATFORM_MAX_LEVERAGE, self.program.manifest.max_leverage):
             raise StrategyV2ContractError("strategyV2.leverageExceedsStrategyLimit")
         self.portal = MultiAssetDataPortal(
             frames,

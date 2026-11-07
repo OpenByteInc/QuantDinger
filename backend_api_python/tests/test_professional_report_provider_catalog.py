@@ -42,45 +42,37 @@ def test_market_and_capability_filter_is_prioritized_and_supports_aliases():
     assert all("market_data" in provider.capabilities for provider in market_data)
 
     estimates = providers_for("HKStock", "estimates", tier="professional")
-    assert [provider.key for provider in estimates] == ["lseg"]
+    assert estimates == []
 
 
 def test_catalog_entries_are_immutable_and_include_license_warnings():
-    provider = get_provider("massive")
-    assert provider.api_env_keys == ("MASSIVE_API_KEY", "POLYGON_API_KEY")
+    provider = get_provider("coinglass")
+    assert provider.api_env_keys == ("COINGLASS_API_KEY",)
     assert provider.license_warning
     assert provider.capability == provider.capabilities
     assert provider.can_run_without_key is False
-    assert provider.integration_status == "planned"
+    assert provider.integration_status == "active"
     with pytest.raises(FrozenInstanceError):
         provider.default_priority = 1
 
 
-def test_catalog_distinguishes_active_adapters_from_planned_sources():
+def test_catalog_contains_only_active_adapters():
     active = {provider.key for provider in PROVIDER_CATALOG if provider.integration_status == "active"}
     assert {
         "yahoo_finance", "finnhub", "twelve_data", "alpha_vantage",
         "fred", "sec_edgar", "gate_public", "okx_public", "native_crypto_public",
         "coingecko", "coinglass", "cryptoquant", "cftc_cot",
     }.issubset(active)
-    assert "hkex_data_marketplace" not in active
+    assert active == {provider.key for provider in PROVIDER_CATALOG}
 
 
-def test_configuration_status_supports_keyless_alternative_and_all_key_modes():
+def test_configuration_status_supports_keyless_and_keyed_sources():
     assert is_provider_configured("sec_edgar", environ={}) is True
 
-    massive = provider_configuration_status("massive", environ={"POLYGON_API_KEY": "legacy-key"})
-    assert massive["configured"] is True
-    assert massive["configured_env_keys"] == ("POLYGON_API_KEY",)
-    assert massive["missing_env_keys"] == ("MASSIVE_API_KEY",)
-
-    partial_lseg = provider_configuration_status("lseg", environ={"LSEG_CLIENT_ID": "client"})
-    assert partial_lseg["configured"] is False
-    assert partial_lseg["missing_env_keys"] == ("LSEG_CLIENT_SECRET",)
-    assert is_provider_configured(
-        "lseg",
-        environ={"LSEG_CLIENT_ID": "client", "LSEG_CLIENT_SECRET": "secret"},
-    ) is True
+    coinglass = provider_configuration_status("coinglass", environ={"COINGLASS_API_KEY": "key"})
+    assert coinglass["configured"] is True
+    assert coinglass["configured_env_keys"] == ("COINGLASS_API_KEY",)
+    assert coinglass["missing_env_keys"] == ()
 
 
 def test_configured_filter_does_not_read_network_or_require_process_env():
@@ -90,7 +82,7 @@ def test_configured_filter_does_not_read_network_or_require_process_env():
         configured=True,
         environ={},
     )
-    assert [provider.key for provider in configured] == ["defillama"]
+    assert configured == []
 
 
 @pytest.mark.parametrize(

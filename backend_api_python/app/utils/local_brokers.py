@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import os
+from app.utils.trading_venue_visibility import is_trading_venue_enabled
 
 
 def local_desktop_brokers_allowed() -> bool:
-    """When False, every IBKR connection path must be rejected."""
-    v = os.getenv("ALLOW_LOCAL_DESKTOP_BROKERS", "true").strip().lower()
-    return v in ("1", "true", "yes", "on")
+    """Use the canonical supported-venue policy for every IBKR entry point."""
+    return is_trading_venue_enabled("ibkr")
 
 
 def desktop_broker_cloud_reject_message() -> str:

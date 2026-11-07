@@ -31,7 +31,6 @@ from app.openapi.schemas.high_risk import (
     QuickTradeOrderRequestSchema,
     QuickTradeProtectionRequestSchema,
 )
-
 from app.utils.db import get_db_connection
 from app.utils.logger import get_logger
 from app.utils.auth import login_required
@@ -717,6 +716,7 @@ def get_balance():
             return qt_rej
         product_args = {
             "symbol": request.args.get("symbol", "").strip(),
+            "asset_id": request.args.get("asset_id", "").strip(),
             "instrument_id": request.args.get("instrument_id", "").strip(),
             "product_type": request.args.get("product_type", "").strip(),
             "api_family": request.args.get("api_family", "").strip(),

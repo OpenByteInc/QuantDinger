@@ -22,6 +22,35 @@ def test_v2_source_prefers_script_source_code(monkeypatch):
     assert name == "V2"
 
 
+def test_prepare_run_rejects_leverage_above_source_limit():
+    payload = {
+        "code": """
+def initialize(context):
+    context.set_universe(["Crypto:BTC/USDT@swap"])
+    context.allow_leverage(max_leverage=5)
+    context.subscribe(frequency="1h")
+
+def handle_data(context, data):
+    pass
+""",
+        "startDate": "2026-01-01",
+        "endDate": "2026-02-01",
+        "leverageEnabled": True,
+        "leverage": 10,
+    }
+
+    captured_error = None
+    try:
+        backtest_center._prepare_run(payload, 7)
+    except ValueError as exc:
+        captured_error = exc
+        assert str(exc) == "strategyV2.leverageExceedsStrategyLimit"
+    else:
+        raise AssertionError("Expected strategy leverage limit rejection")
+
+    assert backtest_center._public_request_error(captured_error) == "strategyV2.leverageExceedsStrategyLimit"
+
+
 def test_factor_research_forwards_factor_parameters_to_execution_and_storage(app, monkeypatch):
     captured = {}
 
@@ -59,13 +88,10 @@ def test_factor_research_forwards_factor_parameters_to_execution_and_storage(app
         "factorParams": {"timeperiod": 21, "multiplier": 2.5, "output": "SUPERTREND"},
     }
 
-    with app.test_request_context("/api/backtest/factor-research", method="POST", json=payload):
-        g.user_id = 7
-        response = inspect.unwrap(backtest_center.run_factor_research)()
+    prepared = backtest_center._prepare_factor_research_job(payload, 7)
+    result = backtest_center._run_factor_research_job(prepared)
 
-    body = response.get_json()
-    assert body["code"] == 1, body
-    assert body["data"]["runId"] == 41
+    assert result["runId"] == 41
     assert captured["execution"]["factor_params"] == payload["factorParams"]
     assert captured["storage"]["result"]["factorParams"] == payload["factorParams"]
 
@@ -98,25 +124,51 @@ def test_factor_research_uses_universe_without_loading_strategy_source(app, monk
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("strategy source must not be loaded")),
     )
 
-    with app.test_request_context("/api/backtest/factor-research", method="POST", json={
+    payload = {
         "universeId": 9,
         "frequency": "1d",
         "startDate": "2026-01-01",
         "endDate": "2026-02-01",
         "factorId": "momentum_20",
-    }):
-        g.user_id = 7
-        response = inspect.unwrap(backtest_center.run_factor_research)()
+    }
+    prepared = backtest_center._prepare_factor_research_job(payload, 7)
+    result = backtest_center._run_factor_research_job(prepared)
 
-    body = response.get_json()
-    assert body["code"] == 1, body
-    assert body["data"]["runId"] == 42
+    assert result["runId"] == 42
     assert captured["execution"]["universe_id"] == 9
     assert captured["execution"]["frequency"] == "1d"
     assert captured["storage"]["source_id"] is None
     assert captured["storage"]["universe_id"] == 9
     assert captured["storage"]["universe_name"] == "NASDAQ 100"
     assert captured["storage"]["research_mode"] == "universe"
+
+
+def test_factor_research_submission_uses_durable_worker_job(app, monkeypatch):
+    captured = {}
+
+    def submit_job(**kwargs):
+        captured.update(kwargs)
+        return {
+            "job_id": "factor-job-7",
+            "kind": "factor_research",
+            "status": "queued",
+        }
+
+    monkeypatch.setattr(backtest_center.agent_jobs, "submit_job", submit_job)
+    with app.test_request_context("/api/backtest/factor-research", method="POST", json={
+        "universeId": 9,
+        "startDate": "2026-01-01",
+        "endDate": "2026-02-01",
+        "factorId": "momentum_20",
+    }):
+        g.user_id = 7
+        response, status = inspect.unwrap(backtest_center.run_factor_research)()
+
+    body = response.get_json()
+    assert status == 202
+    assert body["data"]["jobId"] == "factor-job-7"
+    assert body["data"]["kind"] == "factor_research"
+    assert captured["request_payload"]["__user_id"] == 7
 
 
 def test_factor_benchmark_persists_ranked_factor_runs(app, monkeypatch):
@@ -170,7 +222,7 @@ def test_factor_benchmark_persists_ranked_factor_runs(app, monkeypatch):
     monkeypatch.setattr(backtest_center, "get_strategy_backtest_service", lambda: BacktestService())
     monkeypatch.setattr(backtest_center, "get_factor_research_repository", lambda: ResearchRepository())
 
-    with app.test_request_context("/api/backtest/factor-benchmark", method="POST", json={
+    payload = {
         "universeId": 9,
         "frequency": "1d",
         "startDate": "2025-01-01",
@@ -178,23 +230,21 @@ def test_factor_benchmark_persists_ranked_factor_runs(app, monkeypatch):
         "factors": [{"factorId": "quality"}, {"factorId": "value"}],
         "trainFraction": 0.65,
         "falseDiscoveryRate": 0.08,
-    }):
-        g.user_id = 7
-        response = inspect.unwrap(backtest_center.run_factor_benchmark)()
+    }
+    prepared = backtest_center._prepare_factor_benchmark_job(payload, 7)
+    result = backtest_center._run_factor_benchmark_job(prepared)
 
-    body = response.get_json()
-    assert body["code"] == 1, body
-    assert body["data"]["benchmarkId"]
-    assert body["data"]["rankings"][0]["runId"] == 101
-    assert body["data"]["rankings"][1]["runId"] == 102
-    assert "factorResults" not in body["data"]
+    assert result["benchmarkId"]
+    assert result["rankings"][0]["runId"] == 101
+    assert result["rankings"][1]["runId"] == 102
+    assert "factorResults" not in result
     assert captured["execution"]["train_fraction"] == 0.65
     assert captured["execution"]["false_discovery_rate"] == 0.08
     assert [item["research_mode"] for item in captured["persisted"]] == [
         "benchmark", "benchmark"
     ]
     assert captured["persisted"][0]["result"]["benchmarkClassification"] == "alive"
-    assert captured["persisted"][0]["result"]["benchmarkSnapshot"]["benchmarkId"] == body["data"]["benchmarkId"]
+    assert captured["persisted"][0]["result"]["benchmarkSnapshot"]["benchmarkId"] == result["benchmarkId"]
     assert "factorResults" not in captured["persisted"][0]["result"]["benchmarkSnapshot"]
 
 
@@ -241,7 +291,32 @@ def test_factor_benchmark_history_groups_child_runs(app, monkeypatch):
     assert body["data"][0]["factor_count"] == 3
     assert body["data"][0]["completed_count"] == 2
     assert body["data"][0]["validated_count"] == 1
+    assert body["data"][0]["best_factor_id"] == "quality"
+    assert body["data"][0]["best_score"] == 88.0
     assert body["data"][0]["failed_count"] == 1
+
+
+def test_factor_benchmark_history_does_not_promote_failed_factor():
+    items = backtest_center._factor_benchmark_history_items([{
+        "created_at": "2026-11-01T10:00:00",
+        "result": {
+            "benchmarkId": "benchmark-no-leader",
+            "benchmarkSnapshot": {
+                "rankings": [{
+                    "factorId": "momentum",
+                    "classification": "decaying",
+                    "score": 50.1,
+                }],
+                "summary": {
+                    "requestedFactorCount": 1,
+                    "bestFactorId": "momentum",
+                },
+            },
+        },
+    }])
+
+    assert items[0]["best_factor_id"] is None
+    assert items[0]["best_score"] is None
 
 
 def test_factor_benchmark_detail_restores_complete_snapshot(app, monkeypatch):
@@ -283,12 +358,11 @@ def test_factor_benchmark_detail_restores_complete_snapshot(app, monkeypatch):
 
 
 def test_factor_benchmark_rejects_exception_detail_exposure(app, monkeypatch):
-    class BacktestService:
-        @staticmethod
-        def benchmark_universe_factors(**_kwargs):
-            raise ValueError("database password=secret")
-
-    monkeypatch.setattr(backtest_center, "get_strategy_backtest_service", lambda: BacktestService())
+    monkeypatch.setattr(
+        backtest_center.agent_jobs,
+        "submit_job",
+        lambda **_kwargs: (_ for _ in ()).throw(ValueError("database password=secret")),
+    )
 
     with app.test_request_context("/api/backtest/factor-benchmark", method="POST", json={
         "universeId": 9,
@@ -348,7 +422,14 @@ def test_human_backtest_submission_uses_persisted_async_job(app, monkeypatch):
 
     monkeypatch.setattr(backtest_center.agent_jobs, "submit_job", submit_job)
     payload = {
-        "code": "def initialize(context):\n    pass",
+        "code": """
+def initialize(context):
+    context.set_universe(["Crypto:BTC/USDT@swap"])
+    context.subscribe(frequency="1h")
+
+def handle_data(context, data):
+    pass
+""",
         "startDate": "2026-01-01",
         "endDate": "2026-02-01",
         "initialCapital": 20000,

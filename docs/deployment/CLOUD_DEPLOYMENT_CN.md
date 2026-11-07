@@ -85,7 +85,7 @@ python3 scripts/bootstrap_env.py --compose-file docker-compose.ghcr.yml
 ADMIN_USER=your_admin_user
 ADMIN_PASSWORD=your_strong_password
 FRONTEND_URL=https://app.example.com,https://m.example.com
-ALLOW_LOCAL_DESKTOP_BROKERS=false
+ENABLED_TRADING_VENUES=alpaca,tiger,webull,binance,okx,bybit,bitget,gate,htx
 ```
 
 初始化脚本会生成 `POSTGRES_PASSWORD`、`SECRET_KEY` 和
@@ -150,7 +150,7 @@ python3 scripts/bootstrap_env.py
 ADMIN_USER=your_admin_user
 ADMIN_PASSWORD=your_strong_password
 FRONTEND_URL=https://app.example.com,https://m.example.com
-ALLOW_LOCAL_DESKTOP_BROKERS=false
+ENABLED_TRADING_VENUES=alpaca,tiger,webull,binance,okx,bybit,bitget,gate,htx
 ```
 
 启动：

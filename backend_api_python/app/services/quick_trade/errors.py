@@ -43,7 +43,17 @@ FRIENDLY_ERROR_PATTERNS = [
         "quickTrade.errorHints.invalidPrice",
     ),
     (
-        re.compile(r"rate.?limit|too many request|429|REQUEST_FREQUENCY", re.IGNORECASE),
+        re.compile(
+            r"(?<!\d)-4411(?!\d)|Please\s+sign\s+TradFi[- ]Perps?\s+agreement",
+            re.IGNORECASE,
+        ),
+        "quickTrade.errorHints.binanceTradFiAgreement",
+    ),
+    (
+        re.compile(
+            r"too many requests?|HTTP\s*429|(?<!\d)(?:-1003|-1015|429)(?!\d)|REQUEST_FREQUENCY|rate[ _-]limit(?:ed|\s+(?:exceeded|reached))?\b",
+            re.IGNORECASE,
+        ),
         "quickTrade.errorHints.rateLimit",
     ),
     (
