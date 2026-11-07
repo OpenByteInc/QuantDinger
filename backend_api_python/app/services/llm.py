@@ -6,6 +6,9 @@ Kept separate from AnalysisService to avoid circular imports.
 """
 import json
 import os
+import queue
+import shutil
+import threading
 import requests
 from typing import Dict, Any, Optional, List
 from enum import Enum
@@ -170,7 +173,7 @@ PROVIDER_CONFIGS = {
 class LLMService:
     """LLM provider wrapper with multi-provider support."""
 
-    def __init__(self, provider: str = None):
+    def __init__(self, provider: str = None, auth_mode: str = None):
         """
         Initialize LLM service.
 
@@ -178,6 +181,13 @@ class LLMService:
             provider: Override the default provider (openrouter, openai, google, deepseek, grok, atlascloud, custom, minimax)
         """
         self._provider_override = provider
+        self.auth_mode = str(
+            auth_mode
+            or load_addon_config().get('llm', {}).get('auth_mode')
+            or os.getenv('LLM_AUTH_MODE', 'api_key')
+        ).strip().lower()
+        if self.auth_mode not in {'api_key', 'chatgpt_account'}:
+            raise ValueError(f"Unsupported LLM auth mode: {self.auth_mode}")
         # Populated by call_llm_api() so callers can report what actually answered;
         # a model-level fallback is otherwise only visible in provider dashboards.
         self.last_model_used = ""
@@ -263,6 +273,8 @@ class LLMService:
 
     def get_default_model(self, provider: LLMProvider = None) -> str:
         """Get default model for the specified provider."""
+        if self.auth_mode == 'chatgpt_account':
+            return os.getenv('CHATGPT_ACCOUNT_MODEL', 'gpt-6-luna').strip() or 'gpt-6-luna'
         p = provider or self.provider
         config = load_addon_config()
         
@@ -276,6 +288,8 @@ class LLMService:
 
     def get_code_generation_model(self, provider: LLMProvider = None) -> str:
         """Get model for AI code generation; fallback to provider default when unset."""
+        if self.auth_mode == 'chatgpt_account':
+            return self.get_default_model(provider)
         model = os.getenv('AI_CODE_GEN_MODEL', '').strip()
         if model:
             return model
@@ -297,6 +311,13 @@ class LLMService:
 
     def is_configured(self, provider: LLMProvider = None) -> bool:
         """Return whether the provider has enough configuration to make a request."""
+        if self.auth_mode == 'chatgpt_account':
+            bridge_url = os.getenv('CHATGPT_ACCOUNT_BRIDGE_URL', '').strip()
+            bridge_token = os.getenv('CHATGPT_ACCOUNT_BRIDGE_TOKEN', '').strip()
+            if bridge_url:
+                return bool(bridge_token)
+            executable = os.getenv('CODEX_CLI_PATH', 'codex').strip() or 'codex'
+            return bool(shutil.which(executable) or (os.path.isabs(executable) and os.path.exists(executable)))
         p = provider or self.provider
         if (self.get_api_key(p) or "").strip():
             return True
@@ -1203,6 +1224,17 @@ class LLMService:
             2. Otherwise, use the configured LLM_PROVIDER with normalized model name
             3. Fall back to provider's default model if model name is incompatible
         """
+        if self.auth_mode == 'chatgpt_account':
+            from app.services.chatgpt_account import CodexAppServerClient
+            requested_model = model or self.get_default_model()
+            result = CodexAppServerClient(
+                timeout_seconds=timeout_seconds or 180,
+            ).complete(messages, model=requested_model)
+            self.last_model_used = requested_model
+            self.last_provider_used = 'chatgpt_account'
+            self.model_fallback_used = False
+            return result
+
         cfg = load_addon_config()
         explicit_provider_name = str(
             cfg.get('llm', {}).get('provider') or os.getenv('LLM_PROVIDER', '')
@@ -1430,6 +1462,36 @@ class LLMService:
 
     def stream_llm_api(self, messages: list, model: str = None, temperature: float = 0.7):
         """Stream LLM response deltas for providers with OpenAI-compatible streaming."""
+        if self.auth_mode == 'chatgpt_account':
+            from app.services.chatgpt_account import CodexAppServerClient
+            requested_model = model or self.get_default_model()
+            deltas: queue.Queue[object] = queue.Queue()
+            sentinel = object()
+
+            def run_account_turn() -> None:
+                try:
+                    CodexAppServerClient().complete(
+                        messages,
+                        model=requested_model,
+                        on_delta=deltas.put,
+                    )
+                except BaseException as exc:
+                    deltas.put(exc)
+                finally:
+                    deltas.put(sentinel)
+
+            threading.Thread(target=run_account_turn, daemon=True).start()
+            while True:
+                item = deltas.get()
+                if item is sentinel:
+                    break
+                if isinstance(item, BaseException):
+                    raise item
+                yield str(item)
+            self.last_model_used = requested_model
+            self.last_provider_used = 'chatgpt_account'
+            self.model_fallback_used = False
+            return
         p = self.provider
         api_key = (self.get_api_key(p) or "").strip()
         base_url = (self.get_base_url(p) or "").strip()
