@@ -1,5 +1,6 @@
 """Exercise real adapters against exchange-shaped public candle responses."""
 import time
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -19,8 +20,8 @@ def make_source(venue, market, monkeypatch):
     return source
 
 
-def mock_public_api(client, step, monkeypatch, retained_bars=4000):
-    end = int(time.time() * 1000) // step * step
+def mock_public_api(client, step, monkeypatch, retained_bars=4000, origin_ms=0):
+    end = (int(time.time() * 1000) - origin_ms) // step * step + origin_ms
     all_times = list(range(end - retained_bars * step, end + step, step))
     calls = []
 
@@ -140,6 +141,101 @@ def test_explicit_strategy_window_spans_multiple_exchange_pages(venue, monkeypat
     assert len(rows) == 1500
     assert rows[0]['time'] == after
     assert rows[-1]['time'] == before - 60
+
+
+@pytest.mark.parametrize('venue', ['okx', 'bitget', 'gate', 'bybit', 'binance'])
+@pytest.mark.parametrize('days', [32, 364])
+def test_strategy_date_only_end_respects_history_coverage(venue, days, monkeypatch):
+    from app.data_sources.errors import MarketDataUnavailableError
+    from app.services.strategy_v2 import market_data
+
+    source = make_source(venue, 'spot', monkeypatch)
+    end, calls = mock_public_api(source.exchange, 900000, monkeypatch, retained_bars=days * 96 + 400)
+    end_date = datetime.fromtimestamp(end / 1000, timezone.utc).replace(
+        hour=23, minute=59, second=59, microsecond=0,
+    ) - timedelta(days=1)
+    start_date = (end_date - timedelta(days=days - 1)).replace(hour=0, minute=0, second=0)
+    monkeypatch.setattr(time, 'sleep', lambda _seconds: None)
+    monkeypatch.setattr(market_data, '_resolve_catalog_product', lambda *a, **k: None)
+    monkeypatch.setattr(market_data.DataSourceFactory, '_resolve_source', lambda *a, **k: source)
+    monkeypatch.setattr(market_data._cache, 'get', lambda _key: None)
+    monkeypatch.setattr(market_data._cache, 'put', lambda *args: None)
+
+    if venue == 'gate' and days == 364:
+        with pytest.raises(MarketDataUnavailableError) as error:
+            market_data._load_strategy_frame_uncached(
+                'Crypto', 'BTC/USDT', '15m', start_date, end_date,
+                market_type='spot', exchange_id=venue,
+            )
+        assert error.value.failure.code == 'incomplete_market_data'
+        assert 'recent 10000-candle window' in error.value.failure.technical_detail
+        assert not calls
+        return
+
+    frame = market_data._load_strategy_frame_uncached(
+        'Crypto', 'BTC/USDT', '15m', start_date, end_date,
+        market_type='spot', exchange_id=venue,
+    )
+
+    assert len(calls) > 1
+    assert len(frame) == days * 96
+    assert frame.index[0].to_pydatetime() == start_date.replace(tzinfo=None)
+    assert frame.index[-1].to_pydatetime() == end_date.replace(tzinfo=None, minute=45, second=0)
+
+
+@pytest.mark.parametrize('fault', [None, 'right_edge', 'internal_gap', 'unconfirmed'])
+def test_closed_history_uses_aligned_end_and_still_rejects_missing_bars(fault, monkeypatch):
+    source = make_source('okx', 'spot', monkeypatch)
+    end, _ = mock_public_api(source.exchange, 900000, monkeypatch)
+    before = end // 1000 - 900 - 1
+    after = (before // 900 - 500) * 900
+    expected_last = (before // 900 - 1) * 900
+    public_get = source.exchange._get
+
+    def get(url, params):
+        payload = public_get(url, params)
+        missing = expected_last if fault == 'right_edge' else after + 250 * 900
+        if fault in {'right_edge', 'internal_gap'}:
+            payload['data'] = [row for row in payload['data'] if row[0] != missing * 1000]
+        if fault == 'unconfirmed':
+            payload['data'] = [
+                row + ['0', '0', '0' if row[0] == expected_last * 1000 else '1']
+                for row in payload['data']
+            ]
+        return payload
+
+    monkeypatch.setattr(time, 'sleep', lambda _seconds: None)
+    monkeypatch.setattr(source.exchange, '_get', get)
+    rows = source.get_kline('BTC/USDT', '15m', 700, before, after, closed_only=True)
+    if fault is None:
+        assert len(rows) == 500
+        assert rows[-1]['time'] == expected_last
+        assert rows[-1]['time'] + 900 <= before
+    else:
+        assert rows == []
+        assert source.get_last_failure().code == 'incomplete_market_data'
+
+
+@pytest.mark.parametrize('venue,market', [('okx', 'spot'), ('bitget', 'spot'), ('binance', 'spot'), ('gate', 'swap')])
+@pytest.mark.parametrize('tf,seconds', [('1D', 86400), ('1W', 604800)])
+@pytest.mark.parametrize('unaligned_seconds', [0, 1, 3600])
+def test_closed_history_preserves_venue_calendar(venue, market, tf, seconds, unaligned_seconds, monkeypatch):
+    from app.data_sources.candle_calendar import candle_open, candle_origin
+
+    source = make_source(venue, market, monkeypatch)
+    source_tf = '1D' if tf == '1W' and venue == 'bitget' else tf
+    source_seconds = _TIMEFRAME_SECONDS[source_tf.lower()]
+    origin_ms = candle_origin(source_tf, venue, market) * 1000
+    end, _ = mock_public_api(source.exchange, source_seconds * 1000, monkeypatch, origin_ms=origin_ms)
+    boundary = candle_open(end // 1000, tf, venue, market) - 10 * seconds
+    after = boundary - 20 * seconds
+    monkeypatch.setattr(time, 'sleep', lambda _seconds: None)
+
+    rows = source.get_kline('BTC/USDT', tf, 30, boundary + unaligned_seconds, after, closed_only=True)
+
+    assert len(rows) == 20
+    assert rows[0]['time'] == after
+    assert rows[-1]['time'] == boundary - seconds
 
 
 def test_htx_does_not_substitute_recent_data_for_expired_history(monkeypatch):
