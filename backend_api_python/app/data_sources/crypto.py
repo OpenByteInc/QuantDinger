@@ -6,6 +6,7 @@ import threading
 import time
 
 from app.data_sources.base import BaseDataSource, TIMEFRAME_SECONDS
+from app.data_sources.candle_calendar import completed_candle_open
 from app.data_sources.errors import MarketDataFailure, classify_market_data_failure
 from app.data_sources.native_crypto import (
     NativeCryptoPublicClient,
@@ -1014,14 +1015,32 @@ class CryptoDataSource(BaseDataSource):
                 # Never attach an old partial page across an unreported gap. Only
                 # validate the returned chart tail, not its extra warmup buffer.
                 checked_rows = ohlcv if after_time is not None else ohlcv[-limit:]
+                expected_last_ms = end_ms - timeframe_ms
+                if closed_only:
+                    # Date-only backtests end at 23:59:59, not on a candle boundary.
+                    # Require the last completed candle on the venue's calendar.
+                    expected_last_ms = completed_candle_open(
+                        safe_before_ts, exchange_timeframe, exchange_id,
+                        str(getattr(self.exchange, "market_type", "spot")),
+                    ) * 1000
+                has_gap = any(
+                    int(b[0]) - int(a[0]) != timeframe_ms
+                    for a, b in zip(checked_rows, checked_rows[1:])
+                )
                 if (
-                    int(checked_rows[-1][0]) < end_ms - timeframe_ms
-                    or any(int(b[0]) - int(a[0]) != timeframe_ms
-                           for a, b in zip(checked_rows, checked_rows[1:]))
+                    int(checked_rows[-1][0]) < expected_last_ms
+                    or has_gap
                 ):
                     self._set_last_failure(
-                        "Incomplete K-line history: missing candles or historical right boundary",
+                        "Incomplete K-line history: missing candles or historical right boundary; "
+                        f"expected_last={expected_last_ms}, actual_last={int(checked_rows[-1][0])}, "
+                        f"internal_gap={has_gap}",
                         symbol=symbol_pair, timeframe=timeframe,
+                    )
+                    logger.warning(
+                        "Refused incomplete %s %s history for %s: expected_last=%s, actual_last=%s, internal_gap=%s",
+                        exchange_id, exchange_timeframe, symbol_pair,
+                        expected_last_ms, int(checked_rows[-1][0]), has_gap,
                     )
                     return []
                 if after_time is not None:
