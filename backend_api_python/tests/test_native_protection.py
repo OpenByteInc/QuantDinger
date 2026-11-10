@@ -2,6 +2,7 @@ from decimal import Decimal
 
 import pytest
 
+from app.services.live_trading.base import LiveTradingError
 from app.services.live_trading.native_protection import (
     NativeProtectionRequest,
     place_native_protection_orders,
@@ -91,6 +92,67 @@ def test_binance_trailing_protection_keeps_partner_attribution():
     assert calls[0][2]["clientAlgoId"].startswith(
         f"x-{BinanceFuturesClient._BROKER_ID}"
     )
+
+
+def test_binance_normalizes_native_protection_to_exchange_filters():
+    from app.services.live_trading.binance import BinanceFuturesClient
+
+    client = BinanceFuturesClient.__new__(BinanceFuturesClient)
+    client.broker_id = BinanceFuturesClient._BROKER_ID
+    client.get_dual_side_position = lambda: False
+    client.get_symbol_filters = lambda **_kwargs: {
+        "PRICE_FILTER": {"tickSize": "0.1", "minPrice": "0.1"},
+        "LOT_SIZE": {"stepSize": "0.001", "minQty": "0.001"},
+        "MARKET_LOT_SIZE": {"stepSize": "0.001", "minQty": "0.001"},
+        "_meta": {"pricePrecision": 1, "quantityPrecision": 3},
+    }
+    calls = []
+    client._signed_request = (
+        lambda method, path, params: calls.append((method, path, params))
+        or {"algoId": len(calls)}
+    )
+
+    result = place_native_protection_orders(
+        client,
+        _request(
+            quantity=0.001234,
+            entry_price=76049.9,
+            stop_loss_price=74148.6525,
+            take_profit_price=77951.14749999999,
+            trailing_stop_pct=0.02,
+            trailing_activation_pct=0.05,
+        ),
+    )
+
+    assert len(result) == 3
+    assert all(call[2]["quantity"] == "0.001" for call in calls)
+    by_type = {call[2]["type"]: call[2] for call in calls}
+    assert by_type["STOP_MARKET"]["triggerPrice"] == "74148.6"
+    assert by_type["TAKE_PROFIT_MARKET"]["triggerPrice"] == "77951.1"
+    assert by_type["TRAILING_STOP_MARKET"]["activatePrice"] == "79852.3"
+
+
+def test_binance_rejects_native_protection_quantity_below_exchange_minimum():
+    from app.services.live_trading.binance import BinanceFuturesClient
+
+    client = BinanceFuturesClient.__new__(BinanceFuturesClient)
+    client.broker_id = BinanceFuturesClient._BROKER_ID
+    client.get_dual_side_position = lambda: False
+    client.get_symbol_filters = lambda **_kwargs: {
+        "PRICE_FILTER": {"tickSize": "0.1", "minPrice": "0.1"},
+        "LOT_SIZE": {"stepSize": "0.001", "minQty": "0.001"},
+        "MARKET_LOT_SIZE": {"stepSize": "0.001", "minQty": "0.001"},
+    }
+    calls = []
+    client._signed_request = lambda *_args, **_kwargs: calls.append(True)
+
+    with pytest.raises(
+        LiveTradingError,
+        match="binance_native_protection_quantity_below_minimum",
+    ):
+        place_native_protection_orders(client, _request(quantity=0.0009))
+
+    assert calls == []
 
 
 def test_okx_hedge_protection_uses_position_side_without_net_only_reduce_flag():
