@@ -208,8 +208,36 @@ def test_bitget_keeps_channel_header_path_and_position_side():
     assert path == "/api/v3/trade/place-strategy-order"
     assert body["posSide"] == "long"
     assert body["reduceOnly"] == "yes"
-    assert body["stopLoss"] == "90.0"
-    assert body["takeProfit"] == "120.0"
+    assert body["stopLoss"] == "90"
+    assert body["takeProfit"] == "120"
+
+
+def test_bitget_snaps_trigger_and_activation_prices_to_contract_tick():
+    from app.services.live_trading.bitget import BitgetMixClient
+
+    client = BitgetMixClient.__new__(BitgetMixClient)
+    client._normalize_size = lambda **_kwargs: (Decimal("0.01"), 2)
+    client.get_contract = lambda **_kwargs: {"pricePrecision": "1", "priceMultiplier": "0.1"}
+    calls = []
+    client._signed_request = (
+        lambda method, path, json_body=None, params=None: calls.append(json_body)
+        or {"code": "00000"}
+    )
+
+    place_native_protection_orders(
+        client,
+        _request(
+            entry_price=76049.9,
+            stop_loss_price=74148.6525,
+            take_profit_price=79852.395,
+            trailing_stop_pct=0.05,
+            trailing_activation_pct=0.05,
+        ),
+    )
+
+    assert calls[0]["stopLoss"] == "74148.6"
+    assert calls[0]["takeProfit"] == "79852.3"
+    assert calls[1]["trailingStopParams"]["activationPrice"] == "79852.3"
 
 
 def test_bitget_classic_account_uses_v2_native_protection_orders():
@@ -223,6 +251,7 @@ def test_bitget_classic_account_uses_v2_native_protection_orders():
     )
     routed = client._classic_client
     routed._normalize_size = lambda **_kwargs: (Decimal("0.01"), 2)
+    routed.get_contract = lambda **_kwargs: {"pricePlace": "1", "priceEndStep": "5"}
     calls = []
     routed._signed_request = (
         lambda method, path, json_body=None, params=None: calls.append((path, json_body))
@@ -235,6 +264,38 @@ def test_bitget_classic_account_uses_v2_native_protection_orders():
     assert all(path == "/api/v2/mix/order/place-tpsl-order" for path, _body in calls)
     assert {body["planType"] for _path, body in calls} == {"loss_plan", "profit_plan"}
     assert all(body["holdSide"] == "long" for _path, body in calls)
+
+
+def test_bitget_classic_snaps_trigger_prices_to_price_end_step():
+    from app.services.live_trading.bitget_compat import BitgetCompatibleMixClient
+
+    client = BitgetCompatibleMixClient(
+        api_key="classic-native-protection",
+        secret_key="secret",
+        passphrase="passphrase",
+        account_mode="classic",
+    )
+    routed = client._classic_client
+    routed._normalize_size = lambda **_kwargs: (Decimal("0.01"), 2)
+    routed.get_contract = lambda **_kwargs: {"pricePlace": "1", "priceEndStep": "5"}
+    calls = []
+    routed._signed_request = (
+        lambda method, path, json_body=None, params=None: calls.append(json_body)
+        or {"code": "00000"}
+    )
+
+    place_native_protection_orders(
+        client,
+        _request(
+            entry_price=76049.9,
+            stop_loss_price=74148.6525,
+            take_profit_price=79852.395,
+            trailing_stop_pct=0.05,
+            trailing_activation_pct=0.05,
+        ),
+    )
+
+    assert [body["triggerPrice"] for body in calls] == ["74148.5", "79852", "79852"]
 
 
 def test_bybit_conditional_orders_are_reduce_only():
@@ -252,6 +313,37 @@ def test_bybit_conditional_orders_are_reduce_only():
     assert all(body["reduceOnly"] is True for body in calls)
     assert all(body["closeOnTrigger"] is True for body in calls)
     assert {body["triggerDirection"] for body in calls} == {1, 2}
+
+
+def test_bybit_snaps_trigger_and_trailing_prices_to_tick():
+    from app.services.live_trading.bybit import BybitClient
+
+    client = BybitClient.__new__(BybitClient)
+    client.category = "linear"
+    client.get_instrument_info = lambda **_kwargs: {"priceFilter": {"tickSize": "0.1"}}
+    client._normalize_qty = lambda **_kwargs: (Decimal("0.01"), 2)
+    client._resolve_position_idx = lambda *_args, **_kwargs: 2
+    calls = []
+    client._signed_request = (
+        lambda method, path, json_body=None, params=None: calls.append(json_body)
+        or {"retCode": 0}
+    )
+
+    place_native_protection_orders(
+        client,
+        _request(
+            pos_side="short",
+            entry_price=76049.9,
+            stop_loss_price=77951.14749999999,
+            take_profit_price=0,
+            trailing_stop_pct=0.05,
+            trailing_activation_pct=0.05,
+        ),
+    )
+
+    assert calls[0]["triggerPrice"] == "77951.1"
+    assert calls[1]["trailingStop"] == "3802.4"
+    assert calls[1]["activePrice"] == "72247.4"
 
 
 def test_gate_price_orders_use_reduce_only_signed_contract_size():
