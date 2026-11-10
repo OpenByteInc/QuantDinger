@@ -237,14 +237,28 @@ def _place_bitget(client: Any, request: NativeProtectionRequest) -> List[Dict[st
     if request.stop_loss_price > 0 or request.take_profit_price > 0:
         body = dict(base)
         if request.stop_loss_price > 0:
+            stop_loss, price_precision = client._normalize_price(
+                symbol=request.symbol,
+                product_type=request.product_type,
+                price=request.stop_loss_price,
+            )
+            if stop_loss <= 0:
+                raise LiveTradingError("bitget_native_protection_price_below_minimum")
             body.update(
-                stopLoss=str(request.stop_loss_price),
+                stopLoss=client._dec_str(stop_loss, strict_precision=price_precision),
                 slTriggerBy="mark",
                 slOrderType="market",
             )
         if request.take_profit_price > 0:
+            take_profit, price_precision = client._normalize_price(
+                symbol=request.symbol,
+                product_type=request.product_type,
+                price=request.take_profit_price,
+            )
+            if take_profit <= 0:
+                raise LiveTradingError("bitget_native_protection_price_below_minimum")
             body.update(
-                takeProfit=str(request.take_profit_price),
+                takeProfit=client._dec_str(take_profit, strict_precision=price_precision),
                 tpTriggerBy="mark",
                 tpOrderType="market",
             )
@@ -254,6 +268,13 @@ def _place_bitget(client: Any, request: NativeProtectionRequest) -> List[Dict[st
             client._signed_request("POST", "/api/v3/trade/place-strategy-order", json_body=body)
         )
     if request.trailing_stop_pct > 0:
+        activation_price, price_precision = client._normalize_price(
+            symbol=request.symbol,
+            product_type=request.product_type,
+            price=_activation_price(request) or request.entry_price,
+        )
+        if activation_price <= 0:
+            raise LiveTradingError("bitget_native_protection_price_below_minimum")
         body = {
             "category": request.product_type.upper(),
             "symbol": to_bitget_um_symbol(request.symbol),
@@ -264,7 +285,7 @@ def _place_bitget(client: Any, request: NativeProtectionRequest) -> List[Dict[st
             "reduceOnly": "yes",
             "qty": client._dec_str(size, strict_precision=precision),
             "trailingStopParams": {
-                "activationPrice": str(_activation_price(request) or request.entry_price),
+                "activationPrice": client._dec_str(activation_price, strict_precision=price_precision),
                 "activationType": "mark",
                 "trailType": "ratio",
                 "trailVariance": str(request.trailing_stop_pct * 100.0),
@@ -299,7 +320,18 @@ def _place_bitget_classic(client: Any, request: NativeProtectionRequest) -> List
     ):
         if price <= 0:
             continue
-        body = dict(base, planType=plan_type, triggerPrice=str(price))
+        trigger_price, price_precision = client._normalize_price(
+            symbol=request.symbol,
+            product_type=request.product_type,
+            price=price,
+        )
+        if trigger_price <= 0:
+            raise LiveTradingError("bitget_native_protection_price_below_minimum")
+        body = dict(
+            base,
+            planType=plan_type,
+            triggerPrice=client._dec_str(trigger_price, strict_precision=price_precision),
+        )
         if request.client_order_id:
             body["clientOid"] = f"{request.client_order_id}-{suffix}"[:64]
         responses.append(
@@ -310,10 +342,17 @@ def _place_bitget_classic(client: Any, request: NativeProtectionRequest) -> List
             )
         )
     if request.trailing_stop_pct > 0:
+        activation_price, price_precision = client._normalize_price(
+            symbol=request.symbol,
+            product_type=request.product_type,
+            price=_activation_price(request) or request.entry_price,
+        )
+        if activation_price <= 0:
+            raise LiveTradingError("bitget_native_protection_price_below_minimum")
         body = dict(
             base,
             planType="moving_plan",
-            triggerPrice=str(_activation_price(request) or request.entry_price),
+            triggerPrice=client._dec_str(activation_price, strict_precision=price_precision),
             rangeRate=str(request.trailing_stop_pct * 100.0),
         )
         body.pop("executePrice", None)
@@ -351,18 +390,35 @@ def _place_bybit(client: Any, request: NativeProtectionRequest) -> List[Dict[str
         rises = (kind == "tp" and request.pos_side == "long") or (
             kind == "sl" and request.pos_side == "short"
         )
-        body = dict(base, triggerPrice=str(price), triggerDirection=1 if rises else 2)
+        trigger_price, price_precision = client._normalize_price(symbol=request.symbol, price=price)
+        if trigger_price <= 0:
+            raise LiveTradingError("bybit_native_protection_price_below_minimum")
+        body = dict(
+            base,
+            triggerPrice=client._dec_str(trigger_price, strict_precision=price_precision),
+            triggerDirection=1 if rises else 2,
+        )
         if request.client_order_id:
             body["orderLinkId"] = f"{request.client_order_id}-{suffix}"[:36]
         responses.append(client._signed_request("POST", "/v5/order/create", json_body=body))
     if request.trailing_stop_pct > 0:
+        trailing_stop, price_precision = client._normalize_price(
+            symbol=request.symbol,
+            price=request.entry_price * request.trailing_stop_pct,
+        )
+        activation_price, _ = client._normalize_price(
+            symbol=request.symbol,
+            price=_activation_price(request) or request.entry_price,
+        )
+        if trailing_stop <= 0 or activation_price <= 0:
+            raise LiveTradingError("bybit_native_protection_price_below_minimum")
         body = {
             "category": "linear",
             "symbol": to_bybit_symbol(request.symbol),
             "positionIdx": base["positionIdx"],
             "tpslMode": "Full",
-            "trailingStop": str(request.entry_price * request.trailing_stop_pct),
-            "activePrice": str(_activation_price(request) or request.entry_price),
+            "trailingStop": client._dec_str(trailing_stop, strict_precision=price_precision),
+            "activePrice": client._dec_str(activation_price, strict_precision=price_precision),
         }
         responses.append(client._signed_request("POST", "/v5/position/trading-stop", json_body=body))
     return responses
