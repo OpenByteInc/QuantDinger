@@ -110,12 +110,19 @@ def _place_binance(client: Any, request: NativeProtectionRequest) -> List[Dict[s
     dual = client.get_dual_side_position()
     if dual is None:
         raise LiveTradingError("binance_position_mode_unknown")
+    quantity, quantity_precision = client._normalize_quantity(
+        symbol=request.symbol,
+        quantity=request.quantity,
+        for_market=True,
+    )
+    if quantity <= 0:
+        raise LiveTradingError("binance_native_protection_quantity_below_minimum")
     base: Dict[str, Any] = {
         "algoType": "CONDITIONAL",
         "symbol": to_binance_futures_symbol(request.symbol),
         "side": close_side,
         "positionSide": request.pos_side.upper() if dual else "BOTH",
-        "quantity": str(request.quantity),
+        "quantity": client._dec_str(quantity, strict_precision=quantity_precision),
         "workingType": "MARK_PRICE",
     }
     if not dual:
@@ -127,7 +134,14 @@ def _place_binance(client: Any, request: NativeProtectionRequest) -> List[Dict[s
     ):
         if price <= 0:
             continue
-        body = dict(base, type=kind, triggerPrice=str(price))
+        trigger_price = client._normalize_price(symbol=request.symbol, price=price)
+        if trigger_price <= 0:
+            raise LiveTradingError("binance_native_protection_price_below_minimum")
+        body = dict(
+            base,
+            type=kind,
+            triggerPrice=client._dec_str(trigger_price),
+        )
         client_algo_id = client._format_client_order_id(
             f"{request.client_order_id}-{suffix}" if request.client_order_id else ""
         )
@@ -139,7 +153,13 @@ def _place_binance(client: Any, request: NativeProtectionRequest) -> List[Dict[s
         body = dict(base, type="TRAILING_STOP_MARKET", callbackRate=str(callback))
         activation = _activation_price(request)
         if activation > 0:
-            body["activatePrice"] = str(activation)
+            activation_price = client._normalize_price(
+                symbol=request.symbol,
+                price=activation,
+            )
+            if activation_price <= 0:
+                raise LiveTradingError("binance_native_protection_price_below_minimum")
+            body["activatePrice"] = client._dec_str(activation_price)
         client_algo_id = client._format_client_order_id(
             f"{request.client_order_id}-trail" if request.client_order_id else ""
         )
