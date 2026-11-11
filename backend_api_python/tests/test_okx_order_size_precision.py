@@ -86,3 +86,22 @@ def test_swap_limit_order_serializes_small_price_without_exponent():
     body = request.call_args.kwargs["json_body"]
     assert body["px"] == "0.00001"
     assert "e" not in body["px"].lower()
+
+
+def test_swap_limit_order_snaps_price_to_tick_size():
+    c = _client_with_instrument("BTC-USDT-SWAP", "SWAP", "1", "1")
+    c._inst_cache["SWAP:BTC-USDT-SWAP"][1].update({"ctVal": "0.01", "tickSz": "0.1"})
+    with (
+        patch.object(c, "_resolve_pos_side", return_value="net"),
+        patch.object(c, "_signed_request", return_value={"data": [{"ordId": "123"}]}) as request,
+    ):
+        c.place_limit_order(
+            market_type="swap",
+            symbol="BTC/USDT",
+            side="buy",
+            size=0.05,
+            price=77951.14749999999,
+        )
+
+    body = request.call_args.kwargs["json_body"]
+    assert body["px"] == "77951.1"

@@ -263,6 +263,33 @@ def test_htx_swap_market_order_uses_mode_fallback():
     mock_place.assert_called_once()
 
 
+def test_htx_swap_limit_order_snaps_price_to_contract_tick():
+    c = HtxClient(api_key="k", secret_key="s", market_type="swap")
+    result = type("R", (), {"exchange_order_id": "1"})()
+    with (
+        patch.object(
+            c,
+            "get_contract_info",
+            return_value={"price_tick": "0.1", "contract_size": "0.001"},
+        ),
+        patch.object(c, "_base_to_contracts", return_value=2),
+        patch.object(c, "get_swap_hedge_mode", return_value=False),
+        patch.object(
+            c,
+            "_place_swap_order_with_mode_fallback",
+            return_value=result,
+        ) as mock_place,
+    ):
+        c.place_limit_order(
+            symbol="BTC/USDT",
+            side="buy",
+            size=0.01,
+            price=77951.14749999999,
+        )
+
+    assert mock_place.call_args.kwargs["body"]["price"] == 77951.1
+
+
 def test_htx_position_mode_probe_failure_stays_unknown():
     c = HtxClient(api_key="k", secret_key="s", market_type="swap")
     with patch.object(c, "_swap_v5_request", side_effect=RuntimeError("v5 unavailable")):

@@ -77,6 +77,24 @@ def test_gate_futures_limit_order_serializes_small_price_without_exponent():
     assert "e" not in body["price"].lower()
 
 
+def test_gate_futures_limit_order_snaps_price_to_contract_tick():
+    client = GateUsdtFuturesClient(api_key="k", secret_key="s")
+    with (
+        patch.object(client, "_resolve_order_size", return_value=("1", None)),
+        patch.object(client, "get_contract", return_value={"order_price_round": "0.1"}),
+        patch.object(client, "_signed_request", return_value={"id": "123"}) as mock_req,
+    ):
+        client.place_limit_order(
+            symbol="BTC/USDT",
+            side="buy",
+            size=1,
+            price=77951.14749999999,
+        )
+
+    body = mock_req.call_args.kwargs["json_body"]
+    assert body["price"] == "77951.1"
+
+
 def test_gate_spot_open_orders_uses_account_wide_endpoint():
     client = GateSpotClient(api_key="k", secret_key="s")
     with patch.object(client, "_signed_request", return_value=[]) as mock_req:
