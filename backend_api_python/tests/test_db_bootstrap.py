@@ -137,6 +137,20 @@ def test_apply_init_sql_includes_public_universe_expansion(tmp_path, monkeypatch
     assert 'default-cn-hk-universe-members-20261025' in applied
     assert 'default-global-universe-members-20261025' in applied
     assert 'remove-manager-role-20261104' in applied
+    assert 'strategy-runtime-epoch-20261111' in applied
+
+
+def test_strategy_runtime_epoch_migration_separates_desired_and_actual_lifecycle():
+    migration_path = (
+        Path(__file__).resolve().parents[1]
+        / 'migrations'
+        / '20261111_strategy_runtime_epoch.sql'
+    )
+    migration = migration_path.read_text(encoding='utf-8')
+
+    assert 'desired_runtime_epoch' in migration
+    assert 'runtime_requested_at' in migration
+    assert 'runtime_epoch' in migration
 
 
 def test_remove_manager_role_migration_downgrades_legacy_users():

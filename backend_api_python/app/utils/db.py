@@ -422,6 +422,12 @@ def _apply_init_sql(logger, *, strict: bool = False):
             _apply_migration_component(
                 conn,
                 logger,
+                name="strategy-runtime-epoch-20261111",
+                path=Path(__file__).resolve().parent.parent.parent / "migrations" / "20261111_strategy_runtime_epoch.sql",
+            )
+            _apply_migration_component(
+                conn,
+                logger,
                 name="market-symbols-master",
                 path=symbols_sql,
                 baseline_table="qd_market_symbols",

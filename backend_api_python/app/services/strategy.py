@@ -159,14 +159,20 @@ class StrategyService:
                 cur.close()
                 return str(current.get("status") or "") == status
             cur.execute(
-                f"SELECT id, user_id, status FROM qd_strategies_trading WHERE {where} FOR UPDATE",
+                f"""
+                SELECT id, user_id, status, desired_runtime_epoch
+                FROM qd_strategies_trading
+                WHERE {where}
+                FOR UPDATE
+                """,
                 tuple(lookup_values),
             )
             strategy = cur.fetchone() or {}
             if not strategy:
                 cur.close()
                 return False
-            if str(strategy.get("status") or "") != "running":
+            current_status = str(strategy.get("status") or "")
+            if current_status != "running":
                 owner_id = int(strategy["user_id"])
                 cur.execute(
                     "SELECT vip_expires_at, vip_plan, vip_is_lifetime FROM qd_users WHERE id=? FOR UPDATE",
@@ -199,9 +205,58 @@ class StrategyService:
                     db.rollback()
                     cur.close()
                     raise StrategyLimitExceeded(limit, running)
+            if current_status == "running":
+                cur.execute(
+                    "UPDATE qd_strategies_trading SET status=?, updated_at=NOW() WHERE id=?",
+                    (status, int(strategy_id)),
+                )
+            else:
+                cur.execute(
+                    """
+                    UPDATE qd_strategies_trading
+                    SET status=?,
+                        desired_runtime_epoch=GREATEST(COALESCE(desired_runtime_epoch, 0), 0) + 1,
+                        runtime_requested_at=NOW(),
+                        updated_at=NOW()
+                    WHERE id=?
+                    """,
+                    (status, int(strategy_id)),
+                )
+            changed = int(cur.rowcount or 0)
+            db.commit()
+            cur.close()
+        return changed > 0
+
+    def request_strategy_runtime_restart(
+        self,
+        strategy_id: int,
+        user_id: int | None = None,
+    ) -> bool:
+        """Advance the desired runtime generation without changing business state."""
+        with get_db_connection() as db:
+            cur = db.cursor()
+            where = "id = ?"
+            values: list[Any] = [int(strategy_id)]
+            if user_id is not None:
+                where += " AND user_id = ?"
+                values.append(int(user_id))
             cur.execute(
-                "UPDATE qd_strategies_trading SET status=?, updated_at=NOW() WHERE id=?",
-                (status, int(strategy_id)),
+                f"SELECT status FROM qd_strategies_trading WHERE {where} FOR UPDATE",
+                tuple(values),
+            )
+            strategy = cur.fetchone() or {}
+            if str(strategy.get("status") or "") != "running":
+                cur.close()
+                return False
+            cur.execute(
+                f"""
+                UPDATE qd_strategies_trading
+                SET desired_runtime_epoch=GREATEST(COALESCE(desired_runtime_epoch, 0), 0) + 1,
+                    runtime_requested_at=NOW(),
+                    updated_at=NOW()
+                WHERE {where}
+                """,
+                tuple(values),
             )
             changed = int(cur.rowcount or 0)
             db.commit()

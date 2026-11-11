@@ -212,7 +212,14 @@ class TradingWorker:
                     close_positions=bool(command.payload.get("close_positions")),
                 )
             elif command.command_type == "restart":
-                self._stop_strategy(command.strategy_id)
+                from app.services.strategy import StrategyService
+
+                if not StrategyService().request_strategy_runtime_restart(
+                    command.strategy_id,
+                    user_id=command.user_id or None,
+                ):
+                    raise RuntimeError("Strategy is not running or no longer exists.")
+                self._stop_strategy(command.strategy_id, persist_status=False)
                 result = self._start(command.strategy_id)
             else:
                 result = self._reconcile(command.strategy_id)
@@ -308,7 +315,13 @@ class TradingWorker:
         check = getattr(self.repository, "has_active_strategy_lease", None)
         return bool(callable(check) and check(int(strategy_id)))
 
-    def _stop_strategy(self, strategy_id: int, *, close_positions: bool = False) -> dict:
+    def _stop_strategy(
+        self,
+        strategy_id: int,
+        *,
+        close_positions: bool = False,
+        persist_status: bool = True,
+    ) -> dict:
         append_strategy_log(strategy_id, "info", "strategyRuntime.stopCommand")
         if self.distributed_bar_evaluation:
             from app.services.strategy_event_subscriptions import (
@@ -337,7 +350,7 @@ class TradingWorker:
             )
             self.repository.revoke_strategy_lease(strategy_id=strategy_id)
             return result
-        if not self.executor.stop_strategy(strategy_id, persist_status=True):
+        if not self.executor.stop_strategy(strategy_id, persist_status=persist_status):
             raise RuntimeError("Executor failed to stop the local strategy runtime.")
         self._lease_heartbeat.forget_strategy(strategy_id)
         self.repository.release_strategy_lease(strategy_id=strategy_id, owner_id=self.worker_id)

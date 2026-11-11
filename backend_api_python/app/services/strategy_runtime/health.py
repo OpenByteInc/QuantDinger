@@ -52,14 +52,22 @@ def load_runtime_health(
     strategy_ids: Iterable[int],
     *,
     strategy_statuses: Dict[int, str] | None = None,
-    strategy_started_ats: Dict[int, Any] | None = None,
+    strategy_runtime_epochs: Dict[int, int] | None = None,
+    strategy_runtime_requested_ats: Dict[int, Any] | None = None,
     strategy_execution_modes: Dict[int, str] | None = None,
 ) -> Dict[int, Dict[str, Any]]:
     ids = sorted({int(value) for value in strategy_ids if int(value or 0) > 0})
     if not ids:
         return {}
     statuses = {int(key): str(value or "").lower() for key, value in (strategy_statuses or {}).items()}
-    started_ats = {int(key): value for key, value in (strategy_started_ats or {}).items()}
+    runtime_epochs = {
+        int(key): max(0, int(value or 0))
+        for key, value in (strategy_runtime_epochs or {}).items()
+    }
+    runtime_requested_ats = {
+        int(key): value
+        for key, value in (strategy_runtime_requested_ats or {}).items()
+    }
     execution_modes = {
         int(key): str(value or "").strip().lower()
         for key, value in (strategy_execution_modes or {}).items()
@@ -80,7 +88,8 @@ def load_runtime_health(
 
     now = int(time.time())
     for strategy_id, snapshot in snapshots.items():
-        snapshot["_strategy_started_at"] = started_ats.get(strategy_id)
+        snapshot["_desired_runtime_epoch"] = runtime_epochs.get(strategy_id, 0)
+        snapshot["_runtime_requested_at"] = runtime_requested_ats.get(strategy_id)
         snapshot["health"] = _health_state(
             snapshot,
             strategy_status=statuses.get(strategy_id, ""),
@@ -99,7 +108,8 @@ def load_runtime_health(
         snapshot["attention_reasons"] = list(dict.fromkeys(reasons))
         snapshot["needs_attention"] = bool(reasons) or snapshot["health"] == "degraded"
         snapshot.pop("_ownership_context", None)
-        snapshot.pop("_strategy_started_at", None)
+        snapshot.pop("_desired_runtime_epoch", None)
+        snapshot.pop("_runtime_requested_at", None)
         snapshot.pop("_execution_mode", None)
     return snapshots
 
@@ -180,6 +190,7 @@ def _empty_snapshot() -> Dict[str, Any]:
     return {
         "health": "unknown",
         "run_id": 0,
+        "runtime_epoch": 0,
         "runtime_status": "",
         "started_at": None,
         "last_heartbeat_at": 0,
@@ -233,7 +244,7 @@ def _load_latest_runs(snapshots, placeholders, ids):
     rows = _query(
         f"""
         SELECT strategy_id, id, user_id, exchange_id, credential_id, symbol, market_type,
-               runtime_status, started_at, stopped_at, stop_reason
+               runtime_status, runtime_epoch, started_at, stopped_at, stop_reason
         FROM strategy_runs
         WHERE strategy_id IN ({placeholders})
         ORDER BY strategy_id, id DESC
@@ -248,6 +259,7 @@ def _load_latest_runs(snapshots, placeholders, ids):
         seen.add(strategy_id)
         snapshots[strategy_id].update({
             "run_id": int(row.get("id") or 0),
+            "runtime_epoch": int(row.get("runtime_epoch") or 0),
             "runtime_status": str(row.get("runtime_status") or ""),
             "started_at": row.get("started_at"),
             "stopped_at": row.get("stopped_at"),
@@ -296,6 +308,10 @@ def _load_health_state(snapshots, placeholders, ids):
     for row in rows:
         strategy_id = int(row.get("strategy_id") or 0)
         if strategy_id in seen or strategy_id not in snapshots:
+            continue
+        if int(row.get("strategy_run_id") or 0) != int(
+            snapshots[strategy_id].get("run_id") or 0
+        ):
             continue
         seen.add(strategy_id)
         state = row.get("state_json") or {}
@@ -507,15 +523,24 @@ def _health_state(snapshot: Dict[str, Any], *, strategy_status: str, now: int) -
     if strategy_status != "running":
         return "inactive"
     run_started_timestamp = _timestamp_seconds(snapshot.get("started_at"))
-    strategy_started_timestamp = _timestamp_seconds(snapshot.get("_strategy_started_at"))
-    startup_candidates = [value for value in (run_started_timestamp, strategy_started_timestamp) if value is not None]
+    runtime_requested_timestamp = _timestamp_seconds(snapshot.get("_runtime_requested_at"))
+    startup_candidates = [
+        value
+        for value in (run_started_timestamp, runtime_requested_timestamp)
+        if value is not None
+    ]
     startup_timestamp = max(startup_candidates) if startup_candidates else None
     startup_age = max(0, now - startup_timestamp) if startup_timestamp is not None else None
     startup_grace = _startup_grace_seconds()
     snapshot["startup_grace_sec"] = startup_grace
+    desired_runtime_epoch = int(snapshot.get("_desired_runtime_epoch") or 0)
+    actual_runtime_epoch = int(snapshot.get("runtime_epoch") or 0)
     pending_new_run = (
-        strategy_started_timestamp is not None
-        and (run_started_timestamp is None or strategy_started_timestamp > run_started_timestamp)
+        desired_runtime_epoch > 0
+        and (
+            int(snapshot.get("run_id") or 0) <= 0
+            or actual_runtime_epoch != desired_runtime_epoch
+        )
     )
     if pending_new_run:
         if startup_age is not None and startup_age <= startup_grace:
@@ -540,8 +565,6 @@ def _health_state(snapshot: Dict[str, Any], *, strategy_status: str, now: int) -
     ):
         return "healthy"
     heartbeat = int(snapshot.get("last_heartbeat_at") or 0)
-    if strategy_started_timestamp is not None and heartbeat < strategy_started_timestamp:
-        heartbeat = 0
     if heartbeat <= 0:
         if startup_age is not None and startup_age <= startup_grace:
             snapshot["startup_age_sec"] = startup_age
