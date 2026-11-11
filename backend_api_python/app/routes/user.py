@@ -1085,7 +1085,7 @@ def _admin_strategy_ledger_metrics(
     """Build admin metrics from the ledger selected by execution mode."""
     mode = str(execution_mode or '').strip().lower()
     initial_capital = float(strategy_initial_capital or 0)
-    if mode == 'signal' and float(trade_stats.get('virtual_initial_capital') or 0) > 0:
+    if initial_capital <= 0 and mode == 'signal' and float(trade_stats.get('virtual_initial_capital') or 0) > 0:
         initial_capital = float(trade_stats['virtual_initial_capital'])
     total_unrealized_pnl = sum(float(p.get('unrealized_pnl') or 0) for p in positions)
     total_realized_pnl = float(trade_stats.get('total_realized_pnl') or 0)
@@ -1175,7 +1175,8 @@ def get_system_strategies():
             ),
             'total_equity': (
                 "(CASE WHEN LOWER(COALESCE(s.execution_mode, 'signal')) = 'signal' THEN "
-                "COALESCE((SELECT va.initial_cash + va.realized_pnl FROM qd_strategy_virtual_accounts va WHERE va.strategy_id = s.id), s.initial_capital, 0) "
+                "COALESCE(s.initial_capital, (SELECT va.initial_cash FROM qd_strategy_virtual_accounts va WHERE va.strategy_id = s.id), 0) "
+                "+ COALESCE((SELECT va.realized_pnl FROM qd_strategy_virtual_accounts va WHERE va.strategy_id = s.id), 0) "
                 "+ COALESCE((SELECT SUM(vp.unrealized_pnl) FROM qd_strategy_virtual_positions vp WHERE vp.strategy_id = s.id), 0) "
                 "ELSE COALESCE((SELECT SUM(p.equity) FROM qd_strategy_positions p WHERE p.strategy_id = s.id), 0) END)"
             ),
@@ -1376,7 +1377,7 @@ def get_system_strategies():
                            CASE WHEN LOWER(COALESCE(s.execution_mode, 'signal')) = 'signal'
                                 THEN COALESCE(va.realized_pnl, 0)
                                 ELSE COALESCE(lt.total_realized_pnl, 0) END AS total_realized_pnl,
-                           COALESCE(va.initial_cash, s.initial_capital, 0) AS virtual_initial_capital,
+                           COALESCE(s.initial_capital, va.initial_cash, 0) AS virtual_initial_capital,
                            COALESCE(va.cash_balance, 0) AS virtual_cash_balance
                     FROM qd_strategies_trading s
                     LEFT JOIN live_trades lt ON lt.strategy_id = s.id

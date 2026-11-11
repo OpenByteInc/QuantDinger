@@ -17,6 +17,7 @@ from __future__ import annotations
 import pytest
 
 from app.services.trading_executor import TradingExecutor
+from app.services.grid.runner import GridRestingRunner
 
 
 def _make_executor() -> TradingExecutor:
@@ -64,6 +65,49 @@ def test_live_equity_uses_latest_prices_for_every_strategy_position(monkeypatch)
     )
 
     assert equity == 1090.0
+
+
+def test_live_equity_is_scoped_to_current_strategy_run(monkeypatch):
+    captured = {}
+
+    class Cursor:
+        def execute(self, sql, params=None):
+            captured["sql"] = sql
+            captured["params"] = params
+
+        def fetchone(self):
+            return {"realized_pnl": -50.0}
+
+        def close(self):
+            return None
+
+    class Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def cursor(self):
+            return Cursor()
+
+    ex = _make_executor()
+    monkeypatch.setattr(ex, "_load_strategy", lambda _strategy_id: {"execution_mode": "live"})
+    monkeypatch.setattr(
+        "app.services.trading_executor.get_db_connection",
+        lambda: Connection(),
+    )
+
+    equity = ex._calculate_current_equity(
+        9,
+        1000.0,
+        current_positions=[],
+        strategy_run_id=77,
+    )
+
+    assert equity == 950.0
+    assert "strategy_run_id = %s" in captured["sql"]
+    assert captured["params"][:3] == (9, 77, 77)
 
 
 def test_generic_stop_loss_is_noop_for_grid_bot(monkeypatch):
@@ -267,9 +311,66 @@ def test_grid_no_exit_when_no_positions(monkeypatch):
     ex = _make_executor()
     cfg = {"bot_type": "grid", "stop_loss_pct": 5}
     monkeypatch.setattr(ex, "_get_current_positions", lambda *a, **k: [])
+    monkeypatch.setattr(ex, "_calculate_current_equity", lambda *a, **k: 10000.0)
 
     exits = ex._grid_bot_risk_exits(
         strategy_id=1, symbol="BTC/USDT", current_price=50.0,
         trading_config=cfg, timeframe_seconds=60, initial_capital=10000.0,
     )
     assert exits == []
+
+
+def test_grid_stops_after_realized_loss_when_exchange_is_already_flat(monkeypatch):
+    ex = _make_executor()
+    cfg = {"bot_type": "grid", "stop_loss_pct": 30}
+    monkeypatch.setattr(ex, "_get_current_positions", lambda *a, **k: [])
+    monkeypatch.setattr(ex, "_calculate_current_equity", lambda *a, **k: 6500.0)
+
+    exits = ex._grid_bot_risk_exits(
+        strategy_id=1,
+        symbol="BTC/USDT",
+        current_price=50.0,
+        trading_config=cfg,
+        timeframe_seconds=60,
+        initial_capital=10000.0,
+        strategy_run_id=18,
+    )
+
+    assert len(exits) == 1
+    assert exits[0]["type"] == "stop"
+    assert exits[0]["reason"] == "grid_equity_stop_loss"
+    assert exits[0]["equity"] == 6500.0
+    assert exits[0]["equity_pct"] == pytest.approx(-0.35)
+
+
+def test_grid_runner_accepts_stop_only_risk_exit_without_placing_order(monkeypatch):
+    class Engine:
+        stop_requested = False
+        _paused_entries = False
+        _stop_requested = False
+        _stop_reason = ""
+
+        def set_runtime_params(self, _params):
+            return None
+
+        def cancel_entry_orders_on_exchange(self):
+            return None
+
+        def _enqueue_market(self, *_args, **_kwargs):
+            raise AssertionError("already-flat risk exit must not place another order")
+
+    runner = object.__new__(GridRestingRunner)
+    runner.strategy_id = 1
+    runner._started = True
+    runner._runtime_params = {}
+    runner._engine = Engine()
+    runner._risk_exit_fn = lambda _price: [
+        {"type": "stop", "reason": "grid_equity_stop_loss"}
+    ]
+    monkeypatch.setattr("app.services.grid.runner.prepare_bot_market_guards", lambda *a, **k: None)
+    monkeypatch.setattr("app.services.grid.runner.append_strategy_log", lambda *a, **k: None)
+
+    runner.tick(100.0)
+
+    assert runner._engine._stop_requested is True
+    assert runner._engine._stop_reason == "grid risk exit: grid_equity_stop_loss"

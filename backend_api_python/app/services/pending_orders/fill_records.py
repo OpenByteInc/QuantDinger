@@ -186,6 +186,7 @@ def _persist_strategy_fill(
         filled=position_qty,
         avg_price=avg_px,
         leg=leg,
+        strategy_run_id=int(strategy_run_id or 0),
     )
     if profit is None:
         profit = profit_out

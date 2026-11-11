@@ -1,6 +1,7 @@
 import pytest
 
 from app.services import pending_order_position_sync as sync_mod
+from app.services.live_trading import external_flat_close as external_close_mod
 
 
 @pytest.fixture(autouse=True)
@@ -8,6 +9,8 @@ def _purge_enabled(monkeypatch):
     """The purge ships disabled; the cases below exercise it explicitly."""
     monkeypatch.setenv("POSITION_SYNC_PURGE_FLAT_LEDGER", "true")
     monkeypatch.setattr(sync_mod, "_record_flat_leg_ownership_state", lambda **_kwargs: None)
+    monkeypatch.setattr(sync_mod, "_fetch_position", lambda *_args, **_kwargs: {"strategy_run_id": 0})
+    monkeypatch.setattr(external_close_mod, "forced_close_reason", lambda *_args, **_kwargs: "")
 
 
 def _no_recent_open_fills(monkeypatch):
@@ -22,7 +25,7 @@ def _attributed_close(monkeypatch, trade_id=4242):
     """A purge is only allowed once the matching close trade can be written."""
     monkeypatch.setattr(
         "app.services.live_trading.external_flat_close.trade_side_net_qty",
-        lambda strategy_id, symbol, side: 0.01,
+        lambda strategy_id, symbol, side, **_kwargs: 0.01,
     )
     monkeypatch.setattr(
         "app.services.live_trading.external_flat_close.reconcile_external_flat_closes",
@@ -229,7 +232,7 @@ def test_purge_flat_strategy_positions_drops_already_reconciled_leg(monkeypatch)
     _no_recent_open_fills(monkeypatch)
     monkeypatch.setattr(
         "app.services.live_trading.external_flat_close.trade_side_net_qty",
-        lambda strategy_id, symbol, side: 0.0,
+        lambda strategy_id, symbol, side, **_kwargs: 0.0,
     )
     monkeypatch.setattr(
         "app.services.live_trading.external_flat_close.reconcile_external_flat_closes",
@@ -281,3 +284,35 @@ def test_purge_flat_strategy_positions_is_on_by_default(monkeypatch):
 
     assert count == 1
     assert deleted == [(15, "BTC/USDT", "long")]
+
+
+def test_purge_auto_stops_strategy_after_exchange_liquidation(monkeypatch):
+    _no_recent_open_fills(monkeypatch)
+    _attributed_close(monkeypatch, trade_id=9001)
+    monkeypatch.setattr(
+        sync_mod,
+        "_local_strategy_position_legs",
+        lambda strategy_id, allowed_symbols: [("DOGE/USDT", "long")],
+    )
+    monkeypatch.setattr(sync_mod, "_delete_position", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        external_close_mod,
+        "forced_close_reason",
+        lambda *_args, **_kwargs: "exchange_liquidation",
+    )
+    stopped = []
+    monkeypatch.setattr(
+        "app.services.strategy_lifecycle.auto_stop_live_strategy",
+        lambda strategy_id, reason, source="": stopped.append((strategy_id, reason, source)) or True,
+    )
+
+    count = sync_mod._purge_flat_strategy_positions_from_exchange(
+        strategy_id=1006,
+        strategy_config={"symbol": "DOGE/USDT"},
+        exch_size={},
+    )
+
+    assert count == 1
+    assert stopped == [
+        (1006, "exchange_liquidation", "position_sync_forced_close")
+    ]

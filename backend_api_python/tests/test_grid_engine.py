@@ -536,6 +536,135 @@ def test_initial_market_target_qty_100u_20pct_20x():
     assert make_grid_initial_client_order_id(42, leg="long") != make_grid_initial_client_order_id(42, leg="short")
 
 
+def test_initial_market_client_order_id_is_stable_only_within_one_run():
+    from app.services.grid.exchange_orders import make_grid_initial_client_order_id
+
+    first = make_grid_initial_client_order_id(42, leg="long", strategy_run_id=1001)
+    same_run = make_grid_initial_client_order_id(42, leg="long", strategy_run_id=1001)
+    next_run = make_grid_initial_client_order_id(42, leg="long", strategy_run_id=1002)
+
+    assert first == same_run
+    assert first != next_run
+    assert all(len(value) <= 32 and value.isalnum() for value in (first, next_run))
+
+
+def test_new_grid_run_resets_previous_run_startup_state(monkeypatch):
+    from app.services.grid.engine import GridEngine
+
+    persisted = []
+    monkeypatch.setattr(
+        "app.services.grid.engine.load_grid_resting_state",
+        lambda config: {
+            "strategy_run_id": 1001,
+            "initial_market_done": True,
+            "initial_exchange_baseline": {"long": 25, "short": 0},
+            "initial_seeded_cells": [1, 2],
+        },
+    )
+    monkeypatch.setattr(
+        "app.services.grid.engine.persist_grid_resting_state",
+        lambda strategy_id, updates: persisted.append((strategy_id, updates)),
+    )
+    engine = GridEngine(
+        42,
+        "BTC/USDT",
+        {"market_type": "swap"},
+        {},
+        strategy_run_id=1002,
+        create_client_fn=lambda: object(),
+        enqueue_market=lambda *args, **kwargs: False,
+    )
+
+    assert engine._initial_done is False
+    assert engine._initial_exchange_baseline == {}
+    assert engine._initial_seeded_cells == set()
+
+    engine.prepare_runtime_state()
+
+    assert persisted == [
+        (
+            42,
+            {
+                "strategy_run_id": 1002,
+                "initial_market_done": False,
+                "initial_exchange_baseline": {},
+                "initial_seeded_cells": [],
+            },
+        )
+    ]
+
+
+@pytest.mark.parametrize("exchange_id", ["okx", "binance", "bitget", "bybit", "gate", "htx"])
+def test_stale_initial_fill_is_rejected_when_exchange_position_is_flat(monkeypatch, exchange_id):
+    from app.services.grid.engine import GridEngine
+
+    recorded = []
+    monkeypatch.setattr(
+        "app.services.grid.engine.wait_grid_market_fill",
+        lambda *args, **kwargs: (624860.0, 0.0957),
+    )
+    monkeypatch.setattr(
+        "app.services.grid.engine.record_grid_market_fill",
+        lambda *args, **kwargs: recorded.append((args, kwargs)),
+    )
+    engine = GridEngine(
+        1006,
+        "DOGE/USDT",
+        {"market_type": "swap", "leverage": 50},
+        {"exchange_id": exchange_id},
+        strategy_run_id=4254,
+        create_client_fn=lambda: object(),
+        enqueue_market=lambda *args, **kwargs: False,
+    )
+    monkeypatch.setattr(engine, "_leg_position_qty", lambda side: 0.0)
+
+    recovered = engine._probe_initial_client_order_fill(
+        object(),
+        "ginit01006r00000004254l",
+        "open_long",
+        "grid_initial_long",
+        0.0844,
+    )
+
+    assert recovered is False
+    assert recorded == []
+
+
+def test_initial_fill_larger_than_exchange_delta_is_rejected(monkeypatch):
+    from app.services.grid.engine import GridEngine
+
+    recorded = []
+    monkeypatch.setattr(
+        "app.services.grid.engine.wait_grid_market_fill",
+        lambda *args, **kwargs: (96.151, 2550.0),
+    )
+    monkeypatch.setattr(
+        "app.services.grid.engine.record_grid_market_fill",
+        lambda *args, **kwargs: recorded.append((args, kwargs)),
+    )
+    engine = GridEngine(
+        1106,
+        "ETH/USDT",
+        {"market_type": "spot"},
+        {"exchange_id": "okx"},
+        strategy_run_id=9001,
+        create_client_fn=lambda: object(),
+        enqueue_market=lambda *args, **kwargs: False,
+    )
+    monkeypatch.setattr(engine, "_leg_position_qty", lambda side: 0.773408)
+
+    recovered = engine._probe_initial_client_order_fill(
+        object(),
+        "ginit01106r00000009001l",
+        "open_long",
+        "grid_initial_long",
+        2550.0,
+    )
+
+    assert recovered is False
+    assert recorded == []
+
+
 def test_grid_resting_client_order_ids_do_not_collide_within_same_second():
     from app.services.grid.exchange_orders import make_grid_client_order_id
 
@@ -776,10 +905,11 @@ def test_initial_market_requires_its_order_fill_without_new_order(monkeypatch, c
             "initialPositionPct": 20,
         },
     }
-    recorded = {"calls": 0}
+    recorded = {"calls": 0, "run_ids": []}
 
     def fake_record(*args, **kwargs):
         recorded["calls"] += 1
+        recorded["run_ids"].append(kwargs.get("strategy_run_id"))
 
     monkeypatch.setattr("app.services.grid.engine.record_grid_market_fill", fake_record)
     monkeypatch.setattr("app.services.grid.engine.append_strategy_log", lambda *a, **k: None)
@@ -791,6 +921,7 @@ def test_initial_market_requires_its_order_fill_without_new_order(monkeypatch, c
         "BTC/USDT",
         tc,
         {},
+        strategy_run_id=7007,
         create_client_fn=lambda: object(),
         enqueue_market=lambda *a, **k: False,
     )
@@ -803,6 +934,7 @@ def test_initial_market_requires_its_order_fill_without_new_order(monkeypatch, c
     assert ok is confirmed
     assert engine._initial_done is confirmed
     assert recorded["calls"] == int(confirmed)
+    assert recorded["run_ids"] == ([7007] if confirmed else [])
 
 
 def test_sync_exit_coverage_places_long_exit_for_uncovered_position(monkeypatch):

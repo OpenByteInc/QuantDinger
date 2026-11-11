@@ -43,10 +43,12 @@ class GridEngine:
         exchange_config: Dict[str, Any],
         *,
         user_id: int = 1,
+        strategy_run_id: int = 0,
         create_client_fn: Callable[[], Any],
         enqueue_market: MarketSignalFn,
     ) -> None:
         self.strategy_id = int(strategy_id)
+        self.strategy_run_id = max(0, int(strategy_run_id or 0))
         self.user_id = int(user_id or 1)
         self.symbol = str(symbol or "")
         self.trading_config = trading_config if isinstance(trading_config, dict) else {}
@@ -62,9 +64,16 @@ class GridEngine:
         self._paused_entries = False
         self._runtime_params: Dict[str, Any] = {}
         gs = load_grid_resting_state(self.trading_config)
-        if gs.get("initial_market_done"):
+        try:
+            state_run_id = max(0, int(gs.get("strategy_run_id") or 0))
+        except (TypeError, ValueError):
+            state_run_id = 0
+        self._runtime_state_matches_run = (
+            self.strategy_run_id <= 0 or state_run_id == self.strategy_run_id
+        )
+        if self._runtime_state_matches_run and gs.get("initial_market_done"):
             self._initial_done = True
-        baseline = gs.get("initial_exchange_baseline")
+        baseline = gs.get("initial_exchange_baseline") if self._runtime_state_matches_run else None
         self._initial_exchange_baseline = (
             {
                 "long": max(0.0, float((baseline or {}).get("long") or 0.0)),
@@ -73,7 +82,7 @@ class GridEngine:
             if isinstance(baseline, dict)
             else {}
         )
-        seeded = gs.get("initial_seeded_cells")
+        seeded = gs.get("initial_seeded_cells") if self._runtime_state_matches_run else None
         self._initial_seeded_cells = {
             int(index)
             for index in (seeded if isinstance(seeded, list) else [])
@@ -326,9 +335,14 @@ class GridEngine:
                     SELECT 1 FROM qd_strategy_trades
                     WHERE strategy_id = %s
                       AND close_reason IN ('grid_initial_long', 'grid_initial_short')
+                      AND (%s <= 0 OR strategy_run_id = %s)
                     LIMIT 1
                     """,
-                    (int(self.strategy_id),),
+                    (
+                        int(self.strategy_id),
+                        int(self.strategy_run_id),
+                        int(self.strategy_run_id),
+                    ),
                 )
                 row = cur.fetchone()
                 cur.close()
@@ -653,6 +667,7 @@ class GridEngine:
 
     def set_initial_exchange_baseline(self, *, long_size: float = 0.0, short_size: float = 0.0) -> None:
         """Freeze the pre-start account position so recovery only claims new delta."""
+        self.prepare_runtime_state()
         if self._initial_exchange_baseline:
             return
         self._initial_exchange_baseline = {
@@ -663,6 +678,21 @@ class GridEngine:
             self.strategy_id,
             {"initial_exchange_baseline": dict(self._initial_exchange_baseline)},
         )
+
+    def prepare_runtime_state(self) -> None:
+        """Reset run-scoped startup flags before a newly created strategy run starts."""
+        if self.strategy_run_id <= 0 or self._runtime_state_matches_run:
+            return
+        persist_grid_resting_state(
+            self.strategy_id,
+            {
+                "strategy_run_id": self.strategy_run_id,
+                "initial_market_done": False,
+                "initial_exchange_baseline": {},
+                "initial_seeded_cells": [],
+            },
+        )
+        self._runtime_state_matches_run = True
 
     def _initial_exchange_delta(self, pos_side: str) -> float:
         total = self._leg_position_qty(pos_side)
@@ -722,6 +752,19 @@ class GridEngine:
         px = float(avg or 0)
         if px <= 0:
             return False
+        pos_side = self._pos_side_for_signal(signal_type)
+        exchange_delta = self._initial_exchange_delta(pos_side)
+        recovery_tolerance = max(1e-12, float(filled) * 0.02)
+        if exchange_delta <= 0 or float(filled) > exchange_delta + recovery_tolerance:
+            logger.warning(
+                "grid initial recovery rejected sid=%s run=%s coid=%s filled=%s exchange_delta=%s",
+                self.strategy_id,
+                self.strategy_run_id,
+                coid,
+                filled,
+                exchange_delta,
+            )
+            return False
         from app.services.pending_orders.fee_reconciliation import (
             fee_breakdown_snapshot,
             fee_breakdown_to_quote,
@@ -755,6 +798,7 @@ class GridEngine:
             client_order_id=coid,
             exchange_id=str(self.exchange_config.get("exchange_id") or ""),
             user_id=self.user_id,
+            strategy_run_id=int(getattr(self, "strategy_run_id", 0) or 0),
             fee_status=str(
                 details.get("fee_status")
                 or ("actual" if fees else "pending")
@@ -819,7 +863,8 @@ class GridEngine:
             if quantity <= 0 or opened_signal not in {"open_long", "open_short"}:
                 continue
             leg = "long" if close_signal == "close_long" else "short"
-            client_order_id = f"grb{self.strategy_id}{leg}"[:32]
+            run_segment = f"r{self.strategy_run_id}" if self.strategy_run_id > 0 else ""
+            client_order_id = f"grb{self.strategy_id}{run_segment}{leg}"[:32]
             execution = execute_grid_market_order(
                 client,
                 symbol=self.symbol,
@@ -861,6 +906,7 @@ class GridEngine:
                 exchange_order_id=execution.exchange_order_id,
                 exchange_id=str(self.exchange_config.get("exchange_id") or ""),
                 user_id=self.user_id,
+                strategy_run_id=self.strategy_run_id,
                 fee_status=execution.fee_status,
                 fee_source="rest",
             )
@@ -915,7 +961,11 @@ class GridEngine:
             self._initial_done = True
             persist_grid_resting_state(self.strategy_id, {"initial_market_done": True})
             return True
-        coid = make_grid_initial_client_order_id(self.strategy_id, leg=pos_side)
+        coid = make_grid_initial_client_order_id(
+            self.strategy_id,
+            leg=pos_side,
+            strategy_run_id=self.strategy_run_id,
+        )
         try:
             recovered = self._probe_initial_client_order_fill(
                 self._create_client(), coid, signal_type, reason, current_price)
@@ -945,17 +995,12 @@ class GridEngine:
         coid = str(client_order_id or "").strip() or make_grid_initial_client_order_id(
             self.strategy_id,
             leg=self._pos_side_for_signal(signal_type),
+            strategy_run_id=self.strategy_run_id,
         )
         pos_side = self._pos_side_for_signal(signal_type)
         exch_qty = self._initial_exchange_delta(pos_side)
         if exch_qty > 0:
             return False
-        try:
-            client = self._create_client()
-            if self._probe_initial_client_order_fill(client, coid, signal_type, reason, price):
-                return True
-        except Exception as e:
-            logger.debug("grid initial pre-place probe sid=%s: %s", self.strategy_id, e)
         try:
             client = self._create_client()
             if self.order_guard and not self.order_guard():
@@ -1001,6 +1046,7 @@ class GridEngine:
             client_order_id=str(getattr(execution, "client_order_id", coid) or coid),
             exchange_id=str(self.exchange_config.get("exchange_id") or ""),
             user_id=self.user_id,
+            strategy_run_id=self.strategy_run_id,
             fee_status=str(getattr(execution, "fee_status", "pending") or "pending"),
             fee_source="rest",
         )
@@ -1082,7 +1128,11 @@ class GridEngine:
                 usdt,
                 current_price,
                 "grid_initial_short",
-                client_order_id=make_grid_initial_client_order_id(self.strategy_id, leg="short"),
+                client_order_id=make_grid_initial_client_order_id(
+                    self.strategy_id,
+                    leg="short",
+                    strategy_run_id=self.strategy_run_id,
+                ),
             )
         elif direction == "neutral":
             half = usdt / 2.0
@@ -1091,14 +1141,22 @@ class GridEngine:
                 half,
                 current_price,
                 "grid_initial_long",
-                client_order_id=make_grid_initial_client_order_id(self.strategy_id, leg="long"),
+                client_order_id=make_grid_initial_client_order_id(
+                    self.strategy_id,
+                    leg="long",
+                    strategy_run_id=self.strategy_run_id,
+                ),
             )
             ok_short = self._sync_initial_market_leg(
                 "open_short",
                 half,
                 current_price,
                 "grid_initial_short",
-                client_order_id=make_grid_initial_client_order_id(self.strategy_id, leg="short"),
+                client_order_id=make_grid_initial_client_order_id(
+                    self.strategy_id,
+                    leg="short",
+                    strategy_run_id=self.strategy_run_id,
+                ),
             )
             ok = ok_long or ok_short
             if ok:
@@ -1113,7 +1171,11 @@ class GridEngine:
                 usdt,
                 current_price,
                 "grid_initial_long",
-                client_order_id=make_grid_initial_client_order_id(self.strategy_id, leg="long"),
+                client_order_id=make_grid_initial_client_order_id(
+                    self.strategy_id,
+                    leg="long",
+                    strategy_run_id=self.strategy_run_id,
+                ),
             )
         if ok:
             self._initial_done = True
@@ -1973,6 +2035,7 @@ class GridEngine:
             exchange_fill_id=exchange_fill_id,
             execution_event_id=execution_event_id,
             fees_by_ccy=fees_by_ccy,
+            strategy_run_id=int(getattr(self, "strategy_run_id", 0) or 0),
         )
         _, cells = self._levels_and_cells()
         cell_map = {c.index: c for c in cells}

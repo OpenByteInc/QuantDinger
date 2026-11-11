@@ -32,11 +32,15 @@ def _resolve(client, qty, *, side="long", market_type="swap", recorded=None):
 
 
 class _Binance(BinanceFuturesClient):
-    def __init__(self, rows):
+    def __init__(self, rows, force_orders=None):
         self.rows = rows
+        self.force_orders = force_orders or {}
 
     def get_user_trades(self, **_kwargs):
         return self.rows
+
+    def _signed_request(self, _method, _path, *, params):
+        return self.force_orders.get(str(params.get("autoCloseType") or ""), [])
 
 
 class _Bybit(BybitClient):
@@ -126,6 +130,29 @@ def test_binance_combines_exact_partial_close_fills():
     assert [row["exchange_fill_id"] for row in snap["components"]] == ["1", "2"]
 
 
+def test_binance_preserves_force_order_liquidation_reason():
+    snap = _resolve(
+        _Binance(
+            [
+                {
+                    "id": 7,
+                    "orderId": 9001,
+                    "buyer": False,
+                    "positionSide": "LONG",
+                    "qty": "1",
+                    "price": "80",
+                    "time": TS1,
+                }
+            ],
+            force_orders={"LIQUIDATION": [{"orderId": 9001}]},
+        ),
+        1.0,
+    )
+
+    assert snap is not None
+    assert snap["components"][0]["close_reason"] == "exchange_liquidation"
+
+
 def test_close_history_requires_exact_unrecorded_quantity():
     client = _Binance(
         [{"id": 1, "buyer": False, "positionSide": "LONG", "qty": "0.4", "price": "100", "time": TS1}]
@@ -153,6 +180,32 @@ def test_bybit_uses_closed_size_and_position_lane():
     assert snap["amount"] == pytest.approx(0.25)
 
 
+@pytest.mark.parametrize(
+    ("exec_type", "expected"),
+    [("BustTrade", "exchange_liquidation"), ("AdlTrade", "exchange_adl")],
+)
+def test_bybit_preserves_forced_close_reason(exec_type, expected):
+    snap = _resolve(
+        _Bybit(
+            [
+                {
+                    "execId": "b-force",
+                    "side": "Sell",
+                    "positionIdx": 1,
+                    "closedSize": "0.25",
+                    "execPrice": "80",
+                    "execTime": TS1,
+                    "execType": exec_type,
+                }
+            ]
+        ),
+        0.25,
+    )
+
+    assert snap is not None
+    assert snap["components"][0]["close_reason"] == expected
+
+
 def test_bitget_rejects_open_fills_and_parses_fee_detail():
     snap = _resolve(
         _Bitget(
@@ -168,6 +221,25 @@ def test_bitget_rejects_open_fills_and_parses_fee_detail():
     assert snap["fee_ccy"] == "USDT"
 
 
+def test_bitget_preserves_liquidation_reason():
+    snap = _resolve(
+        _Bitget(
+            [{
+                "execId": "g-force",
+                "side": "sell",
+                "tradeSide": "close",
+                "execQty": "0.5",
+                "execPrice": "80",
+                "reason": "liquidation",
+                "createdTime": TS1,
+            }]
+        ),
+        0.5,
+    )
+    assert snap is not None
+    assert snap["components"][0]["close_reason"] == "exchange_liquidation"
+
+
 def test_gate_converts_contracts_to_base_quantity():
     snap = _resolve(
         _Gate([{"id": "gate1", "size": "-25", "price": "105", "fee": "-0.02", "create_time_ms": TS1}]),
@@ -175,6 +247,21 @@ def test_gate_converts_contracts_to_base_quantity():
     )
     assert snap is not None
     assert snap["amount"] == pytest.approx(0.025)
+
+
+def test_gate_preserves_adl_reason():
+    snap = _resolve(
+        _Gate([{
+            "id": "gate-adl",
+            "size": "-25",
+            "price": "80",
+            "text": "adl_auto_close",
+            "create_time_ms": TS1,
+        }]),
+        0.025,
+    )
+    assert snap is not None
+    assert snap["components"][0]["close_reason"] == "exchange_adl"
 
 
 def test_okx_converts_contracts_and_preserves_liquidation_reason():
@@ -189,6 +276,32 @@ def test_okx_converts_contracts_and_preserves_liquidation_reason():
     assert snap["components"][0]["close_reason"] == "exchange_liquidation"
 
 
+def test_okx_preserves_adl_reason():
+    snap = _resolve(
+        _Okx(
+            [{"tradeId": "o-adl", "side": "sell", "posSide": "long", "fillSz": "2", "fillPx": "95", "ts": TS1}],
+            history=[{"posSide": "long", "type": "5", "uTime": TS1}],
+        ),
+        0.02,
+    )
+    assert snap is not None
+    assert snap["components"][0]["close_reason"] == "exchange_adl"
+
+
+def test_okx_ignores_forced_close_history_from_before_current_position():
+    stale_ts = int(datetime(2026, 10, 14, 2, 0, tzinfo=timezone.utc).timestamp() * 1000)
+    snap = _resolve(
+        _Okx(
+            [{"tradeId": "o2", "side": "sell", "posSide": "long", "fillSz": "2", "fillPx": "105", "ts": TS1}],
+            history=[{"posSide": "long", "type": "3", "uTime": stale_ts}],
+        ),
+        0.02,
+    )
+
+    assert snap is not None
+    assert snap["components"][0]["close_reason"] == "exchange_native_close"
+
+
 def test_htx_converts_contract_volume_to_base_quantity():
     snap = _resolve(
         _Htx([{"trade_id": "h1", "direction": "sell", "offset": "close", "trade_volume": "20", "trade_price": "102", "trade_fee": "-0.01", "created_at": TS1}]),
@@ -196,6 +309,23 @@ def test_htx_converts_contract_volume_to_base_quantity():
     )
     assert snap is not None
     assert snap["amount"] == pytest.approx(0.02)
+
+
+def test_htx_preserves_liquidation_reason():
+    snap = _resolve(
+        _Htx([{
+            "trade_id": "h-force",
+            "direction": "sell",
+            "offset": "close",
+            "trade_volume": "20",
+            "trade_price": "80",
+            "reason": "forced_liquidation",
+            "created_at": TS1,
+        }]),
+        0.02,
+    )
+    assert snap is not None
+    assert snap["components"][0]["close_reason"] == "exchange_liquidation"
 
 
 def test_alpaca_uses_fill_activities_and_preserves_order_id():

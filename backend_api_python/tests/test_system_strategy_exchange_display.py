@@ -149,7 +149,7 @@ def test_strategy_v2_admin_metadata_exposes_declared_grid_executor():
     assert metadata['bot_type'] == 'grid'
 
 
-def test_signal_admin_metrics_use_virtual_account_and_ledger():
+def test_signal_admin_metrics_use_strategy_capital_and_virtual_ledger():
     metrics = _admin_strategy_ledger_metrics(
         execution_mode='signal',
         strategy_initial_capital=1000,
@@ -162,12 +162,12 @@ def test_signal_admin_metrics_use_virtual_account_and_ledger():
     )
 
     assert metrics['ledger_mode'] == 'virtual'
-    assert metrics['initial_capital'] == pytest.approx(500)
+    assert metrics['initial_capital'] == pytest.approx(1000)
     assert metrics['position_count'] == 1
     assert metrics['trade_count'] == 7
     assert metrics['total_pnl'] == pytest.approx(10)
-    assert metrics['total_equity'] == pytest.approx(510)
-    assert metrics['roi'] == pytest.approx(2)
+    assert metrics['total_equity'] == pytest.approx(1010)
+    assert metrics['roi'] == pytest.approx(1)
 
 
 def test_live_admin_metrics_keep_live_position_equity():

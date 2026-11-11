@@ -17,6 +17,7 @@ from app.services.live_trading.okx import OkxClient
 from app.services.alpaca_trading import AlpacaClient
 from app.services.ibkr_trading import IBKRClient
 from app.services.live_trading.symbols import (
+    to_binance_futures_symbol,
     to_bitget_um_symbol,
     to_gate_currency_pair,
     to_htx_contract_code,
@@ -128,11 +129,64 @@ def _fill(
     }
 
 
+def _forced_reason(row: Dict[str, Any]) -> str:
+    """Normalize venue-specific forced-close markers without guessing from PnL."""
+    values = " ".join(
+        str(row.get(key) or "").strip().lower()
+        for key in (
+            "autoCloseType",
+            "execType",
+            "tradeSide",
+            "closeType",
+            "reason",
+            "type",
+            "clientOrderId",
+            "clientOid",
+            "text",
+        )
+    )
+    compact = values.replace("_", "").replace("-", "").replace(" ", "")
+    if "adl" in compact:
+        return EXCHANGE_ADL
+    if any(token in compact for token in ("liquidat", "busttrade", "forcedclose", "forceclose", "autoclose")):
+        return EXCHANGE_LIQUIDATION
+    return EXCHANGE_NATIVE_CLOSE
+
+
 def _binance_rows(client: Any, symbol: str, side: str) -> List[Dict[str, Any]]:
     if isinstance(client, BinanceFuturesClient):
         rows = client.get_user_trades(symbol=symbol, limit=100) or []
     else:
         rows = client.get_my_trades(symbol=symbol, limit=100) or []
+    forced_orders: Dict[str, str] = {}
+    if isinstance(client, BinanceFuturesClient):
+        native_symbol = to_binance_futures_symbol(symbol)
+        for auto_close_type, reason in (
+            ("LIQUIDATION", EXCHANGE_LIQUIDATION),
+            ("ADL", EXCHANGE_ADL),
+        ):
+            try:
+                forced = client._signed_request(
+                    "GET",
+                    "/fapi/v1/forceOrders",
+                    params={
+                        "symbol": native_symbol,
+                        "autoCloseType": auto_close_type,
+                        "limit": 100,
+                    },
+                )
+            except Exception:
+                forced = []
+            forced_rows = forced if isinstance(forced, list) else (forced or {}).get("data", [])
+            for forced_row in forced_rows if isinstance(forced_rows, list) else []:
+                if not isinstance(forced_row, dict):
+                    continue
+                order_id = str(forced_row.get("orderId") or "").strip()
+                client_id = str(forced_row.get("clientOrderId") or "").strip()
+                if order_id:
+                    forced_orders[order_id] = reason
+                if client_id:
+                    forced_orders[client_id] = reason
     want_buyer = side == "short"
     output: List[Dict[str, Any]] = []
     for row in rows if isinstance(rows, list) else []:
@@ -141,6 +195,8 @@ def _binance_rows(client: Any, symbol: str, side: str) -> List[Dict[str, Any]]:
         pos_side = str(row.get("positionSide") or "BOTH").strip().lower()
         if pos_side not in ("", "both", side):
             continue
+        order_id = str(row.get("orderId") or row.get("order_id") or "").strip()
+        client_id = str(row.get("clientOrderId") or row.get("client_order_id") or "").strip()
         item = _fill(
             fill_id=row.get("id") or row.get("tradeId"),
             qty=row.get("qty") or row.get("quantity"),
@@ -148,8 +204,9 @@ def _binance_rows(client: Any, symbol: str, side: str) -> List[Dict[str, Any]]:
             fee=row.get("commission"),
             fee_ccy=row.get("commissionAsset"),
             closed_at=row.get("time"),
-            exchange_order_id=row.get("orderId") or row.get("order_id"),
-            client_order_id=row.get("clientOrderId") or row.get("client_order_id"),
+            reason=forced_orders.get(order_id) or forced_orders.get(client_id) or _forced_reason(row),
+            exchange_order_id=order_id,
+            client_order_id=client_id,
         )
         if item:
             output.append(item)
@@ -179,6 +236,7 @@ def _bybit_rows(client: BybitClient, symbol: str, side: str) -> List[Dict[str, A
             fee=row.get("execFee"),
             fee_ccy=row.get("feeCurrency") or "USDT",
             closed_at=row.get("execTime"),
+            reason=_forced_reason(row),
             exchange_order_id=row.get("orderId") or row.get("order_id"),
             client_order_id=row.get("orderLinkId") or row.get("clientOrderId"),
         )
@@ -222,6 +280,7 @@ def _bitget_rows(client: Any, symbol: str, side: str, market_type: str) -> List[
             fee=fee,
             fee_ccy=fee_ccy,
             closed_at=row.get("createdTime") or row.get("cTime") or row.get("uTime"),
+            reason=_forced_reason(row),
             exchange_order_id=row.get("orderId") or row.get("order_id"),
             client_order_id=row.get("clientOid") or row.get("clientOrderId"),
         )
@@ -268,6 +327,7 @@ def _gate_rows(client: Any, symbol: str, side: str) -> List[Dict[str, Any]]:
             fee=row.get("fee"),
             fee_ccy=row.get("fee_currency") or "USDT",
             closed_at=row.get("create_time_ms") or row.get("time_ms") or row.get("create_time") or row.get("time"),
+            reason=_forced_reason(row),
             exchange_order_id=row.get("order_id") or row.get("orderId"),
             client_order_id=row.get("text") or row.get("client_order_id"),
         )
@@ -276,7 +336,13 @@ def _gate_rows(client: Any, symbol: str, side: str) -> List[Dict[str, Any]]:
     return output
 
 
-def _okx_rows(client: OkxClient, symbol: str, side: str, market_type: str) -> List[Dict[str, Any]]:
+def _okx_rows(
+    client: OkxClient,
+    symbol: str,
+    side: str,
+    market_type: str,
+    opened_after: Optional[datetime] = None,
+) -> List[Dict[str, Any]]:
     inst_type = "SPOT" if market_type == "spot" else "SWAP"
     inst_id = to_okx_spot_inst_id(symbol) if market_type == "spot" else to_okx_swap_inst_id(symbol)
     raw = client._signed_request(
@@ -332,6 +398,8 @@ def _okx_rows(client: OkxClient, symbol: str, side: str, market_type: str) -> Li
         if pos_side and pos_side != side:
             continue
         closed = _timestamp(row.get("uTime") or row.get("cTime"))
+        if opened_after and closed and closed < opened_after:
+            continue
         if newest is None or (closed and closed > newest):
             newest = closed
             close_type = str(row.get("type") or "")
@@ -388,6 +456,7 @@ def _htx_rows(client: HtxClient, symbol: str, side: str, market_type: str) -> Li
             fee=row.get("trade_fee") or row.get("filled-fees") or row.get("fee"),
             fee_ccy=row.get("fee-currency") or row.get("fee_asset") or "USDT",
             closed_at=row.get("created_at") or row.get("created-at") or row.get("ts"),
+            reason=_forced_reason(row),
             exchange_order_id=row.get("order_id") or row.get("order-id") or row.get("orderId"),
             client_order_id=row.get("client_order_id") or row.get("client-order-id"),
         )
@@ -531,7 +600,7 @@ def resolve_exchange_external_close(
         elif isinstance(client, (GateUsdtFuturesClient, GateSpotClient)):
             rows = _gate_rows(client, symbol, side)
         elif isinstance(client, OkxClient):
-            rows = _okx_rows(client, symbol, side, mt)
+            rows = _okx_rows(client, symbol, side, mt, opened_after)
         elif isinstance(client, HtxClient):
             rows = _htx_rows(client, symbol, side, mt)
         else:

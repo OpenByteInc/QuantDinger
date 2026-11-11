@@ -392,6 +392,8 @@ def test_bootstrap_applies_execution_accounting_after_schema(monkeypatch):
     assert names[4] == "quick-trade-client-order-id-20260926"
     assert names[5] == "signal-virtual-account-20260926"
     assert "client-scoped-sessions-20261106" in names
+    assert "virtual-account-capital-consistency-20261111" in names
+    assert "strategy-risk-stop-run-identity-20261111" in names
     assert "qd_exchange_order_pnl" in calls[2]["path"].read_text(encoding="utf-8")
     assert "billing_json" in calls[3]["path"].read_text(encoding="utf-8")
     assert "qd_quick_trades" in calls[4]["path"].read_text(encoding="utf-8")
@@ -399,5 +401,17 @@ def test_bootstrap_applies_execution_accounting_after_schema(monkeypatch):
     virtual_sql = calls[5]["path"].read_text(encoding="utf-8")
     assert "qd_strategy_virtual_trades" in virtual_sql
     assert "slippage_quote" in virtual_sql
+    capital_repair = next(
+        item for item in calls
+        if item["name"] == "virtual-account-capital-consistency-20261111"
+    )["path"].read_text(encoding="utf-8")
+    assert "cash_balance = s.initial_capital + va.realized_pnl" in capital_repair
+    assert "account_equity = vt.account_equity +" in capital_repair
+    run_identity = next(
+        item for item in calls
+        if item["name"] == "strategy-risk-stop-run-identity-20261111"
+    )["path"].read_text(encoding="utf-8")
+    assert "ADD COLUMN IF NOT EXISTS strategy_run_id" in run_identity
+    assert "idx_positions_strategy_run" in run_identity
     assert calls[1]["path"].is_file()
     assert "commission_breakdown" in calls[1]["path"].read_text(encoding="utf-8")

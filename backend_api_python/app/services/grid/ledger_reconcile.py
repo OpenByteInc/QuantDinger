@@ -18,11 +18,18 @@ def fetch_initial_market_trades(strategy_id: int) -> List[Dict[str, Any]]:
         cur = db.cursor()
         cur.execute(
             """
-            SELECT id, strategy_id, symbol, type, price, amount, close_reason, created_at
-            FROM qd_strategy_trades
-            WHERE strategy_id = %s
-              AND close_reason = ANY(%s)
-            ORDER BY id ASC
+            SELECT t.id, t.strategy_id, t.strategy_run_id, t.symbol, t.type,
+                   t.price, t.amount, t.close_reason, t.exchange_order_id,
+                   b.client_order_id AS binding_client_order_id,
+                   b.exchange_order_id AS binding_exchange_order_id,
+                   t.created_at
+            FROM qd_strategy_trades AS t
+            LEFT JOIN qd_live_order_bindings AS b
+              ON b.owner_type = 'grid_market'
+             AND b.owner_id = t.id
+            WHERE t.strategy_id = %s
+              AND t.close_reason = ANY(%s)
+            ORDER BY t.id ASC
             """,
             (sid, list(_INITIAL_REASONS)),
         )
@@ -50,7 +57,11 @@ def fetch_ledger_positions(strategy_id: int) -> List[Dict[str, Any]]:
 
 
 def exchange_is_flat(exchange_snapshot: Optional[Dict[str, Any]]) -> bool:
-    snap = exchange_snapshot if isinstance(exchange_snapshot, dict) else {}
+    if not isinstance(exchange_snapshot, dict) or not {
+        "long_size", "short_size",
+    }.intersection(exchange_snapshot):
+        return False
+    snap = exchange_snapshot
     long_sz = float(snap.get("long_size") or 0.0)
     short_sz = float(snap.get("short_size") or 0.0)
     return long_sz <= _EPS and short_sz <= _EPS
@@ -61,6 +72,41 @@ def ledger_has_open_legs(positions: List[Dict[str, Any]]) -> bool:
         if float(row.get("size") or 0.0) > _EPS:
             return True
     return False
+
+
+def ledger_exceeds_exchange(
+    exchange_snapshot: Optional[Dict[str, Any]],
+    ledger_positions: List[Dict[str, Any]],
+) -> bool:
+    if not isinstance(exchange_snapshot, dict) or not {
+        "long_size", "short_size",
+    }.intersection(exchange_snapshot):
+        return False
+    local = {"long": 0.0, "short": 0.0}
+    for row in ledger_positions or []:
+        side = str(row.get("side") or "").strip().lower()
+        if side in local:
+            local[side] += max(0.0, float(row.get("size") or 0.0))
+    for side in ("long", "short"):
+        exchange_size = max(0.0, float(exchange_snapshot.get(f"{side}_size") or 0.0))
+        tolerance = max(_EPS, exchange_size * 0.02)
+        if local[side] > exchange_size + tolerance:
+            return True
+    return False
+
+
+def is_legacy_initial_recovery_trade(trade: Dict[str, Any]) -> bool:
+    client_order_id = str(trade.get("binding_client_order_id") or "").strip().lower()
+    exchange_order_id = str(
+        trade.get("exchange_order_id")
+        or trade.get("binding_exchange_order_id")
+        or ""
+    ).strip()
+    return (
+        int(trade.get("strategy_run_id") or 0) <= 0
+        and client_order_id.startswith("ginit")
+        and not exchange_order_id
+    )
 
 
 def should_clear_phantom_ledger(
@@ -74,10 +120,16 @@ def should_clear_phantom_ledger(
         return False, "no initial trades or ledger legs to clear"
     if force:
         return True, "forced by operator"
+    if not isinstance(exchange_snapshot, dict) or not {
+        "long_size", "short_size",
+    }.intersection(exchange_snapshot):
+        return False, "exchange snapshot unavailable; refusing automatic ledger repair"
     if exchange_is_flat(exchange_snapshot) and ledger_has_open_legs(ledger_positions):
         return True, "exchange flat but strategy ledger shows open legs"
-    if exchange_is_flat(exchange_snapshot) and initial_trades:
-        return True, "exchange flat but initial market trades exist in ledger"
+    if ledger_exceeds_exchange(exchange_snapshot, ledger_positions):
+        return True, "strategy ledger position exceeds the exchange position"
+    if exchange_is_flat(exchange_snapshot):
+        return False, "exchange and strategy ledger are flat; historical trades are preserved"
     return False, "exchange still holds positions; use --force to clear ledger anyway"
 
 
@@ -90,7 +142,7 @@ def clear_phantom_grid_ledger(
     sanitize_neutral_initial_pct: bool = True,
 ) -> Dict[str, Any]:
     """
-    Remove phantom grid initial-market ledger rows when exchange is flat.
+    Remove legacy phantom initial fills when the local ledger exceeds exchange holdings.
 
     Dry-run by default (``apply=False``). Returns a report dict.
     """
@@ -166,7 +218,21 @@ def clear_phantom_grid_ledger(
     if not ok:
         return report
 
-    report["would_delete_trade_ids"] = [int(t.get("id")) for t in initial_trades if t.get("id")]
+    legacy_recoveries = [
+        trade for trade in initial_trades
+        if is_legacy_initial_recovery_trade(trade)
+    ]
+    trades_to_delete = initial_trades if force else legacy_recoveries
+    report["legacy_recovery_candidates"] = legacy_recoveries
+    if not trades_to_delete:
+        report["reason"] = (
+            "ledger mismatch found, but no legacy initial-order recovery can be removed safely"
+        )
+        return report
+
+    report["would_delete_trade_ids"] = [
+        int(t.get("id")) for t in trades_to_delete if t.get("id")
+    ]
     report["would_delete_position_ids"] = [int(p.get("id")) for p in ledger_positions if p.get("id")]
 
     if not apply:
@@ -175,15 +241,28 @@ def clear_phantom_grid_ledger(
         return report
 
     deleted_trades = 0
-    if initial_trades:
+    deleted_bindings = 0
+    if trades_to_delete:
+        trade_ids = [int(t.get("id")) for t in trades_to_delete if t.get("id")]
         with get_db_connection() as db:
             cur = db.cursor()
+            if trade_ids:
+                cur.execute(
+                    """
+                    DELETE FROM qd_live_order_bindings
+                    WHERE owner_type = 'grid_market'
+                      AND owner_id = ANY(%s)
+                    """,
+                    (trade_ids,),
+                )
+                deleted_bindings = int(cur.rowcount or 0)
             cur.execute(
                 """
                 DELETE FROM qd_strategy_trades
-                WHERE strategy_id = %s AND close_reason = ANY(%s)
+                WHERE strategy_id = %s
+                  AND id = ANY(%s)
                 """,
-                (sid, list(_INITIAL_REASONS)),
+                (sid, trade_ids),
             )
             deleted_trades = int(cur.rowcount or 0)
             db.commit()
@@ -224,6 +303,7 @@ def clear_phantom_grid_ledger(
         {
             "cleared": True,
             "deleted_trades": deleted_trades,
+            "deleted_bindings": deleted_bindings,
             "deleted_positions": deleted_positions,
             "rebuilt_from_remaining_trades": rebuilt,
         }

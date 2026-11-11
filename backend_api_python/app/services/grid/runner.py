@@ -120,6 +120,7 @@ class GridRestingRunner:
             self.trading_config,
             self.exchange_config,
             user_id=self.user_id,
+            strategy_run_id=self.strategy_run_id,
             create_client_fn=create_client_fn,
             enqueue_market=enqueue_market_fn,
         )
@@ -160,6 +161,7 @@ class GridRestingRunner:
         return self._engine.stop_reason
 
     def startup(self, current_price: float, *, bars_df: Any = None) -> tuple[bool, str]:
+        self._engine.prepare_runtime_state()
         cfg = GridBotConfig.from_trading_config(self.trading_config)
         try:
             fee_rate = float(self.trading_config.get("commission") or 0.0) / 100.0
@@ -420,9 +422,10 @@ class GridRestingRunner:
                         if st:
                             queued_any = True
                             exit_reasons.append(str(ex.get("reason") or "grid_risk"))
-                            all_queued = bool(self._engine._enqueue_market(
-                                st, 0, current_price, str(ex.get("reason") or "grid_risk")
-                            )) and all_queued
+                            if st != "stop":
+                                all_queued = bool(self._engine._enqueue_market(
+                                    st, 0, current_price, str(ex.get("reason") or "grid_risk")
+                                )) and all_queued
                     if queued_any and all_queued:
                         self._engine._stop_requested = True
                         self._engine._stop_reason = (

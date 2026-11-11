@@ -10,6 +10,7 @@ from app.services.virtual_trading import (
     execute_virtual_signal_order,
     mark_virtual_positions,
     match_virtual_limit_orders,
+    reconcile_virtual_account_capital,
 )
 from app.services.virtual_execution_costs import (
     VIRTUAL_COMMISSION_RATE,
@@ -72,6 +73,32 @@ def test_virtual_fill_without_position_is_not_fabricated():
     assert result.status == "no_position"
     assert result.fill_quantity == 0
     assert result.gross_realized_pnl == 0
+
+
+def test_virtual_account_capital_rebases_without_erasing_realized_pnl():
+    calls = []
+
+    class Cursor:
+        def execute(self, query, params=()):
+            calls.append((" ".join(str(query).split()), params))
+
+    account = reconcile_virtual_account_capital(
+        Cursor(),
+        strategy_id=1105,
+        account={
+            "initial_cash": 1000,
+            "cash_balance": 984.7821,
+            "realized_pnl": -15.2179,
+            "total_commission": 3.5,
+        },
+        strategy_initial_cash=20000,
+    )
+
+    assert account["initial_cash"] == pytest.approx(20000)
+    assert account["cash_balance"] == pytest.approx(19984.7821)
+    assert account["realized_pnl"] == pytest.approx(-15.2179)
+    assert calls[0][1] == pytest.approx((19000, 1105))
+    assert calls[1][1] == pytest.approx((20000, 19984.7821, 1105))
 
 
 def test_virtual_limit_order_waits_for_touch_and_never_fills_worse_than_limit():

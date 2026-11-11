@@ -40,6 +40,7 @@ def apply_grid_fill_to_local_state(
     exchange_fill_id: str = "",
     execution_event_id: int = 0,
     fees_by_ccy: Dict[str, float] | None = None,
+    strategy_run_id: int = 0,
 ) -> None:
     sym = normalize_strategy_symbol(symbol)
     purpose = str(order.purpose or "")
@@ -67,6 +68,7 @@ def apply_grid_fill_to_local_state(
             gross_quantity=qty, fees_by_ccy=fees_by_ccy or {}),
         avg_price=px,
         leg=leg,
+        strategy_run_id=int(strategy_run_id or order.extra.get("strategy_run_id") or 0),
     )
     record_trade(
         strategy_id=int(strategy_id),
@@ -116,6 +118,7 @@ def _record_grid_market_fill(
     client_order_id: str = "",
     exchange_id: str = "",
     user_id: int = 0,
+    strategy_run_id: int = 0,
     fee_status: str = "pending",
     fee_source: str = "rest",
     fees_by_ccy: Dict[str, float] | None = None,
@@ -144,6 +147,7 @@ def _record_grid_market_fill(
         filled=spot_position_fill_quantity(market_type=leg.normalized_market_type(), symbol=sym, signal_type=sig, gross_quantity=qty, fees_by_ccy=fees_by_ccy),
         avg_price=px,
         leg=leg,
+        strategy_run_id=int(strategy_run_id or 0),
     )
     trade_id = record_trade(
         strategy_id=int(strategy_id),
@@ -158,6 +162,7 @@ def _record_grid_market_fill(
         close_reason=str(reason or sig),
         matched_entry_price=matched_entry,
         leg=leg,
+        strategy_run_id=int(strategy_run_id or 0),
         fee_status=str(fee_status or "pending"),
         fee_source=str(fee_source or "rest"),
         fees_by_ccy=fees_by_ccy,
@@ -177,6 +182,7 @@ def _record_grid_market_fill(
                 owner_id=int(trade_id),
                 user_id=int(user_id or 1),
                 strategy_id=int(strategy_id),
+                strategy_run_id=int(strategy_run_id or 0),
                 symbol=sym,
                 signal_type=sig,
                 client_order_id=str(client_order_id or ""),

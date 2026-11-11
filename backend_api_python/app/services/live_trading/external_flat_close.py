@@ -35,7 +35,32 @@ logger = get_logger(__name__)
 _EPS = 1e-12
 
 
-def trade_side_net_qty(strategy_id: int, symbol: str, side: str) -> float:
+def _active_strategy_run_id(strategy_id: int) -> int:
+    try:
+        with get_db_connection() as db:
+            cur = db.cursor()
+            cur.execute(
+                """
+                SELECT id FROM strategy_runs
+                WHERE strategy_id = %s
+                  AND runtime_status IN ('running', 'recovering', 'paused', 'needs_review')
+                ORDER BY id DESC LIMIT 1
+                """,
+                (int(strategy_id),),
+            )
+            row = cur.fetchone() or {}
+            cur.close()
+        return int(row.get("id") or 0)
+    except Exception:
+        return 0
+
+
+def trade_side_net_qty(
+    strategy_id: int,
+    symbol: str,
+    side: str,
+    strategy_run_id: Optional[int] = None,
+) -> float:
     """Net base qty still open on the trade ledger for one side."""
     sid = int(strategy_id or 0)
     sym = normalize_strategy_symbol(symbol) or str(symbol or "").strip()
@@ -44,6 +69,11 @@ def trade_side_net_qty(strategy_id: int, symbol: str, side: str) -> float:
         return 0.0
     open_types = ("open_long", "add_long") if side_l == "long" else ("open_short", "add_short")
     close_types = ("close_long", "reduce_long") if side_l == "long" else ("close_short", "reduce_short")
+    run_id = (
+        int(_active_strategy_run_id(sid) or 0)
+        if strategy_run_id is None
+        else int(strategy_run_id or 0)
+    )
     with get_db_connection() as db:
         cur = db.cursor()
         cur.execute(
@@ -53,9 +83,10 @@ def trade_side_net_qty(strategy_id: int, symbol: str, side: str) -> float:
             WHERE strategy_id = %s
               AND UPPER(COALESCE(NULLIF(symbol_canonical, ''), symbol)) = UPPER(%s)
               AND type = ANY(%s)
+              AND (%s <= 0 OR strategy_run_id = %s)
             ORDER BY id ASC
             """,
-            (sid, sym, list(open_types) + list(close_types)),
+            (sid, sym, list(open_types) + list(close_types), run_id, run_id),
         )
         rows = cur.fetchall() or []
         cur.close()
@@ -73,7 +104,12 @@ def trade_side_net_qty(strategy_id: int, symbol: str, side: str) -> float:
     return net if net > _EPS else 0.0
 
 
-def _last_open_trade(strategy_id: int, symbol: str, side: str) -> Dict[str, Any]:
+def _last_open_trade(
+    strategy_id: int,
+    symbol: str,
+    side: str,
+    strategy_run_id: int = 0,
+) -> Dict[str, Any]:
     sid = int(strategy_id or 0)
     sym = normalize_strategy_symbol(symbol) or str(symbol or "").strip()
     side_l = str(side or "").strip().lower()
@@ -82,15 +118,17 @@ def _last_open_trade(strategy_id: int, symbol: str, side: str) -> Dict[str, Any]
         cur = db.cursor()
         cur.execute(
             """
-            SELECT id, price, amount, created_at, credential_id, inst_id, market_type
+            SELECT id, price, amount, created_at, credential_id, inst_id, market_type,
+                   strategy_run_id
             FROM qd_strategy_trades
             WHERE strategy_id = %s
               AND UPPER(COALESCE(NULLIF(symbol_canonical, ''), symbol)) = UPPER(%s)
               AND type = ANY(%s)
+              AND (%s <= 0 OR strategy_run_id = %s)
             ORDER BY id DESC
             LIMIT 1
             """,
-            (sid, sym, list(open_types)),
+            (sid, sym, list(open_types), int(strategy_run_id or 0), int(strategy_run_id or 0)),
         )
         row = cur.fetchone() or {}
         cur.close()
@@ -346,6 +384,7 @@ def record_external_flat_close(
     credential_id: int = 0,
     inst_id: str = "",
     market_type: str = "swap",
+    strategy_run_id: int = 0,
     created_at: Optional[datetime] = None,
     clear_local_position: bool = True,
 ) -> int:
@@ -383,6 +422,7 @@ def record_external_flat_close(
         credential_id=int(credential_id or 0),
         inst_id=str(inst_id or ""),
         market_type=str(market_type or "swap"),
+        strategy_run_id=int(strategy_run_id or 0),
         fee_status="actual" if fee > 0 else "pending",
         fee_source="rest" if fee > 0 else "",
         created_at=created_at,
@@ -397,6 +437,7 @@ def record_external_flat_close(
                 signal_type=trade_type,
                 filled=min(local_size, qty),
                 avg_price=px,
+                strategy_run_id=int(strategy_run_id or 0),
             )
     if trade_id > 0:
         try:
@@ -432,9 +473,13 @@ def reconcile_external_flat_closes(
     sid = int(strategy_id or 0)
     sym = normalize_strategy_symbol(symbol) or str(symbol or "").strip()
     side_l = str(side or "").strip().lower()
-    residual = trade_side_net_qty(sid, sym, side_l)
-    if residual <= _EPS:
+    try:
         local = _fetch_position(sid, sym, side_l)
+    except Exception:
+        local = {}
+    run_id = int(local.get("strategy_run_id") or _active_strategy_run_id(sid) or 0)
+    residual = trade_side_net_qty(sid, sym, side_l, strategy_run_id=run_id)
+    if residual <= _EPS:
         local_size = _as_float(local.get("size"))
         if local_size <= _EPS:
             return 0
@@ -443,9 +488,15 @@ def reconcile_external_flat_closes(
         cred = int(local.get("credential_id") or credential_id or 0)
         iid = str(local.get("inst_id") or inst_id or "")
         mt = str(local.get("market_type") or market_type or "swap")
-        opened_after = None
+        legacy_open = _last_open_trade(sid, sym, side_l, strategy_run_id=0)
+        if entry <= 0:
+            entry = _as_float(legacy_open.get("price"))
+        opened_after = legacy_open.get("created_at")
+        if isinstance(opened_after, datetime) and opened_after.tzinfo is None:
+            opened_after = opened_after.replace(tzinfo=timezone.utc)
     else:
-        last_open = _last_open_trade(sid, sym, side_l)
+        last_open = _last_open_trade(sid, sym, side_l, strategy_run_id=run_id)
+        run_id = int(last_open.get("strategy_run_id") or run_id or 0)
         entry = _as_float(last_open.get("price"))
         if entry <= 0:
             local = _fetch_position(sid, sym, side_l)
@@ -511,6 +562,7 @@ def reconcile_external_flat_closes(
             credential_id=cred,
             inst_id=iid,
             market_type=mt,
+            strategy_run_id=run_id,
             created_at=(
                 component.get("closed_at")
                 if isinstance(component.get("closed_at"), datetime)
@@ -521,3 +573,48 @@ def reconcile_external_flat_closes(
         if trade_id:
             last_trade_id = int(trade_id)
     return last_trade_id
+
+
+def forced_close_reason(
+    strategy_id: int,
+    *,
+    trade_id: int = 0,
+    symbol: str = "",
+    side: str = "",
+    strategy_run_id: int = 0,
+) -> str:
+    """Return a liquidation/ADL reason for a reconciled external close."""
+    sid = int(strategy_id or 0)
+    if sid <= 0:
+        return ""
+    params: list[Any] = [sid]
+    filters = ["strategy_id = %s", "close_reason = ANY(%s)"]
+    params.append([EXCHANGE_LIQUIDATION, EXCHANGE_ADL])
+    if int(trade_id or 0) > 0:
+        filters.append("id = %s")
+        params.append(int(trade_id))
+    else:
+        run_id = int(strategy_run_id or 0)
+        if run_id > 0:
+            filters.append("strategy_run_id = %s")
+            params.append(run_id)
+        sym = normalize_strategy_symbol(symbol) or str(symbol or "").strip()
+        if sym:
+            filters.append("UPPER(COALESCE(NULLIF(symbol_canonical, ''), symbol)) = UPPER(%s)")
+            params.append(sym)
+        side_l = str(side or "").strip().lower()
+        if side_l in ("long", "short"):
+            filters.append("type = %s")
+            params.append("close_long" if side_l == "long" else "close_short")
+    try:
+        with get_db_connection() as db:
+            cur = db.cursor()
+            cur.execute(
+                f"SELECT close_reason FROM qd_strategy_trades WHERE {' AND '.join(filters)} ORDER BY id DESC LIMIT 1",
+                tuple(params),
+            )
+            row = cur.fetchone() or {}
+            cur.close()
+        return str(row.get("close_reason") or "")
+    except Exception:
+        return ""
