@@ -911,6 +911,10 @@ class TradingExecutor:
                 symbol=str(primary.get("symbol") or ""),
                 market_type=str(primary.get("market_type") or "spot"),
                 position_mode=str(trading_config.get("position_mode") or ""),
+                runtime_epoch=max(
+                    1,
+                    int(strategy.get("desired_runtime_epoch") or 1),
+                ),
             )
             run_id = int(runtime_run.strategy_run_id or 0)
             last_prices: dict[str, float] = {}

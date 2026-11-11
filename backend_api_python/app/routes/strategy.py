@@ -134,8 +134,13 @@ def _attach_runtime_health(rows, *, user_id: int | None = None, client_timezone:
         for row in items
         if int(row.get("id") or 0) > 0
     }
-    started_ats = {
-        int(row.get("id") or 0): row.get("updated_at")
+    runtime_epochs = {
+        int(row.get("id") or 0): int(row.get("desired_runtime_epoch") or 0)
+        for row in items
+        if int(row.get("id") or 0) > 0
+    }
+    runtime_requested_ats = {
+        int(row.get("id") or 0): row.get("runtime_requested_at")
         for row in items
         if int(row.get("id") or 0) > 0
     }
@@ -147,7 +152,8 @@ def _attach_runtime_health(rows, *, user_id: int | None = None, client_timezone:
     health = load_runtime_health(
         statuses,
         strategy_statuses=statuses,
-        strategy_started_ats=started_ats,
+        strategy_runtime_epochs=runtime_epochs,
+        strategy_runtime_requested_ats=runtime_requested_ats,
         strategy_execution_modes=execution_modes,
     )
     for row in items:

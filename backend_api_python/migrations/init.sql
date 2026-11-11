@@ -379,6 +379,8 @@ CREATE TABLE IF NOT EXISTS qd_strategies_trading (
     exchange_config JSONB NOT NULL DEFAULT '{}'::jsonb,
     trading_config JSONB NOT NULL DEFAULT '{}'::jsonb,
     source_version_id INTEGER,
+    desired_runtime_epoch BIGINT NOT NULL DEFAULT 0,
+    runtime_requested_at TIMESTAMP,
     created_at TIMESTAMP DEFAULT NOW(),
     updated_at TIMESTAMP DEFAULT NOW()
 );
@@ -431,6 +433,12 @@ ON qd_script_source_versions(user_id);
 
 ALTER TABLE qd_strategies_trading
 ADD COLUMN IF NOT EXISTS source_version_id INTEGER;
+
+ALTER TABLE qd_strategies_trading
+ADD COLUMN IF NOT EXISTS desired_runtime_epoch BIGINT NOT NULL DEFAULT 0;
+
+ALTER TABLE qd_strategies_trading
+ADD COLUMN IF NOT EXISTS runtime_requested_at TIMESTAMP;
 
 DO $$
 DECLARE

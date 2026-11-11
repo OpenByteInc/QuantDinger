@@ -9,12 +9,16 @@ def test_strategy_rows_include_runtime_health(monkeypatch):
         strategy_ids,
         *,
         strategy_statuses=None,
-        strategy_started_ats=None,
+        strategy_runtime_epochs=None,
+        strategy_runtime_requested_ats=None,
         strategy_execution_modes=None,
     ):
         captured["ids"] = list(strategy_ids)
         captured["statuses"] = dict(strategy_statuses or {})
-        captured["started_ats"] = dict(strategy_started_ats or {})
+        captured["runtime_epochs"] = dict(strategy_runtime_epochs or {})
+        captured["runtime_requested_ats"] = dict(
+            strategy_runtime_requested_ats or {}
+        )
         captured["execution_modes"] = dict(strategy_execution_modes or {})
         return {
             20: {
@@ -31,7 +35,9 @@ def test_strategy_rows_include_runtime_health(monkeypatch):
             "id": 20,
             "status": "running",
             "strategy_name": "Momentum",
-            "updated_at": "2026-07-19T04:14:15Z",
+            "updated_at": "2026-07-19T05:00:00Z",
+            "desired_runtime_epoch": 4,
+            "runtime_requested_at": "2026-07-19T04:14:15Z",
             "execution_mode": "live",
         }
     ])
@@ -39,7 +45,8 @@ def test_strategy_rows_include_runtime_health(monkeypatch):
     assert captured == {
         "ids": [20],
         "statuses": {20: "running"},
-        "started_ats": {20: "2026-07-19T04:14:15Z"},
+        "runtime_epochs": {20: 4},
+        "runtime_requested_ats": {20: "2026-07-19T04:14:15Z"},
         "execution_modes": {20: "live"},
     }
     assert rows[0]["runtime_health"]["health"] == "healthy"
@@ -178,6 +185,34 @@ def test_historical_failed_order_does_not_degrade_current_run(monkeypatch):
     assert snapshots[20]["historical_failed_orders"] == 1
 
 
+def test_runtime_health_state_never_reuses_previous_run_heartbeat(monkeypatch):
+    snapshots = {
+        20: {
+            **health._empty_snapshot(),
+            "run_id": 7,
+        }
+    }
+    monkeypatch.setattr(
+        health,
+        "_query",
+        lambda _sql, _params: [
+            {
+                "strategy_id": 20,
+                "strategy_run_id": 6,
+                "state_json": {
+                    "last_heartbeat_at": 990,
+                    "last_error": "previous run failed",
+                },
+            }
+        ],
+    )
+
+    health._load_health_state(snapshots, "%s", [20])
+
+    assert snapshots[20]["last_heartbeat_at"] == 0
+    assert snapshots[20]["last_error"] == ""
+
+
 def test_recent_failed_order_degrades_until_attention_window_expires():
     snapshot = {
         **health._empty_snapshot(),
@@ -208,7 +243,8 @@ def test_queued_strategy_stays_starting_before_runtime_record_exists(monkeypatch
     monkeypatch.setenv("STRATEGY_STARTUP_HEALTH_GRACE_SEC", "180")
     snapshot = {
         **health._empty_snapshot(),
-        "_strategy_started_at": "1970-01-01T00:16:40Z",
+        "_desired_runtime_epoch": 2,
+        "_runtime_requested_at": "1970-01-01T00:16:40Z",
     }
 
     assert health._health_state(snapshot, strategy_status="running", now=1_060) == "starting"
@@ -230,13 +266,30 @@ def test_restart_ignores_previous_run_heartbeat_during_new_startup_grace(monkeyp
     snapshot = {
         **health._empty_snapshot(),
         "run_id": 7,
+        "runtime_epoch": 1,
         "started_at": "1970-01-01T00:08:20Z",
         "last_heartbeat_at": 990,
         "last_error": "previous run failed",
-        "_strategy_started_at": "1970-01-01T00:16:40Z",
+        "_desired_runtime_epoch": 2,
+        "_runtime_requested_at": "1970-01-01T00:16:40Z",
     }
 
     assert health._health_state(snapshot, strategy_status="running", now=1_060) == "starting"
+
+
+def test_handoff_with_same_runtime_epoch_keeps_existing_run_healthy(monkeypatch):
+    monkeypatch.setenv("STRATEGY_STARTUP_HEALTH_GRACE_SEC", "180")
+    snapshot = {
+        **health._empty_snapshot(),
+        "run_id": 7,
+        "runtime_epoch": 3,
+        "started_at": "1970-01-01T00:08:20Z",
+        "last_heartbeat_at": 1_390,
+        "_desired_runtime_epoch": 3,
+        "_runtime_requested_at": "1970-01-01T00:08:20Z",
+    }
+
+    assert health._health_state(snapshot, strategy_status="running", now=1_400) == "healthy"
 
 
 def test_position_drift_degrades_running_strategy_health():
