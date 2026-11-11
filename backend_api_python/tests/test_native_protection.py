@@ -193,6 +193,51 @@ def test_okx_net_protection_sets_reduce_only():
     assert all(body["reduceOnly"] == "true" for body in calls)
 
 
+def test_okx_snaps_trigger_and_activation_prices_to_tick():
+    from app.services.live_trading.okx import OkxClient
+
+    client = OkxClient.__new__(OkxClient)
+    client.broker_code = ""
+    client._normalize_order_size = lambda **_kwargs: (Decimal("2"), 0)
+    client._resolve_pos_side = lambda **_kwargs: "net"
+    client.get_instrument = lambda **_kwargs: {"tickSz": "0.1"}
+    calls = []
+    client._signed_request = (
+        lambda method, path, json_body=None, params=None: calls.append(json_body)
+        or {"data": [{"algoId": "1"}]}
+    )
+
+    place_native_protection_orders(
+        client,
+        _request(
+            entry_price=76049.9,
+            stop_loss_price=74148.6525,
+            take_profit_price=77951.14749999999,
+            trailing_stop_pct=0.05,
+            trailing_activation_pct=0.05,
+        ),
+    )
+
+    assert calls[0]["slTriggerPx"] == "74148.6"
+    assert calls[1]["tpTriggerPx"] == "77951.1"
+    assert calls[2]["activePx"] == "79852.3"
+
+
+def test_okx_rejects_native_protection_quantity_below_exchange_minimum():
+    from app.services.live_trading.okx import OkxClient
+
+    client = OkxClient.__new__(OkxClient)
+    client.broker_code = ""
+    client._normalize_order_size = lambda **_kwargs: (Decimal("0"), 3)
+    client._resolve_pos_side = lambda **_kwargs: "net"
+
+    with pytest.raises(
+        LiveTradingError,
+        match="okx_native_protection_quantity_below_minimum",
+    ):
+        place_native_protection_orders(client, _request(quantity=0.0001))
+
+
 def test_bitget_keeps_channel_header_path_and_position_side():
     from app.services.live_trading.bitget import BitgetMixClient
 
@@ -238,6 +283,19 @@ def test_bitget_snaps_trigger_and_activation_prices_to_contract_tick():
     assert calls[0]["stopLoss"] == "74148.6"
     assert calls[0]["takeProfit"] == "79852.3"
     assert calls[1]["trailingStopParams"]["activationPrice"] == "79852.3"
+
+
+def test_bitget_rejects_native_protection_quantity_below_exchange_minimum():
+    from app.services.live_trading.bitget import BitgetMixClient
+
+    client = BitgetMixClient.__new__(BitgetMixClient)
+    client._normalize_size = lambda **_kwargs: (Decimal("0"), 3)
+
+    with pytest.raises(
+        LiveTradingError,
+        match="bitget_native_protection_quantity_below_minimum",
+    ):
+        place_native_protection_orders(client, _request(quantity=0.0001))
 
 
 def test_bitget_classic_account_uses_v2_native_protection_orders():
@@ -298,6 +356,24 @@ def test_bitget_classic_snaps_trigger_prices_to_price_end_step():
     assert [body["triggerPrice"] for body in calls] == ["74148.5", "79852", "79852"]
 
 
+def test_bitget_classic_rejects_native_protection_quantity_below_exchange_minimum():
+    from app.services.live_trading.bitget_compat import BitgetCompatibleMixClient
+
+    client = BitgetCompatibleMixClient(
+        api_key="classic-native-protection",
+        secret_key="secret",
+        passphrase="passphrase",
+        account_mode="classic",
+    )
+    client._classic_client._normalize_size = lambda **_kwargs: (Decimal("0"), 2)
+
+    with pytest.raises(
+        LiveTradingError,
+        match="bitget_native_protection_quantity_below_minimum",
+    ):
+        place_native_protection_orders(client, _request(quantity=0.0001))
+
+
 def test_bybit_conditional_orders_are_reduce_only():
     from app.services.live_trading.bybit import BybitClient
 
@@ -346,6 +422,19 @@ def test_bybit_snaps_trigger_and_trailing_prices_to_tick():
     assert calls[1]["activePrice"] == "72247.4"
 
 
+def test_bybit_rejects_native_protection_quantity_below_exchange_minimum():
+    from app.services.live_trading.bybit import BybitClient
+
+    client = BybitClient.__new__(BybitClient)
+    client._normalize_qty = lambda **_kwargs: (Decimal("0"), 3)
+
+    with pytest.raises(
+        LiveTradingError,
+        match="bybit_native_protection_quantity_below_minimum",
+    ):
+        place_native_protection_orders(client, _request(quantity=0.0001))
+
+
 def test_gate_price_orders_use_reduce_only_signed_contract_size():
     from app.services.live_trading.gate import GateUsdtFuturesClient
 
@@ -379,6 +468,43 @@ def test_gate_decimal_price_orders_use_string_amount():
     assert all("size" not in kwargs["json_body"]["initial"] for _, kwargs in calls)
 
 
+def test_gate_snaps_trigger_prices_to_contract_tick():
+    from app.services.live_trading.gate import GateUsdtFuturesClient
+
+    client = GateUsdtFuturesClient.__new__(GateUsdtFuturesClient)
+    client._resolve_order_size = lambda **_kwargs: ("2", None)
+    client.get_contract = lambda **_kwargs: {"order_price_round": "0.1"}
+    calls = []
+    client._signed_request = (
+        lambda method, path, **kwargs: calls.append(kwargs["json_body"])
+        or {"id": 1}
+    )
+
+    place_native_protection_orders(
+        client,
+        _request(
+            entry_price=76049.9,
+            stop_loss_price=74148.6525,
+            take_profit_price=77951.14749999999,
+        ),
+    )
+
+    assert [body["trigger"]["price"] for body in calls] == ["74148.6", "77951.1"]
+
+
+def test_gate_rejects_native_protection_quantity_below_exchange_minimum():
+    from app.services.live_trading.gate import GateUsdtFuturesClient
+
+    client = GateUsdtFuturesClient.__new__(GateUsdtFuturesClient)
+    client._resolve_order_size = lambda **_kwargs: ("0", None)
+
+    with pytest.raises(
+        LiveTradingError,
+        match="gate_native_protection_quantity_below_minimum",
+    ):
+        place_native_protection_orders(client, _request(quantity=0.0001))
+
+
 def test_htx_uses_margin_mode_specific_position_tpsl_endpoint():
     from app.services.live_trading.htx import HtxClient
 
@@ -393,3 +519,42 @@ def test_htx_uses_margin_mode_specific_position_tpsl_endpoint():
     assert calls[0][0] == "/linear-swap-api/v1/swap_tpsl_order"
     assert calls[0][1]["volume"] == 3
     assert calls[0][1]["direction"] == "sell"
+
+
+def test_htx_snaps_native_protection_prices_to_contract_tick():
+    from app.services.live_trading.htx import HtxClient
+
+    client = HtxClient.__new__(HtxClient)
+    client.market_type = "swap"
+    client._base_to_contracts = lambda **_kwargs: 3
+    client.get_contract_info = lambda **_kwargs: {"price_tick": "0.1"}
+    calls = []
+    client._swap_private_request_raw = (
+        lambda method, path, **kwargs: calls.append(kwargs["json_body"])
+        or {"status": "ok"}
+    )
+
+    place_native_protection_orders(
+        client,
+        _request(
+            entry_price=76049.9,
+            stop_loss_price=74148.6525,
+            take_profit_price=77951.14749999999,
+        ),
+    )
+
+    assert calls[0]["sl_trigger_price"] == 74148.6
+    assert calls[0]["tp_trigger_price"] == 77951.1
+
+
+def test_htx_rejects_native_protection_quantity_below_exchange_minimum():
+    from app.services.live_trading.htx import HtxClient
+
+    client = HtxClient.__new__(HtxClient)
+    client._base_to_contracts = lambda **_kwargs: 0
+
+    with pytest.raises(
+        LiveTradingError,
+        match="htx_native_protection_quantity_below_minimum",
+    ):
+        place_native_protection_orders(client, _request(quantity=0.0001))

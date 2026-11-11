@@ -796,6 +796,36 @@ class GateUsdtFuturesClient(_GateBase):
             signed_iv = int(Decimal(iv) * sign)
             return (str(signed_iv), None)
 
+    def _normalize_price(self, *, contract: str, price: float) -> Tuple[Decimal, Optional[int]]:
+        """Align a futures price to Gate's contract price increment."""
+        value = self._to_dec(price)
+        if value <= 0:
+            return (Decimal("0"), None)
+
+        metadata: Dict[str, Any] = {}
+        try:
+            metadata = self.get_contract(contract=contract) or {}
+        except Exception:
+            metadata = {}
+
+        tick_size = self._to_dec(
+            metadata.get("order_price_round")
+            or metadata.get("orderPriceRound")
+            or "0"
+        )
+        if tick_size > 0:
+            value = floor_decimal_to_step(value, tick_size)
+
+        price_precision = None
+        if tick_size > 0:
+            try:
+                exponent = tick_size.normalize().as_tuple().exponent
+                if isinstance(exponent, int):
+                    price_precision = min(max(0, -exponent), 18)
+            except Exception:
+                pass
+        return (value, price_precision)
+
     def _base_to_contracts(self, *, contract: str, base_size: float) -> int:
         """Integer contracts estimate (for internal use like position sizing display)."""
         meta: Dict[str, Any] = {}
@@ -1001,10 +1031,13 @@ class GateUsdtFuturesClient(_GateBase):
         size_str, extra_headers = self._resolve_order_size(contract=contract, side=sd, base_size=base_qty)
         if size_str in ("0", "-0", ""):
             raise LiveTradingError("Invalid size (resolved contracts == 0)")
+        price_dec, _price_precision = self._normalize_price(contract=contract, price=px)
+        if price_dec <= 0:
+            raise LiveTradingError("Invalid price (below contract tick)")
         body: Dict[str, Any] = {
             "contract": contract,
             "size": size_str,
-            "price": _gate_decimal_text(px),
+            "price": _gate_decimal_text(price_dec),
             "tif": "gtc",
         }
         if reduce_only:

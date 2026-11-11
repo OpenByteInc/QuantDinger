@@ -345,6 +345,39 @@ class OkxClient(BaseRestClient):
             return (Decimal("0"), size_precision)
         return (req, size_precision)
 
+    def _normalize_price(
+        self,
+        *,
+        inst_id: str,
+        market_type: str,
+        price: float,
+    ) -> Tuple[Decimal, Optional[int]]:
+        """Align an order price to the instrument tick size."""
+        value = self._to_dec(price)
+        if value <= 0:
+            return (Decimal("0"), None)
+
+        inst_type = "SPOT" if str(market_type or "swap").strip().lower() == "spot" else "SWAP"
+        instrument: Dict[str, Any] = {}
+        try:
+            instrument = self.get_instrument(inst_type=inst_type, inst_id=str(inst_id or "")) or {}
+        except Exception:
+            instrument = {}
+
+        tick_size = self._to_dec(instrument.get("tickSz") or "0")
+        if tick_size > 0:
+            value = self._floor_to_step(value, tick_size)
+
+        price_precision = None
+        if tick_size > 0:
+            try:
+                exponent = tick_size.normalize().as_tuple().exponent
+                if isinstance(exponent, int):
+                    price_precision = min(max(0, -exponent), 18)
+            except Exception:
+                pass
+        return (value, price_precision)
+
     def _iso_ts(self) -> str:
         # OKX requires RFC3339 timestamp with milliseconds, e.g. 2020-12-08T09:08:57.715Z
         t = time.time()
@@ -1022,13 +1055,20 @@ class OkxClient(BaseRestClient):
                     "Invalid size (below lot/min size): "
                     f"requested={format_decimal(sz_raw)}"
                 )
+            price_dec, price_precision = self._normalize_price(
+                inst_id=inst_id,
+                market_type=mt,
+                price=px,
+            )
+            if price_dec <= 0:
+                raise LiveTradingError("Invalid price (below instrument tick)")
             body: Dict[str, Any] = {
                 "instId": inst_id,
                 "tdMode": "cash",
                 "side": sd,
                 "ordType": "limit",
                 "sz": self._dec_str(sz_dec, strict_precision=sz_precision),
-                "px": self._dec_str(self._to_dec(px)),
+                "px": self._dec_str(price_dec, strict_precision=price_precision),
             }
         else:
             inst_id = to_okx_swap_inst_id(symbol)
@@ -1039,6 +1079,13 @@ class OkxClient(BaseRestClient):
                     "Invalid size (below lot/min size): "
                     f"requested={format_decimal(sz_raw)}"
                 )
+            price_dec, price_precision = self._normalize_price(
+                inst_id=inst_id,
+                market_type=mt,
+                price=px,
+            )
+            if price_dec <= 0:
+                raise LiveTradingError("Invalid price (below instrument tick)")
             td = (td_mode or "cross").lower()
             if td not in ("cross", "isolated"):
                 td = "cross"
@@ -1049,7 +1096,7 @@ class OkxClient(BaseRestClient):
                 "posSide": ps,
                 "ordType": "limit",
                 "sz": self._dec_str(sz_dec, strict_precision=sz_precision),
-                "px": self._dec_str(self._to_dec(px)),
+                "px": self._dec_str(price_dec, strict_precision=price_precision),
             }
             if reduce_only and ps == "net":
                 body["reduceOnly"] = "true"

@@ -174,6 +174,8 @@ def _place_okx(client: Any, request: NativeProtectionRequest) -> List[Dict[str, 
     size, precision = client._normalize_order_size(
         inst_id=inst_id, market_type="swap", size=request.quantity
     )
+    if size <= 0:
+        raise LiveTradingError("okx_native_protection_quantity_below_minimum")
     pos_side = client._resolve_pos_side(
         requested_pos_side=request.pos_side, market_type="swap"
     )
@@ -193,8 +195,18 @@ def _place_okx(client: Any, request: NativeProtectionRequest) -> List[Dict[str, 
     for prefix, price in (("sl", request.stop_loss_price), ("tp", request.take_profit_price)):
         if price <= 0:
             continue
+        trigger_price, price_precision = client._normalize_price(
+            inst_id=inst_id,
+            market_type="swap",
+            price=price,
+        )
+        if trigger_price <= 0:
+            raise LiveTradingError("okx_native_protection_price_below_minimum")
         body = dict(base)
-        body[f"{prefix}TriggerPx"] = str(price)
+        body[f"{prefix}TriggerPx"] = client._dec_str(
+            trigger_price,
+            strict_precision=price_precision,
+        )
         body[f"{prefix}OrdPx"] = "-1"
         body[f"{prefix}TriggerPxType"] = "mark"
         responses.append(client._signed_request("POST", "/api/v5/trade/order-algo", json_body=body))
@@ -202,7 +214,17 @@ def _place_okx(client: Any, request: NativeProtectionRequest) -> List[Dict[str, 
         body = dict(base, ordType="move_order_stop", callbackRatio=str(request.trailing_stop_pct))
         activation = _activation_price(request)
         if activation > 0:
-            body["activePx"] = str(activation)
+            activation_price, price_precision = client._normalize_price(
+                inst_id=inst_id,
+                market_type="swap",
+                price=activation,
+            )
+            if activation_price <= 0:
+                raise LiveTradingError("okx_native_protection_price_below_minimum")
+            body["activePx"] = client._dec_str(
+                activation_price,
+                strict_precision=price_precision,
+            )
         responses.append(client._signed_request("POST", "/api/v5/trade/order-algo", json_body=body))
     return responses
 
@@ -221,6 +243,8 @@ def _place_bitget(client: Any, request: NativeProtectionRequest) -> List[Dict[st
         product_type=request.product_type,
         base_size=request.quantity,
     )
+    if size <= 0:
+        raise LiveTradingError("bitget_native_protection_quantity_below_minimum")
     close_side = "sell" if request.pos_side == "long" else "buy"
     base = {
         "category": request.product_type.upper(),
@@ -304,6 +328,8 @@ def _place_bitget_classic(client: Any, request: NativeProtectionRequest) -> List
         product_type=request.product_type,
         base_size=request.quantity,
     )
+    if size <= 0:
+        raise LiveTradingError("bitget_native_protection_quantity_below_minimum")
     base = {
         "marginCoin": request.margin_coin.upper(),
         "productType": request.product_type.upper(),
@@ -369,6 +395,8 @@ def _place_bitget_classic(client: Any, request: NativeProtectionRequest) -> List
 def _place_bybit(client: Any, request: NativeProtectionRequest) -> List[Dict[str, Any]]:
     close_side = "Sell" if request.pos_side == "long" else "Buy"
     size, precision = client._normalize_qty(symbol=request.symbol, qty=request.quantity)
+    if size <= 0:
+        raise LiveTradingError("bybit_native_protection_quantity_below_minimum")
     base: Dict[str, Any] = {
         "category": "linear",
         "symbol": to_bybit_symbol(request.symbol),
@@ -430,6 +458,8 @@ def _place_gate(client: Any, request: NativeProtectionRequest) -> List[Dict[str,
     size, extra_headers = client._resolve_order_size(
         contract=contract, side=close_side, base_size=request.quantity
     )
+    if str(size or "").strip() in ("", "0", "-0", "+0"):
+        raise LiveTradingError("gate_native_protection_quantity_below_minimum")
     initial: Dict[str, Any] = {
         "contract": contract,
         "price": "0",
@@ -452,12 +482,18 @@ def _place_gate(client: Any, request: NativeProtectionRequest) -> List[Dict[str,
         if price <= 0:
             continue
         rule = 1 if price > request.entry_price else 2
+        trigger_price, _price_precision = client._normalize_price(
+            contract=contract,
+            price=price,
+        )
+        if trigger_price <= 0:
+            raise LiveTradingError("gate_native_protection_price_below_minimum")
         body = {
             "initial": initial,
             "trigger": {
                 "strategy_type": 0,
                 "price_type": 1,
-                "price": str(price),
+                "price": format(trigger_price, "f"),
                 "rule": rule,
                 "expiration": 2_592_000,
             },
@@ -478,19 +514,33 @@ def _place_gate(client: Any, request: NativeProtectionRequest) -> List[Dict[str,
 
 def _place_htx(client: Any, request: NativeProtectionRequest) -> List[Dict[str, Any]]:
     volume = client._base_to_contracts(symbol=request.symbol, qty=request.quantity)
+    if volume <= 0:
+        raise LiveTradingError("htx_native_protection_quantity_below_minimum")
     body: Dict[str, Any] = {
         "contract_code": to_htx_contract_code(request.symbol),
         "direction": "sell" if request.pos_side == "long" else "buy",
         "volume": volume,
     }
     if request.take_profit_price > 0:
+        take_profit, _price_precision = client._normalize_price(
+            symbol=request.symbol,
+            price=request.take_profit_price,
+        )
+        if take_profit <= 0:
+            raise LiveTradingError("htx_native_protection_price_below_minimum")
         body.update(
-            tp_trigger_price=request.take_profit_price,
+            tp_trigger_price=float(take_profit),
             tp_order_price_type="optimal_5",
         )
     if request.stop_loss_price > 0:
+        stop_loss, _price_precision = client._normalize_price(
+            symbol=request.symbol,
+            price=request.stop_loss_price,
+        )
+        if stop_loss <= 0:
+            raise LiveTradingError("htx_native_protection_price_below_minimum")
         body.update(
-            sl_trigger_price=request.stop_loss_price,
+            sl_trigger_price=float(stop_loss),
             sl_order_price_type="optimal_5",
         )
     responses: List[Dict[str, Any]] = []
