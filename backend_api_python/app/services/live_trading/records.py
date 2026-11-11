@@ -336,7 +336,8 @@ def rebuild_positions_from_trades(strategy_id: int) -> bool:
             return False
         cur.execute(
             """
-            SELECT type, symbol, amount, price, market_type, credential_id, inst_id, fill_source
+            SELECT type, symbol, amount, price, market_type, credential_id, inst_id, fill_source,
+                   strategy_run_id
             FROM qd_strategy_trades
             WHERE strategy_id = %s
             ORDER BY id ASC
@@ -366,6 +367,7 @@ def rebuild_positions_from_trades(strategy_id: int) -> bool:
             filled=float(row.get("amount") or 0.0),
             avg_price=float(row.get("price") or 0.0),
             leg=leg,
+            strategy_run_id=int(row.get("strategy_run_id") or 0),
         )
     return True
 
@@ -441,6 +443,7 @@ def ensure_position_ledger_schema() -> None:
         "ALTER TABLE qd_strategy_positions ADD COLUMN IF NOT EXISTS credential_id INTEGER DEFAULT 0",
         "ALTER TABLE qd_strategy_positions ADD COLUMN IF NOT EXISTS inst_id VARCHAR(80) DEFAULT ''",
         "ALTER TABLE qd_strategy_positions ADD COLUMN IF NOT EXISTS symbol_canonical VARCHAR(50) DEFAULT ''",
+        "ALTER TABLE qd_strategy_positions ADD COLUMN IF NOT EXISTS strategy_run_id INTEGER DEFAULT 0",
         "ALTER TABLE pending_orders ADD COLUMN IF NOT EXISTS credential_id INTEGER DEFAULT 0",
         "ALTER TABLE pending_orders ADD COLUMN IF NOT EXISTS inst_id VARCHAR(80) DEFAULT ''",
         "ALTER TABLE pending_orders ADD COLUMN IF NOT EXISTS strategy_run_id INTEGER DEFAULT 0",
@@ -495,6 +498,7 @@ def ensure_position_ledger_schema() -> None:
         "CREATE INDEX IF NOT EXISTS idx_trades_strategy_symbol_canon ON qd_strategy_trades (strategy_id, market_type, symbol_canonical)",
         "CREATE INDEX IF NOT EXISTS idx_strategy_trades_grid_order ON qd_strategy_trades (grid_order_id) WHERE grid_order_id > 0",
         "CREATE INDEX IF NOT EXISTS idx_positions_strategy_leg ON qd_strategy_positions (strategy_id, market_type, symbol_canonical, side)",
+        "CREATE INDEX IF NOT EXISTS idx_positions_strategy_run ON qd_strategy_positions (strategy_id, strategy_run_id)",
     )
     for sql in statements:
         try:
@@ -812,6 +816,7 @@ def upsert_position(
     market_type: str = "",
     credential_id: int = 0,
     inst_id: str = "",
+    strategy_run_id: int = 0,
 ) -> None:
     if user_id is None:
         user_id = _get_user_id_from_strategy(strategy_id)
@@ -834,9 +839,9 @@ def upsert_position(
             """
             INSERT INTO qd_strategy_positions
             (user_id, strategy_id, symbol, symbol_canonical, side, size, entry_price, current_price,
-             highest_price, lowest_price, market_type, credential_id, inst_id, updated_at)
+             highest_price, lowest_price, market_type, credential_id, inst_id, strategy_run_id, updated_at)
             VALUES
-            (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+            (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
             ON CONFLICT(strategy_id, symbol, side) DO UPDATE SET
                 symbol_canonical = excluded.symbol_canonical,
                 size = excluded.size,
@@ -847,6 +852,7 @@ def upsert_position(
                 market_type = excluded.market_type,
                 credential_id = CASE WHEN excluded.credential_id > 0 THEN excluded.credential_id ELSE qd_strategy_positions.credential_id END,
                 inst_id = CASE WHEN excluded.inst_id <> '' THEN excluded.inst_id ELSE qd_strategy_positions.inst_id END,
+                strategy_run_id = CASE WHEN excluded.strategy_run_id > 0 THEN excluded.strategy_run_id ELSE qd_strategy_positions.strategy_run_id END,
                 updated_at = NOW()
             """,
             (
@@ -863,6 +869,7 @@ def upsert_position(
                 mt,
                 cred,
                 iid,
+                int(strategy_run_id or 0),
             ),
         )
         db.commit()
@@ -878,6 +885,7 @@ def apply_fill_to_local_position(
     filled: float,
     avg_price: float,
     leg: Optional["LegContext"] = None,
+    strategy_run_id: int = 0,
 ) -> Tuple[Optional[float], Optional[Dict[str, Any]], Optional[float]]:
     """
     Apply a fill to the local position snapshot.
@@ -938,6 +946,7 @@ def apply_fill_to_local_position(
             highest_price=new_high,
             lowest_price=new_low,
             leg=leg,
+            strategy_run_id=int(strategy_run_id or 0),
         )
         return None, _fetch_position(sid, sym_key, side), None
 
@@ -968,6 +977,7 @@ def apply_fill_to_local_position(
             highest_price=new_high,
             lowest_price=new_low,
             leg=leg,
+            strategy_run_id=int(strategy_run_id or 0),
         )
         return profit, _fetch_position(sid, sym_key, side), matched_entry
 

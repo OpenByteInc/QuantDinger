@@ -1179,6 +1179,7 @@ class TradingExecutor:
                         initial_capital,
                         current_positions=equity_positions,
                         current_prices=active_prices,
+                        strategy_run_id=run_id,
                     )
                     session.synchronize_positions(
                         positions,
@@ -2111,6 +2112,7 @@ class TradingExecutor:
                 timeframe_seconds=60,
                 initial_capital=initial_capital,
                 risk_state=grid_risk_state,
+                strategy_run_id=strategy_run_id,
             )
             grid_risk_store.save(grid_risk_state)
             return exits
@@ -2593,6 +2595,7 @@ class TradingExecutor:
         timeframe_seconds: int,
         initial_capital: Optional[float] = None,
         risk_state: Optional[Dict[str, Any]] = None,
+        strategy_run_id: int = 0,
     ) -> List[Dict[str, Any]]:
         config = trading_config if isinstance(trading_config, dict) else {}
         if str(config.get("bot_type") or "").strip().lower() not in {"grid", "dca"}:
@@ -2606,8 +2609,6 @@ class TradingExecutor:
             str(row.get("side") or "").lower() == "short" and float(row.get("size") or 0) > 0
             for row in positions
         )
-        if not long_open and not short_open:
-            return []
         candle = int(time.time() // max(1, int(timeframe_seconds or 60))) * max(
             1, int(timeframe_seconds or 60)
         )
@@ -2618,6 +2619,8 @@ class TradingExecutor:
                 result.append({"type": "close_long", "position_size": 0, "timestamp": candle, "reason": reason, **extra})
             if short_open:
                 result.append({"type": "close_short", "position_size": 0, "timestamp": candle, "reason": reason, **extra})
+            if not result:
+                result.append({"type": "stop", "position_size": 0, "timestamp": candle, "reason": reason, **extra})
             return result
 
         params = config.get("bot_params") if isinstance(config.get("bot_params"), dict) else {}
@@ -2628,7 +2631,8 @@ class TradingExecutor:
         ).strip().lower()
         buffer_ratio = self._ratio(config.get("grid_oob_buffer_pct"), 0.05)
         if (
-            boundary_action == "stop_loss"
+            (long_open or short_open)
+            and boundary_action == "stop_loss"
             and upper > lower > 0
             and current_price > 0
             and buffer_ratio > 0
@@ -2678,6 +2682,7 @@ class TradingExecutor:
                 current_positions=positions,
                 current_price=current_price,
                 symbol=symbol,
+                strategy_run_id=int(strategy_run_id or 0),
             )
             change = (equity - capital) / capital
             state = risk_state if isinstance(risk_state, dict) else {}
@@ -2711,6 +2716,7 @@ class TradingExecutor:
         current_price: Optional[float] = None,
         symbol: str = "",
         current_prices: Optional[Mapping[str, float]] = None,
+        strategy_run_id: int = 0,
     ) -> float:
         realized = 0.0
         strategy = self._load_strategy(strategy_id) or {}
@@ -2729,18 +2735,48 @@ class TradingExecutor:
                         SELECT
                           COALESCE((
                             SELECT SUM(COALESCE(profit, 0) - COALESCE(commission_quote, commission, 0))
-                            FROM qd_strategy_trades WHERE strategy_id = %s
+                            FROM qd_strategy_trades
+                            WHERE strategy_id = %s
+                              AND (%s <= 0 OR strategy_run_id = %s)
                           ), 0)
                           + COALESCE((
                             SELECT SUM(COALESCE(amount, 0))
-                            FROM qd_strategy_funding_fees WHERE strategy_id = %s
+                            FROM qd_strategy_funding_fees
+                            WHERE strategy_id = %s
+                              AND (
+                                %s <= 0
+                                OR occurred_at >= (
+                                  SELECT started_at FROM strategy_runs
+                                  WHERE id = %s AND strategy_id = %s
+                                )
+                              )
                           ), 0)
                           + COALESCE((
                             SELECT SUM(COALESCE(amount, 0))
-                            FROM qd_strategy_broker_activities WHERE strategy_id = %s
+                            FROM qd_strategy_broker_activities
+                            WHERE strategy_id = %s
+                              AND (
+                                %s <= 0
+                                OR occurred_at >= (
+                                  SELECT started_at FROM strategy_runs
+                                  WHERE id = %s AND strategy_id = %s
+                                )
+                              )
                           ), 0) AS realized_pnl
                         """,
-                        (strategy_id, strategy_id, strategy_id),
+                        (
+                            strategy_id,
+                            int(strategy_run_id or 0),
+                            int(strategy_run_id or 0),
+                            strategy_id,
+                            int(strategy_run_id or 0),
+                            int(strategy_run_id or 0),
+                            strategy_id,
+                            strategy_id,
+                            int(strategy_run_id or 0),
+                            int(strategy_run_id or 0),
+                            strategy_id,
+                        ),
                     )
                 realized = float((cur.fetchone() or {}).get("realized_pnl") or 0)
                 cur.close()

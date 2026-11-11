@@ -263,11 +263,22 @@ def normalize_grid_order_quantity(
         return 0.0
 
 
-def make_grid_initial_client_order_id(strategy_id: int, leg: str = "") -> str:
-    """Stable client oid for grid initial market leg (one per strategy/leg, avoids duplicate opens)."""
+def make_grid_initial_client_order_id(
+    strategy_id: int,
+    leg: str = "",
+    *,
+    strategy_run_id: int = 0,
+) -> str:
+    """Stable client oid for one grid run/leg without leaking across later runs."""
     suffix = str(leg or "").strip().lower()[:1]
     if suffix not in ("l", "s"):
         suffix = ""
+    run_id = max(0, int(strategy_run_id or 0))
+    if run_id > 0:
+        return (
+            f"ginit{int(strategy_id) % 100000:05d}"
+            f"r{run_id % 100000000000:011d}{suffix}"
+        )[:32]
     return f"ginit{int(strategy_id) % 100000:05d}{suffix}"[:32]
 
 

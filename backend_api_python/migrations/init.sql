@@ -603,6 +603,7 @@ CREATE TABLE IF NOT EXISTS qd_strategy_positions (
 
 CREATE INDEX IF NOT EXISTS idx_positions_user_id ON qd_strategy_positions(user_id);
 CREATE INDEX IF NOT EXISTS idx_positions_strategy_id ON qd_strategy_positions(strategy_id);
+CREATE INDEX IF NOT EXISTS idx_positions_strategy_run ON qd_strategy_positions(strategy_id, strategy_run_id);
 
 -- =============================================================================
 -- 4. Strategy Trades

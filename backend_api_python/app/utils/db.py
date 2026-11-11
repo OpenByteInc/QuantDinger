@@ -410,6 +410,18 @@ def _apply_init_sql(logger, *, strict: bool = False):
             _apply_migration_component(
                 conn,
                 logger,
+                name="virtual-account-capital-consistency-20261111",
+                path=Path(__file__).resolve().parent.parent.parent / "migrations" / "20261111_virtual_account_capital_consistency.sql",
+            )
+            _apply_migration_component(
+                conn,
+                logger,
+                name="strategy-risk-stop-run-identity-20261111",
+                path=Path(__file__).resolve().parent.parent.parent / "migrations" / "20261111_strategy_risk_stop_run_identity.sql",
+            )
+            _apply_migration_component(
+                conn,
+                logger,
                 name="market-symbols-master",
                 path=symbols_sql,
                 baseline_table="qd_market_symbols",

@@ -238,6 +238,37 @@ def _purge_flat_strategy_positions_from_exchange(
 
     grace_sec = _purge_flat_grace_sec()
     recent_open = _recent_open_fill_symbols(sid, grace_sec)
+    forced_stop_reason = ""
+
+    def stop_after_forced_close(
+        *,
+        trade_id: int = 0,
+        symbol: str,
+        side: str,
+        strategy_run_id: int = 0,
+    ) -> None:
+        nonlocal forced_stop_reason
+        if forced_stop_reason:
+            return
+        from app.services.live_trading.external_flat_close import forced_close_reason
+
+        close_reason = forced_close_reason(
+            sid,
+            trade_id=int(trade_id or 0),
+            symbol=symbol,
+            side=side,
+            strategy_run_id=int(strategy_run_id or 0),
+        )
+        if not close_reason:
+            return
+        forced_stop_reason = close_reason
+        from app.services.strategy_lifecycle import auto_stop_live_strategy
+
+        auto_stop_live_strategy(
+            sid,
+            close_reason,
+            source="position_sync_forced_close",
+        )
 
     deleted = 0
     for symbol, side in _local_strategy_position_legs(sid, allowed):
@@ -257,7 +288,16 @@ def _purge_flat_strategy_positions_from_exchange(
             trade_side_net_qty,
         )
 
-        if trade_side_net_qty(sid, symbol, side) <= eps:
+        try:
+            local_position = _fetch_position(sid, symbol, side)
+        except Exception:
+            local_position = {}
+        if trade_side_net_qty(
+            sid,
+            symbol,
+            side,
+            strategy_run_id=int(local_position.get("strategy_run_id") or 0),
+        ) <= eps:
             # An earlier tick already recorded this close but did not drop the leg (for
             # example the delete raised). Re-reconciling would write a second close for the
             # same size and double-count the PnL, so only the stale leg is removed here.
@@ -278,6 +318,11 @@ def _purge_flat_strategy_positions_from_exchange(
             except Exception:
                 pass
             _delete_position(sid, symbol, side)
+            stop_after_forced_close(
+                symbol=symbol,
+                side=side,
+                strategy_run_id=int(local_position.get("strategy_run_id") or 0),
+            )
             deleted += 1
             continue
 
@@ -297,6 +342,11 @@ def _purge_flat_strategy_positions_from_exchange(
                     trade_id,
                     symbol,
                     side,
+                )
+                stop_after_forced_close(
+                    trade_id=trade_id,
+                    symbol=symbol,
+                    side=side,
                 )
         except Exception as reconcile_err:
             logger.warning(
@@ -375,6 +425,11 @@ def _purge_flat_strategy_positions_from_exchange(
                         trade_id,
                         sym,
                         side,
+                    )
+                    stop_after_forced_close(
+                        trade_id=trade_id,
+                        symbol=sym,
+                        side=side,
                     )
     except Exception as heal_err:
         logger.warning(

@@ -101,6 +101,48 @@ def calculate_virtual_limit_fill_price(
     return max(limit_value, _fill_price(action, market_value, slippage_rate))
 
 
+def reconcile_virtual_account_capital(
+    cur: Any,
+    *,
+    strategy_id: int,
+    account: Mapping[str, Any],
+    strategy_initial_cash: float,
+) -> dict[str, Any]:
+    """Keep the virtual ledger basis aligned with the strategy sizing basis."""
+    normalized = dict(account or {})
+    expected = max(0.0, float(strategy_initial_cash or 0.0))
+    if expected <= 0:
+        return normalized
+    recorded = max(0.0, float(normalized.get("initial_cash") or 0.0))
+    tolerance = max(1e-8, expected * 1e-10)
+    if abs(recorded - expected) <= tolerance:
+        return normalized
+    realized = float(normalized.get("realized_pnl") or 0.0)
+    cash_balance = expected + realized
+    capital_delta = expected - recorded
+    cur.execute(
+        """
+        UPDATE qd_strategy_virtual_trades
+        SET account_equity = account_equity + %s
+        WHERE strategy_id = %s
+        """,
+        (capital_delta, int(strategy_id)),
+    )
+    cur.execute(
+        """
+        UPDATE qd_strategy_virtual_accounts
+        SET initial_cash = %s,
+            cash_balance = %s,
+            updated_at = NOW()
+        WHERE strategy_id = %s
+        """,
+        (expected, cash_balance, int(strategy_id)),
+    )
+    normalized["initial_cash"] = expected
+    normalized["cash_balance"] = cash_balance
+    return normalized
+
+
 def execute_virtual_signal_order(order_row: Mapping[str, Any], payload: Mapping[str, Any]) -> dict[str, Any]:
     """Atomically fill a signal order in the isolated virtual ledger."""
     mode = str(order_row.get("execution_mode") or payload.get("execution_mode") or "").strip().lower()
@@ -213,7 +255,12 @@ def execute_virtual_signal_order(order_row: Mapping[str, Any], payload: Mapping[
             "SELECT * FROM qd_strategy_virtual_accounts WHERE strategy_id = %s FOR UPDATE",
             (strategy_id,),
         )
-        account = cur.fetchone() or {}
+        account = reconcile_virtual_account_capital(
+            cur,
+            strategy_id=strategy_id,
+            account=cur.fetchone() or {},
+            strategy_initial_cash=initial_cash,
+        )
         if not market_open or (order_type == "limit" and forced_fill_price <= 0):
             immediate_fill = None
             if market_open:

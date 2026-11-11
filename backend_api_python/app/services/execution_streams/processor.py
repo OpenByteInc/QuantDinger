@@ -733,6 +733,7 @@ class ExecutionEventProcessor:
                         leg=LegContext(
                             market_type=event["market_type"], credential_id=int(trade.get("credential_id") or 0)
                         ),
+                        strategy_run_id=int(trade.get("strategy_run_id") or 0),
                     )
                     cur.execute(
                         """UPDATE qd_strategy_trades SET amount = %s, price = %s, value = %s,
