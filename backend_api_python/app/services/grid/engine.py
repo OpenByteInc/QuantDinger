@@ -964,7 +964,7 @@ class GridEngine:
         coid = make_grid_initial_client_order_id(
             self.strategy_id,
             leg=pos_side,
-            strategy_run_id=self.strategy_run_id,
+            strategy_run_id=int(getattr(self, "strategy_run_id", 0) or 0),
         )
         try:
             recovered = self._probe_initial_client_order_fill(
