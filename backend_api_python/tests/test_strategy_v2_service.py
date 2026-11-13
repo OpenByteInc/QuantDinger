@@ -177,9 +177,9 @@ def test_benchmark_alignment_covers_the_full_final_intraday_bar():
     assert result["benchmarkCoverageEnd"] == "2026-08-29T23:59:59.999999Z"
 
 
-def test_trade_review_snapshot_uses_the_finest_bounded_timeframe_and_keeps_only_ohlcv():
-    index = pd.date_range("2026-07-31", periods=30 * 24 * 60, freq="min")
-    frame = pd.DataFrame({
+def _review_frame(start: str, periods: int, freq: str) -> pd.DataFrame:
+    index = pd.date_range(start, periods=periods, freq=freq)
+    return pd.DataFrame({
         "open": range(len(index)),
         "high": [value + 2 for value in range(len(index))],
         "low": [value - 2 for value in range(len(index))],
@@ -187,6 +187,14 @@ def test_trade_review_snapshot_uses_the_finest_bounded_timeframe_and_keeps_only_
         "volume": [3] * len(index),
         "private_rule": ["must-not-leak"] * len(index),
     }, index=index)
+
+
+def _candle_time(snapshot: dict, position: int) -> pd.Timestamp:
+    return pd.to_datetime(snapshot["candles"][position]["time"], unit="s", utc=True)
+
+
+def test_trade_review_snapshot_keeps_the_strategy_timeframe_and_only_ohlcv():
+    frame = _review_frame("2026-07-31", 30 * 24 * 60, "min")
     symbol = "Crypto:ETH/USDT@swap"
 
     snapshots = _build_review_candle_snapshots(
@@ -202,12 +210,76 @@ def test_trade_review_snapshot_uses_the_finest_bounded_timeframe_and_keeps_only_
     )
 
     snapshot = snapshots[symbol]
-    assert snapshot["timeframe"] == "15m"
-    assert 2000 < len(snapshot["candles"]) <= 3000
+    assert snapshot["timeframe"] == "1m"
+    assert len(snapshot["candles"]) == 3000
     assert set(snapshot["candles"][0]) == {"time", "open", "high", "low", "close", "volume"}
-    assert max(item["volume"] for item in snapshot["candles"]) > 3
-    first_time = pd.to_datetime(snapshot["candles"][0]["time"], unit="s", utc=True)
-    assert first_time < pd.Timestamp("2026-08-01T00:00:00Z")
+    assert {item["volume"] for item in snapshot["candles"]} == {3}
+    # The trade span is longer than the bar budget, so the most recent
+    # candles around the latest exit are kept at the strategy timeframe.
+    assert _candle_time(snapshot, -1) >= pd.Timestamp("2026-08-29T23:40:00Z")
+
+
+def test_fifteen_minute_strategy_review_is_not_compressed_to_thirty_minutes():
+    # Regression for #328: a two-month 15m backtest used to be reviewed on
+    # 30m candles because the whole requested range exceeded 3000 bars.
+    frame = _review_frame("2026-06-01", 61 * 24 * 4, "15min")
+    symbol = "Crypto:BTC/USDT@swap"
+
+    snapshots = _build_review_candle_snapshots(
+        {symbol: frame},
+        [
+            {"symbol": symbol, "entry_time": "2026-07-10T01:15:00Z", "exit_time": "2026-07-12T09:45:00Z"},
+            {"symbol": symbol, "entry_time": "2026-07-20T03:00:00Z", "exit_time": "2026-07-28T18:30:00Z"},
+        ],
+        source_frequency="15m",
+        start_date=datetime(2026, 6, 1),
+        end_date=datetime(2026, 7, 31, 23, 59),
+    )
+
+    snapshot = snapshots[symbol]
+    assert snapshot["timeframe"] == "15m"
+    times = [item["time"] for item in snapshot["candles"]]
+    assert {right - left for left, right in zip(times, times[1:])} == {900}
+    # The window is focused on the trades, so every entry and exit is covered.
+    assert _candle_time(snapshot, 0) <= pd.Timestamp("2026-07-10T01:15:00Z")
+    assert _candle_time(snapshot, -1) >= pd.Timestamp("2026-07-28T18:30:00Z")
+    assert len(times) <= 3000
+
+
+def test_trade_review_snapshot_keeps_the_full_requested_range_when_it_fits():
+    frame = _review_frame("2026-06-01", 20 * 24 * 4, "15min")
+    symbol = "Crypto:BTC/USDT@swap"
+
+    snapshots = _build_review_candle_snapshots(
+        {symbol: frame},
+        [{"symbol": symbol, "entry_time": "2026-06-10T01:15:00Z", "exit_time": "2026-06-11T09:45:00Z"}],
+        source_frequency="15m",
+        start_date=datetime(2026, 6, 1),
+        end_date=datetime(2026, 6, 20, 23, 59),
+    )
+
+    snapshot = snapshots[symbol]
+    assert snapshot["timeframe"] == "15m"
+    assert _candle_time(snapshot, 0) <= pd.Timestamp("2026-06-01T00:15:00Z")
+    assert _candle_time(snapshot, -1) >= pd.Timestamp("2026-06-20T23:30:00Z")
+
+
+def test_three_minute_strategy_review_uses_three_minute_candles():
+    frame = _review_frame("2026-06-01", 2 * 24 * 20, "3min")
+    symbol = "Crypto:BTC/USDT@swap"
+
+    snapshots = _build_review_candle_snapshots(
+        {symbol: frame},
+        [{"symbol": symbol, "entry_time": "2026-06-01T03:00:00Z", "exit_time": "2026-06-02T09:00:00Z"}],
+        source_frequency="3m",
+        start_date=datetime(2026, 6, 1),
+        end_date=datetime(2026, 6, 2, 23, 59),
+    )
+
+    snapshot = snapshots[symbol]
+    assert snapshot["timeframe"] == "3m"
+    times = [item["time"] for item in snapshot["candles"]]
+    assert {right - left for left, right in zip(times, times[1:])} == {180}
 
 
 def test_trade_review_snapshot_maps_hedged_position_leg_to_market_data_symbol():

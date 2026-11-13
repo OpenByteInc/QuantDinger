@@ -1378,6 +1378,7 @@ def _frame_provenance(
 
 _REVIEW_FREQUENCIES: tuple[tuple[str, str, int], ...] = (
     ("1m", "1min", 60),
+    ("3m", "3min", 180),
     ("5m", "5min", 300),
     ("15m", "15min", 900),
     ("30m", "30min", 1800),
@@ -1404,6 +1405,7 @@ def _build_review_candle_snapshots(
         symbol = _review_instrument_key((trade or {}).get("symbol"))
         if symbol and symbol in frames:
             grouped.setdefault(symbol, []).append(trade)
+    timeframe, rule, source_seconds = _review_frequency_spec(source_frequency)
     snapshots: dict[str, dict[str, Any]] = {}
     for symbol in list(grouped)[:max(1, int(max_symbols or 1))]:
         frame = frames.get(symbol)
@@ -1431,7 +1433,6 @@ def _build_review_candle_snapshots(
         )
         entry = requested_start if not pd.isna(requested_start) else trade_entry
         exit_at = requested_end if not pd.isna(requested_end) else trade_exit
-        source_seconds = _review_frequency_seconds(source_frequency)
         span_seconds = max(source_seconds, int((exit_at - entry).total_seconds()))
         if not pd.isna(requested_start) and not pd.isna(requested_end):
             window_start = entry
@@ -1440,11 +1441,15 @@ def _build_review_candle_snapshots(
             padding_seconds = max(source_seconds * 8, int(span_seconds * 0.05))
             window_start = entry - pd.Timedelta(seconds=padding_seconds)
             window_end = exit_at + pd.Timedelta(seconds=padding_seconds)
-        timeframe, rule, _ = _review_frequency_for_window(
-            source_frequency,
-            int((window_end - window_start).total_seconds()),
-            max_bars=max_bars,
-        )
+        if not _review_window_fits(window_start, window_end, source_seconds, max_bars):
+            # Review candles follow the strategy timeframe. When the full
+            # backtest range does not fit the bar budget, focus on the span
+            # that contains trades instead of coarsening the candles; the
+            # tail crop below keeps the most recent trades if that span is
+            # still too long.
+            trade_padding = pd.Timedelta(seconds=source_seconds * 8)
+            window_start = max(window_start, trade_entry - trade_padding)
+            window_end = min(window_end, trade_exit + trade_padding)
         candle_frame = _resample_review_frame(frame, rule, window_start, window_end)
         if candle_frame.empty:
             continue
@@ -1476,9 +1481,26 @@ def _review_instrument_key(value: object) -> str:
     return symbol
 
 
-def _review_frequency_seconds(value: str) -> int:
+def _review_frequency_spec(value: str) -> tuple[str, str, int]:
     normalized = str(value or "").strip().lower()
-    return next((seconds for key, _, seconds in _REVIEW_FREQUENCIES if key.lower() == normalized), 86400)
+    return next(
+        (item for item in _REVIEW_FREQUENCIES if item[0].lower() == normalized),
+        ("1D", "1D", 86400),
+    )
+
+
+def _review_frequency_seconds(value: str) -> int:
+    return _review_frequency_spec(value)[2]
+
+
+def _review_window_fits(
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+    bar_seconds: int,
+    max_bars: int,
+) -> bool:
+    span_seconds = max(0, int((end - start).total_seconds()))
+    return span_seconds // max(1, bar_seconds) + 2 <= max(1, max_bars)
 
 
 def _review_frequency_for_window(
