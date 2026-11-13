@@ -1193,6 +1193,8 @@ class LLMService:
             provider: Override the service's default provider
             use_json_mode: Whether to request JSON output format (default True for analysis, False for code generation)
             try_alternative_providers: Whether to try alternative providers when current provider fails with 403/402
+            timeout_seconds: Optional per-request cap, also applied to fallback attempts.
+                This is not a total deadline across models or providers.
         
         Returns:
             Generated text content
@@ -1344,6 +1346,7 @@ class LLMService:
                         temperature,
                         use_json_mode,
                         excluded_provider=p,
+                        timeout_seconds=timeout_seconds,
                     )
 
                 if not use_fallback:
@@ -1386,7 +1389,7 @@ class LLMService:
                     logger.warning(f"{p.value} returned {status_code} (likely API key issue). Trying alternative providers...")
                     return self._try_alternative_providers(
                         messages, original_model, temperature, 
-                        use_json_mode, excluded_provider=p
+                        use_json_mode, excluded_provider=p, timeout_seconds=timeout_seconds
                     )
                 
                 # Check for recoverable errors - try fallback model
@@ -1456,7 +1459,8 @@ class LLMService:
         )
     
     def _try_alternative_providers(self, messages: list, model: str, temperature: float,
-                                  use_json_mode: bool, excluded_provider: LLMProvider = None) -> str:
+                                  use_json_mode: bool, excluded_provider: LLMProvider = None,
+                                  timeout_seconds: float | None = None) -> str:
         """
         Try alternative providers when current provider fails.
 
@@ -1486,7 +1490,8 @@ class LLMService:
                     messages, model, temperature,
                     use_fallback=True, provider=alt_provider,
                     use_json_mode=use_json_mode,
-                    try_alternative_providers=False  # Prevent infinite recursion
+                    try_alternative_providers=False,  # Prevent infinite recursion
+                    timeout_seconds=timeout_seconds,
                 )
             except Exception as e:
                 logger.warning(f"Alternative provider {alt_provider.value} also failed: {redact_secrets(e)}")
@@ -1500,14 +1505,18 @@ class LLMService:
         return self.call_llm_api(messages, model, temperature, use_fallback)
 
     def safe_call_llm(self, system_prompt: str, user_prompt: str, default_structure: Dict[str, Any], 
-                      model: str = None, provider: LLMProvider = None) -> Dict[str, Any]:
-        """Safe LLM call with robust JSON parsing and fallback structure."""
+                      model: str = None, provider: LLMProvider = None, *,
+                      timeout_seconds: float | None = None) -> Dict[str, Any]:
+        """Parse JSON safely with an optional per-request timeout, not a total deadline."""
         response_text = ""
         try:
+            call_options = {"model": model, "provider": provider}
+            if timeout_seconds is not None:
+                call_options["timeout_seconds"] = timeout_seconds
             response_text = self.call_llm_api([
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
-            ], model=model, provider=provider)
+            ], **call_options)
             
             # Strip markdown fences if present
             clean_text = response_text.strip()
