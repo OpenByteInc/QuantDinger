@@ -34,6 +34,8 @@ cryptography>=50.0.2,<51
 # TOTP MFA and QR code generation
 pyotp>=2.10.0
 qrcode[pil]>=8.2
+# CVE-2026-126190 and CVE-2026-126192; 4.0+ fixes both selector DoS issues.
+soupsieve>=4.1,<5
 # Pillow 13.0.0 resolves the 2026 image decoder security advisories.
 Pillow>=13.0.0,<14
 # PostgreSQL support (multi-user mode)
