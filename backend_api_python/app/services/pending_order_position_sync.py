@@ -49,6 +49,7 @@ from app.services.strategy_lifecycle import (
     is_fatal_exchange_error,
     should_skip_position_sync,
 )
+from app.services.strategy_runtime.exit_residuals import reconcile_spot_exit_residuals
 from app.utils.db import get_db_connection
 from app.utils.logger import get_logger
 
@@ -1143,6 +1144,27 @@ class PendingOrderPositionSyncMixin:
                             client_err,
                         )
                         client = None
+
+                if market_type == "spot":
+                    try:
+                        residual_changes = reconcile_spot_exit_residuals(
+                            strategy_id=int(sid),
+                            exchange_id=str(exchange_id or ""),
+                            client=client,
+                            snapshot_from_cache=cached_snap is not None,
+                        )
+                        if residual_changes:
+                            logger.info(
+                                "[PositionSync] Strategy %s updated %s spot exit-residual state(s).",
+                                sid,
+                                residual_changes,
+                            )
+                    except Exception as residual_err:
+                        logger.warning(
+                            "[PositionSync] Strategy %s failed exit-residual reconciliation: %s",
+                            sid,
+                            residual_err,
+                        )
 
                 try:
                     purged = _purge_flat_strategy_positions_from_exchange(

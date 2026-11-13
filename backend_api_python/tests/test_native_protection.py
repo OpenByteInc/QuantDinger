@@ -25,6 +25,17 @@ def _request(**overrides):
     return NativeProtectionRequest(**values)
 
 
+def test_partial_fill_protection_client_ids_are_stable_and_distinct():
+    from app.services.pending_order_worker import PendingOrderWorker
+
+    first = PendingOrderWorker._protection_client_order_id(17, 0.01)
+    retry = PendingOrderWorker._protection_client_order_id(17, 0.01)
+    second = PendingOrderWorker._protection_client_order_id(17, 0.02)
+    assert first == retry
+    assert first != second
+    assert len(first) <= 32
+
+
 def test_resolves_strategy_protection_percentages():
     stop, take, trailing, activation = protection_prices_from_payload(
         {
@@ -64,6 +75,11 @@ def test_binance_uses_current_algo_order_endpoint():
         for call in calls
     )
     assert len({call[2]["clientAlgoId"] for call in calls}) == 2
+    assert {item["_qd_protection"]["role"] for item in result} == {
+        "stop_loss",
+        "take_profit",
+    }
+    assert all(item["_qd_protection"]["identifiers"] for item in result)
 
 
 def test_binance_trailing_protection_keeps_partner_attribution():
@@ -172,6 +188,14 @@ def test_okx_hedge_protection_uses_position_side_without_net_only_reduce_flag():
     assert calls[0]["tag"] == "broker"
     assert any("slTriggerPx" in body for body in calls)
     assert any("tpTriggerPx" in body for body in calls)
+    assert {body["algoClOrdId"] for body in calls} == {
+        "qdprot1-sl",
+        "qdprot1-tp",
+    }
+    assert {item["_qd_protection"]["role"] for item in result} == {
+        "stop_loss",
+        "take_profit",
+    }
 
 
 def test_okx_net_protection_sets_reduce_only():
@@ -443,11 +467,18 @@ def test_gate_price_orders_use_reduce_only_signed_contract_size():
     calls = []
     client._signed_request = lambda method, path, **kwargs: calls.append((path, kwargs)) or {"id": 1}
 
-    place_native_protection_orders(client, _request())
+    result = place_native_protection_orders(client, _request())
 
     assert len(calls) == 2
     assert all(kwargs["json_body"]["initial"]["reduce_only"] is True for _, kwargs in calls)
     assert all(kwargs["json_body"]["initial"]["size"] == -2 for _, kwargs in calls)
+    assert {
+        kwargs["json_body"]["initial"]["text"] for _, kwargs in calls
+    } == {"t-qdprot1-sl", "t-qdprot1-tp"}
+    assert {item["_qd_protection"]["role"] for item in result} == {
+        "stop_loss",
+        "take_profit",
+    }
 
 
 def test_gate_decimal_price_orders_use_string_amount():

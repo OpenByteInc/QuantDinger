@@ -605,6 +605,11 @@ CREATE TABLE IF NOT EXISTS qd_strategy_positions (
     credential_id INTEGER DEFAULT 0,
     inst_id VARCHAR(80) DEFAULT '',
     strategy_run_id INTEGER DEFAULT 0,
+    position_state VARCHAR(24) NOT NULL DEFAULT 'open',
+    tradable_size DECIMAL(20,8) NOT NULL DEFAULT 0,
+    residual_reason VARCHAR(64) NOT NULL DEFAULT '',
+    residual_evidence_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+    residual_classified_at TIMESTAMP,
     updated_at TIMESTAMP DEFAULT NOW(),
     UNIQUE(strategy_id, symbol, side)
 );
@@ -612,6 +617,14 @@ CREATE TABLE IF NOT EXISTS qd_strategy_positions (
 CREATE INDEX IF NOT EXISTS idx_positions_user_id ON qd_strategy_positions(user_id);
 CREATE INDEX IF NOT EXISTS idx_positions_strategy_id ON qd_strategy_positions(strategy_id);
 CREATE INDEX IF NOT EXISTS idx_positions_strategy_run ON qd_strategy_positions(strategy_id, strategy_run_id);
+ALTER TABLE qd_strategy_positions ADD COLUMN IF NOT EXISTS position_state VARCHAR(24) NOT NULL DEFAULT 'open';
+ALTER TABLE qd_strategy_positions ADD COLUMN IF NOT EXISTS tradable_size DECIMAL(20,8) NOT NULL DEFAULT 0;
+ALTER TABLE qd_strategy_positions ADD COLUMN IF NOT EXISTS residual_reason VARCHAR(64) NOT NULL DEFAULT '';
+ALTER TABLE qd_strategy_positions ADD COLUMN IF NOT EXISTS residual_evidence_json JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE qd_strategy_positions ADD COLUMN IF NOT EXISTS residual_classified_at TIMESTAMP;
+CREATE INDEX IF NOT EXISTS idx_positions_exit_residual
+  ON qd_strategy_positions(strategy_id, position_state)
+  WHERE position_state = 'exit_residual';
 
 -- =============================================================================
 -- 4. Strategy Trades
@@ -2769,6 +2782,18 @@ CREATE INDEX IF NOT EXISTS idx_live_order_binding_client
   ON qd_live_order_bindings(credential_id, exchange_id, market_type, client_order_id);
 CREATE INDEX IF NOT EXISTS idx_live_order_binding_exchange
   ON qd_live_order_bindings(credential_id, exchange_id, market_type, exchange_order_id);
+
+CREATE TABLE IF NOT EXISTS qd_live_order_binding_identifiers (
+    id BIGSERIAL PRIMARY KEY,
+    binding_id BIGINT NOT NULL REFERENCES qd_live_order_bindings(id) ON DELETE CASCADE,
+    identifier_type VARCHAR(40) NOT NULL,
+    identifier_value VARCHAR(160) NOT NULL,
+    role VARCHAR(40) NOT NULL DEFAULT '',
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    UNIQUE(binding_id, identifier_type, identifier_value)
+);
+CREATE INDEX IF NOT EXISTS idx_live_order_binding_identifier_lookup
+  ON qd_live_order_binding_identifiers(identifier_type, identifier_value, binding_id);
 
 CREATE TABLE IF NOT EXISTS qd_execution_events (
     id BIGSERIAL PRIMARY KEY,

@@ -218,6 +218,8 @@ def _empty_snapshot() -> Dict[str, Any]:
         "last_signal_at": 0,
         "open_positions": 0,
         "gross_exposure": 0.0,
+        "exit_residual_positions": 0,
+        "exit_residual_exposure": 0.0,
         "last_fill_at": None,
         "position_drift_blocked": False,
         "position_drift_count": 0,
@@ -407,8 +409,26 @@ def _load_positions(snapshots, placeholders, ids):
     rows = _query(
         f"""
         SELECT s.id AS strategy_id,
-               SUM(CASE WHEN ABS(COALESCE(lp.size, vp.size, 0)) > 0 THEN 1 ELSE 0 END) AS open_positions,
-               SUM(ABS(COALESCE(lp.size, vp.size, 0) * COALESCE(lp.current_price, vp.current_price, 0))) AS gross_exposure
+               SUM(CASE
+                   WHEN LOWER(COALESCE(s.execution_mode, 'signal')) = 'live'
+                        AND COALESCE(lp.position_state, 'open') <> 'exit_residual'
+                        AND ABS(COALESCE(lp.size, 0)) > 0 THEN 1
+                   WHEN LOWER(COALESCE(s.execution_mode, 'signal')) = 'signal'
+                        AND ABS(COALESCE(vp.size, 0)) > 0 THEN 1
+                   ELSE 0 END) AS open_positions,
+               SUM(CASE
+                   WHEN LOWER(COALESCE(s.execution_mode, 'signal')) = 'live'
+                        AND COALESCE(lp.position_state, 'open') <> 'exit_residual'
+                   THEN ABS(COALESCE(lp.size, 0) * COALESCE(lp.current_price, 0))
+                   WHEN LOWER(COALESCE(s.execution_mode, 'signal')) = 'signal'
+                   THEN ABS(COALESCE(vp.size, 0) * COALESCE(vp.current_price, 0))
+                   ELSE 0 END) AS gross_exposure,
+               SUM(CASE WHEN LOWER(COALESCE(s.execution_mode, 'signal')) = 'live'
+                        AND COALESCE(lp.position_state, 'open') = 'exit_residual'
+                        AND ABS(COALESCE(lp.size, 0)) > 0 THEN 1 ELSE 0 END) AS exit_residual_positions,
+               SUM(CASE WHEN LOWER(COALESCE(s.execution_mode, 'signal')) = 'live'
+                        AND COALESCE(lp.position_state, 'open') = 'exit_residual'
+                   THEN ABS(COALESCE(lp.size, 0) * COALESCE(lp.current_price, 0)) ELSE 0 END) AS exit_residual_exposure
         FROM qd_strategies_trading s
         LEFT JOIN qd_strategy_positions lp
           ON lp.strategy_id = s.id AND LOWER(COALESCE(s.execution_mode, 'signal')) = 'live'
@@ -425,6 +445,8 @@ def _load_positions(snapshots, placeholders, ids):
             snapshots[strategy_id].update({
                 "open_positions": int(row.get("open_positions") or 0),
                 "gross_exposure": float(row.get("gross_exposure") or 0.0),
+                "exit_residual_positions": int(row.get("exit_residual_positions") or 0),
+                "exit_residual_exposure": float(row.get("exit_residual_exposure") or 0.0),
             })
 
 

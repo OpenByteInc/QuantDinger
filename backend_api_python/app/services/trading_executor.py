@@ -2996,9 +2996,12 @@ class TradingExecutor:
             cur.execute(
                 """
                 SELECT id, symbol, side, size, entry_price, current_price,
-                       highest_price, lowest_price, updated_at
+                       highest_price, lowest_price, position_state,
+                       tradable_size, residual_reason, updated_at
                 FROM qd_strategy_positions
-                WHERE strategy_id = %s AND (%s::text IS NULL OR split_part(symbol, ':', 1) = split_part(%s, ':', 1))
+                WHERE strategy_id = %s
+                  AND COALESCE(position_state, 'open') <> 'exit_residual'
+                  AND (%s::text IS NULL OR split_part(symbol, ':', 1) = split_part(%s, ':', 1))
                 """,
                 (strategy_id, symbol, symbol),
             )

@@ -444,6 +444,12 @@ def ensure_position_ledger_schema() -> None:
         "ALTER TABLE qd_strategy_positions ADD COLUMN IF NOT EXISTS inst_id VARCHAR(80) DEFAULT ''",
         "ALTER TABLE qd_strategy_positions ADD COLUMN IF NOT EXISTS symbol_canonical VARCHAR(50) DEFAULT ''",
         "ALTER TABLE qd_strategy_positions ADD COLUMN IF NOT EXISTS strategy_run_id INTEGER DEFAULT 0",
+        "ALTER TABLE qd_strategy_positions ADD COLUMN IF NOT EXISTS position_state VARCHAR(24) NOT NULL DEFAULT 'open'",
+        "ALTER TABLE qd_strategy_positions ADD COLUMN IF NOT EXISTS tradable_size DECIMAL(24, 8) NOT NULL DEFAULT 0",
+        "ALTER TABLE qd_strategy_positions ADD COLUMN IF NOT EXISTS residual_reason VARCHAR(64) NOT NULL DEFAULT ''",
+        "ALTER TABLE qd_strategy_positions ADD COLUMN IF NOT EXISTS residual_evidence_json JSONB NOT NULL DEFAULT '{}'::jsonb",
+        "ALTER TABLE qd_strategy_positions ADD COLUMN IF NOT EXISTS residual_classified_at TIMESTAMP",
+        "CREATE INDEX IF NOT EXISTS idx_strategy_positions_state ON qd_strategy_positions(strategy_id, position_state) WHERE size > 0",
         "ALTER TABLE pending_orders ADD COLUMN IF NOT EXISTS credential_id INTEGER DEFAULT 0",
         "ALTER TABLE pending_orders ADD COLUMN IF NOT EXISTS inst_id VARCHAR(80) DEFAULT ''",
         "ALTER TABLE pending_orders ADD COLUMN IF NOT EXISTS strategy_run_id INTEGER DEFAULT 0",
@@ -853,6 +859,11 @@ def upsert_position(
                 credential_id = CASE WHEN excluded.credential_id > 0 THEN excluded.credential_id ELSE qd_strategy_positions.credential_id END,
                 inst_id = CASE WHEN excluded.inst_id <> '' THEN excluded.inst_id ELSE qd_strategy_positions.inst_id END,
                 strategy_run_id = CASE WHEN excluded.strategy_run_id > 0 THEN excluded.strategy_run_id ELSE qd_strategy_positions.strategy_run_id END,
+                position_state = 'open',
+                tradable_size = 0,
+                residual_reason = '',
+                residual_evidence_json = '{}'::jsonb,
+                residual_classified_at = NULL,
                 updated_at = NOW()
             """,
             (
@@ -928,7 +939,7 @@ def apply_fill_to_local_position(
     if is_open:
         new_size = cur_size + filled_qty
         if new_size <= 0:
-            return None, None
+            return None, None, None
         # Weighted average entry.
         if cur_size > 0 and cur_entry > 0:
             new_entry = (cur_size * cur_entry + filled_qty * px) / new_size

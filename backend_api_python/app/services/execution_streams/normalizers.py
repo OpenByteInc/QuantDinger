@@ -31,6 +31,19 @@ def _fee(currency: Any, amount: Any, *, signed_deduction: bool = False) -> List[
     return [FeeComponent(currency=ccy, amount=value)]
 
 
+def _identifiers(*items: tuple[str, Any]) -> List[Dict[str, str]]:
+    result: List[Dict[str, str]] = []
+    seen = set()
+    for identifier_type, value in items:
+        normalized = str(value or "").strip()
+        key = (str(identifier_type or "").strip(), normalized)
+        if not key[0] or not key[1] or key in seen:
+            continue
+        seen.add(key)
+        result.append({"type": key[0], "value": key[1]})
+    return result
+
+
 def parse_binance(
     payload: Dict[str, Any],
     *,
@@ -73,6 +86,10 @@ def parse_binance(
             realized_pnl=as_float(data.get("rp")) if data.get("rp") is not None else None,
             maker=bool(data.get("m")) if data.get("m") is not None else None,
             fee_status=fee_status,
+            order_identifiers=_identifiers(
+                ("algo_id", data.get("algoId") or data.get("ai")),
+                ("algo_client_id", data.get("clientAlgoId") or data.get("caid")),
+            ),
             occurred_at=as_millis_datetime(data.get("T") or payload.get("E")),
             fees=_fee(data.get("N"), data.get("n")),
             raw=payload,
@@ -120,6 +137,10 @@ def parse_okx(payload: Dict[str, Any]) -> List[ExecutionEvent]:
                 if item.get("execType") not in (None, "")
                 else None,
                 fee_status=("actual" if fees else "actual_zero") if fee_value not in (None, "") else "pending",
+                order_identifiers=_identifiers(
+                    ("algo_id", item.get("algoId")),
+                    ("algo_client_id", item.get("algoClOrdId")),
+                ),
                 occurred_at=as_millis_datetime(item.get("fillTime") or item.get("uTime")),
                 fees=fees,
                 raw=item,
@@ -174,6 +195,10 @@ def parse_bybit(payload: Dict[str, Any]) -> List[ExecutionEvent]:
                 realized_pnl=as_float(item.get("execPnl")) if item.get("execPnl") not in (None, "") else None,
                 maker=bool(item.get("isMaker")) if item.get("isMaker") is not None else None,
                 fee_status=("actual" if fees else "actual_zero") if item.get("execFee") not in (None, "") and item.get("feeCurrency") else "pending",
+                order_identifiers=_identifiers(
+                    ("parent_client_order_id", item.get("parentOrderLinkId")),
+                    ("parent_order_id", item.get("parentOrderId")),
+                ),
                 occurred_at=as_millis_datetime(item.get("execTime") or payload.get("creationTime")),
                 fees=fees,
                 raw=item,
@@ -267,6 +292,15 @@ def parse_bitget(payload: Dict[str, Any]) -> List[ExecutionEvent]:
                 or item.get("fillFee") is not None
                 or item.get("fee") is not None
                 else "pending",
+                order_identifiers=_identifiers(
+                    (
+                        "parent_order_id",
+                        item.get("planOrderId")
+                        or item.get("triggerOrderId")
+                        or item.get("strategyOrderId"),
+                    ),
+                    ("parent_client_order_id", item.get("planClientOid") or item.get("triggerClientOid")),
+                ),
                 occurred_at=as_millis_datetime(
                     item.get("createdTime")
                     or item.get("execTime")
@@ -317,6 +351,11 @@ def parse_gate(payload: Dict[str, Any], *, market_type: str) -> List[ExecutionEv
                 realized_pnl=as_float(item.get("pnl")) if item.get("pnl") not in (None, "") else None,
                 maker=str(item.get("role") or "").lower() == "maker" if item.get("role") else None,
                 fee_status=("actual" if abs(as_float(item.get("fee"))) > 1e-18 else "actual_zero") if has_fee_field and fee_ccy else "pending",
+                order_identifiers=_identifiers(
+                    ("parent_order_id", item.get("price_order_id") or item.get("auto_order_id")),
+                    ("child_order_id", item.get("suborder_id") or item.get("trade_id")),
+                    ("child_client_order_id", item.get("suborder_text")),
+                ),
                 occurred_at=as_millis_datetime(item.get("create_time_ms") or item.get("time_ms") or item.get("create_time")),
                 fees=_fee(fee_ccy, item.get("fee")),
                 raw=item,
@@ -360,6 +399,10 @@ def parse_htx(payload: Dict[str, Any], *, market_type: str) -> List[ExecutionEve
                 quantity=qty,
                 realized_pnl=as_float(item.get("real_profit")) if item.get("real_profit") not in (None, "") else None,
                 fee_status=("actual" if fees else "actual_zero") if fee_value not in (None, "") and fee_ccy else "pending",
+                order_identifiers=_identifiers(
+                    ("parent_order_id", item.get("source_order_id") or item.get("relation_tpsl_order_id")),
+                    ("child_order_id", item.get("relation_order_id")),
+                ),
                 occurred_at=as_millis_datetime(item.get("tradeTime") or item.get("created_at") or item.get("ts")),
                 fees=fees,
                 raw=item,

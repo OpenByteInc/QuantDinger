@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from app.services.execution_streams.events import ExecutionEvent, normalize_symbol
 from app.services.exchange_execution import coalesce_exchange_config_from_payload
@@ -29,9 +29,10 @@ class ExecutionEventRepository:
         client_order_id: str = "",
         exchange_order_id: str = "",
         observed_filled: float = 0.0,
-    ) -> None:
+    ) -> int:
         if not owner_type or int(owner_id or 0) <= 0:
-            return
+            return 0
+        binding_id = 0
         with get_db_connection() as db:
             cur = db.cursor()
             cur.execute(
@@ -57,6 +58,7 @@ class ExecutionEventRepository:
                     exchange_order_id = COALESCE(NULLIF(EXCLUDED.exchange_order_id, ''), qd_live_order_bindings.exchange_order_id),
                     observed_filled = GREATEST(qd_live_order_bindings.observed_filled, EXCLUDED.observed_filled),
                     updated_at = NOW()
+                RETURNING id
                 """,
                 (
                     int(credential_id or 0),
@@ -76,8 +78,67 @@ class ExecutionEventRepository:
                     float(observed_filled or 0.0),
                 ),
             )
+            row = cur.fetchone() or {}
+            binding_id = int(row.get("id") or 0)
             db.commit()
             cur.close()
+        identifiers = []
+        if client_order_id:
+            identifiers.append(("client_order_id", client_order_id))
+        if exchange_order_id:
+            identifiers.append(("exchange_order_id", exchange_order_id))
+        self.register_identifiers(binding_id, identifiers, role="entry")
+        return binding_id
+
+    def register_identifiers(
+        self,
+        binding_id: int,
+        identifiers: Iterable[Mapping[str, Any] | Tuple[str, Any]],
+        *,
+        role: str = "",
+    ) -> int:
+        bid = int(binding_id or 0)
+        if bid <= 0:
+            return 0
+        rows: List[Tuple[str, str, str]] = []
+        for item in identifiers or []:
+            if isinstance(item, Mapping):
+                identifier_type = str(item.get("type") or item.get("identifier_type") or "").strip()
+                identifier_value = str(item.get("value") or item.get("identifier_value") or "").strip()
+                item_role = str(item.get("role") or role or "").strip()
+            else:
+                try:
+                    identifier_type, identifier_value = item
+                except (TypeError, ValueError):
+                    continue
+                identifier_type = str(identifier_type or "").strip()
+                identifier_value = str(identifier_value or "").strip()
+                item_role = str(role or "").strip()
+            if identifier_type and identifier_value:
+                rows.append((identifier_type[:40], identifier_value[:160], item_role[:40]))
+        if not rows:
+            return 0
+        inserted = 0
+        with get_db_connection() as db:
+            cur = db.cursor()
+            for identifier_type, identifier_value, item_role in rows:
+                cur.execute(
+                    """
+                    INSERT INTO qd_live_order_binding_identifiers
+                    (binding_id, identifier_type, identifier_value, role)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (binding_id, identifier_type, identifier_value)
+                    DO UPDATE SET role = CASE
+                        WHEN EXCLUDED.role <> '' THEN EXCLUDED.role
+                        ELSE qd_live_order_binding_identifiers.role
+                    END
+                    """,
+                    (bid, identifier_type, identifier_value, item_role),
+                )
+                inserted += 1
+            db.commit()
+            cur.close()
+        return inserted
 
     def ingest(self, event: ExecutionEvent) -> Optional[int]:
         from app.services.live_trading.partner_attribution import redact_partner_attribution
@@ -86,6 +147,7 @@ class ExecutionEventRepository:
         raw = dict(raw, _qd_execution={
             "cumulative_average_price": event.cumulative_average_price,
             "fees_cumulative": event.fees_cumulative,
+            "order_identifiers": list(event.order_identifiers or []),
         })
         with get_db_connection() as db:
             cur = db.cursor()
@@ -230,6 +292,144 @@ class ExecutionEventRepository:
             cur.close()
         return rows
 
+    @staticmethod
+    def _event_identifiers(event: Mapping[str, Any]) -> List[Tuple[str, str]]:
+        identifiers: List[Tuple[str, str]] = []
+        seen = set()
+
+        def add(identifier_type: Any, value: Any) -> None:
+            key = (str(identifier_type or "").strip(), str(value or "").strip())
+            if not key[0] or not key[1] or key in seen:
+                return
+            seen.add(key)
+            identifiers.append(key)
+
+        add("exchange_order_id", event.get("exchange_order_id"))
+        add("client_order_id", event.get("client_order_id"))
+        raw = event.get("raw_json") or event.get("raw") or {}
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except (TypeError, ValueError):
+                raw = {}
+        if not isinstance(raw, Mapping):
+            return identifiers
+        execution = raw.get("_qd_execution")
+        if isinstance(execution, Mapping):
+            for item in execution.get("order_identifiers") or []:
+                if isinstance(item, Mapping):
+                    add(item.get("type"), item.get("value"))
+        venue = raw.get("data") if isinstance(raw.get("data"), Mapping) else raw
+        if isinstance(venue, Mapping):
+            for identifier_type, keys in {
+                "algo_id": ("algoId", "algo_id"),
+                "algo_client_id": ("algoClOrdId", "clientAlgoId"),
+                "parent_order_id": (
+                    "parentOrderId", "parent_order_id", "source_order_id",
+                    "relation_tpsl_order_id", "planOrderId", "triggerOrderId",
+                    "trigger_order_id", "strategyOrderId",
+                ),
+                "parent_client_order_id": ("parentOrderLinkId",),
+                "child_order_id": ("suborder_id", "trade_id", "relation_order_id"),
+                "child_client_order_id": ("suborder_text",),
+            }.items():
+                for key in keys:
+                    add(identifier_type, venue.get(key))
+        return identifiers
+
+    @staticmethod
+    def _protection_side_matches(binding: Mapping[str, Any], event: Mapping[str, Any]) -> bool:
+        signal_type = str(binding.get("signal_type") or "").strip().lower()
+        side = str(event.get("side") or "").strip().lower()
+        role = str(binding.get("matched_identifier_role") or "").strip().lower()
+        if not role or role == "entry" or not side:
+            return True
+        if "long" in signal_type:
+            return side in {"sell", "short"}
+        if "short" in signal_type:
+            return side in {"buy", "long"}
+        return True
+
+    def _resolve_identifier_binding(self, event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        identifiers = self._event_identifiers(event)
+        if not identifiers:
+            return None
+        credential_id = int(event.get("credential_id") or 0)
+        exchange_id = str(event.get("exchange_id") or "").lower()
+        market_type = str(event.get("market_type") or "").lower()
+        symbol = normalize_symbol(event.get("symbol") or "").replace("/", "").replace("-", "")
+        user_id = int(event.get("user_id") or 0)
+        clauses = []
+        params: List[Any] = [
+            credential_id,
+            exchange_id,
+            market_type,
+            market_type,
+            market_type,
+            symbol,
+            user_id,
+            user_id,
+        ]
+        for identifier_type, identifier_value in identifiers:
+            clauses.append("(identifier.identifier_type = %s AND identifier.identifier_value = %s)")
+            params.extend((identifier_type, identifier_value))
+        with get_db_connection() as db:
+            cur = db.cursor()
+            cur.execute(
+                f"""
+                SELECT binding.*, identifier.role AS matched_identifier_role,
+                       identifier.identifier_type AS matched_identifier_type
+                FROM qd_live_order_binding_identifiers AS identifier
+                JOIN qd_live_order_bindings AS binding ON binding.id = identifier.binding_id
+                WHERE binding.credential_id = %s
+                  AND binding.exchange_id = %s
+                  AND (binding.market_type = %s OR binding.market_type = '' OR %s = ''
+                    OR (binding.market_type IN ('crypto', 'spot') AND %s IN ('crypto', 'spot')))
+                  AND (binding.symbol = '' OR regexp_replace(upper(binding.symbol), '[-/_]', '', 'g') = %s)
+                  AND (%s <= 0 OR binding.user_id = %s)
+                  AND ({' OR '.join(clauses)})
+                  AND (binding.strategy_id <= 0 OR EXISTS (
+                    SELECT 1 FROM qd_strategies_trading AS strategy
+                    WHERE strategy.id = binding.strategy_id
+                  ))
+                ORDER BY binding.id DESC
+                """,
+                tuple(params),
+            )
+            candidates = [dict(row) for row in (cur.fetchall() or [])]
+            cur.close()
+        grouped: Dict[int, List[Dict[str, Any]]] = {}
+        for candidate in candidates:
+            if self._protection_side_matches(candidate, event):
+                grouped.setdefault(int(candidate.get("id") or 0), []).append(candidate)
+        grouped.pop(0, None)
+        matches: Dict[int, Dict[str, Any]] = {}
+        for binding_id, binding_rows in grouped.items():
+            protection_rows = [
+                row
+                for row in binding_rows
+                if str(row.get("matched_identifier_role") or "").strip().lower()
+                not in {"", "entry"}
+            ]
+            protection_roles = {
+                str(row.get("matched_identifier_role") or "").strip().lower()
+                for row in protection_rows
+            }
+            if len(protection_roles) > 1:
+                continue
+            matches[binding_id] = protection_rows[0] if protection_rows else binding_rows[0]
+        if len(matches) != 1:
+            return None
+        binding = next(iter(matches.values()))
+        child_order_id = str(event.get("exchange_order_id") or "").strip()
+        if child_order_id and str(binding.get("matched_identifier_role") or "") != "entry":
+            self.register_identifiers(
+                int(binding.get("id") or 0),
+                [("exchange_order_id", child_order_id)],
+                role=str(binding.get("matched_identifier_role") or "protection"),
+            )
+        return binding
+
     def resolve_binding(self, event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         credential_id = int(event.get("credential_id") or 0)
         exchange_id = str(event.get("exchange_id") or "").lower()
@@ -281,7 +481,10 @@ class ExecutionEventRepository:
             )
             row = cur.fetchone()
             cur.close()
-        return dict(row) if row else self._discover_legacy_binding(event)
+        if row:
+            return dict(row)
+        identifier_binding = self._resolve_identifier_binding(event)
+        return identifier_binding or self._discover_legacy_binding(event)
 
     def _discover_legacy_binding(self, event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         credential_id = int(event.get("credential_id") or 0)

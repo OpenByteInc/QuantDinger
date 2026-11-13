@@ -16,6 +16,7 @@ from app.services.execution_streams.normalizers import (
     parse_okx,
 )
 from app.services.live_trading.capabilities import supported_crypto_exchange_ids
+from app.services.execution_streams.repository import ExecutionEventRepository
 
 
 def _fee_map(event) -> dict[str, float]:
@@ -123,6 +124,49 @@ def test_okx_negative_commission_becomes_cost_and_positive_rebate_becomes_credit
     assert sum(f.amount for f in event.fees) == pytest.approx(0.29)
 
 
+def test_okx_algo_fill_preserves_parent_protection_identifiers():
+    event = parse_okx(
+        {
+            "arg": {"channel": "orders", "instType": "SWAP"},
+            "data": [{
+                "instId": "BTC-USDT-SWAP",
+                "ordId": "child-12",
+                "tradeId": "child-fill-12",
+                "fillSz": "0.01",
+                "fillPx": "62000",
+                "state": "filled",
+                "algoId": "algo-12",
+                "algoClOrdId": "qdprot12-sl",
+            }],
+        }
+    )[0]
+    assert {tuple(item.values()) for item in event.order_identifiers} == {
+        ("algo_id", "algo-12"),
+        ("algo_client_id", "qdprot12-sl"),
+    }
+
+
+def test_binding_identifier_extraction_keeps_primary_parent_and_child_ids():
+    identifiers = ExecutionEventRepository._event_identifiers({
+        "exchange_order_id": "child-1",
+        "client_order_id": "child-client-1",
+        "raw_json": {
+            "_qd_execution": {
+                "order_identifiers": [
+                    {"type": "algo_id", "value": "algo-1"},
+                    {"type": "algo_client_id", "value": "qdprot1-sl"},
+                ],
+            },
+        },
+    })
+    assert identifiers == [
+        ("exchange_order_id", "child-1"),
+        ("client_order_id", "child-client-1"),
+        ("algo_id", "algo-1"),
+        ("algo_client_id", "qdprot1-sl"),
+    ]
+
+
 def test_bybit_execution_uses_leaves_quantity_for_terminal_status():
     event = parse_bybit(
         {
@@ -147,6 +191,29 @@ def test_bybit_execution_uses_leaves_quantity_for_terminal_status():
     assert event.order_status == "filled"
     assert event.realized_pnl == pytest.approx(2.5)
     assert _fee_map(event) == {"USDT": pytest.approx(0.3465)}
+
+
+def test_bybit_execution_preserves_conditional_parent_identifiers():
+    event = parse_bybit(
+        {
+            "topic": "execution",
+            "data": [{
+                "category": "linear",
+                "symbol": "BTCUSDT",
+                "orderId": "child-13",
+                "execId": "fill-13",
+                "side": "Sell",
+                "execPrice": "63000",
+                "execQty": "0.01",
+                "parentOrderId": "parent-13",
+                "parentOrderLinkId": "qdprot13-sl",
+            }],
+        }
+    )[0]
+    assert {tuple(item.values()) for item in event.order_identifiers} == {
+        ("parent_client_order_id", "qdprot13-sl"),
+        ("parent_order_id", "parent-13"),
+    }
 
 
 def test_bybit_execution_includes_exchange_reported_extra_fees():
@@ -283,6 +350,30 @@ def test_gate_spot_and_futures_fees_are_actual_and_futures_currency_is_inferred(
     )[0]
     assert _fee_map(spot) == {"BTC": pytest.approx(0.00001)}
     assert _fee_map(future) == {"USDT": pytest.approx(0.12)}
+
+
+def test_gate_triggered_fill_preserves_parent_and_child_identifiers():
+    event = parse_gate(
+        {
+            "channel": "futures.usertrades",
+            "result": [{
+                "id": "105",
+                "order_id": "child-16",
+                "contract": "BTC_USDT",
+                "size": "-2",
+                "price": "65010",
+                "price_order_id": "trigger-16",
+                "suborder_id": "child-16",
+                "suborder_text": "t-qdprot16-sl",
+            }],
+        },
+        market_type="swap",
+    )[0]
+    assert {tuple(item.values()) for item in event.order_identifiers} == {
+        ("parent_order_id", "trigger-16"),
+        ("child_order_id", "child-16"),
+        ("child_client_order_id", "t-qdprot16-sl"),
+    }
 
 
 def test_htx_spot_and_swap_fees_are_parsed():
