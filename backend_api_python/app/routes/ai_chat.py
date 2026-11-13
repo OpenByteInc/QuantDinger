@@ -652,7 +652,8 @@ def _classify_agent_intent(message: str, attachments: list[dict], context: dict,
         "available_research_domains": sorted(RESEARCH_DATA_DOMAINS),
     })
     try:
-        raw = LLMService().safe_call_llm(system_prompt, user_prompt, schema.copy())
+        # Cap each classification request; model/provider fallbacks can take longer in total.
+        raw = LLMService().safe_call_llm(system_prompt, user_prompt, schema.copy(), timeout_seconds=20)
         plan = _normalize_agent_intent(raw, message, has_image, context, language)
         report = str(raw.get("report") or "")
         if report.startswith("Analysis failed:") or report.startswith("Failed to parse"):
