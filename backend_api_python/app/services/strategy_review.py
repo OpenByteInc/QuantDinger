@@ -416,7 +416,7 @@ class StrategyReviewService:
                 cur.execute(
                     """
                     SELECT id, strategy_id, symbol, side, size, entry_price,
-                           current_price, unrealized_pnl, created_at, updated_at
+                           current_price, unrealized_pnl, updated_at
                     FROM qd_strategy_positions
                     WHERE strategy_id = ?
                     ORDER BY id ASC
