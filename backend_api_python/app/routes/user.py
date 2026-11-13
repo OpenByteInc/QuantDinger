@@ -1171,7 +1171,7 @@ def get_system_strategies():
             'position_count': (
                 "(CASE WHEN LOWER(COALESCE(s.execution_mode, 'signal')) = 'signal' "
                 "THEN (SELECT COUNT(*) FROM qd_strategy_virtual_positions vp WHERE vp.strategy_id = s.id AND ABS(COALESCE(vp.size, 0)) > 0) "
-                "ELSE (SELECT COUNT(*) FROM qd_strategy_positions p WHERE p.strategy_id = s.id AND ABS(COALESCE(p.size, 0)) > 0) END)"
+                "ELSE (SELECT COUNT(*) FROM qd_strategy_positions p WHERE p.strategy_id = s.id AND ABS(COALESCE(p.size, 0)) > 0 AND COALESCE(p.position_state, 'open') <> 'exit_residual') END)"
             ),
             'total_equity': (
                 "(CASE WHEN LOWER(COALESCE(s.execution_mode, 'signal')) = 'signal' THEN "
@@ -1315,11 +1315,14 @@ def get_system_strategies():
                     f"""
                     SELECT ledger.strategy_id, ledger.symbol, ledger.side, ledger.size,
                            ledger.entry_price, ledger.current_price, ledger.unrealized_pnl,
-                           ledger.pnl_percent, ledger.equity, ledger.updated_at
+                           ledger.pnl_percent, ledger.equity, ledger.position_state,
+                           ledger.tradable_size, ledger.residual_reason, ledger.updated_at
                     FROM (
                         SELECT p.strategy_id, p.symbol, p.side, p.size, p.entry_price,
                                p.current_price, p.unrealized_pnl, p.pnl_percent,
-                               p.equity, p.updated_at
+                                p.equity, COALESCE(p.position_state, 'open') AS position_state,
+                                COALESCE(p.tradable_size, 0) AS tradable_size,
+                                COALESCE(p.residual_reason, '') AS residual_reason, p.updated_at
                         FROM qd_strategy_positions p
                         JOIN qd_strategies_trading s ON s.id = p.strategy_id
                         WHERE p.strategy_id IN ({placeholders})
@@ -1328,7 +1331,8 @@ def get_system_strategies():
                         UNION ALL
                         SELECT vp.strategy_id, vp.symbol, vp.side, vp.size, vp.entry_price,
                                vp.current_price, vp.unrealized_pnl, vp.pnl_percent,
-                               0 AS equity, vp.updated_at
+                                0 AS equity, 'open' AS position_state, 0 AS tradable_size,
+                                '' AS residual_reason, vp.updated_at
                         FROM qd_strategy_virtual_positions vp
                         JOIN qd_strategies_trading s ON s.id = vp.strategy_id
                         WHERE vp.strategy_id IN ({placeholders})

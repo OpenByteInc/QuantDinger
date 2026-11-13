@@ -13,10 +13,12 @@ def refresh_members(service, candidates, manifest, user_id, strategy_id, now, ex
     with get_db_connection() as db:
         cur = db.cursor()
         cur.execute("""
-            SELECT symbol FROM qd_strategy_positions WHERE strategy_id = %s AND size > 0
+            SELECT symbol FROM qd_strategy_positions
+             WHERE strategy_id = %s AND size > 0
+               AND COALESCE(position_state, 'open') <> 'exit_residual'
             UNION SELECT symbol FROM qd_strategy_virtual_positions WHERE strategy_id = %s AND size > 0
             UNION SELECT symbol FROM pending_orders WHERE strategy_id = %s
-              AND status IN ('pending', 'processing', 'sent', 'syncing')
+              AND status IN ('pending', 'processing', 'sent', 'syncing', 'reconciling')
         """, (strategy_id, strategy_id, strategy_id))
         active = {str(row['symbol']) for row in cur.fetchall() or []}
         cur.close()

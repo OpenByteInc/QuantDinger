@@ -17,6 +17,42 @@ from app.services.live_trading.symbols import (
 )
 
 
+def _response_data(response: Mapping[str, Any]) -> Mapping[str, Any]:
+    data = response.get("data")
+    if isinstance(data, list) and data and isinstance(data[0], Mapping):
+        return data[0]
+    if isinstance(data, Mapping):
+        return data
+    result = response.get("result")
+    if isinstance(result, Mapping):
+        return result
+    return response
+
+
+def _annotate_protection_response(
+    response: Mapping[str, Any],
+    *,
+    role: str,
+    identifiers: List[Tuple[str, Any]],
+) -> Dict[str, Any]:
+    """Attach canonical identifiers without altering the exchange payload."""
+    annotated = dict(response)
+    canonical = []
+    seen = set()
+    for identifier_type, value in identifiers:
+        normalized = str(value or "").strip()
+        key = (str(identifier_type or "").strip(), normalized)
+        if not key[0] or not normalized or key in seen:
+            continue
+        seen.add(key)
+        canonical.append({"type": key[0], "value": normalized})
+    annotated["_qd_protection"] = {
+        "role": str(role or "protection"),
+        "identifiers": canonical,
+    }
+    return annotated
+
+
 @dataclass(frozen=True)
 class NativeProtectionRequest:
     symbol: str
@@ -147,7 +183,16 @@ def _place_binance(client: Any, request: NativeProtectionRequest) -> List[Dict[s
         )
         if client_algo_id:
             body["clientAlgoId"] = client_algo_id
-        responses.append(client._signed_request("POST", "/fapi/v1/algoOrder", params=body))
+        raw = client._signed_request("POST", "/fapi/v1/algoOrder", params=body)
+        data = _response_data(raw)
+        responses.append(_annotate_protection_response(
+            raw,
+            role="stop_loss" if suffix == "sl" else "take_profit",
+            identifiers=[
+                ("algo_id", data.get("algoId")),
+                ("algo_client_id", data.get("clientAlgoId") or client_algo_id),
+            ],
+        ))
     if request.trailing_stop_pct > 0:
         callback = min(10.0, max(0.1, request.trailing_stop_pct * 100.0))
         body = dict(base, type="TRAILING_STOP_MARKET", callbackRate=str(callback))
@@ -165,7 +210,16 @@ def _place_binance(client: Any, request: NativeProtectionRequest) -> List[Dict[s
         )
         if client_algo_id:
             body["clientAlgoId"] = client_algo_id
-        responses.append(client._signed_request("POST", "/fapi/v1/algoOrder", params=body))
+        raw = client._signed_request("POST", "/fapi/v1/algoOrder", params=body)
+        data = _response_data(raw)
+        responses.append(_annotate_protection_response(
+            raw,
+            role="trailing_stop",
+            identifiers=[
+                ("algo_id", data.get("algoId")),
+                ("algo_client_id", data.get("clientAlgoId") or client_algo_id),
+            ],
+        ))
     return responses
 
 
@@ -209,7 +263,19 @@ def _place_okx(client: Any, request: NativeProtectionRequest) -> List[Dict[str, 
         )
         body[f"{prefix}OrdPx"] = "-1"
         body[f"{prefix}TriggerPxType"] = "mark"
-        responses.append(client._signed_request("POST", "/api/v5/trade/order-algo", json_body=body))
+        algo_client_id = f"{request.client_order_id}-{prefix}"[:32] if request.client_order_id else ""
+        if algo_client_id:
+            body["algoClOrdId"] = algo_client_id
+        raw = client._signed_request("POST", "/api/v5/trade/order-algo", json_body=body)
+        data = _response_data(raw)
+        responses.append(_annotate_protection_response(
+            raw,
+            role="stop_loss" if prefix == "sl" else "take_profit",
+            identifiers=[
+                ("algo_id", data.get("algoId")),
+                ("algo_client_id", data.get("algoClOrdId") or algo_client_id),
+            ],
+        ))
     if request.trailing_stop_pct > 0:
         body = dict(base, ordType="move_order_stop", callbackRatio=str(request.trailing_stop_pct))
         activation = _activation_price(request)
@@ -225,7 +291,19 @@ def _place_okx(client: Any, request: NativeProtectionRequest) -> List[Dict[str, 
                 activation_price,
                 strict_precision=price_precision,
             )
-        responses.append(client._signed_request("POST", "/api/v5/trade/order-algo", json_body=body))
+        algo_client_id = f"{request.client_order_id}-trail"[:32] if request.client_order_id else ""
+        if algo_client_id:
+            body["algoClOrdId"] = algo_client_id
+        raw = client._signed_request("POST", "/api/v5/trade/order-algo", json_body=body)
+        data = _response_data(raw)
+        responses.append(_annotate_protection_response(
+            raw,
+            role="trailing_stop",
+            identifiers=[
+                ("algo_id", data.get("algoId")),
+                ("algo_client_id", data.get("algoClOrdId") or algo_client_id),
+            ],
+        ))
     return responses
 
 
@@ -288,9 +366,16 @@ def _place_bitget(client: Any, request: NativeProtectionRequest) -> List[Dict[st
             )
         if request.client_order_id:
             body["clientOid"] = str(request.client_order_id)[:32]
-        responses.append(
-            client._signed_request("POST", "/api/v3/trade/place-strategy-order", json_body=body)
-        )
+        raw = client._signed_request("POST", "/api/v3/trade/place-strategy-order", json_body=body)
+        data = _response_data(raw)
+        responses.append(_annotate_protection_response(
+            raw,
+            role="stop_take_profit",
+            identifiers=[
+                ("parent_order_id", data.get("orderId") or data.get("strategyOrderId")),
+                ("client_order_id", data.get("clientOid") or body.get("clientOid")),
+            ],
+        ))
     if request.trailing_stop_pct > 0:
         activation_price, price_precision = client._normalize_price(
             symbol=request.symbol,
@@ -316,9 +401,18 @@ def _place_bitget(client: Any, request: NativeProtectionRequest) -> List[Dict[st
                 "preOrderType": "market",
             },
         }
-        responses.append(
-            client._signed_request("POST", "/api/v3/trade/place-strategy-order", json_body=body)
-        )
+        if request.client_order_id:
+            body["clientOid"] = f"{request.client_order_id}-trail"[:32]
+        raw = client._signed_request("POST", "/api/v3/trade/place-strategy-order", json_body=body)
+        data = _response_data(raw)
+        responses.append(_annotate_protection_response(
+            raw,
+            role="trailing_stop",
+            identifiers=[
+                ("parent_order_id", data.get("orderId") or data.get("strategyOrderId")),
+                ("client_order_id", data.get("clientOid") or body.get("clientOid")),
+            ],
+        ))
     return responses
 
 
@@ -360,13 +454,20 @@ def _place_bitget_classic(client: Any, request: NativeProtectionRequest) -> List
         )
         if request.client_order_id:
             body["clientOid"] = f"{request.client_order_id}-{suffix}"[:64]
-        responses.append(
-            client._signed_request(
-                "POST",
-                "/api/v2/mix/order/place-tpsl-order",
-                json_body=body,
-            )
+        raw = client._signed_request(
+            "POST",
+            "/api/v2/mix/order/place-tpsl-order",
+            json_body=body,
         )
+        data = _response_data(raw)
+        responses.append(_annotate_protection_response(
+            raw,
+            role="stop_loss" if suffix == "sl" else "take_profit",
+            identifiers=[
+                ("parent_order_id", data.get("orderId") or data.get("planOrderId")),
+                ("client_order_id", data.get("clientOid") or body.get("clientOid")),
+            ],
+        ))
     if request.trailing_stop_pct > 0:
         activation_price, price_precision = client._normalize_price(
             symbol=request.symbol,
@@ -382,13 +483,22 @@ def _place_bitget_classic(client: Any, request: NativeProtectionRequest) -> List
             rangeRate=str(request.trailing_stop_pct * 100.0),
         )
         body.pop("executePrice", None)
-        responses.append(
-            client._signed_request(
-                "POST",
-                "/api/v2/mix/order/place-tpsl-order",
-                json_body=body,
-            )
+        if request.client_order_id:
+            body["clientOid"] = f"{request.client_order_id}-trail"[:64]
+        raw = client._signed_request(
+            "POST",
+            "/api/v2/mix/order/place-tpsl-order",
+            json_body=body,
         )
+        data = _response_data(raw)
+        responses.append(_annotate_protection_response(
+            raw,
+            role="trailing_stop",
+            identifiers=[
+                ("parent_order_id", data.get("orderId") or data.get("planOrderId")),
+                ("client_order_id", data.get("clientOid") or body.get("clientOid")),
+            ],
+        ))
     return responses
 
 
@@ -428,7 +538,17 @@ def _place_bybit(client: Any, request: NativeProtectionRequest) -> List[Dict[str
         )
         if request.client_order_id:
             body["orderLinkId"] = f"{request.client_order_id}-{suffix}"[:36]
-        responses.append(client._signed_request("POST", "/v5/order/create", json_body=body))
+        raw = client._signed_request("POST", "/v5/order/create", json_body=body)
+        data = _response_data(raw)
+        responses.append(_annotate_protection_response(
+            raw,
+            role="stop_loss" if suffix == "sl" else "take_profit",
+            identifiers=[
+                ("exchange_order_id", data.get("orderId")),
+                ("parent_order_id", data.get("orderId")),
+                ("client_order_id", data.get("orderLinkId") or body.get("orderLinkId")),
+            ],
+        ))
     if request.trailing_stop_pct > 0:
         trailing_stop, price_precision = client._normalize_price(
             symbol=request.symbol,
@@ -448,7 +568,17 @@ def _place_bybit(client: Any, request: NativeProtectionRequest) -> List[Dict[str
             "trailingStop": client._dec_str(trailing_stop, strict_precision=price_precision),
             "activePrice": client._dec_str(activation_price, strict_precision=price_precision),
         }
-        responses.append(client._signed_request("POST", "/v5/position/trading-stop", json_body=body))
+        raw = client._signed_request("POST", "/v5/position/trading-stop", json_body=body)
+        data = _response_data(raw)
+        responses.append(_annotate_protection_response(
+            raw,
+            role="trailing_stop",
+            identifiers=[
+                ("exchange_order_id", data.get("orderId")),
+                ("parent_order_id", data.get("orderId")),
+                ("client_order_id", data.get("orderLinkId")),
+            ],
+        ))
     return responses
 
 
@@ -466,6 +596,12 @@ def _place_gate(client: Any, request: NativeProtectionRequest) -> List[Dict[str,
         "tif": "ioc",
         "reduce_only": True,
     }
+    safe_text = ""
+    if request.client_order_id:
+        safe_text = "".join(
+            character for character in str(request.client_order_id)
+            if character.isalnum() or character in "_- ."
+        ).replace(" ", "")[:23]
     # Gate's price-order schema is stricter than the regular futures-order
     # schema: ``initial.size`` is int64. Fractional-contract orders use the
     # string-typed ``initial.amount`` field instead.
@@ -478,7 +614,10 @@ def _place_gate(client: Any, request: NativeProtectionRequest) -> List[Dict[str,
         except (ArithmeticError, TypeError, ValueError) as exc:
             raise LiveTradingError(f"Gate native protection resolved an invalid size: {size}") from exc
     responses: List[Dict[str, Any]] = []
-    for price in (request.stop_loss_price, request.take_profit_price):
+    for role, suffix, price in (
+        ("stop_loss", "sl", request.stop_loss_price),
+        ("take_profit", "tp", request.take_profit_price),
+    ):
         if price <= 0:
             continue
         rule = 1 if price > request.entry_price else 2
@@ -488,8 +627,11 @@ def _place_gate(client: Any, request: NativeProtectionRequest) -> List[Dict[str,
         )
         if trigger_price <= 0:
             raise LiveTradingError("gate_native_protection_price_below_minimum")
+        order_initial = dict(initial)
+        if safe_text:
+            order_initial["text"] = f"t-{safe_text}-{suffix}"
         body = {
-            "initial": initial,
+            "initial": order_initial,
             "trigger": {
                 "strategy_type": 0,
                 "price_type": 1,
@@ -499,14 +641,23 @@ def _place_gate(client: Any, request: NativeProtectionRequest) -> List[Dict[str,
             },
             "order_type": f"plan-close-{request.pos_side}-position",
         }
-        responses.append(
-            client._signed_request(
-                "POST",
-                "/api/v4/futures/usdt/price_orders",
-                json_body=body,
-                extra_headers=extra_headers,
-            )
+        raw = client._signed_request(
+            "POST",
+            "/api/v4/futures/usdt/price_orders",
+            json_body=body,
+            extra_headers=extra_headers,
         )
+        data = _response_data(raw)
+        responses.append(_annotate_protection_response(
+            raw,
+            role=role,
+            identifiers=[
+                ("parent_order_id", data.get("id") or data.get("order_id")),
+                ("client_order_id", order_initial.get("text")),
+                ("child_order_id", data.get("suborder_id") or data.get("trade_id")),
+                ("child_client_order_id", data.get("suborder_text")),
+            ],
+        ))
     if request.trailing_stop_pct > 0:
         responses.append({"managed_by": "strategy_runtime", "type": "trailing_stop"})
     return responses
@@ -553,7 +704,18 @@ def _place_htx(client: Any, request: NativeProtectionRequest) -> List[Dict[str, 
         raw = client._swap_private_request_raw("POST", path, json_body=body)
         if str(raw.get("status") or "").lower() == "error":
             raise LiveTradingError(f"HTX native protection error: {raw}")
-        responses.append(raw)
+        data = _response_data(raw)
+        responses.append(_annotate_protection_response(
+            raw,
+            role="stop_take_profit",
+            identifiers=[
+                ("exchange_order_id", data.get("order_id") or data.get("order_id_str")),
+                ("parent_order_id", data.get("order_id") or data.get("order_id_str")),
+                ("parent_order_id", data.get("tp_order_id") or data.get("tp_order_id_str")),
+                ("parent_order_id", data.get("sl_order_id") or data.get("sl_order_id_str")),
+                ("child_order_id", data.get("relation_order_id")),
+            ],
+        ))
     if request.trailing_stop_pct > 0:
         responses.append({"managed_by": "strategy_runtime", "type": "trailing_stop"})
     return responses

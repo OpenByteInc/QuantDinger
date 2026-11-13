@@ -216,7 +216,99 @@ class ExecutionEventProcessor:
         event = complete_snapshot(prepare_event(event, client, cfg))
         with get_db_transaction():
             lock_strategy_fills(int(binding.get("strategy_id") or 0))
-            self._project_pending_order(event, binding)
+            role = str(binding.get("matched_identifier_role") or "").strip().lower()
+            if role and role != "entry":
+                self._project_native_protection_fill(event, binding)
+            else:
+                self._project_pending_order(event, binding)
+
+    def _project_native_protection_fill(
+        self,
+        event: Dict[str, Any],
+        binding: Dict[str, Any],
+    ) -> None:
+        """Project a native protection execution as an independent exit fill."""
+        event_id = int(event.get("id") or 0)
+        if self._already_projected(event_id):
+            return
+        pending_id = int(binding.get("pending_order_id") or binding.get("owner_id") or 0)
+        with get_db_connection() as db:
+            cur = db.cursor()
+            cur.execute("SELECT * FROM pending_orders WHERE id = %s FOR UPDATE", (pending_id,))
+            pending = cur.fetchone()
+            cur.close()
+        if not pending:
+            return
+        pending = dict(pending)
+
+        quantity = max(0.0, float(event.get("quantity") or 0.0))
+        price = max(0.0, float(event.get("price") or event.get("cumulative_average_price") or 0.0))
+        if quantity <= 1e-12 or price <= 0:
+            return
+        original_signal = str(
+            binding.get("signal_type") or pending.get("signal_type") or ""
+        ).strip().lower()
+        if "long" in original_signal:
+            signal_type = "close_long"
+        elif "short" in original_signal:
+            signal_type = "close_short"
+        else:
+            event_side = str(event.get("side") or "").strip().lower()
+            signal_type = "close_long" if event_side in {"sell", "short"} else "close_short"
+
+        strategy_id = int(binding.get("strategy_id") or pending.get("strategy_id") or 0)
+        if strategy_id <= 0:
+            return
+        sc = load_strategy_configs(strategy_id)
+        exchange_config = event.get("_exchange_config") or resolve_exchange_config(
+            sc.get("exchange_config") or {},
+            user_id=int(sc.get("user_id") or pending.get("user_id") or 1),
+        )
+        market_type = str(event.get("market_type") or pending.get("market_type") or "swap")
+        symbol = str(event.get("symbol") or pending.get("symbol") or "")
+        client = event.get("_client") or create_client(exchange_config, market_type=market_type)
+        fees, commission_quote = self._fees(event, client=client, symbol=symbol, price=price)
+        commission, commission_ccy = self._fee_storage(fees)
+        position_filled = self._spot_position_quantity(
+            market_type=market_type,
+            symbol=symbol,
+            signal_type=signal_type,
+            gross_quantity=quantity,
+            fees=fees,
+        )
+        role = str(binding.get("matched_identifier_role") or "protection").strip().lower()
+        close_reason = f"native_{role}"[:64]
+        persist_strategy_fill(
+            strategy_id=strategy_id,
+            symbol=symbol,
+            signal_type=signal_type,
+            filled=quantity,
+            position_filled=position_filled,
+            avg_price=price,
+            exchange_config=exchange_config,
+            market_type=market_type,
+            order_id=0,
+            fill_source="private_websocket_native_protection",
+            commission=commission,
+            commission_ccy=commission_ccy,
+            commission_quote=commission_quote,
+            fees_by_ccy=fees,
+            profit=None,
+            close_reason=close_reason,
+            strategy_run_id=int(binding.get("strategy_run_id") or pending.get("strategy_run_id") or 0),
+            exchange_id=str(event.get("exchange_id") or ""),
+            exchange_order_id=str(event.get("exchange_order_id") or ""),
+            exchange_fill_id=str(event.get("exchange_fill_id") or ""),
+            execution_event_id=event_id,
+            fee_status=str(event.get("fee_status") or "pending"),
+            fee_source="websocket",
+            raw_fill=self._json(event.get("raw_json")),
+        )
+        append_strategy_log(
+            strategy_id,
+            "trade",
+            f"Native protection fill: {signal_type} {symbol} qty={quantity:.8f} @ {price:.8f}",
+        )
 
     def _project_pending_order(self, event: Dict[str, Any], binding: Dict[str, Any]) -> None:
         pending_id = int(binding.get("pending_order_id") or binding.get("owner_id") or 0)

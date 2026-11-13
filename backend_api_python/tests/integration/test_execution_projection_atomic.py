@@ -32,6 +32,7 @@ def projection(monkeypatch):
     tables = (
         "pending_orders",
         "qd_live_order_bindings",
+        "qd_live_order_binding_identifiers",
         "qd_strategy_positions",
         "qd_strategy_trades",
         "strategy_order_fills",

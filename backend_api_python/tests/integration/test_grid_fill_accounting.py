@@ -38,6 +38,7 @@ def ledger(monkeypatch):
         "qd_strategy_positions",
         "qd_strategy_trades",
         "qd_live_order_bindings",
+        "qd_live_order_binding_identifiers",
         "qd_grid_cells",
         "pending_orders",
         "strategy_order_fills",

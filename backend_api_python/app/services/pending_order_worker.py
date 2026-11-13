@@ -8,6 +8,7 @@ This worker polls `pending_orders` periodically and dispatches orders based on `
 
 from __future__ import annotations
 
+import hashlib
 import json
 from app.services.strategy_runtime.cancellations import dispatch_requested_cancel
 import os
@@ -965,7 +966,13 @@ class PendingOrderWorker(
                     entry_price=delta_avg,
                     exchange_config=exchange_config,
                     market_type=market_type,
-                    client_order_id=f"qdprot{order_id}",
+                    client_order_id=self._protection_client_order_id(order_id, aggregate_filled),
+                )
+                self._register_native_protection_bindings(
+                    order_id=order_id,
+                    responses=protection_result,
+                    exchange_id=exchange_id,
+                    market_type=market_type,
                 )
             except Exception as exc:
                 append_strategy_log(
@@ -1073,6 +1080,12 @@ class PendingOrderWorker(
                 "info",
                 f"Exchange fee reconciled: {symbol} rows={fee_backfilled}",
             )
+
+    @staticmethod
+    def _protection_client_order_id(order_id: int, cumulative_filled: float) -> str:
+        scope = f"{int(order_id)}:{max(0.0, float(cumulative_filled or 0.0)):.12f}"
+        digest = hashlib.blake2s(scope.encode("utf-8"), digest_size=5).hexdigest()
+        return f"qdprot{int(order_id)}-{digest}"
 
     @staticmethod
     def _attach_native_protection(
@@ -2280,9 +2293,15 @@ class PendingOrderWorker(
                     entry_price=avg_final,
                     exchange_config=exchange_config,
                     market_type=str(market_type),
-                    client_order_id=f"qdprot{order_id}",
+                    client_order_id=self._protection_client_order_id(order_id, filled_final),
                 )
                 if native_protection:
+                    self._register_native_protection_bindings(
+                        order_id=order_id,
+                        responses=native_protection,
+                        exchange_id=str(exchange_config.get("exchange_id") or ""),
+                        market_type=str(market_type),
+                    )
                     phases["native_protection"] = native_protection
                     append_strategy_log(
                         strategy_id,
@@ -2900,7 +2919,7 @@ class PendingOrderWorker(
         exchange_id: str = "",
         market_type: str = "",
         observed_filled: float = 0.0,
-    ) -> None:
+    ) -> int:
         try:
             with get_db_connection() as db:
                 cur = db.cursor()
@@ -2908,12 +2927,12 @@ class PendingOrderWorker(
                 row = cur.fetchone()
                 cur.close()
             if not row:
-                return
+                return 0
             row = dict(row)
             payload = json.loads(str(row.get("payload_json") or "{}")) or {}
             from app.services.execution_streams.repository import ExecutionEventRepository
 
-            ExecutionEventRepository().register_binding(
+            return ExecutionEventRepository().register_binding(
                 credential_id=int(row.get("credential_id") or payload.get("credential_id") or 0),
                 exchange_id=str(exchange_id or row.get("exchange_id") or ""),
                 market_type=str(market_type or row.get("market_type") or payload.get("market_type") or "swap"),
@@ -2932,6 +2951,39 @@ class PendingOrderWorker(
             )
         except Exception:
             logger.debug("pending order binding registration failed id=%s", order_id, exc_info=True)
+            return 0
+
+    def _register_native_protection_bindings(
+        self,
+        *,
+        order_id: int,
+        responses: List[Dict[str, Any]],
+        exchange_id: str = "",
+        market_type: str = "swap",
+    ) -> None:
+        if not responses:
+            return
+        binding_id = self._register_pending_order_binding(
+            order_id=int(order_id),
+            client_order_id="",
+            exchange_order_id="",
+            exchange_id=str(exchange_id or ""),
+            market_type=str(market_type or "swap"),
+        )
+        if binding_id <= 0:
+            raise RuntimeError("native_protection_binding_unavailable")
+        from app.services.execution_streams.repository import ExecutionEventRepository
+
+        repository = ExecutionEventRepository()
+        for response in responses:
+            protection = response.get("_qd_protection") if isinstance(response, dict) else None
+            if not isinstance(protection, dict):
+                continue
+            repository.register_identifiers(
+                binding_id,
+                protection.get("identifiers") or [],
+                role=str(protection.get("role") or "protection"),
+            )
 
     def _mark_failed(self, order_id: int, error: str) -> None:
         from app.services.live_trading.partner_attribution import redact_partner_attribution

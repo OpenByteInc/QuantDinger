@@ -85,6 +85,7 @@ class ExecutionEvent:
     fee_status: str = "pending"
     occurred_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     fees: List[FeeComponent] = field(default_factory=list)
+    order_identifiers: List[Dict[str, str]] = field(default_factory=list)
     raw: Dict[str, Any] = field(default_factory=dict)
     credential_id: int = 0
     user_id: int = 1

@@ -88,7 +88,10 @@ def _load_account_rows(*, user_id: int) -> List[Dict[str, Any]]:
                    p.symbol, p.symbol_canonical, p.side, p.size, p.entry_price,
                    p.current_price, p.market_type, p.credential_id
             FROM qd_strategies_trading s
-            LEFT JOIN qd_strategy_positions p ON p.strategy_id = s.id AND p.size > 0
+            LEFT JOIN qd_strategy_positions p
+              ON p.strategy_id = s.id
+             AND p.size > 0
+             AND COALESCE(p.position_state, 'open') <> 'exit_residual'
             WHERE s.user_id = %s AND s.execution_mode = 'live'
             """,
             (int(user_id),),
