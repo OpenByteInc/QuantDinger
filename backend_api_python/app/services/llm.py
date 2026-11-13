@@ -14,6 +14,7 @@ from app.utils.logger import get_logger
 from app.config import APIKeys
 from app.utils.config_loader import load_addon_config
 from app.utils.redaction import redact_secrets
+from app.services.llm_response_format import rejects_response_format
 
 logger = get_logger(__name__)
 
@@ -446,7 +447,7 @@ class LLMService:
 
     def _call_openai_compatible(self, messages: list, model: str, temperature: float, 
                                  api_key: str, base_url: str, timeout: int,
-                                 use_json_mode: bool = True) -> str:
+                                 use_json_mode: bool = True, allow_response_format_retry: bool = False) -> str:
         """Call OpenAI-compatible API (OpenAI, DeepSeek, Grok, AtlasCloud, OpenRouter)."""
         url = f"{base_url}/chat/completions"
         
@@ -474,6 +475,13 @@ class LLMService:
             data["response_format"] = {"type": "json_object"}
 
         response = self._llm_post(url, headers=headers, json_payload=data, timeout=timeout)
+
+        if allow_response_format_retry and "response_format" in data and rejects_response_format(response):
+            # Retry once on the same custom gateway and model; local JSON parsing still applies.
+            response.close()
+            logger.info("Custom LLM gateway rejected response_format; retrying without that parameter")
+            compatible_data = {key: value for key, value in data.items() if key != "response_format"}
+            response = self._llm_post(url, headers=headers, json_payload=compatible_data, timeout=timeout)
         
         # Handle non-2xx with provider/model-aware details
         if response.status_code >= 400:
@@ -1307,10 +1315,13 @@ class LLMService:
                     )
                 else:
                     # OpenAI-compatible providers
+                    compatible_options = {"use_json_mode": use_json_mode}
+                    if p == LLMProvider.CUSTOM and use_json_mode:
+                        compatible_options["allow_response_format_retry"] = True
                     result = self._call_openai_compatible(
                         messages, current_model, temperature,
                         api_key, base_url, timeout,
-                        use_json_mode=use_json_mode
+                        **compatible_options
                     )
                 self._record_model_use(current_model, models_to_try[0], p)
                 return result
