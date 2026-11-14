@@ -7,13 +7,55 @@ from app.utils import db_postgres as db
 
 @pytest.fixture
 def connection(monkeypatch):
-    native = SimpleNamespace(commits=0, rollbacks=0)
-    native.commit = lambda: setattr(native, "commits", native.commits + 1)
-    native.rollback = lambda: setattr(native, "rollbacks", native.rollbacks + 1)
+    native = SimpleNamespace(
+        commits=0,
+        rollbacks=0,
+        transaction_status=db.psycopg2.extensions.TRANSACTION_STATUS_IDLE,
+    )
+
+    def commit():
+        native.commits += 1
+        native.transaction_status = db.psycopg2.extensions.TRANSACTION_STATUS_IDLE
+
+    def rollback():
+        native.rollbacks += 1
+        native.transaction_status = db.psycopg2.extensions.TRANSACTION_STATUS_IDLE
+
+    native.commit = commit
+    native.rollback = rollback
+    native.get_transaction_status = lambda: native.transaction_status
     pool = SimpleNamespace(putconn=lambda *a, **k: None)
     monkeypatch.setattr(db, "_get_connection_pool", lambda: pool)
     monkeypatch.setattr(db, "_acquire_conn_with_wait", lambda p: native)
     return native
+
+
+def test_read_only_context_rolls_back_before_pool_return(connection):
+    with db.get_pg_connection():
+        connection.transaction_status = db.psycopg2.extensions.TRANSACTION_STATUS_INTRANS
+
+    assert connection.rollbacks == 1
+    assert connection.transaction_status == db.psycopg2.extensions.TRANSACTION_STATUS_IDLE
+
+
+def test_health_probe_does_not_leave_transaction_open(connection):
+    class Cursor:
+        def execute(self, _query):
+            connection.transaction_status = db.psycopg2.extensions.TRANSACTION_STATUS_INTRANS
+
+        @staticmethod
+        def fetchone():
+            return (1,)
+
+        @staticmethod
+        def close():
+            return None
+
+    connection.cursor = Cursor
+
+    assert db._is_connection_healthy(connection) is True
+    assert connection.rollbacks == 1
+    assert connection.transaction_status == db.psycopg2.extensions.TRANSACTION_STATUS_IDLE
 
 
 def test_nested_helper_commits_wait_for_owner(connection):

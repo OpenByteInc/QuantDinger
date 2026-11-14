@@ -174,3 +174,27 @@ def test_pool_metrics_publish_counts_and_utilization(monkeypatch):
     assert connections.values[(('application', 'test-api'), ('state', 'opened'))] == 5
     assert connections.values[(('application', 'test-api'), ('state', 'max'))] == 77
     assert utilization.values[(('application', 'test-api'),)] == 3 / 77
+
+
+def test_pool_connections_enforce_transaction_and_lock_timeouts(monkeypatch):
+    captured = {}
+    fake_pool = _FakePool()
+
+    def create_pool(**kwargs):
+        captured.update(kwargs)
+        return fake_pool
+
+    monkeypatch.setattr(db_postgres, "_connection_pool", None)
+    monkeypatch.setattr(db_postgres, "_resolve_effective_pool_limits", lambda _params: (2, 8))
+    monkeypatch.setattr(db_postgres.pool, "ThreadedConnectionPool", create_pool)
+    monkeypatch.setattr(db_postgres, "_observe_pool_stats", lambda _pool: None)
+    monkeypatch.setattr(db_postgres, "DB_IDLE_IN_TRANSACTION_TIMEOUT_MS", 60_000)
+    monkeypatch.setattr(db_postgres, "DB_LOCK_TIMEOUT_MS", 10_000)
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:password@localhost:5432/quantdinger")
+
+    assert db_postgres._get_connection_pool() is fake_pool
+    assert captured["options"] == (
+        "-c timezone=UTC "
+        "-c idle_in_transaction_session_timeout=60000 "
+        "-c lock_timeout=10000"
+    )

@@ -92,36 +92,8 @@ class UserService:
         return normalized
     
     def ensure_password_changed_column(self) -> None:
-        """Add password_changed_at if missing (idempotent)."""
-        if UserService._password_changed_column_ready:
-            return
-        try:
-            with get_db_connection() as db:
-                cur = db.cursor()
-                cur.execute(
-                    """
-                    SELECT 1 FROM information_schema.columns
-                    WHERE table_name = 'qd_users' AND column_name = 'password_changed_at'
-                    """
-                )
-                if not cur.fetchone():
-                    cur.execute(
-                        "ALTER TABLE qd_users ADD COLUMN password_changed_at TIMESTAMP NULL"
-                    )
-                    # Existing accounts: assume they already passed initial setup.
-                    cur.execute(
-                        """
-                        UPDATE qd_users
-                        SET password_changed_at = COALESCE(updated_at, created_at, NOW())
-                        WHERE password_changed_at IS NULL
-                        """
-                    )
-                    db.commit()
-                    logger.info("Added password_changed_at column to qd_users (existing rows backfilled)")
-                cur.close()
-            UserService._password_changed_column_ready = True
-        except Exception as e:
-            logger.warning(f"ensure_password_changed_column failed: {e}")
+        """Compatibility hook; canonical schema changes run in migrations."""
+        UserService._password_changed_column_ready = True
 
     def mark_password_changed(self, user_id: int) -> None:
         """Record that the user has set a non-initial password."""
@@ -1245,27 +1217,28 @@ class UserService:
                 cur.execute("SELECT COUNT(*) as count FROM qd_users")
                 count = cur.fetchone()['count']
                 cur.close()
-                
-                if count == 0:
-                    # Create admin using env credentials
-                    from app.config.settings import Config
-                    admin_user = os.getenv('ADMIN_USER', Config.ADMIN_USER)
-                    admin_password = os.getenv('ADMIN_PASSWORD', Config.ADMIN_PASSWORD)
-                    admin_email = os.getenv('ADMIN_EMAIL', 'admin@example.com')
 
-                    self.create_user({
-                        'username': admin_user,
-                        'password': admin_password,
-                        'email': admin_email,
-                        'nickname': 'Administrator',
-                        'role': 'admin',
-                        'status': 'active',
-                        'email_verified': True  # Admin email is pre-verified
-                    })
-                    logger.info(f"Created admin user: {admin_user} ({admin_email})")
-                else:
-                    self.sync_bootstrap_admin_credentials_from_env()
-                    self.sync_admin_email_from_config(overwrite_existing=False)
+            # Do not call helpers that acquire another pooled connection while
+            # the startup read transaction is still open.
+            if count == 0:
+                from app.config.settings import Config
+                admin_user = os.getenv('ADMIN_USER', Config.ADMIN_USER)
+                admin_password = os.getenv('ADMIN_PASSWORD', Config.ADMIN_PASSWORD)
+                admin_email = os.getenv('ADMIN_EMAIL', 'admin@example.com')
+
+                self.create_user({
+                    'username': admin_user,
+                    'password': admin_password,
+                    'email': admin_email,
+                    'nickname': 'Administrator',
+                    'role': 'admin',
+                    'status': 'active',
+                    'email_verified': True
+                })
+                logger.info(f"Created admin user: {admin_user} ({admin_email})")
+            else:
+                self.sync_bootstrap_admin_credentials_from_env()
+                self.sync_admin_email_from_config(overwrite_existing=False)
         except Exception as e:
             logger.error(f"ensure_admin_exists failed: {e}")
 

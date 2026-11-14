@@ -15,20 +15,7 @@ VALID_NOTIFICATION_CHANNELS = {"browser", "email", "telegram", "discord", "webho
 
 
 def ensure_chart_templates_column() -> None:
-    """Add qd_users.chart_templates when upgrading existing databases."""
-    try:
-        with get_db_connection() as db:
-            cur = db.cursor()
-            cur.execute(
-                """
-                ALTER TABLE qd_users
-                ADD COLUMN IF NOT EXISTS chart_templates TEXT DEFAULT ''
-                """
-            )
-            db.commit()
-            cur.close()
-    except Exception as exc:
-        logger.warning("ensure chart_templates column skipped: %s", exc)
+    """Compatibility hook; canonical schema changes run in migrations."""
 
 
 def get_notification_settings(user_id: int) -> dict | None:
