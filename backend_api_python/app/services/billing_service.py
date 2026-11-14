@@ -89,7 +89,6 @@ class BillingService:
             with get_db_connection() as db:
                 cur = db.cursor()
                 # Ensure lifetime membership monthly credits are granted (best-effort, silent on failure).
-                self._ensure_membership_schema_best_effort(cur)
                 self._grant_lifetime_monthly_credits_best_effort(cur, user_id)
                 try:
                     db.commit()
@@ -124,7 +123,6 @@ class BillingService:
         try:
             with get_db_connection() as db:
                 cur = db.cursor()
-                self._ensure_plan_schema(cur)
                 self._seed_default_plans(cur)
                 sql = """
                     SELECT code, name, description, price_usd, duration_days,
@@ -187,7 +185,6 @@ class BillingService:
         try:
             with get_db_connection() as db:
                 cur = db.cursor()
-                self._ensure_plan_schema(cur)
                 for row in normalized:
                     cur.execute(
                         """
@@ -232,7 +229,6 @@ class BillingService:
         try:
             with get_db_connection() as db:
                 cur = db.cursor()
-                self._ensure_plan_schema(cur)
                 cur.execute("SELECT code, is_active FROM qd_billing_plans WHERE code=? FOR UPDATE", (code,))
                 plan = cur.fetchone() or {}
                 if not plan:
@@ -272,32 +268,6 @@ class BillingService:
             "sort_order": int(row.get("sort_order") or 0),
             "stripe_price_id": row.get("stripe_price_id") or "",
         }
-
-    def _ensure_plan_schema(self, cur) -> None:
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS qd_billing_plans (
-              code VARCHAR(64) PRIMARY KEY,
-              name VARCHAR(120) NOT NULL,
-              description TEXT NOT NULL DEFAULT '',
-              price_usd DECIMAL(12,2) NOT NULL DEFAULT 0,
-              duration_days INTEGER NOT NULL DEFAULT 0,
-              credits_once INTEGER NOT NULL DEFAULT 0,
-              credits_monthly INTEGER NOT NULL DEFAULT 0,
-              strategy_limit INTEGER NOT NULL DEFAULT 10,
-              referral_eligible BOOLEAN NOT NULL DEFAULT FALSE,
-              is_lifetime BOOLEAN NOT NULL DEFAULT FALSE,
-              is_active BOOLEAN NOT NULL DEFAULT TRUE,
-              is_popular BOOLEAN NOT NULL DEFAULT FALSE,
-              sort_order INTEGER NOT NULL DEFAULT 0,
-              stripe_price_id VARCHAR(255) NOT NULL DEFAULT '',
-              created_at TIMESTAMP DEFAULT NOW(),
-              updated_at TIMESTAMP DEFAULT NOW()
-            )
-            """
-        )
-        cur.execute("ALTER TABLE qd_billing_plans ADD COLUMN IF NOT EXISTS strategy_limit INTEGER NOT NULL DEFAULT 10")
-        cur.execute("ALTER TABLE qd_billing_plans ADD COLUMN IF NOT EXISTS referral_eligible BOOLEAN NOT NULL DEFAULT FALSE")
 
     def _seed_default_plans(self, cur) -> None:
         cur.execute("SELECT COUNT(*) AS count FROM qd_billing_plans")
@@ -342,13 +312,8 @@ class BillingService:
         try:
             with get_db_connection() as db:
                 cur = db.cursor()
-                self._ensure_membership_schema_best_effort(cur)
-                if record_membership_order:
-                    self._ensure_membership_orders_table_best_effort(cur)
-
                 fulfillment_ref = (fulfillment_ref or "").strip()
                 if fulfillment_ref:
-                    self._ensure_fulfillment_schema(cur)
                     cur.execute(
                         """
                         INSERT INTO qd_membership_fulfillments (provider_ref, user_id, plan, created_at)
@@ -525,49 +490,6 @@ class BillingService:
             logger.error(f"purchase_membership failed: {e}", exc_info=True)
             return False, f"error:{str(e)}", {}
 
-    def _ensure_membership_schema_best_effort(self, cur):
-        """Best-effort schema upgrade for membership fields on qd_users."""
-        try:
-            # vip_plan / vip_is_lifetime / vip_monthly_credits_last_grant
-            cur.execute("ALTER TABLE qd_users ADD COLUMN IF NOT EXISTS vip_plan VARCHAR(64) DEFAULT ''")
-            cur.execute("ALTER TABLE qd_users ALTER COLUMN vip_plan TYPE VARCHAR(64)")
-            cur.execute("ALTER TABLE qd_users ADD COLUMN IF NOT EXISTS vip_is_lifetime BOOLEAN DEFAULT FALSE")
-            cur.execute("ALTER TABLE qd_users ADD COLUMN IF NOT EXISTS vip_monthly_credits_last_grant TIMESTAMP")
-        except Exception:
-            # Ignore schema upgrade failures (e.g., insufficient privileges)
-            pass
-
-    def _ensure_membership_orders_table_best_effort(self, cur):
-        """Best-effort create membership orders table (legacy; optional row per mock checkout)."""
-        try:
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS qd_membership_orders (
-                  id SERIAL PRIMARY KEY,
-                  user_id INTEGER NOT NULL,
-                  plan VARCHAR(64) NOT NULL,
-                  price_usd DECIMAL(10,2) DEFAULT 0,
-                  status VARCHAR(20) DEFAULT 'paid',
-                  created_at TIMESTAMP DEFAULT NOW(),
-                  paid_at TIMESTAMP
-                )
-                """
-            )
-        except Exception:
-            pass
-
-    def _ensure_fulfillment_schema(self, cur):
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS qd_membership_fulfillments (
-              provider_ref VARCHAR(255) PRIMARY KEY,
-              user_id INTEGER NOT NULL,
-              plan VARCHAR(64) NOT NULL,
-              created_at TIMESTAMP DEFAULT NOW()
-            )
-            """
-        )
-
     def _add_credits_in_tx(self, cur, user_id: int, amount: int, action: str, remark: str, reference_id: str = ''):
         """Add credits within an existing DB transaction and write qd_credits_log."""
         try:
@@ -600,7 +522,6 @@ class BillingService:
                 return
             # Reuse the caller's transaction. Opening another pooled connection
             # here can deadlock a small deployment when all connections are busy.
-            self._ensure_plan_schema(cur)
             self._seed_default_plans(cur)
             cur.execute(
                 "SELECT credits_monthly FROM qd_billing_plans WHERE code = ?",

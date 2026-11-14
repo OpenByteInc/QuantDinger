@@ -9,6 +9,8 @@ Pool tuning (all via env, safe defaults):
     DB_POOL_MAX               maxconn or "auto"             default auto
     DB_POOL_ACQUIRE_TIMEOUT   seconds to wait on exhaustion default 10
     DB_POOL_HEALTH_CHECK      "true" / "false"              default "true"
+    DB_IDLE_IN_TRANSACTION_TIMEOUT_MS server-side timeout    default 60000
+    DB_LOCK_TIMEOUT_MS        server-side lock wait timeout  default 10000
 """
 import os
 import time
@@ -81,6 +83,8 @@ DB_POOL_ACQUIRE_TIMEOUT = _env_int("DB_POOL_ACQUIRE_TIMEOUT", 10)
 DB_POOL_HEALTH_CHECK = _env_bool("DB_POOL_HEALTH_CHECK", True)
 DB_POOL_AUTO_CAP = _env_bool("DB_POOL_AUTO_CAP", True)
 DB_POOL_RESERVE_FOR_OTHER_CLIENTS = _env_int("DB_POOL_RESERVE_FOR_OTHER_CLIENTS", 20)
+DB_IDLE_IN_TRANSACTION_TIMEOUT_MS = _env_int("DB_IDLE_IN_TRANSACTION_TIMEOUT_MS", 60_000)
+DB_LOCK_TIMEOUT_MS = _env_int("DB_LOCK_TIMEOUT_MS", 10_000)
 DB_APPLICATION_NAME = os.getenv("DB_APPLICATION_NAME", "quantdinger_api").strip() or "quantdinger_api"
 
 
@@ -172,7 +176,11 @@ def _get_connection_pool():
                 # "idle in transaction" state when no explicit commit/rollback
                 # followed).  keepalives keep dead sockets from lingering in
                 # the pool when the PG side or a NAT drops them.
-                options="-c timezone=UTC",
+                options=(
+                    "-c timezone=UTC "
+                    f"-c idle_in_transaction_session_timeout={DB_IDLE_IN_TRANSACTION_TIMEOUT_MS} "
+                    f"-c lock_timeout={DB_LOCK_TIMEOUT_MS}"
+                ),
                 keepalives=1,
                 keepalives_idle=30,
                 keepalives_interval=10,
@@ -317,6 +325,23 @@ def _pool_max_config_label() -> str:
     return str(DB_POOL_MAX_CONFIGURED) if DB_POOL_MAX_CONFIGURED is not None else "auto"
 
 
+def _rollback_open_transaction(conn) -> bool:
+    """Return a pooled connection to PostgreSQL's idle transaction state."""
+    if conn is None or getattr(conn, "closed", 0):
+        return False
+
+    try:
+        status_reader = getattr(conn, "get_transaction_status", None)
+        if callable(status_reader):
+            idle_status = psycopg2.extensions.TRANSACTION_STATUS_IDLE
+            if status_reader() == idle_status:
+                return True
+        conn.rollback()
+        return True
+    except Exception:
+        return False
+
+
 def _is_connection_healthy(conn) -> bool:
     """Quick health check: make sure the connection is not closed and can
     actually round-trip a trivial query.  Used only when DB_POOL_HEALTH_CHECK
@@ -327,14 +352,28 @@ def _is_connection_healthy(conn) -> bool:
     # psycopg2 sets .closed to nonzero when the connection is closed.
     if getattr(conn, "closed", 0):
         return False
+    if not _rollback_open_transaction(conn):
+        return False
+
+    probe_ok = False
+    cur = None
     try:
         cur = conn.cursor()
         cur.execute("SELECT 1")
         cur.fetchone()
-        cur.close()
-        return True
+        probe_ok = True
     except Exception:
-        return False
+        probe_ok = False
+    finally:
+        if cur is not None:
+            try:
+                cur.close()
+            except Exception:
+                probe_ok = False
+
+    # psycopg2 starts a transaction even for SELECT 1. Never let the health
+    # probe itself put a pooled connection into idle-in-transaction state.
+    return _rollback_open_transaction(conn) and probe_ok
 
 
 def _acquire_conn_with_wait(pg_pool):
@@ -413,7 +452,11 @@ def _acquire_conn_with_wait(pg_pool):
             backoff = min(backoff * 2, 0.5)
             continue
 
-        if DB_POOL_HEALTH_CHECK and not _is_connection_healthy(conn):
+        connection_ready = _rollback_open_transaction(conn)
+        if connection_ready and DB_POOL_HEALTH_CHECK:
+            connection_ready = _is_connection_healthy(conn)
+
+        if not connection_ready:
             # Drop the dead connection and let the pool create a new one on
             # next attempt.  putconn(close=True) asks the pool to discard it.
             try:
@@ -658,10 +701,14 @@ class PostgresConnection:
         """Return connection to pool.  Broken connections are discarded so
         we don't poison the pool with closed sockets.
         """
-        if self._pool and self._conn:
+        conn = self._conn
+        self._conn = None
+        if self._pool and conn:
             try:
-                broken = bool(getattr(self._conn, "closed", 0))
-                self._pool.putconn(self._conn, close=broken)
+                broken = bool(getattr(conn, "closed", 0))
+                if not broken and not _rollback_open_transaction(conn):
+                    broken = True
+                self._pool.putconn(conn, close=broken)
                 _observe_pool_stats(self._pool)
             except Exception as e:
                 logger.warning(f"Failed to return connection to pool: {e}")
@@ -772,6 +819,8 @@ def get_pg_connection():
     finally:
         if conn is not None:
             try:
+                if not broken and not _rollback_open_transaction(conn):
+                    broken = True
                 pg_pool.putconn(conn, close=broken)
                 _observe_pool_stats(pg_pool)
             except Exception:
