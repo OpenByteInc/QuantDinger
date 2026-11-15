@@ -620,7 +620,10 @@ def _place_gate(client: Any, request: NativeProtectionRequest) -> List[Dict[str,
     ):
         if price <= 0:
             continue
-        rule = 1 if price > request.entry_price else 2
+        rises = (role == "take_profit" and request.pos_side == "long") or (
+            role == "stop_loss" and request.pos_side == "short"
+        )
+        rule = 1 if rises else 2
         trigger_price, _price_precision = client._normalize_price(
             contract=contract,
             price=price,

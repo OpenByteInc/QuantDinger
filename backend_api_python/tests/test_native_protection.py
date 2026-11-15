@@ -536,6 +536,62 @@ def test_gate_rejects_native_protection_quantity_below_exchange_minimum():
         place_native_protection_orders(client, _request(quantity=0.0001))
 
 
+@pytest.mark.parametrize(
+    ("pos_side", "size_str", "entry_price", "sl_price", "tp_price", "expected_rules"),
+    [
+        ("long", "-2", 0.0, 90.0, 120.0, {"sl": 2, "tp": 1}),
+        ("short", "2", 0.0, 110.0, 80.0, {"sl": 1, "tp": 2}),
+        ("long", "-2", 100.0, 105.0, 120.0, {"sl": 2, "tp": 1}),
+        ("short", "2", 100.0, 95.0, 80.0, {"sl": 1, "tp": 2}),
+    ],
+)
+def test_gate_trigger_rule_follows_side_and_role_not_entry_price(
+    pos_side, size_str, entry_price, sl_price, tp_price, expected_rules
+):
+    from app.services.live_trading.gate import GateUsdtFuturesClient
+    from app.services.quick_trade.position_activity import gate_protection_orders
+
+    client = GateUsdtFuturesClient.__new__(GateUsdtFuturesClient)
+    client._resolve_order_size = lambda **_kwargs: (size_str, None)
+    client.get_contract = lambda **_kwargs: {"order_price_round": "0.1"}
+    sent = []
+
+    def fake_signed_request(method, path, **kwargs):
+        if method == "POST":
+            sent.append(kwargs["json_body"])
+            return {"id": len(sent)}
+        return [
+            {
+                "id": index + 1,
+                "initial": body["initial"],
+                "trigger": body["trigger"],
+            }
+            for index, body in enumerate(sent)
+        ]
+
+    client._signed_request = fake_signed_request
+
+    place_native_protection_orders(
+        client,
+        _request(
+            pos_side=pos_side,
+            entry_price=entry_price,
+            stop_loss_price=sl_price,
+            take_profit_price=tp_price,
+        ),
+    )
+
+    rules_by_suffix = {
+        body["initial"]["text"].rsplit("-", 1)[-1]: body["trigger"]["rule"]
+        for body in sent
+    }
+    assert rules_by_suffix == expected_rules
+
+    listed = gate_protection_orders(client, "BTC/USDT")
+    kinds_by_price = {round(item["price"], 6): item["kind"] for item in listed["orders"]}
+    assert kinds_by_price == {sl_price: "sl", tp_price: "tp"}
+
+
 def test_htx_uses_margin_mode_specific_position_tpsl_endpoint():
     from app.services.live_trading.htx import HtxClient
 
