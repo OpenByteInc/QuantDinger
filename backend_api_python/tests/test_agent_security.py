@@ -28,6 +28,47 @@ def test_redact_secrets_masks_known_keys():
     assert out["items"][0]["secret"] == "***"
 
 
+def test_redact_secrets_masks_notification_credentials_and_headers():
+    raw = {
+        "targets": {
+            "telegram_bot_token": "telegram-secret",
+            "telegramToken": "telegram-alias",
+            "webhook.token": "webhook-secret",
+            "webhookSigningSecret": "signing-secret",
+            "webhook_headers": {
+                "Authorization": "Bearer private",
+                "X-Api-Key": "header-secret",
+                "Content-Type": "application/json",
+            },
+            "telegram": True,
+            "telegram_chat_id": "12345",
+            "webhook_url": "https://example.com/hook",
+        }
+    }
+
+    out = redact_secrets(raw)
+
+    assert out["targets"]["telegram_bot_token"] == "***"
+    assert out["targets"]["telegramToken"] == "***"
+    assert out["targets"]["webhook.token"] == "***"
+    assert out["targets"]["webhookSigningSecret"] == "***"
+    assert out["targets"]["webhook_headers"]["Authorization"] == "***"
+    assert out["targets"]["webhook_headers"]["X-Api-Key"] == "***"
+    assert out["targets"]["webhook_headers"]["Content-Type"] == "application/json"
+    assert out["targets"]["telegram_chat_id"] == "12345"
+    assert out["targets"]["webhook_url"] == "https://example.com/hook"
+
+
+def test_redact_secrets_masks_json_encoded_webhook_headers():
+    out = redact_secrets({
+        "webhook_headers": '{"Authorization":"Bearer private","Content-Type":"application/json"}',
+    })
+
+    assert "Bearer private" not in out["webhook_headers"]
+    assert '"Authorization":"***"' in out["webhook_headers"]
+    assert '"Content-Type":"application/json"' in out["webhook_headers"]
+
+
 def test_redact_strategy_row_covers_config_blocks():
     row = {
         "id": 1,

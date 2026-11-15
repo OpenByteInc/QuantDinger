@@ -1,15 +1,15 @@
 """MCP security + tool registry tests."""
 from __future__ import annotations
 
-import importlib
 import asyncio
+import importlib
 import json
 import re
 import sys
 from pathlib import Path
 
-import pytest
 import httpx
+import pytest
 
 pytest.importorskip("mcp")
 
@@ -375,3 +375,45 @@ def test_redaction_handles_camel_case_and_deep_values():
     assert redact_secrets({"clientSecret": "hidden"})["clientSecret"] == "***"
     deep = {"a": {"b": {"c": {"d": {"e": {"f": {"g": {"value": "hidden"}}}}}}}}
     assert "hidden" not in repr(redact_secrets(deep))
+
+
+def test_redaction_masks_notification_credentials_and_auth_headers():
+    from quantdinger_mcp.security import redact_secrets
+
+    payload = {
+        "telegram_bot_token": "telegram-secret",
+        "telegramToken": "telegram-alias",
+        "webhook.token": "webhook-secret",
+        "webhookSigningSecret": "signing-secret",
+        "webhook_headers": {
+            "Authorization": "Bearer private",
+            "X-Api-Key": "header-secret",
+            "Content-Type": "application/json",
+        },
+        "telegram_chat_id": "12345",
+        "webhook_url": "https://example.com/hook",
+    }
+
+    out = redact_secrets(payload)
+
+    assert out["telegram_bot_token"] == "***"
+    assert out["telegramToken"] == "***"
+    assert out["webhook.token"] == "***"
+    assert out["webhookSigningSecret"] == "***"
+    assert out["webhook_headers"]["Authorization"] == "***"
+    assert out["webhook_headers"]["X-Api-Key"] == "***"
+    assert out["webhook_headers"]["Content-Type"] == "application/json"
+    assert out["telegram_chat_id"] == "12345"
+    assert out["webhook_url"] == "https://example.com/hook"
+
+
+def test_redaction_masks_json_encoded_webhook_headers():
+    from quantdinger_mcp.security import redact_secrets
+
+    out = redact_secrets({
+        "webhook_headers": '{"Authorization":"Bearer private","Content-Type":"application/json"}',
+    })
+
+    assert "Bearer private" not in out["webhook_headers"]
+    assert '"Authorization":"***"' in out["webhook_headers"]
+    assert '"Content-Type":"application/json"' in out["webhook_headers"]

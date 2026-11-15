@@ -9,6 +9,7 @@ from app.services.ai_generation_contracts import (
     SCRIPT_STRATEGY_REPAIR_REQUIREMENTS,
     SCRIPT_STRATEGY_SYSTEM_PROMPT,
 )
+from app.utils.safe_exec import RESERVED_SANDBOX_IDENTIFIERS
 
 
 def test_strategy_generation_prompt_is_v2_and_source_controlled():
@@ -104,6 +105,26 @@ def test_strategy_generation_prompt_matches_market_and_execution_boundaries():
     assert "Risk-reducing exits may still complete" in SCRIPT_STRATEGY_SYSTEM_PROMPT
     assert "hard data route and execution identity" in SCRIPT_STRATEGY_REPAIR_REQUIREMENTS
     assert "Keep deployment `execution_mode` out of strategy source" in SCRIPT_STRATEGY_REPAIR_REQUIREMENTS
+
+
+def test_strategy_generation_and_repair_prompts_match_reserved_identifier_rules():
+    for prompt in (SCRIPT_STRATEGY_SYSTEM_PROMPT, SCRIPT_STRATEGY_REPAIR_REQUIREMENTS):
+        for name in RESERVED_SANDBOX_IDENTIFIERS:
+            assert f"`{name}`" in prompt
+        assert "callback" in prompt
+        assert "exact-name" in prompt.lower()
+        assert "`open_long`" in prompt
+        assert "substring" in prompt
+        assert "dunder" in prompt
+
+
+def test_indicator_generation_and_repair_prompts_match_reserved_identifier_rules():
+    for prompt in (INDICATOR_GENERATION_CONTRACT, INDICATOR_REPAIR_REQUIREMENTS):
+        assert "reserved sandbox identifiers" in prompt
+        for name in RESERVED_SANDBOX_IDENTIFIERS:
+            assert f"`{name}`" in prompt
+        assert "`open_long`" in prompt
+        assert "dunder" in prompt
 
 
 def test_indicator_prompt_remains_chart_only():

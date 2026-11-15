@@ -3,6 +3,8 @@ from pathlib import Path
 
 import pytest
 
+from app.utils.safe_exec import RESERVED_SANDBOX_IDENTIFIERS
+
 
 BACKEND_DIR = Path(__file__).parents[1]
 DOCS_DIR = Path(__file__).parents[2] / "docs" / "trading"
@@ -93,3 +95,21 @@ def test_strategy_guide_names_every_runtime_global(filename):
 
     for api_name in sorted(_discovery_context_api_names()):
         assert api_name in guide
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "STRATEGY_DEV_GUIDE.md",
+        "STRATEGY_DEV_GUIDE_CN.md",
+        "INDICATOR_DEV_GUIDE.md",
+        "INDICATOR_DEV_GUIDE_CN.md",
+    ],
+)
+def test_code_guides_document_exact_reserved_identifiers_without_banning_business_names(filename):
+    guide = (DOCS_DIR / filename).read_text(encoding="utf-8")
+
+    for name in RESERVED_SANDBOX_IDENTIFIERS:
+        assert f"<code>{name}</code>" in guide
+    for allowed_name in ("open_long", "format_signal", "dir_value"):
+        assert f"<code>{allowed_name}</code>" in guide

@@ -1,9 +1,11 @@
 """Client-side safety rails for the QuantDinger MCP server."""
 from __future__ import annotations
 
+import json
 import re
 import time
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 
 import httpx
 
@@ -11,11 +13,13 @@ import httpx
 MAX_INDICATOR_CODE_BYTES = 512 * 1024
 
 _SECRET_KEYS = frozenset({
-    "api_key", "apikey", "secret_key", "secretkey", "passphrase", "secret", "password",
-    "private_key", "privatekey", "access_token", "accesstoken", "refresh_token",
-    "refreshtoken", "bot_token", "bottoken", "webhook_secret", "webhooksecret",
-    "signing_secret", "signingsecret", "client_secret", "clientsecret", "authorization",
+    "apikey", "secretkey", "passphrase", "secret", "password", "privatekey",
+    "accesstoken", "refreshtoken", "bottoken", "webhooksecret",
+    "signingsecret", "clientsecret", "telegrambottoken", "telegramtoken",
+    "webhooktoken", "webhooksigningsecret", "authorization",
+    "proxyauthorization", "xapikey", "xauthtoken",
 })
+_SECRET_CONTAINER_KEYS = frozenset({"webhookheaders"})
 
 _SSE_EVENT_RE = re.compile(r"^event:\s*(\S+)\s*$", re.MULTILINE)
 _SSE_DATA_RE = re.compile(r"^data:\s*(.+)$", re.MULTILINE)
@@ -47,9 +51,23 @@ def redact_secrets(value: Any, *, depth: int = 0, max_depth: int = 6) -> Any:
         out: dict[str, Any] = {}
         for k, v in value.items():
             key = str(k)
-            normalized_key = re.sub(r"[^a-z0-9]+", "_", key.lower()).strip("_")
+            normalized_key = re.sub(r"[^a-z0-9]+", "", key.lower())
             if normalized_key in _SECRET_KEYS and v not in (None, "", False):
                 out[key] = "***"
+            elif normalized_key in _SECRET_CONTAINER_KEYS and isinstance(v, str):
+                try:
+                    parsed = json.loads(v)
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    out[key] = "***" if v.strip() else v
+                else:
+                    if isinstance(parsed, Mapping):
+                        out[key] = json.dumps(
+                            redact_secrets(parsed, depth=depth + 1, max_depth=max_depth),
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        )
+                    else:
+                        out[key] = "***"
             elif isinstance(v, Mapping):
                 out[key] = redact_secrets(v, depth=depth + 1, max_depth=max_depth)
             elif isinstance(v, list):

@@ -8,6 +8,7 @@ from app.utils.agent_auth import SCOPE_N, agent_required, current_user_id
 
 from . import agent_v1_bp
 from ._helpers import clip_int, envelope, error, get_json_or_400
+from ._security import redact_secrets
 
 _alerts = IndicatorSignalAlertService()
 
@@ -25,7 +26,7 @@ def list_signal_alerts():
     rows = _alerts.list_tasks(current_user_id())
     limit = clip_int(request.args.get("limit"), default=50, lo=1, hi=200)
     cursor = clip_int(request.args.get("cursor"), default=0, lo=0, hi=1_000_000)
-    items = rows[cursor:cursor + limit]
+    items = redact_secrets(rows[cursor:cursor + limit])
     next_cursor = cursor + len(items) if cursor + len(items) < len(rows) else None
     return envelope({"items": items, "next_cursor": next_cursor, "total": len(rows)})
 
@@ -37,7 +38,10 @@ def create_signal_alert():
     if err:
         return err
     try:
-        return envelope(_alerts.create_task(current_user_id(), body), message="created")
+        return envelope(
+            redact_secrets(_alerts.create_task(current_user_id(), body)),
+            message="created",
+        )
     except ValueError as exc:
         return error(400, str(exc))
 
@@ -49,7 +53,10 @@ def update_signal_alert(task_id: int):
     if err:
         return err
     try:
-        return envelope(_alerts.update_task(current_user_id(), task_id, body), message="updated")
+        return envelope(
+            redact_secrets(_alerts.update_task(current_user_id(), task_id, body)),
+            message="updated",
+        )
     except ValueError as exc:
         return error(404 if "not found" in str(exc).lower() else 400, str(exc), http=404 if "not found" in str(exc).lower() else 400)
 
@@ -73,7 +80,10 @@ def set_signal_alert_status(task_id: int):
     if status not in {"running", "paused"}:
         return error(400, "status must be running or paused")
     try:
-        return envelope(_alerts.set_status(current_user_id(), task_id, status), message=status)
+        return envelope(
+            redact_secrets(_alerts.set_status(current_user_id(), task_id, status)),
+            message=status,
+        )
     except ValueError as exc:
         return error(404, str(exc), http=404)
 
@@ -86,4 +96,4 @@ def run_signal_alert(task_id: int):
         return error(400, "confirm=true is required because this may deliver notifications")
     if not _owned_task(task_id):
         return error(404, "Task not found", http=404)
-    return envelope(_alerts.evaluate_task(task_id), message="evaluated")
+    return envelope(redact_secrets(_alerts.evaluate_task(task_id)), message="evaluated")

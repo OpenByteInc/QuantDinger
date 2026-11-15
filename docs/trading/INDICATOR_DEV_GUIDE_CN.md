@@ -613,6 +613,8 @@ cross_up = (
 - pandas/numpy 的文件读取、写入和序列化方法；
 - <code>os</code>、<code>sys</code>、<code>requests</code>、<code>socket</code>、<code>subprocess</code>、<code>threading</code>、<code>sqlite3</code>、<code>pathlib</code>、<code>pickle</code>、<code>ctypes</code>、<code>operator</code> 等模块。
 
+以下完整标识符属于保留能力，即使只是作为值引用、作为回调传递或复用为局部名称也会被拒绝：<code>eval</code>、<code>exec</code>、<code>compile</code>、<code>__import__</code>、<code>getattr</code>、<code>setattr</code>、<code>delattr</code>、<code>globals</code>、<code>vars</code>、<code>dir</code>、<code>breakpoint</code>、<code>open</code>、<code>input</code>、<code>exit</code>、<code>quit</code>、<code>chr</code> 和 <code>format</code>。校验按完整标识符匹配，因此 <code>open_long</code>、<code>format_signal</code>、<code>dir_value</code> 等描述性名称仍然合法。不要通过变量、字符串拼接、字符串乘法或 f-string 间接构造 dunder 名称。
+
 指标验证有超时限制。避免无界循环、递归爆炸和逐行执行的高复杂度算法。
 
 ---
