@@ -138,3 +138,41 @@ def test_extended_factor_families_have_expected_invariants():
     assert compute_factor("parkinson_volatility", frame) > 0
     assert np.isfinite(compute_factor("skewness", frame))
     assert np.isfinite(compute_factor("kurtosis", frame))
+
+
+def test_amihud_illiquidity_aligns_close_and_volume_with_missing_or_zero_bars():
+    trailing_nan = pd.DataFrame({
+        "close": [100.0, 102.0, 101.0, 104.0, 103.0, 106.0, np.nan],
+        "volume": [1_000.0, 1_100.0, 1_200.0, 1_300.0, 1_400.0, 1_500.0, 1_600.0],
+    })
+    clean = trailing_nan.iloc[:-1]
+    assert compute_factor("amihud_illiquidity", trailing_nan, {"period": 5}) == pytest.approx(
+        compute_factor("amihud_illiquidity", clean, {"period": 5})
+    )
+
+    internal_nan_mismatch = pd.DataFrame({
+        "close": [100.0, 101.0, np.nan, 103.0, 104.0, np.nan, 106.0, 108.0],
+        "volume": [100.0, 200.0, 9_999.0, 300.0, 400.0, 9_999.0, 500.0, 600.0],
+    })
+    expected = compute_factor(
+        "amihud_illiquidity",
+        internal_nan_mismatch.dropna(subset=["close"]).reset_index(drop=True),
+        {"period": 4},
+    )
+    assert compute_factor("amihud_illiquidity", internal_nan_mismatch, {"period": 4}) == pytest.approx(
+        expected
+    )
+
+    zero_volume = pd.DataFrame({
+        "close": [100.0, 101.0, 102.0, 103.0, 104.0, 105.0],
+        "volume": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    })
+    assert np.isnan(compute_factor("amihud_illiquidity", zero_volume, {"period": 5}))
+
+    short_close = pd.DataFrame({
+        "close": [100.0, np.nan, 102.0, 103.0],
+        "volume": [1_000.0, 1_000.0, 1_000.0, 1_000.0],
+    })
+    with pytest.raises(FactorError) as caught:
+        compute_factor("amihud_illiquidity", short_close, {"period": 5})
+    assert caught.value.code == "factor.insufficientHistory"
