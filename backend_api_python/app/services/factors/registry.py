@@ -1077,8 +1077,21 @@ def _garman_klass_volatility(frame: pd.DataFrame, params: Mapping[str, Any]) -> 
 
 def _amihud_illiquidity(frame: pd.DataFrame, params: Mapping[str, Any]) -> float:
     period = _period(params)
-    close = _require(frame["close"], period + 1)
-    volume = pd.to_numeric(frame["volume"], errors="coerce").iloc[-period:]
-    returns = close.pct_change().abs().iloc[-period:]
-    traded_value = (close.iloc[-period:] * volume).replace(0, np.nan)
-    return float((returns.to_numpy() / traded_value.to_numpy()).mean())
+    raw_close = pd.to_numeric(frame["close"], errors="coerce").replace([np.inf, -np.inf], np.nan)
+    raw_volume = pd.to_numeric(frame["volume"], errors="coerce").replace([np.inf, -np.inf], np.nan)
+    valid_close = raw_close.notna().to_numpy()
+    close_values = raw_close.to_numpy(dtype=float)[valid_close]
+    if len(close_values) < period + 1:
+        raise FactorError("factor.insufficientHistory")
+    tail_close = close_values[-(period + 1):]
+    prev_close = tail_close[:-1]
+    curr_close = tail_close[1:]
+    curr_volume = raw_volume.to_numpy(dtype=float)[valid_close][-period:]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        abs_returns = np.abs(curr_close / prev_close - 1.0)
+        traded_value = curr_close * curr_volume
+        ratio = abs_returns / np.where(traded_value > 0.0, traded_value, np.nan)
+    finite = ratio[np.isfinite(ratio)]
+    if finite.size == 0:
+        return float("nan")
+    return float(finite.mean())
