@@ -48,6 +48,24 @@ spec = (chr(123) + "0.DataFrame." + u + "init" + u + "." + u + "globals" + u
 output = spec.format(pd)
 """
 
+_VARIABLE_DUNDER_ESCAPE = """
+left = "__"
+middle = "class"
+right = "__"
+attribute_name = left + middle + right
+output = attribute_name
+"""
+
+_LAUNDERED_GETATTR_ESCAPE = """
+import numpy as np
+left = "__"
+middle = "class"
+right = "__"
+attribute_name = left + middle + right
+resolver = np.frompyfunc(getattr, 2, 1)
+output = resolver("", attribute_name)
+"""
+
 
 def test_subclass_escape_rejected_by_validator():
     ok, err = validate_code_safety(_SUBCLASS_ESCAPE)
@@ -86,6 +104,41 @@ def test_runtime_built_format_field_escape_is_rejected():
     )
     assert result["success"] is False
     assert env["output"] is None
+
+
+def test_variable_built_dunder_name_is_rejected():
+    ok, err = validate_code_safety(_VARIABLE_DUNDER_ESCAPE)
+    assert ok is False
+    assert err
+
+
+def test_banned_callable_cannot_be_laundered_as_a_value():
+    ok, err = validate_code_safety(_LAUNDERED_GETATTR_ESCAPE)
+    assert ok is False
+    assert err
+
+    for name in ("getattr", "vars", "globals", "dir", "eval", "exec", "open", "chr", "format"):
+        ok, err = validate_code_safety(f"callback = {name}\noutput = callback")
+        assert ok is False, name
+        assert err
+
+
+def test_reserved_name_matching_does_not_reject_descriptive_identifiers():
+    code = """
+open_long = True
+format_signal = 1
+dir_value = 2
+getattr_value = 3
+
+def open_position():
+    return open_long
+
+output = open_position() and format_signal + dir_value + getattr_value
+"""
+
+    ok, err = validate_code_safety(code)
+    assert ok is True
+    assert err is None
 
 
 def test_format_attribute_alias_is_rejected():

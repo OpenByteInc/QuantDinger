@@ -1050,7 +1050,11 @@ def rebalance(context, data):
 
 ## 19. 安全限制和常见失败
 
-策略运行在安全执行环境中。禁止文件、网络、数据库、进程、动态执行、反射和不安全导入。不要使用 <code>eval</code>、<code>exec</code>、<code>compile</code>、<code>open</code>、dunder 绕过或外部状态。
+策略运行在安全执行环境中。禁止文件、网络、数据库、进程、动态执行、反射和不安全导入。
+
+以下完整标识符属于沙箱保留能力，不能被调用、作为值引用、作为回调传递，也不要复用为策略变量名或函数名：<code>eval</code>、<code>exec</code>、<code>compile</code>、<code>__import__</code>、<code>getattr</code>、<code>setattr</code>、<code>delattr</code>、<code>globals</code>、<code>vars</code>、<code>dir</code>、<code>breakpoint</code>、<code>open</code>、<code>input</code>、<code>exit</code>、<code>quit</code>、<code>chr</code> 和 <code>format</code>。校验按完整标识符匹配，不按子字符串匹配；<code>open_long</code>、<code>open_position</code>、<code>format_signal</code>、<code>dir_value</code> 等描述性名称仍然合法。
+
+不要访问 dunder 属性，也不要通过字面量、变量、字符串拼接、字符串乘法或 f-string 动态构造 dunder 名称。即使间接构造的结果最终才解析为受限 dunder，也会被拒绝。
 
 允许导入的根模块包括 <code>numpy</code>、<code>pandas</code>、<code>math</code>、<code>json</code>、<code>datetime</code>、<code>time</code>、<code>collections</code>、<code>functools</code>、<code>itertools</code>、<code>statistics</code>、<code>decimal</code>、<code>fractions</code> 和 <code>copy</code>。即使模块允许导入，pandas <code>read_*</code>/<code>to_*</code>、NumPy 文件加载/保存、类似 pickle 的反序列化以及字符串表达式执行方法仍会被禁止。
 

@@ -9,6 +9,12 @@ from typing import Any, Dict, List, Optional
 
 from app.utils.db import get_db_connection
 from app.utils.logger import get_logger
+from app.utils.structured_redaction import (
+    contains_structured_secret,
+    preserve_masked_secrets,
+    redact_structured_secrets,
+    strip_structured_secrets,
+)
 
 
 logger = get_logger(__name__)
@@ -58,28 +64,11 @@ def get_strategy_service() -> "StrategyService":
     return _service
 
 
-_SECRET_KEYS = {
-    "api_key", "apikey", "secret_key", "secretkey", "secret", "passphrase",
-    "password", "private_key", "privatekey", "access_token", "accesstoken",
-    "refresh_token", "refreshtoken", "bot_token", "bottoken", "webhook_secret",
-    "webhooksecret", "signing_secret", "signingsecret", "client_secret", "clientsecret",
-    "spot_broker_id", "spotbrokerid", "futures_broker_id", "futuresbrokerid",
-    "broker_id", "brokerid", "broker_code", "brokercode", "channel_api_code",
-    "channelapicode", "channel_code", "channelcode", "bybit_referer", "broker_referer", "brokerreferer",
-    "gate_channel_id", "gatechannelid", "htx_spot_source", "htxspotsource",
-}
-
-
-def _secret_key(key: Any) -> bool:
-    return str(key or "").replace("-", "_").lower() in _SECRET_KEYS
-
-
-def _has_secret(value: Any) -> bool:
-    if isinstance(value, dict):
-        return any((_secret_key(key) and item not in (None, "", False)) or _has_secret(item) for key, item in value.items())
-    if isinstance(value, list):
-        return any(_has_secret(item) for item in value)
-    return False
+_STRATEGY_SECRET_KEYS = frozenset({
+    "spotbrokerid", "futuresbrokerid", "brokerid", "brokercode",
+    "channelapicode", "channelcode", "bybitreferer", "brokerreferer",
+    "gatechannelid", "htxspotsource",
+})
 
 
 def reject_inline_strategy_secrets(exchange_config: Any) -> None:
@@ -87,27 +76,16 @@ def reject_inline_strategy_secrets(exchange_config: Any) -> None:
         return
     if exchange_config.get("credential_id") or exchange_config.get("credentials_id"):
         return
-    if _has_secret(exchange_config):
+    if contains_structured_secret(exchange_config, extra_keys=_STRATEGY_SECRET_KEYS):
         raise ValueError("INLINE_STRATEGY_SECRETS_NOT_ALLOWED")
 
 
 def strip_strategy_secrets(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {key: strip_strategy_secrets(item) for key, item in value.items() if not _secret_key(key)}
-    if isinstance(value, list):
-        return [strip_strategy_secrets(item) for item in value]
-    return value
+    return strip_structured_secrets(value, extra_keys=_STRATEGY_SECRET_KEYS)
 
 
 def redact_strategy_secrets(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {
-            key: ("***" if _secret_key(key) and item not in (None, "", False) else redact_strategy_secrets(item))
-            for key, item in value.items()
-        }
-    if isinstance(value, list):
-        return [redact_strategy_secrets(item) for item in value]
-    return value
+    return redact_structured_secrets(value, extra_keys=_STRATEGY_SECRET_KEYS)
 
 
 def redact_strategy_row(row: Dict[str, Any] | None) -> Dict[str, Any] | None:
@@ -292,6 +270,13 @@ class StrategyService:
         changes = self._deployment_payload(payload)
         existing_config = existing.get("trading_config") or {}
         existing_risk = existing_config.get("deployment_risk") or {}
+        existing_notifications = existing.get("notification_config") or {}
+        existing_targets = existing_notifications.get("targets") or {}
+        if isinstance(changes.get("notificationTargets"), dict):
+            changes["notificationTargets"] = preserve_masked_secrets(
+                changes["notificationTargets"],
+                existing_targets,
+            )
         merged = {
             "sourceId": existing_config.get("script_source_id"),
             "name": existing.get("strategy_name"),
@@ -300,6 +285,8 @@ class StrategyService:
             "leverage": existing.get("leverage"),
             "leverageEnabled": float(existing.get("leverage") or 1) > 1,
             "params": existing_config.get("params") or {},
+            "notificationChannels": existing_notifications.get("channels") or [],
+            "notificationTargets": existing_targets,
             "directionMode": existing_config.get("direction_mode") or "",
             "positionSide": existing_config.get("position_side") or "",
             "equityTakeProfitPct": existing_risk.get(

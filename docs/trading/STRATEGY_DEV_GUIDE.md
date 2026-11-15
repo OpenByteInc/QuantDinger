@@ -1048,7 +1048,11 @@ Use signal mode first to validate notifications, signal frequency, and state res
 
 ## 19. Sandbox and common failures
 
-Strategy source runs in a safe execution environment. File, network, database, process, dynamic execution, reflection, and unsafe imports are prohibited. Do not use <code>eval</code>, <code>exec</code>, <code>compile</code>, <code>open</code>, dunder bypasses, or external state.
+Strategy source runs in a safe execution environment. File, network, database, process, dynamic execution, reflection, and unsafe imports are prohibited.
+
+The following exact identifiers are reserved sandbox capabilities and cannot be called, referenced as values, passed as callbacks, or reused as strategy variable/function names: <code>eval</code>, <code>exec</code>, <code>compile</code>, <code>__import__</code>, <code>getattr</code>, <code>setattr</code>, <code>delattr</code>, <code>globals</code>, <code>vars</code>, <code>dir</code>, <code>breakpoint</code>, <code>open</code>, <code>input</code>, <code>exit</code>, <code>quit</code>, <code>chr</code>, and <code>format</code>. Matching is by complete identifier, not by substring: descriptive names such as <code>open_long</code>, <code>open_position</code>, <code>format_signal</code>, and <code>dir_value</code> remain valid.
+
+Do not access dunder attributes or assemble dunder names dynamically through literals, variables, concatenation, multiplication, or f-strings. A name that resolves to a blocked dunder is rejected even when it is constructed indirectly.
 
 Allowed import roots are <code>numpy</code>, <code>pandas</code>, <code>math</code>, <code>json</code>, <code>datetime</code>, <code>time</code>, <code>collections</code>, <code>functools</code>, <code>itertools</code>, <code>statistics</code>, <code>decimal</code>, <code>fractions</code>, and <code>copy</code>. File/URL/database methods such as pandas <code>read_*</code>/<code>to_*</code>, NumPy load/save, pickle-like deserialization, and string-expression evaluators remain blocked even through an allowed module.
 

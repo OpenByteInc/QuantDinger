@@ -27,6 +27,7 @@ from app.utils.db import get_db_connection
 from app.utils.logger import get_logger
 from app.utils.notification_display import with_display
 from app.utils.safe_exec import safe_exec_indicator_isolated
+from app.utils.structured_redaction import preserve_masked_secrets
 
 
 logger = get_logger(__name__)
@@ -373,7 +374,12 @@ class IndicatorSignalAlertService:
     def update_task(self, user_id: int, task_id: int, payload: Dict[str, Any]) -> Dict[str, Any]:
         ensure_indicator_signal_alert_schema()
         self._assert_task_owner(user_id, task_id)
-        data = self._sanitize_payload(user_id, payload)
+        existing_task = self._load_task(task_id) or {}
+        data = self._sanitize_payload(
+            user_id,
+            payload,
+            existing_targets=existing_task.get("targets"),
+        )
         indicator = self._load_indicator_for_user(user_id, data["indicator_id"])
         data["indicator_name"] = data.get("indicator_name") or indicator.get("display_name") or indicator.get("name") or ""
         with get_db_connection() as db:
@@ -520,7 +526,13 @@ class IndicatorSignalAlertService:
             self._mark_checked(task_id, next_check=next_check, last_error=str(exc)[:1000])
             return {"triggered": False, "reason": "error", "error": str(exc)}
 
-    def _sanitize_payload(self, user_id: int, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def _sanitize_payload(
+        self,
+        user_id: int,
+        payload: Dict[str, Any],
+        *,
+        existing_targets: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         profile_settings = get_notification_settings(int(user_id)) or {}
         indicator_id = int(payload.get("indicator_id") or payload.get("indicatorId") or 0)
         if indicator_id <= 0:
@@ -552,6 +564,8 @@ class IndicatorSignalAlertService:
         ):
             if key in payload and key not in targets:
                 targets[key] = payload.get(key)
+        if isinstance(existing_targets, dict):
+            targets = preserve_masked_secrets(targets, existing_targets)
         for key in (
             "email",
             "telegram_chat_id",

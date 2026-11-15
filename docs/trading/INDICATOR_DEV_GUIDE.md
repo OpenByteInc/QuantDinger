@@ -605,6 +605,8 @@ Do not use:
 - pandas/numpy file read, write, or serialization methods;
 - modules such as <code>os</code>, <code>sys</code>, <code>requests</code>, <code>socket</code>, <code>subprocess</code>, <code>threading</code>, <code>sqlite3</code>, <code>pathlib</code>, <code>pickle</code>, <code>ctypes</code>, or <code>operator</code>.
 
+The exact identifiers <code>eval</code>, <code>exec</code>, <code>compile</code>, <code>__import__</code>, <code>getattr</code>, <code>setattr</code>, <code>delattr</code>, <code>globals</code>, <code>vars</code>, <code>dir</code>, <code>breakpoint</code>, <code>open</code>, <code>input</code>, <code>exit</code>, <code>quit</code>, <code>chr</code>, and <code>format</code> are reserved even when referenced as values, passed as callbacks, or reused as local names. Matching is by complete identifier, so descriptive names such as <code>open_long</code>, <code>format_signal</code>, and <code>dir_value</code> remain valid. Do not build dunder names indirectly from variables, concatenation, multiplication, or f-strings.
+
 Validation has a timeout. Avoid unbounded loops, explosive recursion, and unnecessarily expensive row-by-row algorithms.
 
 ---

@@ -108,7 +108,9 @@ Return Python source only. Do not use markdown fences or explanatory prose.
 ## Safety
 - Bound loops and position sizes. Add explicit limits to pyramiding, grids, DCA, and martingale behavior.
 - Do not use file, network, database, process, reflection, dynamic execution, or unsafe import APIs.
-- Do not use `eval`, `exec`, `compile`, `open`, `getattr`, `setattr`, dunder access, or unsafe imports.
+- Treat these exact identifiers as reserved sandbox capabilities, including when they are passed as values or callbacks or shadowed by user variables/functions: `eval`, `exec`, `compile`, `__import__`, `getattr`, `setattr`, `delattr`, `globals`, `vars`, `dir`, `breakpoint`, `open`, `input`, `exit`, `quit`, `chr`, and `format`.
+- Matching is exact-name based, not substring based, so descriptive identifiers that merely contain one of those words are not banned. Names such as `open_long`, `open_position`, `format_signal`, and `dir_value` are allowed and should remain unchanged.
+- Never construct dunder names dynamically through literals, variables, concatenation, multiplication, or f-strings. Do not use dunder access or unsafe imports.
 """
 
 STRATEGY_V2_BASE_SYSTEM_PROMPT += STRATEGY_INSTRUMENT_IDENTITY_CONTRACT
@@ -207,6 +209,8 @@ SCRIPT_STRATEGY_REPAIR_REQUIREMENTS = """# Strategy API V2 repair requirements
 - Never use a pandas DataFrame or Series directly as a boolean condition; use an explicit size, emptiness, `.any()`, or `.all()` check.
 - Keep market-data reads, position reads, and orders out of `initialize`; it is executed during manifest discovery.
 - Do not use unsafe file, network, reflection, dynamic execution, or process APIs.
+- Rename exact reserved sandbox identifiers used as variables, functions, aliases, or callback values: `eval`, `exec`, `compile`, `__import__`, `getattr`, `setattr`, `delattr`, `globals`, `vars`, `dir`, `breakpoint`, `open`, `input`, `exit`, `quit`, `chr`, and `format`. Preserve descriptive names such as `open_long`, `format_signal`, and `dir_value`; the rule is exact-name based, not substring based.
+- Remove dynamically constructed dunder names, including constructions assembled through variables, concatenation, multiplication, or f-strings.
 """
 
 SCRIPT_STRATEGY_REPAIR_REQUIREMENTS += STRATEGY_INSTRUMENT_IDENTITY_CONTRACT
@@ -258,6 +262,8 @@ INDICATOR_GENERATION_CONTRACT = INDICATOR_SYSTEM_CONTRACT + """
 - Interpret user requests written in any language, but use English for identifiers, metadata, comments, `@param` descriptions, and default plot, signal, and layer labels.
 - Localize display labels only when the user explicitly requests a target language. Keep identifiers, comments, metadata, and parameter descriptions in English.
 - `pd` and `np` are preloaded. Do not use `locals()`, `globals()`, reflection, or dynamic execution.
+- Treat these exact names as reserved sandbox identifiers even when used as variables, aliases, or callback values: `eval`, `exec`, `compile`, `__import__`, `getattr`, `setattr`, `delattr`, `globals`, `vars`, `dir`, `breakpoint`, `open`, `input`, `exit`, `quit`, `chr`, and `format`. Descriptive identifiers such as `open_long`, `format_signal`, and `dir_value` remain valid because matching is exact, not substring based.
+- Never assemble dunder names from literals, variables, concatenation, multiplication, or f-strings.
 """
 
 INDICATOR_REPAIR_REQUIREMENTS = """# Indicator repair requirements
@@ -279,5 +285,7 @@ INDICATOR_REPAIR_REQUIREMENTS = """# Indicator repair requirements
 - Treat a signal as active only when its `data` array has a finite value at that bar; never infer activation from `text` or `textData`.
 - Convert numpy arrays back to indexed pandas Series before calling pandas-only methods.
 - Use English for identifiers, metadata, comments, parameter descriptions, and default display labels unless the user explicitly requests localized display labels.
+- Rename exact reserved sandbox identifiers and remove bare references to them, including callback arguments: `eval`, `exec`, `compile`, `__import__`, `getattr`, `setattr`, `delattr`, `globals`, `vars`, `dir`, `breakpoint`, `open`, `input`, `exit`, `quit`, `chr`, and `format`. Preserve descriptive identifiers such as `open_long`, `format_signal`, and `dir_value`, which are not reserved.
+- Remove dynamically constructed dunder names, including values assembled through variables, concatenation, multiplication, or f-strings.
 - Return Python only, without markdown or explanations.
 """

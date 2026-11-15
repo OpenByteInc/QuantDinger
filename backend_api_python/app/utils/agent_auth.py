@@ -26,6 +26,7 @@ from flask import current_app, g, jsonify, make_response, request
 from app.config.redis_urls import cache_redis_url
 from app.utils.db import get_db_connection
 from app.utils.logger import get_logger
+from app.utils.structured_redaction import is_sensitive_key
 
 logger = get_logger(__name__)
 
@@ -392,31 +393,7 @@ def _touch_token_last_used(token_id: int) -> None:
 
 # ─────────────────────────── audit ───────────────────────────
 
-_REDACT_KEYS = {
-    "password",
-    "secret",
-    "secretkey",
-    "secret_key",
-    "token",
-    "apikey",
-    "api_key",
-    "authorization",
-    "passphrase",
-    "privatekey",
-    "private_key",
-    "accesstoken",
-    "access_token",
-    "refreshtoken",
-    "refresh_token",
-    "bottoken",
-    "bot_token",
-    "webhooksecret",
-    "webhook_secret",
-    "signingsecret",
-    "signing_secret",
-    "clientsecret",
-    "client_secret",
-}
+_AUDIT_SECRET_KEYS = frozenset({"token"})
 
 
 def _redact(obj: Any, depth: int = 0) -> Any:
@@ -425,7 +402,7 @@ def _redact(obj: Any, depth: int = 0) -> Any:
     if isinstance(obj, dict):
         out = {}
         for k, v in obj.items():
-            if str(k).replace("-", "_").lower() in _REDACT_KEYS:
+            if is_sensitive_key(k, extra_keys=_AUDIT_SECRET_KEYS):
                 out[k] = "<redacted>"
             else:
                 out[k] = _redact(v, depth + 1)

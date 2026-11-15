@@ -7,6 +7,7 @@ from app.openapi.blueprint import HumanBlueprint as Blueprint
 from app.services.indicator_signal_alerts import IndicatorSignalAlertService
 from app.utils.auth import login_required
 from app.utils.logger import get_logger
+from app.utils.structured_redaction import redact_structured_secrets
 
 
 logger = get_logger(__name__)
@@ -37,7 +38,7 @@ def _user_id() -> int:
 def list_indicator_signal_alerts():
     """List current user's indicator signal alert tasks."""
     try:
-        return _ok(service.list_tasks(_user_id()))
+        return _ok(redact_structured_secrets(service.list_tasks(_user_id())))
     except Exception as exc:
         logger.warning("list indicator signal alerts failed: %s", exc)
         return _fail(str(exc), 500)
@@ -49,7 +50,7 @@ def create_indicator_signal_alert():
     """Create an indicator signal alert task."""
     try:
         payload = request.get_json(silent=True) or {}
-        return _ok(service.create_task(_user_id(), payload))
+        return _ok(redact_structured_secrets(service.create_task(_user_id(), payload)))
     except ValueError as exc:
         return _fail(str(exc), 400)
     except Exception as exc:
@@ -63,7 +64,7 @@ def update_indicator_signal_alert(task_id: int):
     """Update an indicator signal alert task."""
     try:
         payload = request.get_json(silent=True) or {}
-        return _ok(service.update_task(_user_id(), task_id, payload))
+        return _ok(redact_structured_secrets(service.update_task(_user_id(), task_id, payload)))
     except ValueError as exc:
         return _fail(str(exc), 400)
     except Exception as exc:
@@ -88,7 +89,7 @@ def delete_indicator_signal_alert(task_id: int):
 def pause_indicator_signal_alert(task_id: int):
     """Pause an indicator signal alert task."""
     try:
-        return _ok(service.set_status(_user_id(), task_id, "paused"))
+        return _ok(redact_structured_secrets(service.set_status(_user_id(), task_id, "paused")))
     except ValueError as exc:
         return _fail(str(exc), 404)
     except Exception as exc:
@@ -101,7 +102,7 @@ def pause_indicator_signal_alert(task_id: int):
 def resume_indicator_signal_alert(task_id: int):
     """Resume an indicator signal alert task."""
     try:
-        return _ok(service.set_status(_user_id(), task_id, "running"))
+        return _ok(redact_structured_secrets(service.set_status(_user_id(), task_id, "running")))
     except ValueError as exc:
         return _fail(str(exc), 404)
     except Exception as exc:

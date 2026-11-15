@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pandas as pd
 import pytest
 
@@ -197,6 +199,79 @@ def test_signal_alert_payload_uses_profile_notification_defaults(monkeypatch):
     assert payload["targets"]["webhook_url"] == "https://example.com/hook"
     assert payload["targets"]["webhook_token"] == "hook-token"
     assert payload["targets"]["webhook_signing_secret"] == "hook-secret"
+
+
+def test_signal_alert_update_preserves_omitted_and_masked_secrets(monkeypatch):
+    monkeypatch.setattr(
+        indicator_signal_alerts,
+        "get_notification_settings",
+        lambda user_id: {"default_channels": ["webhook"]},
+    )
+    existing_targets = {
+        "webhook_url": "https://example.com/old",
+        "webhook_token": "stored-token",
+        "webhook_signing_secret": "stored-signing-secret",
+        "webhook_headers": {
+            "Authorization": "Bearer stored",
+            "X-Api-Key": "stored-api-key",
+            "Content-Type": "application/json",
+        },
+    }
+
+    payload = IndicatorSignalAlertService()._sanitize_payload(
+        7,
+        {
+            "indicator_id": 12,
+            "symbol": "BTC/USDT",
+            "channels": ["webhook"],
+            "targets": {
+                "webhook_url": "https://example.com/new",
+                "webhook_token": "***",
+                "webhook_headers": {
+                    "Authorization": "***",
+                    "Content-Type": "application/cloudevents+json",
+                },
+            },
+        },
+        existing_targets=existing_targets,
+    )
+
+    targets = payload["targets"]
+    assert targets["webhook_url"] == "https://example.com/new"
+    assert targets["webhook_token"] == "stored-token"
+    assert targets["webhook_signing_secret"] == "stored-signing-secret"
+    assert targets["webhook_headers"]["Authorization"] == "Bearer stored"
+    assert targets["webhook_headers"]["X-Api-Key"] == "stored-api-key"
+    assert targets["webhook_headers"]["Content-Type"] == "application/cloudevents+json"
+
+
+def test_signal_alert_update_preserves_secrets_in_json_encoded_headers(monkeypatch):
+    monkeypatch.setattr(
+        indicator_signal_alerts,
+        "get_notification_settings",
+        lambda user_id: {"default_channels": ["webhook"]},
+    )
+
+    payload = IndicatorSignalAlertService()._sanitize_payload(
+        7,
+        {
+            "indicator_id": 12,
+            "symbol": "BTC/USDT",
+            "channels": ["webhook"],
+            "targets": {
+                "webhook_url": "https://example.com/hook",
+                "webhook_headers": '{"Authorization":"***","Content-Type":"text/plain"}',
+            },
+        },
+        existing_targets={
+            "webhook_headers": '{"Authorization":"Bearer stored","X-Api-Key":"stored-key","Content-Type":"application/json"}',
+        },
+    )
+
+    headers = json.loads(payload["targets"]["webhook_headers"])
+    assert headers["Authorization"] == "Bearer stored"
+    assert headers["X-Api-Key"] == "stored-key"
+    assert headers["Content-Type"] == "text/plain"
 
 
 @pytest.mark.parametrize(
