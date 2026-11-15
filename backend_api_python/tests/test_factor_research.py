@@ -459,3 +459,30 @@ def test_factor_research_warmup_bars_handles_shorthand_and_custom_multistage_fac
             [timestamp],
         )
         assert panel.loc[timestamp].notna().all(), factor_id
+
+
+def test_factor_research_correlation_survives_nan_close_in_amihud_illiquidity():
+    index = pd.date_range("2025-01-01", periods=60, freq="B")
+    frames = {}
+    for offset, symbol in enumerate(["A", "B", "C", "D", "E", "F"], start=1):
+        close = pd.Series([100.0 + day * (0.2 + offset * 0.05) for day in range(len(index))], index=index)
+        if symbol == "F":
+            close.iloc[40] = float("nan")
+        frames[symbol] = pd.DataFrame({
+            "open": close - 0.1,
+            "high": close + 1.0,
+            "low": close - 1.0,
+            "close": close,
+            "volume": [1_000.0 + day * 10.0 for day in range(len(index))],
+        }, index=index)
+
+    result = FactorResearchEngine().run(
+        frames=frames,
+        factor_id="momentum_20",
+        start_date=index[30],
+        end_date=index[-1],
+        groups=3,
+        holding_period=5,
+    )
+
+    assert "amihud_illiquidity" in result["factorCorrelation"]["factors"]
