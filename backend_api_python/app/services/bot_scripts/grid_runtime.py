@@ -6,6 +6,11 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
+try:
+    import fin_primitives as _fp
+except ImportError:  # pragma: no cover - fin-primitives is a pinned runtime dependency
+    _fp = None
+
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -64,8 +69,34 @@ def _apply_defaults(params: Dict[str, Any]) -> None:
 
 
 def _compute_atr(bars_df: Optional[pd.DataFrame], period: int) -> float:
+    """Wilder ATR (RMA of true range); 0.0 until ``period`` bars are available."""
     if bars_df is None or len(bars_df) < 2:
         return 0.0
+    if _fp is not None:
+        try:
+            df = bars_df.tail(max(period * 10, 20))
+            hlc = pd.DataFrame(
+                {
+                    "high": pd.to_numeric(df["high"], errors="coerce"),
+                    "low": pd.to_numeric(df["low"], errors="coerce"),
+                    "close": pd.to_numeric(df["close"], errors="coerce"),
+                }
+            ).dropna()
+            if len(hlc) < period:
+                return 0.0
+            atr = _fp.compute(
+                "wilder_smoothed_range",
+                hlc["close"].to_numpy(dtype=float),
+                period,
+                high=hlc["high"].to_numpy(dtype=float),
+                low=hlc["low"].to_numpy(dtype=float),
+                mode="float",
+            )[-1]
+            if atr is None or atr != atr:
+                return 0.0
+            return float(atr)
+        except Exception:
+            return 0.0
     try:
         df = bars_df.tail(max(period + 2, 20))
         high = pd.to_numeric(df["high"], errors="coerce")

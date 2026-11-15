@@ -10,6 +10,8 @@ aiohttp>=3.14.5,<3.15
 pandas>=3.0.6
 # Strategy API V2 technical indicator runtime. Wheels bundle the C library.
 TA-Lib==0.8.2
+# Wilder-smoothed ATR for adaptive grid bounds (abi3 wheels, no C toolchain).
+fin-primitives>=3.2.0,<4
 exchange-calendars>=4.13.2,<5
 # LiteLLM currently declares filelock<4.0, but the 4.2.4 runtime is compatible
 # and resolves CVE-2026-112940, CVE-2026-112913, and CVE-2026-112907.
