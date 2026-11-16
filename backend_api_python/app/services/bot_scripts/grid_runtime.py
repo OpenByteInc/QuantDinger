@@ -4,6 +4,8 @@ from __future__ import annotations
 import time
 from typing import Any, Dict, List, Optional
 
+import math
+
 import pandas as pd
 
 from app.utils.logger import get_logger
@@ -63,23 +65,54 @@ def _apply_defaults(params: Dict[str, Any]) -> None:
             params[k] = dv
 
 
+_ATR_COLUMNS = ("high", "low", "close")
+
+
 def _compute_atr(bars_df: Optional[pd.DataFrame], period: int) -> float:
-    if bars_df is None or len(bars_df) < 2:
+    """Wilder ATR over the whole frame; 0.0 until ``period`` valid bars exist.
+
+    True range of the first valid bar is ``high - low``; later bars use
+    ``max(high - low, |high - prev_close|, |low - prev_close|)``. The ATR is
+    seeded with the mean of the first ``period`` true ranges and then updated
+    with Wilder's RMA: ``atr = (atr * (period - 1) + tr) / period``.
+
+    Rows whose high, low or close is missing or not finite are skipped, so the
+    previous close always comes from the last valid bar. A frame without the
+    required columns, or with fewer than ``period`` valid bars, returns 0.0 so
+    the caller's range / min-width fallback takes over.
+    """
+    if bars_df is None or bars_df.empty or period < 1:
         return 0.0
-    try:
-        df = bars_df.tail(max(period + 2, 20))
-        high = pd.to_numeric(df["high"], errors="coerce")
-        low = pd.to_numeric(df["low"], errors="coerce")
-        close = pd.to_numeric(df["close"], errors="coerce")
-        prev_close = close.shift(1)
-        tr = pd.concat(
-            [(high - low).abs(), (high - prev_close).abs(), (low - prev_close).abs()],
-            axis=1,
-        ).max(axis=1)
-        atr = tr.rolling(period, min_periods=1).mean().iloc[-1]
-        return float(atr) if atr == atr else 0.0
-    except Exception:
+    missing = [c for c in _ATR_COLUMNS if c not in bars_df.columns]
+    if missing:
+        logger.warning("grid ATR unavailable: bars are missing columns %s", missing)
         return 0.0
+
+    cols = [pd.to_numeric(bars_df[c], errors="coerce").tolist() for c in _ATR_COLUMNS]
+    rows = [
+        (h, lo, c)
+        for h, lo, c in zip(*cols)
+        if all(isinstance(v, (int, float)) and math.isfinite(v) for v in (h, lo, c))
+    ]
+    skipped = len(bars_df) - len(rows)
+    if skipped:
+        logger.debug("grid ATR: skipped %d bars with missing or non-finite OHLC", skipped)
+    if len(rows) < period:
+        return 0.0
+
+    true_ranges = []
+    prev_close = None
+    for high, low, close in rows:
+        if prev_close is None:
+            true_ranges.append(high - low)
+        else:
+            true_ranges.append(max(high - low, abs(high - prev_close), abs(low - prev_close)))
+        prev_close = close
+
+    atr = sum(true_ranges[:period]) / period
+    for tr in true_ranges[period:]:
+        atr = (atr * (period - 1) + tr) / period
+    return float(atr) if math.isfinite(atr) else 0.0
 
 
 def _blend_bounds(
