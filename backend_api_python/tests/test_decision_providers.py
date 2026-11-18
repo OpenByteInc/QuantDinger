@@ -148,6 +148,13 @@ def test_jev_provider_rejects_malformed_answers(answer, message):
         provider.evaluate({}, QUESTIONS)
 
 
+def test_jev_provider_rejects_answers_that_are_not_an_object():
+    provider = _provider({"answers": [_answer()]})
+
+    with pytest.raises(DecisionProviderError, match="did not contain a valid direction"):
+        provider.evaluate({}, QUESTIONS)
+
+
 def test_jev_provider_propagates_http_errors_and_timeouts():
     unavailable = _provider(error=requests.HTTPError("503 Service Unavailable"))
 
