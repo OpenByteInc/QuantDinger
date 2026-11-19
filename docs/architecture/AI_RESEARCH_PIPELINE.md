@@ -10,6 +10,7 @@ gates without replacing the trading or analysis architecture.
 | Asset | Keyless baseline | Optional configured sources | Research output |
 | --- | --- | --- | --- |
 | US equities | SEC EDGAR, Yahoo Finance, FINRA daily short volume | Finnhub, Alpha Vantage, FRED, Twelve Data | Financial periods, filings, analyst consensus, bounded options surface, reported short interest, FINRA short volume, ownership and transcript evidence |
+| Mainland China A-shares | Tencent quotes, AkShare/Eastmoney financial data, Yahoo Finance fallback | Twelve Data fundamentals/statements where entitled; configured news search provider | Company identity, valuation and available financial periods. Issuer news is searched by company/code; unrelated results remain background. |
 | Hong Kong equities | HKEX public information, HKMA Open API, Eastmoney/ET Net through AkShare | Licensed HKEX Data Marketplace or LSEG feeds | Financial periods, announcements, Southbound holdings proxy, short selling, CCASS, A/H applicability and analyst consensus |
 | Crypto | Exchange public APIs, CoinGecko | CoinGlass, CryptoQuant | Spot and perpetual scope, funding, open interest, liquidations, flow and on-chain evidence |
 | FX | Yahoo Finance fallback | Twelve Data, Tiingo and FRED | Base/quote identity, technical structure, policy-rate context and policy-rate differential |
@@ -30,6 +31,47 @@ missing capability, lowers its research-readiness posture and applies the
 existing quality gate before any directional trade action.
 
 ## Semantics that must remain distinct
+
+### A-share collection, synchronization and coverage
+
+The analysis collector reads its short-lived memory cache, then the shared
+`qd_fundamental_snapshots` store. Missing, incomplete or refresh-due snapshots
+trigger provider requests; successful results, including the richer statement
+payload, are written back. A fresh stored provider payload can be reused across
+processes. The database refresh interval defaults to 24 hours
+(`AI_FUNDAMENTAL_DB_TTL_SEC`); this is a cache policy, not a guarantee of a new
+financial disclosure every day.
+
+System Settings → market-data management → fundamental data preparation can
+prepopulate or refresh an A-share universe's **current snapshots**. This is not
+a prerequisite for one-off company analysis and does not establish historical
+financial coverage. Check task failures and provider reachability before
+forcing a full refresh. Optional Twelve Data access requires both a configured
+key and an appropriate provider entitlement; no key can guarantee coverage.
+
+A-share news uses the configured search service even when Finnhub has global
+headlines. Search results without a company-name or stock-code match are
+background, not issuer-specific sentiment. Configure/test a search provider in
+System Settings → AI Research → search engines; synchronizing financial
+snapshots does not collect news.
+
+Exchange announcements, Northbound data, margin financing/lending, analyst
+expectations and domestic macro evidence are separate capabilities. The current
+A-share collector does not automatically collect these optional enrichments.
+They remain explicit report gaps; neither a financial sync nor filling in an
+unrelated API key enables them. Availability and granularity depend on source
+disclosures, and missing values are not replaced by zero.
+
+Core coverage for A-shares includes company identity, quote/K-line evidence,
+technical structure and fundamental metrics. It does not certify every research
+capability. Core freshness/conflict percentages use the same limited metric
+set. Research readiness separately lists required and optional gaps, and a
+company profile is recognized from the collector's `company` field. Saved
+reports retain their original evidence and scores; regenerate a report to use
+the corrected assessment. Clients also localize legacy generic scenario text
+in the monitoring checklist.
+
+### Market-specific interpretation
 
 - FINRA short volume is not reported short interest and does not prove new
   directional short positions.

@@ -28,7 +28,8 @@ _WORKFLOWS: dict[str, dict[str, Any]] = {
         "artifact_type": "equity_research",
         "required_capabilities": ["price_history", "financials", "company_profile"],
         "optional_capabilities": [
-            "exchange_disclosures", "northbound_flow", "margin_financing", "analyst_expectations",
+            "company_news", "exchange_disclosures", "northbound_flow", "margin_financing",
+            "analyst_expectations", "cn_macro",
         ],
     },
     "Crypto": {

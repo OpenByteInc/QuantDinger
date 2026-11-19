@@ -73,6 +73,15 @@ def _available_capabilities(market: str, payload: Mapping[str, Any]) -> set[str]
     available = {"price_history"} if payload.get("kline") else set()
     if payload.get("fundamental"):
         available.add("financials")
+    if market == "CNStock":
+        company = payload.get("company") or {}
+        if company.get("name") or company.get("company_name"):
+            available.add("company_profile")
+        if any(
+            isinstance(item, Mapping) and item.get("asset_relevance") in {"direct", "material"}
+            for item in payload.get("news") or []
+        ):
+            available.add("company_news")
     mapping = {
         "sec_filings": "filings",
         "hkex_announcements": "issuer_disclosures",
@@ -89,6 +98,10 @@ def _available_capabilities(market: str, payload: Mapping[str, Any]) -> set[str]
         "futures_curve": "term_structure",
         "futures_positioning": "cftc_positioning",
         "forex_drivers": "pair_identity",
+        "exchange_disclosures": "exchange_disclosures",
+        "northbound_flow": "northbound_flow",
+        "margin_financing": "margin_financing",
+        "cn_macro": "cn_macro",
     }
     for key, capability in mapping.items():
         if payload.get(key):
