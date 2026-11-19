@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from decimal import Decimal
 import sys
 
 import pandas as pd
@@ -76,6 +77,14 @@ def test_live_callbacks_execute_through_isolated_process():
         universe_members=[symbol],
     )
     try:
+        session.synchronize_positions({
+            symbol: {
+                "amount": Decimal("1.25000000"),
+                "side": "long",
+                "avg_cost": Decimal("100.12500000"),
+                "last_price": Decimal("101.50000000"),
+            },
+        })
         orders, logs, timestamp = session.process(
             {symbol: frame.iloc[:2]},
             universe_members=[symbol],
