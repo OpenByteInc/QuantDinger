@@ -1,12 +1,16 @@
 ﻿"""Sandbox static validation and known escape regression tests."""
 
 import builtins
+from decimal import Decimal
 import math
 import threading
 
+import numpy as np
 import pandas as pd
 
 from app.utils.safe_exec import (
+    _sandbox_transport_decode,
+    _sandbox_transport_encode,
     build_safe_builtins,
     safe_exec_code,
     safe_exec_indicator_isolated,
@@ -14,7 +18,32 @@ from app.utils.safe_exec import (
     timeout_context,
     validate_code_safety,
 )
-from app.utils.safe_exec_worker import _format_worker_error
+from app.utils.safe_exec_worker import (
+    _decode as _worker_transport_decode,
+    _encode as _worker_transport_encode,
+    _format_worker_error,
+)
+
+
+def test_json_sandbox_transport_preserves_finite_decimals_in_both_directions():
+    payload = {
+        "quantity": Decimal("0.000000000000000123"),
+        "nested": [Decimal("123456789.987654321")],
+    }
+
+    worker_value = _worker_transport_decode(
+        _sandbox_transport_encode(payload),
+        pd,
+        np,
+    )
+    assert worker_value == payload
+
+    parent_value = _sandbox_transport_decode(
+        _worker_transport_encode(worker_value, pd, np)
+    )
+    assert parent_value == payload
+    assert _sandbox_transport_encode(Decimal("NaN")) is None
+    assert _worker_transport_encode(Decimal("Infinity"), pd, np) is None
 
 # Classic subclass-chain escape (CVE-class pattern for restricted exec).
 _SUBCLASS_ESCAPE = """

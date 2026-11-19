@@ -78,9 +78,13 @@ def positions_by_symbol(executor, strategy_id, candidates, strategy):
         for row in selected_rows:
             side = 'short' if row.get('side') == 'short' else 'long'
             key = member['key'] + (f'::{side}' if explicit_legs else '')
-            output[key] = dict(amount=row.get('size') or 0, side=side,
-                position_side=side if explicit_legs else '', avg_cost=row.get('entry_price') or 0,
-                last_price=row.get('current_price') or 0)
+            output[key] = dict(
+                amount=float(row.get('size') or 0.0),
+                side=side,
+                position_side=side if explicit_legs else '',
+                avg_cost=float(row.get('entry_price') or 0.0),
+                last_price=float(row.get('current_price') or 0.0),
+            )
     return output
 
 

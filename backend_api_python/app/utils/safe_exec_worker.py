@@ -14,6 +14,7 @@ import logging
 import math
 import os
 from datetime import date, datetime
+from decimal import Decimal
 from pathlib import Path
 import sys
 import types
@@ -323,6 +324,9 @@ def _decode(value: Any, pd, np) -> Any:
     kind = value.get(_TYPE_KEY)
     if kind == "datetime":
         return pd.Timestamp(value.get("value"))
+    if kind == "decimal":
+        decoded = Decimal(str(value.get("value")))
+        return decoded if decoded.is_finite() else None
     if kind == "dataframe":
         return pd.DataFrame(
             data=[[_decode(item, pd, np) for item in row] for row in value.get("data", [])],
@@ -349,6 +353,10 @@ def _encode(value: Any, pd, np, *, depth: int = 0) -> Any:
         return value
     if isinstance(value, float):
         return value if math.isfinite(value) else None
+    if isinstance(value, Decimal):
+        if not value.is_finite():
+            return None
+        return {_TYPE_KEY: "decimal", "value": str(value)}
     if isinstance(value, np.generic):
         return _encode(value.item(), pd, np, depth=depth + 1)
     if isinstance(value, (datetime, date, pd.Timestamp)):

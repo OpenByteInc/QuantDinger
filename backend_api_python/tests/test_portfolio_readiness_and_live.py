@@ -1,3 +1,4 @@
+from decimal import Decimal
 from types import SimpleNamespace
 
 import pandas as pd
@@ -66,6 +67,33 @@ def test_five_hundred_stock_portfolio_reads_positions_once():
     assert list(positions) == ['USStock:S001']
     assert pricing_members(candidates, positions) == [candidates[1]]
     assert pricing_members(candidates, positions, require_complete=True) == candidates
+
+
+def test_live_position_snapshot_normalizes_database_decimals():
+    candidates = [dict(key='USStock:AAA', symbol='AAA', market_type='spot')]
+    executor = SimpleNamespace(_get_current_positions=lambda *_args: [dict(
+        symbol='AAA',
+        side='long',
+        size=Decimal('1.25000000'),
+        entry_price=Decimal('123.45670000'),
+        current_price=Decimal('124.50000000'),
+    )])
+
+    positions = positions_by_symbol(executor, 7, candidates, {})
+
+    assert positions == {
+        'USStock:AAA': {
+            'amount': 1.25,
+            'side': 'long',
+            'position_side': '',
+            'avg_cost': 123.4567,
+            'last_price': 124.5,
+        },
+    }
+    assert all(
+        isinstance(positions['USStock:AAA'][field], float)
+        for field in ('amount', 'avg_cost', 'last_price')
+    )
 
 
 def test_live_cancel_waits_for_broker_and_survives_restart():

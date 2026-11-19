@@ -661,6 +661,7 @@ def _sandbox_transport_encode(value: Any, *, depth: int = 0) -> Any:
     """Encode trusted parent input without using pickle across the boundary."""
     import math
     from datetime import date, datetime
+    from decimal import Decimal
 
     import numpy as np
     import pandas as pd
@@ -673,6 +674,13 @@ def _sandbox_transport_encode(value: Any, *, depth: int = 0) -> Any:
         return value
     if isinstance(value, float):
         return value if math.isfinite(value) else None
+    if isinstance(value, Decimal):
+        if not value.is_finite():
+            return None
+        return {
+            _SANDBOX_TRANSPORT_TYPE: "decimal",
+            "value": str(value),
+        }
     if isinstance(value, np.generic):
         return _sandbox_transport_encode(value.item(), depth=depth + 1)
     if isinstance(value, (datetime, date, pd.Timestamp)):
@@ -729,6 +737,8 @@ def _sandbox_transport_encode(value: Any, *, depth: int = 0) -> Any:
 
 def _sandbox_transport_decode(value: Any) -> Any:
     """Decode JSON-only child output; no attacker-controlled pickle is loaded."""
+    from decimal import Decimal
+
     import numpy as np
     import pandas as pd
 
@@ -739,6 +749,9 @@ def _sandbox_transport_decode(value: Any) -> Any:
     kind = value.get(_SANDBOX_TRANSPORT_TYPE)
     if kind == "datetime":
         return pd.Timestamp(value.get("value"))
+    if kind == "decimal":
+        decoded = Decimal(str(value.get("value")))
+        return decoded if decoded.is_finite() else None
     if kind == "dataframe":
         return pd.DataFrame(
             data=[
