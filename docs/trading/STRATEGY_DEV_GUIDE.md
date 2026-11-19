@@ -1070,10 +1070,14 @@ The official deployment defaults are:
 
 | Setting | Default | Purpose |
 | --- | ---: | --- |
-| <code>STRATEGY_SCRIPT_CALLBACK_TIMEOUT_SEC</code> | <code>5</code> | live callback wall-clock timeout |
+| <code>STRATEGY_RUNTIME_SANDBOX_TIMEOUT_SECONDS</code> | <code>120</code> | complete live sandbox request timeout, bounded to 2–300 seconds |
 | <code>STRATEGY_RUNTIME_SANDBOX_MEMORY_MB</code> | <code>2048</code> | live callback-process address-space limit |
 | <code>STRATEGY_BACKTEST_SANDBOX_TIMEOUT_SECONDS</code> | <code>900</code> | complete isolated backtest timeout |
 | <code>STRATEGY_BACKTEST_SANDBOX_MEMORY_MB</code> | <code>4096</code> | isolated backtest address-space limit |
+
+The live request budget covers frame decoding, runtime preparation, all callbacks invoked by that request, and response generation. Market-data fetching happens in the trusted host before the request. The budget is not a per-symbol or per-handler allowance. The retired <code>STRATEGY_SCRIPT_CALLBACK_TIMEOUT_SEC</code> setting is ignored. Missing, empty, non-numeric, or non-finite values use the 120-second default. Distributed evaluation and startup waits allow at least this budget plus 30 seconds, so their outer deadline cannot cut short the sandbox request.
+
+A timeout or terminated sandbox stops the deployment with the original failure and operation name. The owner does not retry a dead process or replay a partially completed callback. Restart requires a new session and the usual state and position reconciliation. Increasing the budget does not disable isolation or the deadline; measure large-universe strategies on the deployment host before adjusting it.
 
 Untrusted strategy execution is supported through the official Linux-based deployment. The runtime currently requires a supported <code>x86_64</code> or <code>aarch64</code> Linux kernel with seccomp and Landlock. Native Windows or macOS development may still use the UI and supporting services, but it must not bypass a fail-closed sandbox error or enable in-process execution. Operators should not add secret environment variables, credential files, host sockets, or broad application-tree mounts to a sandbox process.
 

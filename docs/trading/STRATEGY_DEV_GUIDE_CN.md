@@ -1072,10 +1072,14 @@ def rebalance(context, data):
 
 | 配置项 | 默认值 | 作用 |
 | --- | ---: | --- |
-| <code>STRATEGY_SCRIPT_CALLBACK_TIMEOUT_SEC</code> | <code>5</code> | 实盘单次回调的墙钟超时 |
+| <code>STRATEGY_RUNTIME_SANDBOX_TIMEOUT_SECONDS</code> | <code>120</code> | 完整实盘沙箱请求的超时，限制在 2–300 秒 |
 | <code>STRATEGY_RUNTIME_SANDBOX_MEMORY_MB</code> | <code>2048</code> | 实盘回调进程地址空间上限 |
 | <code>STRATEGY_BACKTEST_SANDBOX_TIMEOUT_SECONDS</code> | <code>900</code> | 完整隔离回测超时 |
 | <code>STRATEGY_BACKTEST_SANDBOX_MEMORY_MB</code> | <code>4096</code> | 隔离回测地址空间上限 |
+
+实盘请求预算包含行情数据解码、运行环境准备、本次请求触发的所有回调及响应生成。行情拉取由可信宿主在请求之前完成。该预算不是每个标的或每个回调分别拥有的时间。旧配置 <code>STRATEGY_SCRIPT_CALLBACK_TIMEOUT_SEC</code> 已停用，不再参与计算。新配置缺失、为空、非数字或非有限值时使用默认 120 秒。分布式求值和启动等待至少使用沙箱预算再加 30 秒，避免外层等待提前截断沙箱请求。
+
+超时或沙箱进程终止后，部署会停止并保留首次失败原因和操作名称，不再重试已退出的进程，也不会重放执行到一半的回调。重新启动需要创建新会话并完成正常的状态与持仓对账。增加预算不会关闭隔离或超时保护；大型组合应在部署主机上测量耗时后再调整。
 
 不受信任策略执行应使用官方 Linux 部署。当前运行时要求支持 seccomp 和 Landlock 的 <code>x86_64</code> 或 <code>aarch64</code> Linux 内核。Windows 或 macOS 原生开发仍可使用 UI 和其他服务，但不能绕过失败关闭的沙箱错误，也不能重新启用进程内执行。运营者不得向沙箱进程添加密钥环境变量、凭证文件、宿主机 Socket 或宽泛的应用目录挂载。
 

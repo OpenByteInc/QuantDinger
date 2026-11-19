@@ -23,7 +23,7 @@ Agent Token 应使用最小 Scope、有效期、速率限制和名义金额上�
 - 接受用户代码的部署应使用官方 Linux 运行方式。沙箱要求支持 seccomp 和 Landlock 的 `x86_64` 或 `aarch64` 内核；控制不可用时会失败关闭。
 - 不要向指标或策略子进程添加数据库 URL、应用密钥、券商凭证、云密钥、宿主机 Socket 或包含密钥的挂载。
 - 指标执行和策略清单发现使用一次性进程；每次回测使用一个一次性运行进程；每个运行中的实盘部署使用一个持久回调进程。这些进程都不能直接向交易所下单。
-- `STRATEGY_SCRIPT_CALLBACK_TIMEOUT_SEC`、`STRATEGY_RUNTIME_SANDBOX_MEMORY_MB`、`STRATEGY_BACKTEST_SANDBOX_TIMEOUT_SECONDS` 和 `STRATEGY_BACKTEST_SANDBOX_MEMORY_MB` 应保持与宿主资源匹配的有限值。提高限制只会增加资源暴露，不会授予策略更多能力。
+- `STRATEGY_RUNTIME_SANDBOX_TIMEOUT_SECONDS`、`STRATEGY_RUNTIME_SANDBOX_MEMORY_MB`、`STRATEGY_BACKTEST_SANDBOX_TIMEOUT_SECONDS` 和 `STRATEGY_BACKTEST_SANDBOX_MEMORY_MB` 应保持与宿主资源匹配的有限值。实盘请求默认使用 120 秒；旧配置 `STRATEGY_SCRIPT_CALLBACK_TIMEOUT_SEC` 已停用，不再生效。提高限制只会增加资源暴露，不会授予策略更多能力。
 - 沙箱升级后应重新构建或拉取后端镜像，并重启 API、交易、求值和回测工作进程；已有进程不会原地获得新的内核策略。
 
 准确执行合同见[指标开发指南](../trading/INDICATOR_DEV_GUIDE_CN.md)、[Strategy API V2 指南](../trading/STRATEGY_DEV_GUIDE_CN.md)和[进程职责模型](../architecture/PROCESS_ROLES_AND_TASKS.md)。

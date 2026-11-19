@@ -52,7 +52,10 @@ from app.services.strategy_v2 import (
 )
 from app.services.strategy_v2.live_execution import LiveOrderRequest, StrategyV2OrderGateway
 from app.services.strategy_v2.instruments import instrument_key_from_metadata, parse_instrument
-from app.services.strategy_v2.sandbox import IsolatedStrategyV2LiveSession
+from app.services.strategy_v2.sandbox import (
+    IsolatedStrategyV2LiveSession,
+    StrategySandboxTerminatedError,
+)
 from app.utils.db import get_db_connection
 from app.utils.logger import get_logger
 from app.utils.numeric_precision import format_decimal
@@ -905,10 +908,6 @@ class TradingExecutor:
                 universe_members=initial_universe_members,
                 schedule_timezone=self._load_schedule_timezone(user_id),
                 program=program,
-                timeout=max(
-                    2.0,
-                    float(os.getenv("STRATEGY_SCRIPT_CALLBACK_TIMEOUT_SEC", "5") or 5),
-                ),
                 max_memory_mb=int(
                     os.getenv("STRATEGY_RUNTIME_SANDBOX_MEMORY_MB", "2048") or 2048
                 ),
@@ -1640,7 +1639,7 @@ class TradingExecutor:
                             status="degraded",
                             last_error=str(exc),
                         )
-                        if consecutive_errors >= 5:
+                        if isinstance(exc, StrategySandboxTerminatedError) or consecutive_errors >= 5:
                             raise RuntimeError(f"strategyV2.repeatedRuntimeFailure:{exc}") from exc
                 remaining = wait_seconds - (time.monotonic() - cycle_started)
                 yield max(0.0, remaining)

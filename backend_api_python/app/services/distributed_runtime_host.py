@@ -6,6 +6,7 @@ import os
 import threading
 
 from app.services.strategy_command_repository import StrategyCommandRepository
+from app.services.strategy_v2.sandbox import live_sandbox_timeout_seconds
 from app.services.trading_executor import TradingExecutor
 from app.utils.logger import get_logger
 from app.utils.strategy_runtime_logs import append_strategy_log
@@ -45,6 +46,9 @@ class DistributedRuntimeHost:
 
     def evaluate(self, strategy_id: int, event, *, timeout: float = 60.0) -> bool:
         strategy_id = int(strategy_id)
+        # The host must allow the child deadline plus orchestration overhead.
+        startup_timeout = live_sandbox_timeout_seconds() + 30.0
+        timeout = max(startup_timeout, float(timeout))
         started = False
         with self._lock:
             self._release_dead_runtime(strategy_id)
@@ -71,7 +75,7 @@ class DistributedRuntimeHost:
         if started:
             ready, hint = self.executor.wait_strategy_running(
                 strategy_id,
-                timeout=min(max(1.0, timeout), 30.0),
+                timeout=startup_timeout,
             )
             if not ready:
                 self._record_start_failure(
