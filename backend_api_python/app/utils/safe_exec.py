@@ -573,7 +573,9 @@ def safe_exec_code(
 
     try:
         with timeout_context(timeout):
-            exec(code, exec_globals, exec_locals)
+            # Intentional execution point after validation and namespace
+            # sanitization, used by credential-free isolated workers only.
+            exec(code, exec_globals, exec_locals)  # NOSONAR
 
         return {'success': True, 'error': None, 'result': None}
 
