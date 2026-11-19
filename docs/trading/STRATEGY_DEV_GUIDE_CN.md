@@ -607,9 +607,18 @@ order_target_percent(
 | <code>maker_offset_bps</code> | maker 价格偏移，单位为基点 |
 | <code>protection</code> | 保护参数映射；可包含本节列出的止损、止盈、追踪和时间字段 |
 | <code>stop_loss_pct</code> | 相对持仓成本的固定止损小数比率 |
+| <code>stop_loss_price</code> | 固定绝对止损价 |
 | <code>take_profit_pct</code> | 相对持仓成本的固定止盈小数比率 |
+| <code>take_profit_price</code> | 固定绝对止盈价 |
 | <code>trailing_stop_pct</code> | 相对持仓后续峰值/谷值的追踪距离 |
+| <code>trailing_stop_points</code> | 相对后续峰值/谷值的绝对点数追踪距离 |
 | <code>trailing_activation_pct</code> | 相对持仓成本的追踪激活盈利阈值 |
+| <code>trailing_activation_points</code> | 激活追踪所需的绝对有利点数 |
+| <code>exit_fraction</code> | 单次退出当前持仓腿的比例，范围 <code>(0, 1]</code> |
+| <code>stop_loss_exit_fraction</code> | 可选的止损专用退出比例 |
+| <code>take_profit_exit_fraction</code> | 可选的止盈专用退出比例 |
+| <code>trailing_exit_fraction</code> | 可选的移动止损专用退出比例 |
+| <code>time_limit_exit_fraction</code> | 可选的持仓时限专用退出比例 |
 | <code>time_limit_seconds</code> | 持仓最长保留秒数 |
 | <code>trailing_rebase_on_scale_in</code> | 同方向加仓时是否重置追踪状态和持仓计时，默认 <code>True</code> |
 
@@ -666,6 +675,22 @@ order_target_percent(
 )
 ~~~
 
+Protection V2 还支持绝对价格、点数移动止损和单次部分退出：
+
+~~~python
+order_target_percent(
+    g.symbol,
+    0.8,
+    reason="absolute_protected_entry",
+    stop_loss_price=96.0,
+    take_profit_price=112.0,
+    trailing_stop_points=2.5,
+    trailing_activation_points=4.0,
+    exit_fraction=0.5,
+    stop_loss_exit_fraction=1.0,
+)
+~~~
+
 也可以使用一个字面量映射；同一次调用中的内联字段会覆盖映射中的同名字段：
 
 ~~~python
@@ -698,15 +723,32 @@ set_default_protection(
 | 参数 | 单位和范围 | 行为 |
 | --- | --- | --- |
 | <code>stop_loss_pct</code> | 小数比率，<code>0..1</code> | 多头触发价为成本价 × <code>(1-pct)</code>，空头为成本价 × <code>(1+pct)</code> |
+| <code>stop_loss_price</code> | 正数绝对价格 | 多头必须低于入场成本，空头必须高于入场成本 |
 | <code>take_profit_pct</code> | 小数比率，<code>0..5</code> | 多头触发价为成本价 × <code>(1+pct)</code>，空头为成本价 × <code>(1-pct)</code> |
+| <code>take_profit_price</code> | 正数绝对价格 | 多头必须高于入场成本，空头必须低于入场成本 |
 | <code>trailing_stop_pct</code> | 小数比率，<code>0..1</code> | 激活后，多头跟随最高价、空头跟随最低价 |
+| <code>trailing_stop_points</code> | 非负绝对点数 | 激活后，按该价格距离跟随有利峰值/谷值 |
 | <code>trailing_activation_pct</code> | 小数比率，<code>0..5</code> | 从成本价开始计算的盈利激活阈值；只有它而没有追踪距离不会产生保护 |
+| <code>trailing_activation_points</code> | 非负绝对点数 | 从入场价开始计算的有利移动激活阈值 |
+| <code>exit_fraction</code> | 小数比例，<code>(0, 1]</code> | 单次退出当前持仓腿的该比例；<code>1</code> 表示全部退出 |
+| <code>stop_loss_exit_fraction</code> | 小数比例，<code>(0, 1]</code> | 可选止损覆盖值；未设置时继承 <code>exit_fraction</code> |
+| <code>take_profit_exit_fraction</code> | 小数比例，<code>(0, 1]</code> | 可选止盈覆盖值；未设置时继承 <code>exit_fraction</code> |
+| <code>trailing_exit_fraction</code> | 小数比例，<code>(0, 1]</code> | 可选移动止损覆盖值；未设置时继承 <code>exit_fraction</code> |
+| <code>time_limit_exit_fraction</code> | 小数比例，<code>(0, 1]</code> | 可选持仓时限覆盖值；未设置时继承 <code>exit_fraction</code> |
 | <code>time_limit_seconds</code> | 非负整数秒 | 达到持仓时限后退出；<code>0</code> 表示关闭 |
 | <code>trailing_rebase_on_scale_in</code> | 布尔值，默认 <code>True</code> | <code>True</code> 在同方向加仓时重置追踪峰谷、激活状态和持仓计时；<code>False</code> 保留已经激活的追踪状态和原计时 |
 
 所有 pct 都是小数比率：<code>0.03</code> 表示 3%，不是 0.03% 或 3。<code>0</code> 会关闭相应规则。运行时会把负值归零并把过大值限制到上表范围，但策略源码和 AI 生成结果不应依赖这种纠正；应直接提供范围内的值。
 
-字段名必须精确。Strategy API V2 不接受 <code>stop_loss</code>、<code>take_profit</code>、<code>stop_price</code> 或 <code>take_profit_price</code> 作为订单参数；这些写法会以 <code>strategyV2.apiCallInvalid:...:unsupportedArgument:...</code> 拒绝。固定绝对价格保护目前不是 Strategy API V2 的源码契约，应改用 pct 保护，或在策略信号逻辑中显式退出。
+字段名必须精确。Strategy API V2 接受 <code>stop_loss_price</code> 和 <code>take_profit_price</code>，但不接受含义不清的 <code>stop_loss</code>、<code>take_profit</code> 或 <code>stop_price</code> 别名。绝对价格/点数字段与对应 pct 字段同时存在时，绝对字段优先。方向不合法的绝对价不会触发；如果创建订单时还不知道入场价，应同时提供合法的 pct 回退值。
+
+部分保护采用保守的“一次触发”语义。订单成交到目标剩余仓位后，已触发的规则会解除，连续价格 Tick 不会反复减仓；同一保护中的其他止损、止盈、移动止损或时间规则仍保持有效。需要重新启用已触发规则时，应在新的开仓或同方向仓位更新中显式附加。实盘会把待完成的目标仓位和触发原因写入会话快照，重启后不会重复提交同一笔部分退出。
+
+触发原因专属的退出比例为 <code>0</code> 时继承 <code>exit_fraction</code>；共享退出比例本身必须大于零。非法或非有限的比例会被拒绝，不会自动变成全仓退出。
+
+实盘部分退出会跨重启保存订单引用和起始仓位。交易所数量步长导致可执行数量取整时，运行时须同时确认订单已全部成交、对应持仓账本已更新，才解除该持仓腿的等待状态。拒单或撤单后重试仍沿用最初的剩余仓位目标，不会对已减少的持仓再次套用退出比例。全仓退出仍须确认仓位归零。
+
+部分退出和点数追踪由运行时执行，依赖策略工作进程和新鲜行情；服务中断时，这些规则不会在交易所继续执行。原生订单适配器会跳过无法准确表达的规则，不会擅自改变退出数量或追踪含义。独立配置的全仓止损/止盈仍可在支持的交易所挂原生保护单，股票券商的原生保护仍需显式开启。原生单与运行时采用相同的绝对价格优先级。回测中的延迟保护订单保留最初的目标剩余仓位，每个仓位在每根 K 线只尝试一次，并只记录一次触发事件。
 
 <code># @param stop_loss_pct ...</code> 只会声明运行面板参数，不会自动启用止损。处理器必须读取它并传给开仓订单：
 
@@ -729,6 +771,7 @@ def handle_data(context, data):
 - 跳空越过保护价时按可成交的 bar 开盘价处理。
 - bar 内触发按触发价处理。
 - 同一 bar 同时触发多个保护时，默认 conservative 模式优先止损，再追踪止损、时间限制、止盈。
+- 部分保护沿用相同的触发与跳空规则，只退出当前持仓腿的 <code>exit_fraction</code>，随后解除。
 
 实盘使用独立价格时钟检查同样的保护语义，不必等待下一根策略 bar。保护状态会保存并可在会话重启后恢复。
 

@@ -97,6 +97,27 @@ def test_native_bar_protection_uses_high_low_and_conservative_conflict_priority(
     assert "not a close-only signal exit" in system
 
 
+def test_protection_v2_prompt_documents_absolute_points_and_partial_exit():
+    system, _ = build_strategy_system_prompt(
+        prompt="Add an absolute stop, trailing points, and a partial exit",
+        asset_type="script",
+    )
+
+    assert "stop_loss_price" in system
+    assert "trailing_stop_points" in system
+    assert "exit_fraction" in system
+    assert "one-shot" in system
+    assert "runtime-owned" in system
+
+
+def test_ai_protection_validation_accepts_zero_as_trigger_fraction_inheritance():
+    code = source(body=f'''    order_target_percent(
+        "{SYMBOL}", 0.2, position_side="long", reason="entry",
+        stop_loss_pct=0.03, exit_fraction=0.5, stop_loss_exit_fraction=0,
+    )''')
+    validate_generated_strategy(code, asset_type="script", prompt="Add stop loss")
+
+
 def test_lifecycle_dispatch_differs_between_backtest_and_live():
     code = source(extra_initialize="    g.before = 0\n    g.after = 0", extra_handlers='''
 def before_trading_start(context, data):

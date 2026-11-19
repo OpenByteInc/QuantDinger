@@ -55,6 +55,56 @@ def test_resolves_strategy_protection_percentages():
     assert activation == pytest.approx(0.04)
 
 
+@pytest.mark.parametrize("side,stop,take", [("long", 97, 108), ("short", 103, 92)])
+def test_nested_absolute_prices_take_precedence_over_percentages(side, stop, take):
+    result = protection_prices_from_payload(
+        {"protection": {
+            "stop_loss_price": stop, "take_profit_price": take,
+            "stop_loss_pct": 0.1, "take_profit_pct": 0.2,
+        }}, entry_price=100, pos_side=side,
+    )
+    assert result[:2] == (stop, take)
+
+
+@pytest.mark.parametrize("override", [0, 0.25])
+def test_partial_native_rule_is_omitted_without_removing_full_stop(override):
+    result = protection_prices_from_payload(
+        {"protection": {
+            "stop_loss_pct": 0.1, "take_profit_pct": 0.2,
+            "exit_fraction": 0.5, "stop_loss_exit_fraction": 1,
+            "take_profit_exit_fraction": override,
+        }}, entry_price=100, pos_side="long",
+    )
+    assert result == (90, 0, 0, 0)
+
+
+@pytest.mark.parametrize("extra", [
+    {"trailing_stop_points": 2},
+    {"trailing_activation_points": 4},
+    {"trailing_exit_fraction": 0.5},
+])
+def test_native_trailing_does_not_approximate_runtime_only_rules(extra):
+    result = protection_prices_from_payload(
+        {"protection": {
+            "stop_loss_pct": 0.1, "trailing_stop_pct": 0.03,
+            "trailing_activation_pct": 0.04, **extra,
+        }}, entry_price=100, pos_side="long",
+    )
+    assert result == (90, 0, 0, 0)
+
+
+def test_broker_projection_preserves_full_stop_but_not_partial_take_profit():
+    from app.services.pending_orders.broker_support import broker_protection_prices
+
+    result = broker_protection_prices(
+        {"protection": {
+            "stop_loss_price": 95, "take_profit_price": 110,
+            "take_profit_exit_fraction": 0.5,
+        }}, signal_type="open_long", entry_price=100,
+    )
+    assert result == (95, 0)
+
+
 def test_binance_uses_current_algo_order_endpoint():
     from app.services.live_trading.binance import BinanceFuturesClient
 

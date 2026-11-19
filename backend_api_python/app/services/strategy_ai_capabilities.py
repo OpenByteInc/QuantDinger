@@ -34,9 +34,27 @@ ORDER_VALUE_ARGUMENTS = {
 }
 PROTECTION_ARGUMENTS = {
     "stop_loss_pct",
+    "stop_loss_price",
     "take_profit_pct",
+    "take_profit_price",
     "trailing_stop_pct",
+    "trailing_stop_points",
     "trailing_activation_pct",
+    "trailing_activation_points",
+    "exit_fraction",
+    "stop_loss_exit_fraction",
+    "take_profit_exit_fraction",
+    "trailing_exit_fraction",
+    "time_limit_exit_fraction",
+    "time_limit_seconds",
+}
+EFFECTIVE_PROTECTION_ARGUMENTS = {
+    "stop_loss_pct",
+    "stop_loss_price",
+    "take_profit_pct",
+    "take_profit_price",
+    "trailing_stop_pct",
+    "trailing_stop_points",
     "time_limit_seconds",
 }
 INITIALIZE_RUNTIME_CALLS = ORDER_CALLS | {
@@ -252,7 +270,7 @@ CAPABILITY_PACKS: dict[str, StrategyAICapability] = {
     ),
     "protection": StrategyAICapability(
         name="protection",
-        summary="Native stop-loss, take-profit, trailing, and time protection.",
+        summary="Native percentage or absolute-price stops, point trailing, partial exits, and time protection.",
         rules={
             "ratio_limits": {
                 "stop_loss_pct": 1.0,
@@ -265,9 +283,13 @@ CAPABILITY_PACKS: dict[str, StrategyAICapability] = {
         },
         contract="""
 ## Native position protection
-- Attach protection to an entry order with `stop_loss_pct`, `take_profit_pct`, `trailing_stop_pct`, `trailing_activation_pct`, and/or `time_limit_seconds`, or call `set_default_protection(...)` inside an executable handler/callback before later entries.
+- Put protection arguments on order calls inside an executable handler/callback, or configure them with `set_default_protection` in `initialize` where per-entry validation does not require inline protection.
+- Attach protection to an entry order with percentage fields, absolute `stop_loss_price` / `take_profit_price`, point-based `trailing_stop_points` / `trailing_activation_points`, and/or `time_limit_seconds`. Use `exit_fraction` in `(0, 1]` for a one-shot partial or full protection exit. The default is `1.0`. Use `stop_loss_exit_fraction`, `take_profit_exit_fraction`, `trailing_exit_fraction`, or `time_limit_exit_fraction` when one trigger needs a different fraction; unspecified trigger overrides inherit `exit_fraction`.
 - When protection is requested for Crypto swaps, each required entry leg must carry effective protection directly on its order call (inline keywords or a literal `protection` mapping). The AI validator does not accept `set_default_protection` alone as proof that each swap entry leg is protected.
 - Percentage values are decimal ratios: `0.03` means 3%, not 0.03% or 3.
+- Absolute prices and point distances must be positive finite numbers. For long positions, an absolute stop must be below entry and take profit above entry; short positions use the opposite direction. Absolute/point fields take precedence over their percentage counterparts.
+- A partial protection fires once, reduces the current leg by `exit_fraction`, then disarms. Re-arm explicitly on a later entry or position update; never assume it repeats on every tick. A trigger-specific fraction of zero inherits `exit_fraction`.
+- Partial exits and point-based trailing are runtime-owned, not exchange-native orders; they require an online worker and fresh prices. Only full-exit rules with matching native semantics are mirrored to supported exchanges or opted-in stock brokers. Never promise exchange-side protection for runtime-only rules.
 - Use ratios within their bounds: stop loss and trailing stop 0..1; take profit and trailing activation 0..5; time limits are non-negative seconds. Zero disables a rule; activation alone is not protection. `trailing_rebase_on_scale_in` defaults to true and resets the trail and holding clock on scale-in; false preserves an already active trail.
 - Signal exits and native protections are different mechanisms. Do not claim fixed stop-loss or take-profit behavior unless executable protection arguments are present.
 - Backtest native protection evaluates each bar's open/high/low and can close at the trigger price or a gap opening price, including on an entry fill bar. It is not a close-only signal exit. The default conservative conflict policy prioritizes stop loss, trailing stop, time limit, then take profit. Live protection uses a separate price clock; do not mutate strategy candles to implement it.
@@ -276,6 +298,7 @@ CAPABILITY_PACKS: dict[str, StrategyAICapability] = {
 - Implement requested stops or take profit with native protection keywords or `set_default_protection`; explanatory comments or parameters alone are insufficient.
 - For Crypto swaps, put effective protection directly on every required entry leg; default protection alone does not pass per-leg AI validation.
 - Keep percentage values as bounded decimal ratios.
+- Keep `exit_fraction` within `(0, 1]`, use directionally valid absolute prices, and do not emulate point trailing with candle mutation.
 """,
     ),
     "persistent_state": StrategyAICapability(
@@ -390,15 +413,22 @@ _PROTECTION_TERMS = (
     "止损",
     "止盈",
     "移动止损",
+    "部分退出",
+    "部分止盈",
     "保护订单",
     "stop loss",
     "stop-loss",
     "take profit",
     "take-profit",
     "trailing stop",
+    "partial exit",
     "stop_loss_pct",
     "take_profit_pct",
     "trailing_stop_pct",
+    "stop_loss_price",
+    "take_profit_price",
+    "trailing_stop_points",
+    "exit_fraction",
     "set_default_protection",
 )
 _ORDER_LIFECYCLE_TERMS = (
@@ -940,7 +970,9 @@ def _has_effective_protection(node: ast.Call) -> bool:
     if protection_node is not None and not isinstance(protection_node, ast.Dict):
         if not (isinstance(protection_node, ast.Constant) and protection_node.value is None):
             return True
-    for value_node in _protection_items(node).values():
+    for name, value_node in _protection_items(node).items():
+        if name not in EFFECTIVE_PROTECTION_ARGUMENTS:
+            continue
         literal = _literal_number(value_node)
         if literal is None or literal > 0:
             return True
@@ -1320,13 +1352,62 @@ def validate_strategy_ai_semantics(
             raise StrategyV2ContractError(
                 "strategyV2.aiProtectionArgumentInvalid:time_limit_seconds"
             )
-        activation = protection_items.get("trailing_activation_pct")
-        activation_value = _literal_number(activation)
-        activation_enabled = activation is not None and (
-            activation_value is None or activation_value > 0
-        )
-        if activation_enabled and protection_items.get("trailing_stop_pct") is None:
-            raise StrategyV2ContractError("strategyV2.aiProtectionCombinationInvalid")
+        for activation_name in (
+            "trailing_activation_pct",
+            "trailing_activation_points",
+        ):
+            activation = protection_items.get(activation_name)
+            activation_value = _literal_number(activation)
+            activation_enabled = activation is not None and (
+                activation_value is None or activation_value > 0
+            )
+            if activation_enabled and not any(
+                protection_items.get(name) is not None
+                for name in ("trailing_stop_pct", "trailing_stop_points")
+            ):
+                raise StrategyV2ContractError("strategyV2.aiProtectionCombinationInvalid")
+        for name in (
+            "stop_loss_price",
+            "take_profit_price",
+            "trailing_stop_points",
+            "trailing_activation_points",
+        ):
+            value_node = protection_items.get(name)
+            value = _literal_number(value_node)
+            if isinstance(value_node, ast.Constant) and value is None:
+                raise StrategyV2ContractError(
+                    f"strategyV2.aiProtectionArgumentInvalid:{name}"
+                )
+            if value_node is not None and value is not None and value < 0:
+                raise StrategyV2ContractError(
+                    f"strategyV2.aiProtectionArgumentInvalid:{name}"
+                )
+        exit_node = protection_items.get("exit_fraction")
+        exit_value = _literal_number(exit_node)
+        if isinstance(exit_node, ast.Constant) and exit_value is None:
+            raise StrategyV2ContractError(
+                "strategyV2.aiProtectionArgumentInvalid:exit_fraction"
+            )
+        if exit_node is not None and exit_value is not None and not 0 < exit_value <= 1:
+            raise StrategyV2ContractError(
+                "strategyV2.aiProtectionArgumentInvalid:exit_fraction"
+            )
+        for name in (
+            "stop_loss_exit_fraction",
+            "take_profit_exit_fraction",
+            "trailing_exit_fraction",
+            "time_limit_exit_fraction",
+        ):
+            value_node = protection_items.get(name)
+            value = _literal_number(value_node)
+            if isinstance(value_node, ast.Constant) and value is None:
+                raise StrategyV2ContractError(
+                    f"strategyV2.aiProtectionArgumentInvalid:{name}"
+                )
+            if value_node is not None and value is not None and not 0 <= value <= 1:
+                raise StrategyV2ContractError(
+                    f"strategyV2.aiProtectionArgumentInvalid:{name}"
+                )
 
     if "protection" in intent.capabilities:
         has_protection = any(_has_effective_protection(node) for node in calls)
