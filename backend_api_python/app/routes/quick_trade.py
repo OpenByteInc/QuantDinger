@@ -26,24 +26,20 @@ from typing import Any, Dict, List, Optional
 from flask import g, jsonify, request
 from app.openapi.blueprint import HumanBlueprint as Blueprint
 from app.openapi.schemas.high_risk import (
-    QuickTradeCancelRequestSchema,
-    QuickTradeCloseRequestSchema,
-    QuickTradeOrderRequestSchema,
-    QuickTradeProtectionRequestSchema,
+    QuickTradeCancelRequestSchema, QuickTradeCloseRequestSchema,
+    QuickTradeOrderRequestSchema, QuickTradeProtectionRequestSchema,
 )
 from app.utils.db import get_db_connection
 from app.utils.logger import get_logger
 from app.utils.auth import login_required, trading_required
 from app.utils.timeutil import to_utc_iso
 from app.services.quick_trade.balances import (
-    empty_balance_dict,
-    fetch_balance_raw,
+    empty_balance_dict, fetch_balance_raw,
     parse_balance as _parse_balance,  # noqa: F401 - compatibility export
 )
 from app.services.quick_trade.credentials import build_exchange_config, create_exchange_client
 from app.services.quick_trade.errors import (
-    exchange_error_user_message,
-    merge_balance_leg_errors,
+    exchange_error_user_message, merge_balance_leg_errors,
     parse_trade_error_hint,
 )
 from app.services.quick_trade.orders import (
