@@ -144,6 +144,17 @@ def test_strategy_ai_prompts_are_workspace_specific_and_market_explicit():
     assert "source instrument and source timeframe exactly" in INDICATOR_TO_STRATEGY_SYSTEM_PROMPT
 
 
+def test_strategy_ai_request_preserves_a_share_instrument_identity():
+    request = build_strategy_generation_request(
+        prompt="生成一个贵州茅台日线均线策略",
+        asset_type="script",
+        context={"instrument": "CNStock:600519.SH", "timeframe": "1d"},
+    )
+    assert '"required_instrument": "CNStock:600519.SH"' in request
+    assert '"required_timeframe": "1d"' in request
+    assert "CNStock:600519.SH" in CTA_STRATEGY_SYSTEM_PROMPT
+
+
 @pytest.mark.parametrize(
     "code,instrument,timeframe",
     [

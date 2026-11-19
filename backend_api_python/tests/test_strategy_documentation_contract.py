@@ -81,6 +81,9 @@ def test_strategy_guide_explains_protection_units_and_non_executable_params(file
     assert "<code>stop_loss</code>" in guide
     assert "# @param stop_loss_pct" in guide
     assert "set_default_protection()" in guide
+    assert "<code>stop_loss_price</code>" in guide
+    assert "<code>trailing_stop_points</code>" in guide
+    assert "<code>exit_fraction</code>" in guide
 
 
 @pytest.mark.parametrize(

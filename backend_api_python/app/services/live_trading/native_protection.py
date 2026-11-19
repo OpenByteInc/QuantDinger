@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Dict, List, Mapping, Tuple
@@ -76,7 +77,7 @@ def protection_prices_from_payload(
     entry_price: float,
     pos_side: str,
 ) -> Tuple[float, float, float, float]:
-    """Resolve absolute SL/TP and trailing ratios from a queued-order payload."""
+    """Project only rules that native full-quantity orders can represent exactly."""
     protection = payload.get("protection")
     spec = protection if isinstance(protection, Mapping) else {}
     entry = max(0.0, float(entry_price or 0.0))
@@ -88,22 +89,54 @@ def protection_prices_from_payload(
                 result = float(value or 0.0)
             except Exception:
                 continue
-            if result > 0:
+            if math.isfinite(result) and result > 0:
                 return result
         return 0.0
 
-    stop = number(payload.get("stop_loss_price"), payload.get("stopLossPrice"))
-    take = number(payload.get("take_profit_price"), payload.get("takeProfitPrice"))
+    def full_exit(override: str) -> bool:
+        for name in (override, "exit_fraction"):
+            for raw in (spec.get(name), payload.get(name)):
+                if raw is None:
+                    continue
+                try:
+                    fraction = Decimal(str(raw))
+                except (ArithmeticError, ValueError):
+                    return False
+                if not fraction.is_finite() or not 0 <= fraction <= 1:
+                    return False
+                if fraction > 0 or name == "exit_fraction":
+                    return fraction == Decimal("1")
+        return True
+
+    stop = number(payload.get("stop_loss_price"), payload.get("stopLossPrice"), spec.get("stop_loss_price"))
+    take = number(payload.get("take_profit_price"), payload.get("takeProfitPrice"), spec.get("take_profit_price"))
     stop_pct = number(spec.get("stop_loss_pct"), payload.get("stop_loss_pct"))
     take_pct = number(spec.get("take_profit_pct"), payload.get("take_profit_pct"))
     trailing_pct = number(spec.get("trailing_stop_pct"), payload.get("trailing_stop_pct"))
     activation_pct = number(
         spec.get("trailing_activation_pct"), payload.get("trailing_activation_pct")
     )
+    if entry > 0:
+        if stop > 0 and (stop >= entry if side == "long" else stop <= entry):
+            stop = 0.0
+        if take > 0 and (take <= entry if side == "long" else take >= entry):
+            take = 0.0
     if entry > 0 and stop <= 0 and stop_pct > 0:
         stop = entry * (1.0 - stop_pct if side == "long" else 1.0 + stop_pct)
     if entry > 0 and take <= 0 and take_pct > 0:
         take = entry * (1.0 + take_pct if side == "long" else 1.0 - take_pct)
+    # Partial exits stay runtime-owned; a full-quantity native order would
+    # change their meaning and race the runtime's one-shot target.
+    if not full_exit("stop_loss_exit_fraction"):
+        stop = 0.0
+    if not full_exit("take_profit_exit_fraction"):
+        take = 0.0
+    if (
+        not full_exit("trailing_exit_fraction")
+        or number(spec.get("trailing_stop_points"), payload.get("trailing_stop_points"))
+        or number(spec.get("trailing_activation_points"), payload.get("trailing_activation_points"))
+    ):
+        trailing_pct = activation_pct = 0.0
     return stop, take, trailing_pct, activation_pct
 
 

@@ -8,6 +8,7 @@ from app.services.indicator_ai_workspace import (
     code_hash,
     _owned_indicator,
 )
+from app.services.indicator_ai_generation import _context_block
 
 
 def test_indicator_ai_workspace_uses_bounded_indicator_scoped_memory():
@@ -21,6 +22,17 @@ def test_indicator_ai_candidate_hash_is_stable_and_content_sensitive():
     assert code_hash("alpha") == code_hash("alpha")
     assert code_hash("alpha") != code_hash("alpha\n")
     assert len(code_hash("alpha")) == 64
+
+
+def test_indicator_ai_context_preserves_a_share_market_and_symbol():
+    context = _context_block({
+        "market": "CNStock",
+        "symbol": "600519",
+        "timeframe": "1D",
+    })
+    assert "market=CNStock" in context
+    assert "symbol=600519" in context
+    assert "timeframe=1D" in context
 
 
 def test_indicator_ai_intent_routes_questions_without_creating_code_candidates():

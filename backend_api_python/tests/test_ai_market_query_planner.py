@@ -49,6 +49,19 @@ def test_comparison_and_multi_timeframe_plan_is_deterministic():
     assert options["exchange_id"] == "gate"
 
 
+def test_a_share_technical_plan_preserves_cn_stock_identity():
+    plan = build_market_query_plan(
+        "贵州茅台日线是否站上 EMA200",
+        {"timeframe": "1D"},
+        [_instrument("600519", "CNStock")],
+    )
+    assert plan["instruments"] == [
+        {"market": "CNStock", "symbol": "600519", "name": "600519"}
+    ]
+    assert plan["timeframes"] == ["1D"]
+    assert "ema200" in plan["metrics"]
+
+
 def test_quote_plan_skips_klines_but_ema200_allocates_history():
     quote = build_market_query_plan("BTC现在多少钱", {}, [_instrument()])
     assert quote["timeframes"] == []

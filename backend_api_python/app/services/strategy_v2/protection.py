@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+import math
+from dataclasses import asdict, dataclass, field
 from typing import Any, Mapping
 
 import pandas as pd
@@ -12,20 +13,45 @@ import pandas as pd
 class ProtectionSpec:
     stop_loss_pct: float = 0.0
     take_profit_pct: float = 0.0
+    stop_loss_price: float = 0.0
+    take_profit_price: float = 0.0
     trailing_stop_pct: float = 0.0
     trailing_activation_pct: float = 0.0
+    trailing_stop_points: float = 0.0
+    trailing_activation_points: float = 0.0
+    exit_fraction: float = 1.0
+    stop_loss_exit_fraction: float = 0.0
+    take_profit_exit_fraction: float = 0.0
+    trailing_exit_fraction: float = 0.0
+    time_limit_exit_fraction: float = 0.0
     time_limit_seconds: int = 0
     trailing_rebase_on_scale_in: bool = True
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "stop_loss_pct", _ratio(self.stop_loss_pct, maximum=1.0))
         object.__setattr__(self, "take_profit_pct", _ratio(self.take_profit_pct, maximum=5.0))
+        object.__setattr__(self, "stop_loss_price", _nonnegative(self.stop_loss_price))
+        object.__setattr__(self, "take_profit_price", _nonnegative(self.take_profit_price))
         object.__setattr__(self, "trailing_stop_pct", _ratio(self.trailing_stop_pct, maximum=1.0))
         object.__setattr__(
             self,
             "trailing_activation_pct",
             _ratio(self.trailing_activation_pct, maximum=5.0),
         )
+        object.__setattr__(self, "trailing_stop_points", _nonnegative(self.trailing_stop_points))
+        object.__setattr__(
+            self,
+            "trailing_activation_points",
+            _nonnegative(self.trailing_activation_points),
+        )
+        object.__setattr__(self, "exit_fraction", _exit_fraction(self.exit_fraction))
+        for name in (
+            "stop_loss_exit_fraction",
+            "take_profit_exit_fraction",
+            "trailing_exit_fraction",
+            "time_limit_exit_fraction",
+        ):
+            object.__setattr__(self, name, _optional_exit_fraction(getattr(self, name)))
         object.__setattr__(self, "time_limit_seconds", max(0, int(self.time_limit_seconds or 0)))
         object.__setattr__(
             self,
@@ -38,7 +64,10 @@ class ProtectionSpec:
         return any((
             self.stop_loss_pct > 0,
             self.take_profit_pct > 0,
+            self.stop_loss_price > 0,
+            self.take_profit_price > 0,
             self.trailing_stop_pct > 0,
+            self.trailing_stop_points > 0,
             self.time_limit_seconds > 0,
         ))
 
@@ -57,11 +86,22 @@ class ProtectionSpec:
         if isinstance(trailing, Mapping):
             source.setdefault("trailing_stop_pct", trailing.get("pct"))
             source.setdefault("trailing_activation_pct", trailing.get("activation_pct"))
+            source.setdefault("trailing_stop_points", trailing.get("points"))
+            source.setdefault("trailing_activation_points", trailing.get("activation_points"))
         spec = cls(
             stop_loss_pct=source.get("stop_loss_pct"),
             take_profit_pct=source.get("take_profit_pct"),
+            stop_loss_price=source.get("stop_loss_price"),
+            take_profit_price=source.get("take_profit_price"),
             trailing_stop_pct=source.get("trailing_stop_pct"),
             trailing_activation_pct=source.get("trailing_activation_pct"),
+            trailing_stop_points=source.get("trailing_stop_points"),
+            trailing_activation_points=source.get("trailing_activation_points"),
+            exit_fraction=source.get("exit_fraction", 1.0),
+            stop_loss_exit_fraction=source.get("stop_loss_exit_fraction"),
+            take_profit_exit_fraction=source.get("take_profit_exit_fraction"),
+            trailing_exit_fraction=source.get("trailing_exit_fraction"),
+            time_limit_exit_fraction=source.get("time_limit_exit_fraction"),
             time_limit_seconds=source.get("time_limit_seconds"),
             trailing_rebase_on_scale_in=source.get(
                 "trailing_rebase_on_scale_in",
@@ -69,6 +109,27 @@ class ProtectionSpec:
             ),
         )
         return spec if spec.enabled else None
+
+    def exit_fraction_for(self, reason: str) -> float:
+        override = {
+            "stop_loss": self.stop_loss_exit_fraction,
+            "take_profit": self.take_profit_exit_fraction,
+            "trailing_stop": self.trailing_exit_fraction,
+            "time_limit": self.time_limit_exit_fraction,
+        }.get(str(reason), 0.0)
+        return override if override > 0 else self.exit_fraction
+
+    def enabled_reasons(self) -> frozenset[str]:
+        reasons: set[str] = set()
+        if self.stop_loss_price > 0 or self.stop_loss_pct > 0:
+            reasons.add("stop_loss")
+        if self.take_profit_price > 0 or self.take_profit_pct > 0:
+            reasons.add("take_profit")
+        if self.trailing_stop_points > 0 or self.trailing_stop_pct > 0:
+            reasons.add("trailing_stop")
+        if self.time_limit_seconds > 0:
+            reasons.add("time_limit")
+        return frozenset(reasons)
 
 
 @dataclass
@@ -81,6 +142,7 @@ class ProtectionState:
     highest_price: float
     lowest_price: float
     trailing_active: bool = False
+    disabled_reasons: set[str] = field(default_factory=set)
 
     @classmethod
     def open(
@@ -116,6 +178,7 @@ class ProtectionState:
         self.entry_price = float(entry_price or self.entry_price)
         if spec is not None:
             self.spec = spec
+            self.disabled_reasons.clear()
         reference = float(fill_price or self.entry_price)
         if reference <= 0:
             reference = self.entry_price
@@ -145,6 +208,7 @@ class ProtectionState:
             "highest_price": self.highest_price,
             "lowest_price": self.lowest_price,
             "trailing_active": bool(self.trailing_active),
+            "disabled_reasons": sorted(self.disabled_reasons),
         }
 
     @classmethod
@@ -164,7 +228,16 @@ class ProtectionState:
         lowest = _number(value.get("lowest_price"), entry_price)
         state.lowest_price = min(entry_price, lowest if lowest > 0 else entry_price)
         state.trailing_active = bool(value.get("trailing_active"))
+        state.disabled_reasons = {
+            str(item)
+            for item in (value.get("disabled_reasons") or [])
+            if str(item) in spec.enabled_reasons()
+        }
         return state
+
+    @property
+    def has_active_protection(self) -> bool:
+        return bool(self.spec.enabled_reasons() - self.disabled_reasons)
 
 
 @dataclass(frozen=True)
@@ -241,25 +314,33 @@ class ProtectionEngine:
         entry = state.entry_price
         is_long = state.side == "long"
         candidates: list[ProtectionDecision] = []
-        if spec.stop_loss_pct > 0:
-            trigger = entry * (1 - spec.stop_loss_pct if is_long else 1 + spec.stop_loss_pct)
+        trigger = None if "stop_loss" in state.disabled_reasons else self._stop_trigger(state)
+        if trigger is not None:
             touched = low <= trigger if is_long else high >= trigger
             gapped = open_ <= trigger if is_long else open_ >= trigger
             if touched:
                 candidates.append(self._decision(state, "stop_loss", open_ if gapped else trigger, trigger, ts))
-        trailing = self._trailing_trigger(state)
+        trailing = (
+            None
+            if "trailing_stop" in state.disabled_reasons
+            else self._trailing_trigger(state)
+        )
         if trailing is not None:
             touched = low <= trailing if is_long else high >= trailing
             gapped = open_ <= trailing if is_long else open_ >= trailing
             if touched:
                 candidates.append(self._decision(state, "trailing_stop", open_ if gapped else trailing, trailing, ts))
-        if spec.take_profit_pct > 0:
-            trigger = entry * (1 + spec.take_profit_pct if is_long else 1 - spec.take_profit_pct)
+        trigger = (
+            None
+            if "take_profit" in state.disabled_reasons
+            else self._take_profit_trigger(state)
+        )
+        if trigger is not None:
             touched = high >= trigger if is_long else low <= trigger
             gapped = open_ >= trigger if is_long else open_ <= trigger
             if touched:
                 candidates.append(self._decision(state, "take_profit", open_ if gapped else trigger, trigger, ts))
-        if self._time_limit_reached(state, ts):
+        if "time_limit" not in state.disabled_reasons and self._time_limit_reached(state, ts):
             candidates.append(self._decision(state, "time_limit", open_, open_, ts))
         return candidates
 
@@ -274,42 +355,94 @@ class ProtectionEngine:
         entry = state.entry_price
         is_long = state.side == "long"
         candidates: list[ProtectionDecision] = []
-        if spec.stop_loss_pct > 0:
-            trigger = entry * (1 - spec.stop_loss_pct if is_long else 1 + spec.stop_loss_pct)
+        trigger = None if "stop_loss" in state.disabled_reasons else self._stop_trigger(state)
+        if trigger is not None:
             if (is_long and price <= trigger) or (not is_long and price >= trigger):
                 candidates.append(self._decision(state, "stop_loss", price, trigger, ts))
-        trailing = self._trailing_trigger(state)
+        trailing = (
+            None
+            if "trailing_stop" in state.disabled_reasons
+            else self._trailing_trigger(state)
+        )
         if trailing is not None and ((is_long and price <= trailing) or (not is_long and price >= trailing)):
             candidates.append(self._decision(state, "trailing_stop", price, trailing, ts))
-        if spec.take_profit_pct > 0:
-            trigger = entry * (1 + spec.take_profit_pct if is_long else 1 - spec.take_profit_pct)
+        trigger = (
+            None
+            if "take_profit" in state.disabled_reasons
+            else self._take_profit_trigger(state)
+        )
+        if trigger is not None:
             if (is_long and price >= trigger) or (not is_long and price <= trigger):
                 candidates.append(self._decision(state, "take_profit", price, trigger, ts))
-        if self._time_limit_reached(state, ts):
+        if "time_limit" not in state.disabled_reasons and self._time_limit_reached(state, ts):
             candidates.append(self._decision(state, "time_limit", price, price, ts))
         return candidates
 
     def _trailing_trigger(self, state: ProtectionState) -> float | None:
         spec = state.spec
-        if spec.trailing_stop_pct <= 0:
+        if spec.trailing_stop_points <= 0 and spec.trailing_stop_pct <= 0:
             return None
         if state.side == "long":
+            activation = (
+                state.entry_price + spec.trailing_activation_points
+                if spec.trailing_activation_points > 0
+                else state.entry_price * (1 + spec.trailing_activation_pct)
+            )
             if (
                 not state.trailing_active
-                and state.highest_price >= state.entry_price * (1 + spec.trailing_activation_pct)
+                and state.highest_price >= activation
             ):
                 state.trailing_active = True
             if not state.trailing_active:
                 return None
+            if spec.trailing_stop_points > 0:
+                return state.highest_price - spec.trailing_stop_points
             return state.highest_price * (1 - spec.trailing_stop_pct)
+        activation = (
+            state.entry_price - spec.trailing_activation_points
+            if spec.trailing_activation_points > 0
+            else state.entry_price * (1 - spec.trailing_activation_pct)
+        )
         if (
             not state.trailing_active
-            and state.lowest_price <= state.entry_price * (1 - spec.trailing_activation_pct)
+            and state.lowest_price <= activation
         ):
             state.trailing_active = True
         if not state.trailing_active:
             return None
+        if spec.trailing_stop_points > 0:
+            return state.lowest_price + spec.trailing_stop_points
         return state.lowest_price * (1 + spec.trailing_stop_pct)
+
+    @staticmethod
+    def _stop_trigger(state: ProtectionState) -> float | None:
+        spec = state.spec
+        is_long = state.side == "long"
+        if spec.stop_loss_price > 0:
+            if (is_long and spec.stop_loss_price < state.entry_price) or (
+                not is_long and spec.stop_loss_price > state.entry_price
+            ):
+                return spec.stop_loss_price
+        if spec.stop_loss_pct <= 0:
+            return None
+        return state.entry_price * (
+            1 - spec.stop_loss_pct if is_long else 1 + spec.stop_loss_pct
+        )
+
+    @staticmethod
+    def _take_profit_trigger(state: ProtectionState) -> float | None:
+        spec = state.spec
+        is_long = state.side == "long"
+        if spec.take_profit_price > 0:
+            if (is_long and spec.take_profit_price > state.entry_price) or (
+                not is_long and spec.take_profit_price < state.entry_price
+            ):
+                return spec.take_profit_price
+        if spec.take_profit_pct <= 0:
+            return None
+        return state.entry_price * (
+            1 + spec.take_profit_pct if is_long else 1 - spec.take_profit_pct
+        )
 
     @staticmethod
     def _time_limit_reached(state: ProtectionState, timestamp: pd.Timestamp) -> bool:
@@ -356,12 +489,34 @@ def _ratio(value: object, *, maximum: float) -> float:
     return min(float(maximum), max(0.0, number))
 
 
+def _nonnegative(value: object) -> float:
+    return max(0.0, _number(value))
+
+
+def _exit_fraction(value: object) -> float:
+    number = _number(1.0 if value is None else value, float("nan"))
+    if not 0 < number <= 1:
+        raise ValueError("exit_fraction must be greater than 0 and at most 1")
+    return number
+
+
+def _optional_exit_fraction(value: object) -> float:
+    if value is None:
+        return 0.0
+    number = _number(value, float("nan"))
+    if number == 0:
+        return 0.0
+    if not 0 < number <= 1:
+        raise ValueError("protection exit fraction overrides must be greater than 0 and at most 1")
+    return number
+
+
 def _number(value: object, default: float = 0.0) -> float:
     try:
         number = float(value if value is not None else default)
     except (TypeError, ValueError):
         return float(default)
-    return number if number == number else float(default)
+    return number if math.isfinite(number) else float(default)
 
 
 def _boolean(value: object, *, default: bool) -> bool:

@@ -15,7 +15,7 @@ from typing import Any, Literal
 from pydantic import AliasChoices, AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
-Market = Literal["USStock", "HKStock", "Crypto", "Forex", "Futures"]
+Market = Literal["USStock", "HKStock", "CNStock", "Crypto", "Forex", "Futures"]
 Decision = Literal["BUY", "SELL", "HOLD"]
 MarketBias = Literal["BULLISH", "BEARISH", "NEUTRAL"]
 ConclusionStrength = Literal["none", "low", "medium", "high"]
@@ -54,6 +54,9 @@ class InstrumentIdentity(_ContractModel):
         aliases = {
             "us_equity": "USStock",
             "hk_equity": "HKStock",
+            "cn_equity": "CNStock",
+            "a_share": "CNStock",
+            "astock": "CNStock",
             "crypto": "Crypto",
             "forex": "Forex",
             "fx": "Forex",

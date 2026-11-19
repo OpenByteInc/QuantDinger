@@ -56,12 +56,24 @@ Small, focused improvements are preferred.
 ---
 
 ### 2) Strategy & Research
+- ready-to-copy indicators for the shared `library/`
+- Strategy API V2 strategies for the shared `library/`
 - example strategies
 - research notebooks
 - execution experiments
 - performance analysis
 
 This is a good place to demonstrate how you think.
+
+#### Indicator and strategy library contributions
+
+The shared [`library/`](library/) is maintained through pull requests. Add one
+self-contained Python file to `library/indicators/` or `library/strategies/`.
+Use English filenames, docstrings, parameter descriptions, and user-facing
+labels. Include chart-preview evidence for indicators or compiler and backtest
+evidence for strategies. Do not include credentials, private endpoints, local
+paths, caches, or generated validation output. Only contribute work that you
+have the right to license under Apache-2.0.
 
 ---
 

@@ -605,9 +605,18 @@ Common order options:
 | <code>maker_offset_bps</code> | maker-price offset in basis points |
 | <code>protection</code> | protection mapping containing the stop, take-profit, trailing, and time fields below |
 | <code>stop_loss_pct</code> | fixed stop-loss decimal ratio from position cost |
+| <code>stop_loss_price</code> | fixed absolute stop-loss price |
 | <code>take_profit_pct</code> | fixed take-profit decimal ratio from position cost |
+| <code>take_profit_price</code> | fixed absolute take-profit price |
 | <code>trailing_stop_pct</code> | trailing distance from the subsequent position peak/trough |
+| <code>trailing_stop_points</code> | absolute-point trailing distance from the subsequent peak/trough |
 | <code>trailing_activation_pct</code> | profit threshold from position cost that activates trailing |
+| <code>trailing_activation_points</code> | absolute favorable-point move that activates trailing |
+| <code>exit_fraction</code> | one-shot fraction of the current position leg to exit, in <code>(0, 1]</code> |
+| <code>stop_loss_exit_fraction</code> | optional stop-loss-specific exit fraction |
+| <code>take_profit_exit_fraction</code> | optional take-profit-specific exit fraction |
+| <code>trailing_exit_fraction</code> | optional trailing-stop-specific exit fraction |
+| <code>time_limit_exit_fraction</code> | optional time-limit-specific exit fraction |
 | <code>time_limit_seconds</code> | maximum holding time in seconds |
 | <code>trailing_rebase_on_scale_in</code> | whether a same-side scale-in resets trailing state and the holding clock; defaults to <code>True</code> |
 
@@ -664,6 +673,22 @@ order_target_percent(
 )
 ~~~
 
+Protection V2 also supports fixed prices, point trailing, and a one-shot partial exit:
+
+~~~python
+order_target_percent(
+    g.symbol,
+    0.8,
+    reason="absolute_protected_entry",
+    stop_loss_price=96.0,
+    take_profit_price=112.0,
+    trailing_stop_points=2.5,
+    trailing_activation_points=4.0,
+    exit_fraction=0.5,
+    stop_loss_exit_fraction=1.0,
+)
+~~~
+
 A literal mapping is also supported. Inline fields on the same call override matching values in that mapping:
 
 ~~~python
@@ -696,15 +721,32 @@ Parameter contract:
 | Parameter | Unit and range | Behavior |
 | --- | --- | --- |
 | <code>stop_loss_pct</code> | decimal ratio, <code>0..1</code> | long trigger is cost × <code>(1-pct)</code>; short trigger is cost × <code>(1+pct)</code> |
+| <code>stop_loss_price</code> | positive absolute price | must be below entry for a long and above entry for a short |
 | <code>take_profit_pct</code> | decimal ratio, <code>0..5</code> | long trigger is cost × <code>(1+pct)</code>; short trigger is cost × <code>(1-pct)</code> |
+| <code>take_profit_price</code> | positive absolute price | must be above entry for a long and below entry for a short |
 | <code>trailing_stop_pct</code> | decimal ratio, <code>0..1</code> | after activation, follows the highest price for longs and the lowest price for shorts |
+| <code>trailing_stop_points</code> | non-negative absolute points | after activation, trails the favorable extreme by this price distance |
 | <code>trailing_activation_pct</code> | decimal ratio, <code>0..5</code> | favorable move from cost required to activate trailing; activation without a trailing distance creates no protection |
+| <code>trailing_activation_points</code> | non-negative absolute points | favorable absolute move from entry required to activate trailing |
+| <code>exit_fraction</code> | decimal fraction, <code>(0, 1]</code> | exits this fraction of the current leg once; <code>1</code> is a full exit |
+| <code>stop_loss_exit_fraction</code> | decimal fraction, <code>(0, 1]</code> | optional stop-loss override; otherwise inherits <code>exit_fraction</code> |
+| <code>take_profit_exit_fraction</code> | decimal fraction, <code>(0, 1]</code> | optional take-profit override; otherwise inherits <code>exit_fraction</code> |
+| <code>trailing_exit_fraction</code> | decimal fraction, <code>(0, 1]</code> | optional trailing-stop override; otherwise inherits <code>exit_fraction</code> |
+| <code>time_limit_exit_fraction</code> | decimal fraction, <code>(0, 1]</code> | optional time-limit override; otherwise inherits <code>exit_fraction</code> |
 | <code>time_limit_seconds</code> | non-negative integer seconds | exits after the holding limit; <code>0</code> disables it |
 | <code>trailing_rebase_on_scale_in</code> | boolean, default <code>True</code> | <code>True</code> resets trailing extrema, activation, and the holding clock on a same-side scale-in; <code>False</code> preserves an active trail and the original clock |
 
 All pct values are decimal ratios: <code>0.03</code> means 3%, not 0.03% or 3. A value of <code>0</code> disables that rule. The runtime clamps negative and oversized values to the ranges above, but source and AI-generated strategies should provide valid values rather than rely on correction.
 
-Names must be exact. Strategy API V2 does not accept <code>stop_loss</code>, <code>take_profit</code>, <code>stop_price</code>, or <code>take_profit_price</code> as order arguments; they fail with <code>strategyV2.apiCallInvalid:...:unsupportedArgument:...</code>. Fixed absolute-price protection is not currently part of the Strategy API V2 source contract. Use pct protection or implement an explicit strategy-signal exit.
+Names must be exact. Strategy API V2 accepts <code>stop_loss_price</code> and <code>take_profit_price</code>; it does not accept the ambiguous aliases <code>stop_loss</code>, <code>take_profit</code>, or <code>stop_price</code>. Absolute-price and point fields take precedence over their percentage counterparts when both are present. A directionally invalid absolute price is ignored; provide a valid percentage fallback if the entry price is not known when the order is created.
+
+A partial trigger is deliberately one-shot. After its order is filled to the requested remaining position, that trigger is disarmed so repeated price ticks cannot repeatedly reduce the leg; other configured protection reasons remain active. Re-arm the fired trigger explicitly on a later entry or same-side position update. In live mode the pending target quantity and trigger reason are stored in the session snapshot, so a restart does not duplicate the partial exit.
+
+A trigger-specific exit fraction of <code>0</code> inherits <code>exit_fraction</code>; the shared fraction itself must be greater than zero. Invalid or non-finite fractions are rejected, not converted into full exits.
+
+Live partial exits track their client order reference and starting position across restarts. When venue lot-size rounding changes the executable quantity, the runtime waits for a terminal filled order and the corresponding position-ledger update before releasing the pending leg. Rejected or cancelled orders can retry the original remaining-position target; they do not apply the exit fraction again to the reduced position. A full-exit target still requires the position to become flat.
+
+Partial exits and point-based trailing remain runtime-owned. They require the strategy worker and a fresh price feed; they do not continue at the exchange during a service outage. The native-order adapter omits these rules rather than changing their quantity or trailing semantics. Independently configured full-exit stop-loss/take-profit rules remain eligible for native protection where supported; stock brackets remain opt-in. Native and runtime rules use the same absolute-price precedence. Deferred backtest protection orders retain their original remaining-position target, with one attempt per position per bar and one reported trigger event.
 
 <code># @param stop_loss_pct ...</code> only declares a run-panel parameter; it does not enable a stop automatically. A handler must read it and pass it to the entry order:
 
@@ -727,6 +769,7 @@ Backtest behavior:
 - A gap through a protection threshold fills at the available bar open.
 - An intrabar touch fills at the trigger price.
 - If several protections trigger in one bar, conservative mode prioritizes stop-loss, trailing stop, time limit, then take-profit.
+- A partial protection uses the same trigger and gap rules, closes only <code>exit_fraction</code> of the current leg, and then disarms.
 
 Live execution checks the same protection semantics on an independent price clock instead of waiting for the next strategy bar. Protection state can be persisted and restored after a session restart.
 
