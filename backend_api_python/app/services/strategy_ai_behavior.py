@@ -14,8 +14,8 @@ from typing import Any
 import pandas as pd
 
 from app.services.strategy_ai_capabilities import StrategyAIGenerationIntent
-from app.services.strategy_v2 import StrategyV2BacktestRunner
 from app.services.strategy_v2.contract import StrategyV2ContractError
+from app.services.strategy_v2.sandbox import run_strategy_backtest_isolated
 
 
 _OBSERVABLE_CAPABILITIES = {"bidirectional", "supertrend", "technical_factors"}
@@ -102,14 +102,18 @@ def validate_strategy_ai_behavior(
     frequency = manifest.frequencies[0]
     frame = _scenario_frame(frequency, getattr(manifest, "warmup_bars", 0))
     try:
-        runner = StrategyV2BacktestRunner(
+        result = run_strategy_backtest_isolated(
             code=code,
             frames={instrument.key: frame},
+            frequency_frames=None,
             initial_capital=100_000.0,
+            params=None,
+            leverage_enabled=False,
+            leverage=1.0,
             commission=0.0,
             slippage=0.0,
+            default_universe_members=[instrument.key],
         )
-        result = runner.run()
     except Exception as exc:
         detail = str(exc).strip() or type(exc).__name__
         raise StrategyV2ContractError(

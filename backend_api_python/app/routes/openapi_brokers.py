@@ -7,7 +7,7 @@ from flask import g, jsonify, request
 
 from app.openapi.blueprint import HumanBlueprint as Blueprint
 from app.services.openapi_brokers import TigerClient, TigerConfig, WebullClient, WebullConfig
-from app.utils.auth import login_required
+from app.utils.auth import login_required, trading_required
 from app.utils.broker_session import BrokerSessionRegistry
 from app.utils.credential_crypto import decrypt_credential_blob, encrypt_credential_blob
 from app.utils.db import get_db_connection
@@ -301,6 +301,7 @@ def status(broker: str):
 
 @openapi_brokers_blp.route("/<broker>/connect", methods=["POST"])
 @login_required
+@trading_required
 def connect(broker: str):
     try:
         broker = _broker_id(broker)
@@ -329,6 +330,7 @@ def connect(broker: str):
 
 @openapi_brokers_blp.route("/<broker>/disconnect", methods=["POST"])
 @login_required
+@trading_required
 def disconnect(broker: str):
     try:
         broker = _broker_id(broker)
@@ -423,6 +425,7 @@ def fills(broker: str):
 
 @openapi_brokers_blp.route("/<broker>/order", methods=["POST"])
 @login_required
+@trading_required
 def place_order(broker: str):
     try:
         broker = _broker_id(broker)
@@ -467,6 +470,7 @@ def place_order(broker: str):
 
 @openapi_brokers_blp.route("/<broker>/order/<order_id>", methods=["DELETE"])
 @login_required
+@trading_required
 def cancel_order(broker: str, order_id: str):
     try:
         broker = _broker_id(broker)

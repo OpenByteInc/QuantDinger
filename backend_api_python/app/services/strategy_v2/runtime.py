@@ -1833,8 +1833,12 @@ class StrategyV2BacktestRunner:
         universe_resolver=None,
         instrument_rules: InstrumentRulesSnapshot | Mapping[str, InstrumentRules | Mapping[str, Any]] | None = None,
         custom_factor_resolver=None,
+        discovery_snapshot: Mapping[str, Any] | None = None,
     ) -> None:
-        self.program: CompiledStrategyV2 = compile_strategy_v2(code)
+        self.program: CompiledStrategyV2 = compile_strategy_v2(
+            code,
+            discovery_snapshot=discovery_snapshot,
+        )
         requested_leverage = max(1.0, float(leverage or 1.0)) if leverage_enabled else 1.0
         if requested_leverage > 1.0 and not self.program.manifest.leverage_allowed:
             raise StrategyV2ContractError("strategyV2.leverageNotAllowed")
@@ -2413,8 +2417,12 @@ class StrategyV2LiveSession:
         deployment_risk: Mapping[str, Any] | None = None,
         universe_resolver=None,
         schedule_timezone: str = "UTC",
+        discovery_snapshot: Mapping[str, Any] | None = None,
     ) -> None:
-        self.program = compile_strategy_v2(code)
+        self.program = compile_strategy_v2(
+            code,
+            discovery_snapshot=discovery_snapshot,
+        )
         self._universe_resolver = universe_resolver
         self.portal = MultiAssetDataPortal(
             frames,

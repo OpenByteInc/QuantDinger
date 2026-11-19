@@ -67,6 +67,22 @@ def user_authed(monkeypatch):
 
 
 @pytest.fixture
+def viewer_authed(monkeypatch):
+    monkeypatch.setattr(
+        core_auth,
+        "verify_token",
+        lambda _raw: {
+            "sub": "observer",
+            "user_id": 8,
+            "role": "viewer",
+            "_verified_username": "observer",
+            "_verified_user_role": "viewer",
+        },
+    )
+    yield {"user_id": 8}
+
+
+@pytest.fixture
 def stub_db_for_issue(monkeypatch):
     class _StubCursor:
         def __init__(self):
@@ -256,6 +272,30 @@ def test_me_tokens_issue_and_policy(client, user_authed, stub_db_for_issue, monk
         base_url="http://localhost",
     )
     assert listed.status_code == 200
+
+
+def test_viewer_cannot_issue_trading_token(
+    client, viewer_authed, stub_db_for_issue, monkeypatch
+):
+    policy = client.get(
+        "/api/agent/v1/me/tokens/policy",
+        headers={"Authorization": "Bearer viewer-jwt"},
+        base_url="http://localhost",
+    )
+    assert policy.status_code == 200
+    assert "T" not in policy.get_json()["data"]["allowed_scopes"]
+
+    resp = client.post(
+        "/api/agent/v1/me/tokens",
+        headers={
+            "Authorization": "Bearer viewer-jwt",
+            "Content-Type": "application/json",
+        },
+        json={"name": "viewer-trader", "scopes": "R,T", "paper_only": True},
+        base_url="http://localhost",
+    )
+    assert resp.status_code == 403
+    assert "T-scope" in resp.get_json()["message"]
 
 
 def test_me_revoke_other_users_token_returns_404(client, user_authed, monkeypatch):

@@ -69,7 +69,6 @@
     <img src="docs/badges/python-3.12.svg" alt="Python 3.12">
     <img src="https://img.shields.io/badge/PostgreSQL-18-4169E1?style=flat-square&logo=postgresql&logoColor=white" alt="PostgreSQL 18">
     <img src="https://img.shields.io/badge/Redis-8-DC382D?style=flat-square&logo=redis&logoColor=white" alt="Redis 8">
-    <a href="#jev-驱动的交易前决策"><img src="https://img.shields.io/badge/JEV-Pre--trade%20Decisions-7C3AED?style=flat-square" alt="JEV 交易前决策"></a>
     <img src="docs/badges/docker-compose.svg" alt="Docker Compose">
     <a href="https://github.com/OpenByteInc/QuantDinger/releases/latest"><img src="docs/badges/latest-release.svg" alt="Latest release"></a>
   </p>
@@ -164,7 +163,8 @@ v5 后端按照明确的运行时和运维边界组织：
 
 - HTTP API 不再承载长期运行的交易循环或调度循环；
 - 交易、调度、Celery 任务和迁移分别在独立进程中运行；
-- Celery 处理有限、可重试的工作，长期运行的策略实例则保留在交易工作进程中；
+- 可信工作进程保留策略所有权、账户校验和下单权限；不受信任的 Strategy API V2
+  清单发现、回测和实盘回调在无凭证沙箱子进程中执行；
 - 缓存 Redis 与持久任务 Redis 使用独立实例和不同的淘汰策略；
 - 高风险 API 合同通过 OpenAPI 表达并由测试保护；
 - 可选的可观测性叠加配置提供 JSON 日志、请求 ID、Prometheus 指标、仪表盘和告警规则；
@@ -196,9 +196,10 @@ flowchart TB
     TW["交易工作进程\n控制、实时策略、执行、网格 Actor"]
     DISPATCH["策略分发工作进程"]
     EVAL["策略求值工作进程\n常驻 K 线策略运行时"]
+    SBOX["无凭证策略沙箱\n每个实盘部署一个持久进程\n每次回测一个进程"]
     AUDIT["Kafka 审计工作进程"]
     SW["调度工作进程"]
-    CW["Celery 工作进程"]
+    CW["Celery 工作进程\nAI/维护与回测队列"]
     BEAT["Celery beat"]
     PROM["Prometheus"]
     GRAF["Grafana"]
@@ -213,11 +214,17 @@ flowchart TB
     KAFKA --> DISPATCH --> KAFKA
     KAFKA --> EVAL
     EVAL -->|"事件收件箱、租约、检查点、订单意图"| PG
+    EVAL -->|"K 线与状态快照"| SBOX
+    SBOX -->|"经校验的订单意图与状态"| EVAL
     KAFKA --> AUDIT --> PG
     PG -->|"按所有者认领待执行订单"| TW
+    TW -->|"行情、仓位与订单快照"| SBOX
+    SBOX -->|"经校验的订单意图与状态"| TW
     SW -->|"调度、监控、心跳"| PG
     API -->|"有限异步任务"| JOBS
     BEAT --> JOBS --> CW
+    CW -->|"回测快照"| SBOX
+    SBOX -->|"回测结果"| CW
     CW --> PG
     API -. 指标 .-> PROM
     PG -. Exporter .-> PROM
@@ -237,9 +244,11 @@ flowchart TB
 | `trading-worker` | 管理控制/实时策略、交易所会话、带 fencing 的下单网关、对账和持久化网格 Actor。 |
 | `strategy-dispatcher-worker` | 将 K 线收盘事件转换为稳定策略分片的求值批次。 |
 | `strategy-evaluator-worker` | 管理常驻的分布式 K 线策略运行时，并处理带 fencing 的策略收件箱事件。 |
+| 策略沙箱子进程 | 在干净环境、仅 JSON 传输、资源限制和 Linux 内核隔离下执行不受信任的指标代码及 Strategy API V2 清单发现、回测或实盘回调。它由可信所有者创建，不是独立的 Compose 服务。 |
 | `kafka-audit-worker` | 独立校验和记录版本化事件流，不参与下单决策。 |
 | `scheduler-worker` | 运行投资组合、部署、支付和信号调度。 |
-| `celery-worker` | 执行有限的 AI、回测、实验、报告和维护任务。 |
+| `celery-worker` | 执行有限的 AI、报告和维护任务。 |
+| `celery-backtest-worker` | 执行回测、因子研究和实验；每个任务完成后回收其 Celery 子进程。 |
 | `celery-beat` | 分发周期性 Celery 任务。 |
 
 有关职责归属规则，请参阅[后端进程职责](docs/architecture/PROCESS_ROLES_AND_TASKS.md)、
@@ -465,6 +474,9 @@ docker compose \
 - Agent Token 经过哈希处理，并应用权限范围、速率限制和审计日志。
 - Agent 交易默认仅允许模拟盘；实盘访问同时需要 Token 授权和服务端授权。
 - 长期运行策略的所有权通过租约、心跳和隔离令牌管理。
+- 指标代码以及 Strategy API V2 的清单发现、回测和实盘回调都在无凭证子进程中执行；
+  数据库、凭证、对账和交易所下单权限仍由可信工作进程持有。
+- 不受信任代码只有在 Linux seccomp 与 Landlock 隔离可启用时才会运行；系统不会降级为进程内执行。
 - 生产容器不使用 root 权限或 Linux 系统能力运行。
 - 宿主机端口默认仅绑定回环地址；公网访问应在 TLS 反向代理处终止。
 
@@ -485,88 +497,12 @@ docker compose \
 [策略开发指南](docs/trading/STRATEGY_DEV_GUIDE.md)和
 [扩展指南](docs/architecture/EXTENSION_GUIDE.md)开始。
 
-## JEV 驱动的交易前决策
+## 可选的交易前决策过滤
 
-QuantDinger 可以在实盘开仓订单之前设置结构化 AI 决策门。创建普通实盘策略时可启用
-**AI 决策过滤**。策略开仓指令到达交易所前，QuantDinger 会将订单、
-策略上下文、资金敞口、持仓和预算状态发送给
-[TypeSafe Jev](https://docs.typesafe.ai/introduction)。Jev 返回类型化 Choice 结果、概率和
-置信度，无需从自然语言中解析决策。应用会在可审计的决策时间线中展示提供商、检查项、结果、
-置信度、延迟和理由。
-
-| 过去仅使用 LLM 的决策门 | JEV 决策门 |
-| --- | --- |
-| 生成自然语言或 JSON，再通过解析恢复决策 | 直接接收带有选中结果、完整概率和置信度的类型化 Choice |
-| 单一黑盒答案在执行后难以检查 | 独立的开仓与风险检查连同订单上下文和延迟一起保存 |
-| 提供商故障可能意外阻断仓位管理 | 提供商故障会被审计并故障放行，所有退出操作始终绕过 AI |
-
-执行策略始终由 QuantDinger 代码控制：被拒绝的开仓不会到达交易所；退出、止损、止盈和紧急操作
-绕过过滤器。首个版本不包含网格、DCA 和马丁运行时。未配置 Jev 时，QuantDinger 会尝试使用
-系统中已配置的 LLM。如果没有可用的 AI 提供商，订单会被放行并记录故障放行结果，避免 AI 服务
-中断导致现有仓位无法退出。
-
-### 决策流程
-
-```mermaid
-flowchart TD
-    A["策略开仓信号"] --> B["确定性风控与订单预算检查"]
-    B -->|"基础检查不通过"| R["拒绝下单"]
-    B -->|"基础检查通过"| C["构造 Decision Context V2"]
-
-    C --> C1["策略参数与信号原因"]
-    C --> C2["多周期行情与指标"]
-    C --> C3["持仓、敞口、净值与回撤"]
-    C --> C4["最近盈亏与连续亏损"]
-    C --> C5["止盈、止损与执行条件"]
-
-    C1 --> D
-    C2 --> D
-    C3 --> D
-    C4 --> D
-    C5 --> D
-
-    D{"已配置 JEV？"}
-
-    D -->|"是"| E["JEV System One"]
-    E --> E1["证据质量"]
-    E --> E2["信号一致性"]
-    E --> E3["市场状态"]
-    E --> E4["账户风险"]
-    E --> E5["执行质量"]
-    E --> E6["开仓判断：pass/reject"]
-
-    E1 --> F["校验结构、概率与置信度"]
-    E2 --> F
-    E3 --> F
-    E4 --> F
-    E5 --> F
-    E6 --> F
-
-    F -->|"结果有效且达到置信度阈值"| G["确定性决策收敛器"]
-    F -->|"超时、异常、格式错误或低置信度"| H
-
-    D -->|"否"| H{"已配置 LLM？"}
-    H -->|"是"| I["LLM 读取同一份上下文"]
-    I --> J["强制输出严格 JSON"]
-    J --> K{"decision"}
-
-    H -->|"否"| O["故障放行并记录原因"]
-
-    G -->|"PASS"| P["进入待处理订单队列"]
-    G -->|"REJECT"| R
-    K -->|"pass"| P
-    K -->|"reject"| R
-    K -->|"非法输出或提供商失败"| O
-
-    P --> Q["异步提交交易所"]
-    R --> S["记录 ai_rejected 与决策过程"]
-    O --> T["正常下单并记录提供商不可用"]
-```
-
-请在**系统设置 → AI / LLM** 中配置 `JEV_ENABLED`、`JEV_API_KEY`、`JEV_BASE_URL`、
-`JEV_MODEL` 和 `JEV_TIMEOUT_SECONDS`。关闭 JEV 后，决策过滤将直接使用当前配置的
-大模型。TypeSafe 在
-[`POST /v1/systemone`](https://docs.typesafe.ai/introduction/quickstart) 中说明了 HTTP 合同。
+普通实盘策略可选使用 AI 决策过滤器评估新的开仓指令。过滤器可使用 JEV 或已配置的
+LLM，并保留决策结果供审计。确定性风控仍是最终权威；平仓、止损、止盈和紧急操作不经过 AI 过滤，
+避免提供商异常阻断减仓。相关提供商在**系统设置 → AI / LLM** 中配置，具体范围见
+[实盘交易安全指南](docs/trading/LIVE_TRADING_SAFETY_CN.md)。
 
 ## AI Agent 与 MCP
 
@@ -636,6 +572,7 @@ QuantDinger/
 |   |   |   |-- ibkr_trading/          Interactive Brokers 集成
 |   |   |   |-- strategy_runtime/      策略信号、交易意图、执行与状态
 |   |   |   |-- strategy_v2/           版本化策略合同与运行时服务
+|   |   |   |   `-- sandbox.py         回调沙箱的可信宿主与 JSON 传输边界
 |   |   |   `-- virtual_trading.py     隔离的仅通知模拟账户、持仓与成交
 |   |   |-- data_sources/              原始行情数据源适配器
 |   |   |-- data_providers/            聚合行情、宏观、新闻和情绪提供商
@@ -644,7 +581,10 @@ QuantDinger/
 |   |   |-- workers/                   长期运行的工作进程外壳
 |   |   |-- runtime/                   进程角色与所有权辅助模块
 |   |   |-- observability/             请求上下文、指标与 HTTP 检测
-|   |   `-- utils/                     共享的底层数据库、缓存、认证和日志辅助模块
+|   |   `-- utils/                     共享底层基础设施与沙箱工作进程
+|   |       |-- safe_exec.py           AST 安全策略、受限命名空间与沙箱启动器
+|   |       |-- safe_exec_worker.py    一次性指标与策略合同发现沙箱
+|   |       `-- strategy_runtime_worker.py  无凭证回测/实盘回调沙箱
 |   |-- migrations/                    PostgreSQL 结构与种子迁移
 |   |-- scripts/                       后端维护与校验命令
 |   |-- tests/                         单元、合同、集成和发布门禁测试
@@ -683,7 +623,8 @@ QuantDinger/
 | --- | --- |
 | 同步 API 请求 | `app/routes` -> `app/services` -> 数据库、缓存、行情数据或交易适配器 |
 | 持久策略命令 | API 路由 -> PostgreSQL 命令记录 -> `trading-worker` -> 策略运行时与券商适配器 |
-| 有限后台任务 | API 或 Celery beat -> 任务 Redis -> `celery-worker` 中的 `app/tasks` -> PostgreSQL 结果 |
+| Strategy API V2 回调 | 可信求值、交易或回测工作进程 -> 沙箱子进程 -> 已校验交易意图与状态 -> 可信所有者 |
+| 有限后台任务 | API 或 Celery beat -> 任务 Redis -> 队列专属 Celery Worker 中的 `app/tasks` -> PostgreSQL 结果 |
 | 计划领域任务 | `app/commands/scheduler.py` -> 调度服务 -> 持久状态与通知 |
 | 监控 | API 与工作进程 -> `app/observability` 指标 -> Prometheus -> Grafana 与 Alertmanager |
 | Agent 或 MCP 调用 | MCP 客户端 -> `mcp_server` -> `/api/agent/v1` -> 与 Human API 共用的服务层 |

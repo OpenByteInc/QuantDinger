@@ -153,6 +153,6 @@ def test_publish_gate_uses_the_same_fingerprint_as_backtest_compilation(monkeypa
         27,
         source_with_editor_whitespace,
     ) is True
-    assert captured['code_hash'] == script_source_routes.compile_strategy_v2(
+    assert captured['code_hash'] == script_source_routes.inspect_strategy_v2(
         source_with_editor_whitespace,
     ).manifest.code_hash

@@ -26,6 +26,25 @@ docker compose \
 
 Prepare both backend secrets before the first locked start because the non-root containers cannot generate or persist them. Run migrations through the bundled migration service; do not run migrations concurrently from API workers.
 
+## Untrusted-code sandbox
+
+Indicator and Strategy API V2 source is not executed in the API, trading,
+evaluator, or backtest owner process. The official image starts clean-environment
+child processes and applies seccomp, Landlock, resource limits, and JSON-only
+transport before user handlers run.
+
+- Use a supported `x86_64` or `aarch64` Linux host. A missing kernel boundary is
+  a fatal strategy/indicator execution error, not a reason to enable an
+  in-process fallback.
+- Do not pass the project `.env`, Docker socket, cloud credential directories,
+  database sockets, or exchange credential files to sandbox children.
+- Keep the strategy timeout and memory settings in `.env` bounded. Account for
+  one persistent child per active live Strategy API V2 deployment and one
+  disposable child per backtest.
+- After upgrading the sandbox implementation, recreate the API, trading,
+  evaluator, and backtest-worker containers. A frontend-only restart does not
+  activate the new boundary.
+
 ## Redis tiers
 
 `redis` is a disposable cache with `allkeys-lru`. `redis-jobs` is a durable Celery broker/result store with AOF, periodic snapshots, and `noeviction`. They use separate passwords (`REDIS_PASSWORD` and `CELERY_REDIS_PASSWORD`), separate databases, and separate memory limits.

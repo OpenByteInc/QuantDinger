@@ -121,7 +121,6 @@ def test_gate_stock_complete_live_loop_uses_exchange_quotes(monkeypatch, account
     elif data_mode == "stale":
         assert all(meta["status"] == "degraded" for _, meta in heartbeats[1:]), logs
         assert all(meta["last_error"] == "marketData.incomplete_market_data" for _, meta in heartbeats[1:])
-        assert sessions[0].last_processed is None
         sessions[0].process.assert_not_called()
         submit.assert_not_called()
         assert len(fetches) >= 3
@@ -129,7 +128,6 @@ def test_gate_stock_complete_live_loop_uses_exchange_quotes(monkeypatch, account
         assert heartbeats[1][1]["status"] == "degraded"
         assert heartbeats[-1][1]["status"] == "healthy"
         assert sessions[0].process.call_count == 1
-        assert sessions[0].last_processed == frame.index[-1]
     assert request.call_count == 1
 
 

@@ -13,7 +13,7 @@ import json
 
 from flask import g, jsonify, request
 from app.openapi.blueprint import HumanBlueprint as Blueprint
-from app.utils.auth import login_required
+from app.utils.auth import login_required, trading_required
 from app.utils.logger import get_logger
 from app.utils.broker_session import BrokerSessionRegistry
 from app.utils.credential_crypto import decrypt_credential_blob, encrypt_credential_blob
@@ -282,6 +282,7 @@ def get_status():
 
 @alpaca_blp.route('/connect', methods=['POST'])
 @login_required
+@trading_required
 def connect():
     """
     Connect to Alpaca.
@@ -327,6 +328,7 @@ def connect():
 
 @alpaca_blp.route('/disconnect', methods=['POST'])
 @login_required
+@trading_required
 def disconnect():
     """Disconnect from Alpaca."""
     try:
@@ -441,6 +443,7 @@ def get_fills():
 
 @alpaca_blp.route('/order', methods=['POST'])
 @login_required
+@trading_required
 def place_order():
     """
     Place an Alpaca order.
@@ -528,6 +531,7 @@ def place_order():
 
 @alpaca_blp.route('/order/<order_id>', methods=['DELETE'])
 @login_required
+@trading_required
 def cancel_order(order_id):
     """Cancel an Alpaca order by ID."""
     try:

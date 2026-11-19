@@ -13,7 +13,7 @@ import ast
 import hashlib
 from typing import Any, Optional
 
-from app.services.strategy_v2 import compile_strategy_v2
+from app.services.strategy_v2 import inspect_strategy_v2
 from app.services.strategy_v2.instruments import instrument_key_from_metadata, parse_instrument
 
 
@@ -139,7 +139,7 @@ def derive_strategy_contract(
     *,
     source: str = "published_code",
 ) -> dict[str, Any]:
-    program = compile_strategy_v2(str(code or ""))
+    program = inspect_strategy_v2(str(code or ""))
     manifest = program.manifest.metadata()
     universe = manifest.get("universe") if isinstance(manifest.get("universe"), dict) else {}
     instruments = [dict(item) for item in (universe.get("instruments") or []) if isinstance(item, dict)]

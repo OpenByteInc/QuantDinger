@@ -9,7 +9,7 @@ The most important boundary is: **an indicator is for chart analysis, not trade 
 
 An indicator cannot place orders, backtest, run live trading, read an account, manage positions, enable leverage, or execute stop-loss/take-profit rules. To trade an idea, convert its visual signals into a Strategy API V2 strategy, then verify, backtest, and deploy that strategy separately.
 
-The TradingView/Pine compatibility target is: **preserve the calculation and visual semantics of common single-symbol, single-timeframe indicators, not Pine syntax, every Pine API, or Pine's tick-by-tick execution model.** Pine migrations must rewrite formulas in Python/pandas and return the result through the <code>output</code> contract in this guide.
+The TradingView/Pine compatibility target is: **preserve the calculation and visual semantics of common single-symbol indicators, including bounded host-prefetched timeframes of that same symbol, not Pine syntax, cross-symbol data, every Pine API, or Pine's tick-by-tick execution model.** Pine migrations must rewrite formulas in Python/pandas and return the result through the <code>output</code> contract in this guide.
 
 ---
 
@@ -29,6 +29,7 @@ close_line = [
 ]
 
 output = {
+    "schema_version": 2,
     "name": my_indicator_name,
     "plots": [
         {
@@ -41,6 +42,7 @@ output = {
     ],
     "signals": [],
     "layers": [],
+    "tables": [],
 }
 ~~~
 
@@ -83,7 +85,10 @@ The runtime provides:
 - <code>params</code>: a dict produced by merging declared defaults with values from the parameter panel.
 - <code>pd</code>: preloaded pandas.
 - <code>np</code>: preloaded numpy.
+- <code>ctx</code>, <code>request_series</code>, and <code>request_lower_tf</code>: bounded, same-symbol timeframe helpers described in section 18.
 - <code>open</code>, <code>high</code>, <code>low</code>, <code>close</code>, and <code>volume</code>: some runtime entries also expose convenience Series. Prefer explicit <code>df["close"]</code> access for clarity and portability.
+
+Each validation or preview executes the indicator in a new credential-free process. The host resolves and bounds the requested same-symbol timeframes before execution, then sends only serialized market data, parameters, and indicator context. Helpers such as <code>request_series</code> and <code>request_lower_tf</code> read that prefetched payload; they do not make network or database requests from indicator code. The process returns the validated output and exits, so module globals and caches do not persist between runs.
 
 Standard OHLCV access:
 
@@ -122,10 +127,12 @@ period = int(params.get("period", 20))
 # Marker construction
 
 output = {
+    "schema_version": 2,
     "name": my_indicator_name,
     "plots": [],
     "signals": [],
     "layers": [],
+    "tables": [],
 }
 ~~~
 
@@ -195,7 +202,7 @@ Declare search candidates at the end of the description:
 
 <code>range=start:end:step</code> produces an inclusive arithmetic sequence. <code>values=a,b,c</code> declares an explicit list. One parameter expands to at most 1,024 values. Range markers are removed from the human-facing description.
 
-Indicator parameters control calculations and display only. Do not declare account, symbol, timeframe, position, leverage, stop-loss, or take-profit settings.
+Indicator parameters control calculations and display only. Do not declare account, symbol, position, leverage, stop-loss, or take-profit settings. A user-selectable same-symbol timeframe is allowed only through the literal allowlist and parameter-binding contract in section 18; do not turn an arbitrary string parameter into a network or cross-symbol request.
 
 ---
 
@@ -205,36 +212,45 @@ The program must finish by setting a dict named <code>output</code>:
 
 ~~~python
 output = {
+    "schema_version": 2,
     "name": my_indicator_name,
     "plots": plots,
     "signals": signals,
     "layers": layers,
+    "tables": tables,
 }
 ~~~
 
-Optional:
+Optional chart styling and diagnostics:
 
 ~~~python
+output["bar_colors"] = [None] * len(df)
+output["background_colors"] = [None] * len(df)
 output["calculatedVars"] = {}
 ~~~
 
 Validation rules:
 
 - <code>output</code> must be a dict.
-- At least the <code>plots</code> or <code>signals</code> key must exist.
+- New code should set <code>schema_version</code> to <code>2</code>. Existing version-1 <code>plots</code>, <code>signals</code>, and <code>layers</code> remain compatible.
+- At least one supported chart field must exist: <code>plots</code>, <code>signals</code>, <code>layers</code>, <code>tables</code>, <code>bar_colors</code>, or <code>background_colors</code>.
 - Every <code>plot["data"]</code> must have length <code>len(df)</code>.
 - Every <code>signal["data"]</code> must have length <code>len(df)</code>.
+- <code>bar_colors</code> and <code>background_colors</code>, when present, must also have length <code>len(df)</code>.
 - Do not emit NaN, positive infinity, or negative infinity; use <code>None</code> for missing points.
 - Layers do not need per-bar arrays, but indices, times, and prices must be meaningful for the current data.
+- <code>calculatedVars</code> is JSON-safe diagnostic data for the editor. It does not render by itself.
 
 Explicit empty lists are recommended:
 
 ~~~python
 output = {
+    "schema_version": 2,
     "name": my_indicator_name,
     "plots": [],
     "signals": [],
     "layers": [],
+    "tables": [],
 }
 ~~~
 
@@ -250,7 +266,7 @@ Each plot normally contains:
 | <code>data</code> | list | values/<code>None</code>, length <code>len(df)</code> |
 | <code>color</code> | str | preferably <code>#RRGGBB</code> |
 | <code>overlay</code> | bool | <code>True</code> on price chart, <code>False</code> in a pane |
-| <code>type</code> | optional str | <code>line</code>, <code>bar</code>, <code>circle</code>, or <code>cloud</code>; see aliases below |
+| <code>type</code> | optional str | <code>line</code>, <code>bar</code>, <code>circle</code>, <code>cloud</code>, <code>candlestick</code>, or <code>background</code>; see aliases below |
 
 Public plot types:
 
@@ -261,6 +277,8 @@ Public plot types:
 | <code>circle</code>, <code>dot</code>, <code>point</code>, <code>scatter</code> | circles | circles/scatter |
 | <code>lamp</code> | lamp dots; three or more lamp series in one pane are arranged into rows | an approximation for state panels |
 | <code>cloud</code>, <code>band</code>, <code>fill_between</code>, <code>fill-between</code> | filled range between an upper and lower series | <code>fill(plot1, plot2)</code> |
+| <code>candlestick</code>, <code>candle</code>, <code>ohlc</code> | indicator-generated OHLC candles | <code>plotcandle()</code>/<code>plotbar()</code> |
+| <code>background</code> | per-bar chart background | <code>bgcolor()</code> |
 
 Style fields apply by figure type:
 
@@ -268,6 +286,8 @@ Style fields apply by figure type:
 - Line: <code>lineWidth</code> and <code>lineStyle</code>/<code>style</code>, such as <code>solid</code> or <code>dashed</code>.
 - Bar and circle: <code>size</code>/<code>radius</code>, <code>borderColor</code>, and <code>borderSize</code>; bars also accept <code>baseValue</code>.
 - Cloud: each point uses <code>upper</code> and <code>lower</code>; <code>color</code> may change per point. Use <code>opacity</code> between <code>0.02</code> and <code>0.30</code>. Set <code>title=False</code> to hide the cloud from the legend.
+- Candlestick: each point is <code>None</code> or contains finite <code>open</code>, <code>high</code>, <code>low</code>, and <code>close</code>, with optional <code>color</code>, <code>fillColor</code>, <code>borderColor</code>, and <code>wickColor</code>.
+- Background: use a translucent per-bar color and keep the host candles, signals, and labels legible. For host-chart backgrounds, <code>output["background_colors"]</code> is usually simpler than constructing this plot directly.
 - All <code>overlay=False</code> plots from one indicator share one pane. They do not automatically create several panes as separate Pine scripts would.
 
 For Pine-like series colors or dynamic point sizes, a <code>data</code> entry may be an object instead of a scalar:
@@ -441,7 +461,7 @@ This moves a completed event later; it does not read future data.
 
 ---
 
-## 9. layers: zones, lines, and labels
+## 9. layers: zones, lines, labels, and polylines
 
 Prefer plots and signals for normal indicators. Add layers only for supply/demand zones, support/resistance, channels, invalidation levels, or structure labels that materially improve readability.
 
@@ -488,6 +508,21 @@ For a sloped line, replace <code>price</code> with <code>startPrice</code> and <
 }
 ~~~
 
+Polyline:
+
+~~~python
+{
+    "type": "polyline",
+    "points": [
+        {"index": 100, "price": 98.5},
+        {"index": 120, "price": 101.2},
+        {"index": 145, "price": 99.8},
+    ],
+    "color": "#38BDF8",
+    "lineWidth": 2,
+}
+~~~
+
 Indices are the most stable representation for the current <code>df</code>. Matching <code>startTime</code>, <code>endTime</code>, and <code>time</code> values are also supported.
 
 Layers remain visual objects. They do not represent real orders, positions, or hosted stops.
@@ -509,14 +544,14 @@ QuantDinger does not execute Pine source. Migration means preserving indicator m
 | <code>hline()</code>, line, box, label | Common static results supported | line/zone/label layers; each run returns a final object list, without Pine object IDs, mutation methods, or garbage-collection semantics |
 | <code>alert()</code>, <code>alertcondition()</code> | Partially supported | emit <code>signals</code>, then configure monitoring after saving; indicator code does not directly notify or trade |
 | arrays, maps, user functions, state calculations | Python equivalents available | use list/dict, functions, and pandas Series; calculation is vectorized over the DataFrame, not Pine's per-bar <code>var</code>/<code>varip</code> model |
-| linefill, <code>bgcolor()</code>, <code>barcolor()</code> | No first-class equivalent yet | a fixed range may be approximated with a zone; this is not full background or candle-color compatibility |
-| area/step/cross/arrow, <code>plotcandle()</code>/<code>plotbar()</code> | Not supported yet | an unknown <code>type</code> currently falls back to line; do not rely on that fallback |
-| table, polyline, dynamic drawing lifecycle | Not supported yet | do not emit undefined objects |
-| <code>request.security()</code>, <code>request.*()</code>, cross-symbol/MTF | Not supported yet | indicators receive only the current chart DataFrame and cannot fetch network or exchange data |
+| linefill, <code>bgcolor()</code>, <code>barcolor()</code> | Common subset supported | use cloud plots, <code>background_colors</code>, and <code>bar_colors</code>; Pine gradients and every display flag are not reproduced automatically |
+| area/step/cross/arrow, <code>plotcandle()</code>/<code>plotbar()</code> | Partial | candlestick/OHLC plots are supported; area, step, cross, and arrow styles require an explicit native approximation |
+| table, polyline, dynamic drawing lifecycle | Partial | fixed tables and polyline layers are supported; stateful Pine objects must be replayed chronologically and returned as a bounded final object list |
+| <code>request.security()</code>, <code>request.*()</code>, cross-symbol/MTF | Same-symbol subset supported | use bounded host-prefetched <code>request_series</code>/<code>request_lower_tf</code>; other symbols, macro feeds, network access, and arbitrary Pine request APIs remain unsupported |
 | <code>barstate.*</code>, tick updates, rollback | Different execution model | the runtime recalculates from the received DataFrame; confirmed-bar events are the reproducible baseline |
 | strategy.*, orders, positions, backtesting | Outside indicator scope | convert to Strategy API V2 |
 
-The recommended acceptance criterion for “most features are consistent” is therefore: common single-symbol, single-timeframe indicators produce equivalent values and event bars from the same OHLCV, parameters, and confirmed candles. It does not mean Pine source runs directly, and it excludes multi-timeframe requests, tick state, and advanced drawing objects until those contracts are implemented.
+The recommended acceptance criterion for “most features are consistent” is therefore: common single-symbol indicators produce equivalent values and event bars from the same OHLCV, parameters, confirmed candles, and explicitly requested same-symbol timeframe inputs. It does not mean Pine source runs directly, and it still excludes cross-symbol or macro requests, tick rollback, imported Pine libraries, and unsupported drawing styles.
 
 For every Pine migration:
 
@@ -525,7 +560,7 @@ For every Pine migration:
 3. Match warmup, <code>na</code> propagation, division-by-zero handling, and the first valid bar.
 4. Separate persistent conditions from one-time events; a Pine condition series must not become a notification on every bar.
 5. Compare numerical tolerance, event bar indexes, and drawing anchors on a fixed OHLCV fixture.
-6. If the Pine script uses a “not supported yet” row, simplify it, document an approximation, or extend the platform contract first. Never label it fully compatible in documentation or code comments.
+6. If the Pine script uses an unsupported capability, simplify it, document an approximation, or extend the platform contract first. Never label it fully compatible in documentation or code comments.
 
 See TradingView's official Pine documentation for its capability categories: [Visuals overview](https://www.tradingview.com/pine-script-docs/visuals/overview/), [Inputs](https://www.tradingview.com/pine-script-docs/concepts/inputs/), [Other timeframes and data](https://www.tradingview.com/pine-script-docs/concepts/other-timeframes-and-data/), and [Bar states](https://www.tradingview.com/pine-script-docs/concepts/bar-states/).
 
@@ -597,6 +632,8 @@ If a signal requires the current close to confirm, its converted strategy should
 
 Allowed computational modules include numpy, pandas, math, json, datetime, time, collections, functools, itertools, statistics, decimal, fractions, and copy. Since <code>pd</code> and <code>np</code> are preloaded, imports are normally unnecessary.
 
+Static validation is only the first layer. Indicator execution uses <code>python -I</code>, a clean environment, closed inherited file descriptors, a temporary working directory, JSON-only input/output, and hard timeout, memory, file-size, and output-size limits. On the supported Linux deployment, the worker enables seccomp and Landlock before the indicator source runs. It cannot read the application tree or arbitrary host files, create network connections or child processes, or inherit database, exchange, provider, JWT, or credential-encryption secrets. If those kernel restrictions cannot be activated, execution fails closed.
+
 Do not use:
 
 - network, file, database, or subprocess access;
@@ -608,6 +645,8 @@ Do not use:
 The exact identifiers <code>eval</code>, <code>exec</code>, <code>compile</code>, <code>__import__</code>, <code>getattr</code>, <code>setattr</code>, <code>delattr</code>, <code>globals</code>, <code>vars</code>, <code>dir</code>, <code>breakpoint</code>, <code>open</code>, <code>input</code>, <code>exit</code>, <code>quit</code>, <code>chr</code>, and <code>format</code> are reserved even when referenced as values, passed as callbacks, or reused as local names. Matching is by complete identifier, so descriptive names such as <code>open_long</code>, <code>format_signal</code>, and <code>dir_value</code> remain valid. Do not build dunder names indirectly from variables, concatenation, multiplication, or f-strings.
 
 Validation has a timeout. Avoid unbounded loops, explosive recursion, and unnecessarily expensive row-by-row algorithms.
+
+The standard validation path uses a 20-second timeout, 1 GiB of address space, and a 32 MiB encoded-output cap; another indicator workflow may define a different bounded timeout. A timeout or resource failure terminates the disposable process. Do not rely on files, process environment, module-global caches, background threads, or state from a previous preview. Native non-Linux execution is not a supported substitute for the official Linux sandbox and must not be configured to fall back to in-process execution.
 
 ---
 
@@ -672,6 +711,7 @@ death_marks = [
 ]
 
 output = {
+    "schema_version": 2,
     "name": my_indicator_name,
     "plots": [
         {
@@ -695,15 +735,18 @@ output = {
             "text": "Long Entry",
             "color": "#22C55E",
             "data": golden_marks,
+            "renderMode": "events",
         },
         {
             "type": "sell",
             "text": "Long Exit",
             "color": "#EF4444",
             "data": death_marks,
+            "renderMode": "events",
         },
     ],
     "layers": [],
+    "tables": [],
 }
 ~~~
 
@@ -735,7 +778,7 @@ Use this workflow after each meaningful change:
 | <code>MISSING_OUTPUT</code> | no output assignment | add the output dict |
 | <code>MissingOutput</code> | no output after execution | check branches and scope |
 | <code>InvalidOutputType</code> | output is not a dict | return a dict |
-| <code>InvalidOutputStructure</code> | neither plots nor signals exists | provide at least one key |
+| <code>InvalidOutputStructure</code> | no supported chart field exists | provide plots, signals, layers, tables, bar colors, or background colors |
 | <code>LengthMismatch</code> | data length differs from bars | make every data list <code>len(df)</code> |
 | <code>MISSING_DF_COPY</code> | missing working copy | add <code>df = df.copy()</code> |
 | <code>PARAM_DEFAULT_MISMATCH</code> | declaration and fallback differ | align both defaults |
@@ -778,10 +821,102 @@ Always verify and backtest generated strategy code again. Marketplace publicatio
 - [ ] Every parameter is read through <code>params.get</code> with a matching default.
 - [ ] No order, position, leverage, or execution-risk logic is present.
 - [ ] <code>output</code> is a dict.
+- [ ] New indicators use <code>schema_version: 2</code>; tables and chart-style arrays use canonical fields.
 - [ ] Every plot/signal data list has length <code>len(df)</code>.
+- [ ] <code>bar_colors</code> and <code>background_colors</code>, when present, have length <code>len(df)</code>.
 - [ ] Missing values are <code>None</code>; no NaN or infinity is emitted.
 - [ ] Signals are sparse events; persistent states use plots or a few layers.
-- [ ] No future data is accessed.
+- [ ] Repeated labels, zones, plans, and targets use a bounded recent display budget and do not obscure candles.
+- [ ] Price overlays do not introduce distant stale values that compress the active market into a narrow strip.
+- [ ] Rolling windows remain unavailable until their declared lookback is ready unless progressive behavior is intentional.
+- [ ] No future data is accessed; same-symbol timeframe requests keep <code>lookahead="off"</code>.
+- [ ] Timeframe requests use literal declarations or the documented allowlist binding, stay within eight requests, and guard incomplete coverage.
 - [ ] Numpy results are converted to indexed Series before pandas-only methods.
 - [ ] Short datasets, warm-up periods, and unusual parameters do not crash.
-- [ ] A version is saved and preview/validation passes.
+- [ ] A version is saved, runtime validation passes, and the 1H and 4H previews remain readable.
+
+---
+
+## 18. Unified chart output and same-symbol timeframes
+
+Set <code>schema_version</code> to <code>2</code> for new indicators. Existing version-1
+<code>plots</code>, <code>signals</code>, and <code>layers</code> remain compatible. Version 2 adds:
+
+- <code>candlestick</code> plots whose points contain <code>open</code>, <code>high</code>, <code>low</code>, <code>close</code>, and optional body, border, and wick colors;
+- <code>bar_colors</code> for host-candle styling and <code>background_colors</code> for per-bar chart backgrounds;
+- fixed <code>tables</code> at <code>top-left</code>, <code>top-right</code>, <code>bottom-left</code>, or <code>bottom-right</code>;
+- <code>polyline</code> layers with indexed price points.
+
+A compact table example:
+
+~~~python
+tables = [{
+    "id": "status",
+    "position": "top-right",
+    "title": "Trend Status",
+    "columns": ["Metric", "Value"],
+    "rows": [
+        ["Trend", {"text": "Bullish", "color": "#22C55E"}],
+        ["Strength", "Moderate"],
+    ],
+    "compact": True,
+}]
+~~~
+
+Same-symbol timeframes are prefetched by the host and remain inside the sandbox:
+
+~~~python
+daily_close = request_series("1D", field="close")
+daily_ohlcv = request_series("1D")
+minute_records = request_lower_tf("1m")
+minute_volume = request_lower_tf("1m", fields="volume")
+minute_fields = request_lower_tf("1m", fields=["open", "close", "volume"])
+~~~
+
+<code>request_series</code> returns a pandas Series aligned to <code>df</code> when <code>field</code> is
+provided and an aligned DataFrame when it is omitted. With the default <code>lookahead="off"</code>, a
+higher-timeframe value becomes available only after that source bar has closed. Keep lookahead off for
+calculations, signals, notifications, and ordinary visuals.
+
+<code>request_lower_tf</code> has three return shapes:
+
+- no <code>fields</code>: a list containing one list of OHLCV dictionaries per chart bar;
+- one string field: a list containing one list of values per chart bar;
+- a field list: a dictionary whose fields each contain those per-chart-bar value lists.
+
+Supported intervals are <code>1m</code>, <code>3m</code>, <code>5m</code>, <code>15m</code>,
+<code>30m</code>, <code>1H</code>, <code>2H</code>, <code>4H</code>, <code>6H</code>,
+<code>8H</code>, <code>12H</code>, <code>1D</code>, and <code>1W</code>. An indicator may request at
+most eight distinct timeframe/mode combinations.
+
+Direct calls use literal intervals so the host can discover them before execution. For a user-selectable
+timeframe, declare the complete literal allowlist and bind it to a string parameter:
+
+~~~python
+# @param confirmation_tf str 4H Confirmation timeframe values=1H,4H,1D
+
+indicator_timeframes = ["1H", "4H", "1D"]
+indicator_timeframe_param = "confirmation_tf"
+confirmation_tf = str(params.get("confirmation_tf", "4H"))
+
+confirmation_close = request_series(confirmation_tf, field="close")
+~~~
+
+Use <code>indicator_lower_timeframes</code> and <code>indicator_lower_timeframe_param</code> for the
+equivalent lower-timeframe selector. The selected value must remain in the declared allowlist.
+
+Host-prefetched history is intentionally recent and bounded: ordinary timeframe series requests fetch
+at most 1,000 bars and lower-timeframe requests at most 5,000 bars, with at most one host fetch per
+requested timeframe in a preview. Provider throttling, availability, and the limit cap can leave older
+chart bars with <code>NaN</code> or empty intrabar lists. Treat them as unavailable; do not paginate,
+retry in loops, or substitute zero.
+
+For visual correctness, do not validate a long rolling level from one or two samples. Use the declared
+lookback as <code>min_periods</code> unless the original formula explicitly defines progressive behavior.
+Keep repeated event labels and historical drawing objects recent and bar-spaced, hide helper titles with
+<code>title=False</code>, and omit distant stale levels that would distort the active price scale. Preserve
+complete non-visual diagnostics in <code>calculatedVars</code> when useful.
+
+This service does not provide other symbols, macro feeds, imported Pine libraries, forming-bar
+rollback, or tick data. A lower-timeframe candle array is historical OHLCV, not a reconstruction of
+the order of trades inside a candle.

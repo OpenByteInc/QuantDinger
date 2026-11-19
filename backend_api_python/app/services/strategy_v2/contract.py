@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import os
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -113,10 +114,17 @@ class CompiledStrategyV2:
     namespace: dict[str, Any]
     state: StateNamespace
     manifest: StrategyManifest
+    discovered_handlers: tuple[str, ...] = ()
+    discovery_snapshot: dict[str, Any] | None = None
 
     def handler(self, name: str) -> Callable[..., Any] | None:
         value = self.namespace.get(name)
         return value if callable(value) else None
+
+    def has_handler(self, name: str) -> bool:
+        return str(name) in self.discovered_handlers or callable(
+            self.namespace.get(str(name))
+        )
 
 
 class DiscoveryContext:
@@ -216,7 +224,40 @@ class _ScheduleBindings:
         self.context.schedules.append(ScheduleSpec("monthly", callback, time=time, monthday=int(monthday)))
 
 
-def compile_strategy_v2(code: str) -> CompiledStrategyV2:
+def compile_strategy_v2(
+    code: str,
+    *,
+    discovery_snapshot: Mapping[str, Any] | None = None,
+) -> CompiledStrategyV2:
+    """Compile handlers only inside the isolated runtime process.
+
+    Request, scheduler, and trading workers should use ``inspect_strategy_v2``.
+    Outside the runtime worker this function intentionally returns the same
+    metadata-only result for backward-compatible callers.
+    """
+    load_runtime_namespace = os.getenv("QD_STRATEGY_RUNTIME_WORKER") == "1"
+    return _compile_strategy_v2(
+        code,
+        load_runtime_namespace=load_runtime_namespace,
+        discovery_snapshot=discovery_snapshot,
+    )
+
+
+def inspect_strategy_v2(code: str) -> CompiledStrategyV2:
+    """Return the validated manifest without loading user functions in-process."""
+    return _compile_strategy_v2(
+        code,
+        load_runtime_namespace=False,
+        discovery_snapshot=None,
+    )
+
+
+def _compile_strategy_v2(
+    code: str,
+    *,
+    load_runtime_namespace: bool,
+    discovery_snapshot: Mapping[str, Any] | None,
+) -> CompiledStrategyV2:
     raw = str(code or "").strip()
     if not raw:
         raise StrategyV2ContractError("strategyV2.codeRequired")
@@ -228,14 +269,20 @@ def compile_strategy_v2(code: str) -> CompiledStrategyV2:
     _validate_strategy_api_calls(raw)
     _validate_safe_module_top_level(raw)
 
-    try:
-        discovery_result = _discover_strategy_isolated_cached(
-            raw,
-            STRATEGY_COMPILE_TIMEOUT_SECONDS,
-            STRATEGY_COMPILE_MEMORY_MB,
-        )
-    except _IsolatedDiscoveryFailure as exc:
-        discovery_result = exc.result
+    if discovery_snapshot is not None:
+        expected_hash = strategy_source_code_hash(raw)
+        if str(discovery_snapshot.get("codeHash") or "") != expected_hash:
+            raise StrategyV2ContractError("strategyV2.discoverySnapshotMismatch")
+        discovery_result = deepcopy(discovery_snapshot.get("response") or {})
+    else:
+        try:
+            discovery_result = _discover_strategy_isolated_cached(
+                raw,
+                STRATEGY_COMPILE_TIMEOUT_SECONDS,
+                STRATEGY_COMPILE_MEMORY_MB,
+            )
+        except _IsolatedDiscoveryFailure as exc:
+            discovery_result = exc.result
     if not discovery_result.get("success"):
         raise StrategyV2ContractError(
             str(discovery_result.get("error") or "strategyV2.compileFailed")
@@ -244,47 +291,49 @@ def compile_strategy_v2(code: str) -> CompiledStrategyV2:
 
     context = DiscoveryContext()
     state = StateNamespace()
-    schedules = _ScheduleBindings(context)
-    discovery_log = _DiscoveryLogger()
-    namespace: dict[str, Any] = {
-        "__builtins__": build_safe_builtins(),
-        "g": state,
-        "run_daily": schedules.daily,
-        "run_weekly": schedules.weekly,
-        "run_monthly": schedules.monthly,
-        "get_index_stocks": lambda value, **_: [normalize_index_reference(value)],
-        "get_universe_stocks": lambda *_args, **_kwargs: [],
-        "get_position": lambda *_args, **_kwargs: SimpleNamespace(
-            amount=0.0,
-            avg_cost=0.0,
-            last_price=0.0,
-        ),
-        "get_positions": lambda *_args, **_kwargs: {},
-        "get_order_status": lambda *_args, **_kwargs: {
-            "status": "unknown",
-            "filled_quantity": 0.0,
-            "filled_notional": 0.0,
-            "fee": 0.0,
-        },
-        "cancel_order": lambda *_args, **_kwargs: False,
-        "consume_last_exit_reason": lambda *_args, **_kwargs: "",
-        "get_history": lambda *_args, **_kwargs: [],
-        "history": lambda *_args, **_kwargs: [],
-        "is_trade": lambda *_args, **_kwargs: False,
-        "log": discovery_log,
-    }
-    result = safe_exec_with_validation(
-        raw,
-        namespace,
-        namespace,
-        timeout=STRATEGY_COMPILE_TIMEOUT_SECONDS,
-    )
-    if not result.get("success"):
-        raise StrategyV2ContractError(str(result.get("error") or "strategyV2.compileFailed"))
-
-    initialize = namespace.get("initialize")
-    if not callable(initialize):
-        raise StrategyV2ContractError("strategyV2.initializeRequired")
+    namespace = _static_module_namespace(raw)
+    if load_runtime_namespace:
+        schedules = _ScheduleBindings(context)
+        discovery_log = _DiscoveryLogger()
+        namespace.update({
+            "__builtins__": build_safe_builtins(),
+            "g": state,
+            "run_daily": schedules.daily,
+            "run_weekly": schedules.weekly,
+            "run_monthly": schedules.monthly,
+            "get_index_stocks": lambda value, **_: [normalize_index_reference(value)],
+            "get_universe_stocks": lambda *_args, **_kwargs: [],
+            "get_position": lambda *_args, **_kwargs: SimpleNamespace(
+                amount=0.0,
+                avg_cost=0.0,
+                last_price=0.0,
+            ),
+            "get_positions": lambda *_args, **_kwargs: {},
+            "get_order_status": lambda *_args, **_kwargs: {
+                "status": "unknown",
+                "filled_quantity": 0.0,
+                "filled_notional": 0.0,
+                "fee": 0.0,
+            },
+            "cancel_order": lambda *_args, **_kwargs: False,
+            "consume_last_exit_reason": lambda *_args, **_kwargs: "",
+            "get_history": lambda *_args, **_kwargs: [],
+            "history": lambda *_args, **_kwargs: [],
+            "is_trade": lambda *_args, **_kwargs: False,
+            "log": discovery_log,
+        })
+        result = safe_exec_with_validation(
+            raw,
+            namespace,
+            namespace,
+            timeout=STRATEGY_COMPILE_TIMEOUT_SECONDS,
+        )
+        if not result.get("success"):
+            raise StrategyV2ContractError(
+                str(result.get("error") or "strategyV2.compileFailed")
+            )
+        if not callable(namespace.get("initialize")):
+            raise StrategyV2ContractError("strategyV2.initializeRequired")
     for name, value in dict(discovery.get("state") or {}).items():
         setattr(state, str(name), value)
     for item in list(discovery.get("calls") or []):
@@ -326,7 +375,12 @@ def compile_strategy_v2(code: str) -> CompiledStrategyV2:
             f"strategyV2.frequencyNotSubscribed:{undeclared_frequencies[0]}"
         )
 
-    handlers = tuple(name for name in V2_HANDLER_NAMES if callable(namespace.get(name)))
+    discovered_handlers = tuple(
+        str(name) for name in (discovery.get("handlers") or ())
+    )
+    handlers = tuple(
+        name for name in V2_HANDLER_NAMES if name in discovered_handlers
+    )
     if not any(name in handlers for name in ("handle_data", "on_rebalance")) and not context.schedules:
         raise StrategyV2ContractError("strategyV2.handlerRequired")
 
@@ -379,7 +433,69 @@ def compile_strategy_v2(code: str) -> CompiledStrategyV2:
         direction_mode=direction_mode,
         metadata_fields=dict(context.metadata),
     )
-    return CompiledStrategyV2(raw, namespace, state, manifest)
+    return CompiledStrategyV2(
+        raw,
+        namespace,
+        state,
+        manifest,
+        discovered_handlers=discovered_handlers,
+        discovery_snapshot={
+            "codeHash": strategy_source_code_hash(raw),
+            "response": deepcopy(discovery_result),
+        },
+    )
+
+
+def _static_module_namespace(code: str) -> dict[str, Any]:
+    """Extract literal module constants without executing strategy source."""
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return {}
+    values: dict[str, Any] = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            value = _literal_static_value(node.value, values)
+            if value is _STATIC_VALUE_MISSING:
+                continue
+            for target in node.targets:
+                _bind_static_target(target, value, values)
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            value = _literal_static_value(node.value, values)
+            if value is not _STATIC_VALUE_MISSING:
+                _bind_static_target(node.target, value, values)
+    return values
+
+
+_STATIC_VALUE_MISSING = object()
+
+
+def _literal_static_value(
+    node: ast.AST,
+    values: Mapping[str, Any],
+) -> Any:
+    if isinstance(node, ast.Name):
+        return deepcopy(values.get(node.id, _STATIC_VALUE_MISSING))
+    if not _is_safe_static_value(node):
+        return _STATIC_VALUE_MISSING
+    try:
+        return ast.literal_eval(node)
+    except (TypeError, ValueError):
+        return _STATIC_VALUE_MISSING
+
+
+def _bind_static_target(
+    target: ast.AST,
+    value: Any,
+    values: dict[str, Any],
+) -> None:
+    if isinstance(target, ast.Name):
+        values[target.id] = deepcopy(value)
+        return
+    if isinstance(target, (ast.Tuple, ast.List)) and isinstance(value, (tuple, list)):
+        if len(target.elts) == len(value):
+            for item, item_value in zip(target.elts, value):
+                _bind_static_target(item, item_value, values)
 
 
 @lru_cache(maxsize=64)
@@ -533,7 +649,7 @@ def canonical_source_metadata(
     metadata: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Compile source code and persist only the current runtime contract."""
-    manifest = compile_strategy_v2(code).manifest.metadata()
+    manifest = inspect_strategy_v2(code).manifest.metadata()
     canonical = dict(metadata or {})
     canonical.pop("apiVersion", None)
     canonical.pop("api_version", None)

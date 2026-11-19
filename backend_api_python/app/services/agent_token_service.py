@@ -9,6 +9,7 @@ from typing import Any
 from app.utils.agent_auth import (
     ALL_SCOPES,
     SCOPE_C,
+    SCOPE_T,
     ensure_agent_gateway_schema,
     generate_token,
     parse_csv_list,
@@ -78,8 +79,15 @@ def _positive_env_float(name: str, default: float) -> float:
     return value if math.isfinite(value) and value > 0 else default
 
 
-def get_token_policy(*, for_admin: bool = False) -> dict[str, Any]:
+def get_token_policy(
+    *,
+    for_admin: bool = False,
+    allow_t_scope: bool = True,
+) -> dict[str, Any]:
     saas = is_saas_mode()
+    allowed_scopes = set(ALL_SCOPES if for_admin else USER_SCOPES)
+    if not allow_t_scope:
+        allowed_scopes.discard(SCOPE_T)
     risks = {
         "user_funds": list(_USER_FUND_RISKS),
         "system": list(_SYSTEM_RISKS) if saas else list(_SYSTEM_RISKS[:3]),
@@ -88,7 +96,7 @@ def get_token_policy(*, for_admin: bool = False) -> dict[str, Any]:
         "deployment_mode": deployment_mode_label(),
         "is_saas": saas,
         "agent_live_trading_enabled": agent_live_trading_enabled(),
-        "allowed_scopes": sorted(ALL_SCOPES if for_admin else USER_SCOPES),
+        "allowed_scopes": sorted(allowed_scopes),
         "c_scope_admin_only": True,
         "default_paper_only": True,
         "default_max_order_notional": _positive_env_float("AGENT_DEFAULT_MAX_ORDER_NOTIONAL", 1000),
@@ -110,7 +118,12 @@ def _normalize_expiry(days: int | None) -> datetime | None:
     return datetime.now(timezone.utc) + timedelta(days=d)
 
 
-def _parse_issue_body(body: dict[str, Any], *, allow_c_scope: bool) -> dict[str, Any]:
+def _parse_issue_body(
+    body: dict[str, Any],
+    *,
+    allow_c_scope: bool,
+    allow_t_scope: bool = True,
+) -> dict[str, Any]:
     name = (body.get("name") or "").strip() or f"agent-{int(datetime.utcnow().timestamp())}"
     scopes = parse_scopes(body.get("scopes")) or {"R"}
 
@@ -122,6 +135,13 @@ def _parse_issue_body(body: dict[str, Any], *, allow_c_scope: bool) -> dict[str,
                 http=403,
             )
         scopes = scopes & set(USER_SCOPES)
+
+    if not allow_t_scope and SCOPE_T in scopes:
+        raise TokenIssueError(
+            "T-scope (trading) tokens require trading access.",
+            code=403,
+            http=403,
+        )
 
     if not scopes:
         raise TokenIssueError("At least one scope is required.", code=400)
@@ -182,9 +202,19 @@ def _parse_issue_body(body: dict[str, Any], *, allow_c_scope: bool) -> dict[str,
     }
 
 
-def issue_agent_token(user_id: int, body: dict[str, Any], *, allow_c_scope: bool) -> dict[str, Any]:
+def issue_agent_token(
+    user_id: int,
+    body: dict[str, Any],
+    *,
+    allow_c_scope: bool,
+    allow_t_scope: bool = True,
+) -> dict[str, Any]:
     ensure_agent_gateway_schema()
-    parsed = _parse_issue_body(body, allow_c_scope=allow_c_scope)
+    parsed = _parse_issue_body(
+        body,
+        allow_c_scope=allow_c_scope,
+        allow_t_scope=allow_t_scope,
+    )
 
     full_token, prefix, token_hash = generate_token()
 

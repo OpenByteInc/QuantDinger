@@ -4,6 +4,7 @@ import datetime
 from contextlib import contextmanager
 
 import jwt
+import pytest
 from flask import Flask, jsonify
 
 from app.config.settings import Config
@@ -314,3 +315,37 @@ def test_admin_required_uses_only_verified_database_role(monkeypatch):
         headers={"Authorization": "Bearer forged"},
     )
     assert response.status_code == 403
+
+
+@pytest.mark.parametrize("role,expected", [
+    ("viewer", 403),
+    ("user", 200),
+    ("admin", 200),
+])
+def test_trading_required_uses_authoritative_database_role(monkeypatch, role, expected):
+    app = Flask(__name__)
+
+    @app.post("/trade")
+    @auth.login_required
+    @auth.trading_required
+    def trade_route():
+        return jsonify({"ok": True})
+
+    monkeypatch.setattr(
+        auth,
+        "verify_token",
+        lambda _: {
+            "sub": "account",
+            "user_id": 1,
+            "role": "admin",
+            "_verified_username": "account",
+            "_verified_user_role": role,
+        },
+    )
+
+    response = app.test_client().post(
+        "/trade",
+        headers={"Authorization": "Bearer database-verified"},
+    )
+
+    assert response.status_code == expected

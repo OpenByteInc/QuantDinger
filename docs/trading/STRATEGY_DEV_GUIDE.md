@@ -1050,6 +1050,33 @@ Use signal mode first to validate notifications, signal frequency, and state res
 
 Strategy source runs in a safe execution environment. File, network, database, process, dynamic execution, reflection, and unsafe imports are prohibited.
 
+Manifest discovery and runtime callbacks use separate credential-free processes. A backtest receives an immutable market-data snapshot and exits when the run completes. A live deployment owns one persistent process for its callbacks and serializable strategy state. These processes receive market frames, strategy parameters, risk settings, and order-status snapshots only; they do not receive database handles, exchange credentials, application secrets, or an order-submission client. Callback results cross the boundary as validated order intents, and the trusted trading worker remains responsible for account checks, reconciliation, fencing, and exchange submission.
+
+On Linux, the runtime process also applies fail-closed filesystem and syscall restrictions before loading strategy handlers. If the kernel boundary cannot be activated, the strategy does not run. Callback timeouts terminate the isolated process rather than leaving untrusted code in the API, backtest, evaluator, or trading process.
+
+The execution stages are deliberately separate:
+
+| Stage | Process lifetime | Data admitted to the process | Result returned to the trusted host |
+| --- | --- | --- | --- |
+| Manifest discovery | one disposable process per source inspection | source text and fixed discovery helpers | instruments, subscriptions, schedules, handler names, and metadata |
+| Backtest | one disposable process per run | validated source, serialized market frames, parameters, execution assumptions, and instrument rules | report data, fills, logs, and serializable state |
+| Live callbacks | one persistent process per running deployment | incremental market frames, parameters, risk settings, strategy-owned positions, and order-status snapshots | validated order intents, logs, and serializable state |
+
+The sandbox is not an order gateway. It cannot open an exchange session, query the database, decrypt a credential, or submit an order. The trading worker independently applies ownership, balance, instrument, account-mode, reconciliation, risk, lease, and fencing checks before an intent can reach an exchange.
+
+Only serializable strategy state is durable. Use <code>g</code> and <code>PERSIST_RUNTIME_STATE</code> for state that must survive a restart. Open files, sockets, threads, database objects, imported process state, and objects that cannot cross the JSON transport boundary are unsupported. A sandbox timeout, protocol failure, or kernel-isolation failure is an execution failure; QuantDinger does not fall back to running the callback in a trusted application process.
+
+The official deployment defaults are:
+
+| Setting | Default | Purpose |
+| --- | ---: | --- |
+| <code>STRATEGY_SCRIPT_CALLBACK_TIMEOUT_SEC</code> | <code>5</code> | live callback wall-clock timeout |
+| <code>STRATEGY_RUNTIME_SANDBOX_MEMORY_MB</code> | <code>2048</code> | live callback-process address-space limit |
+| <code>STRATEGY_BACKTEST_SANDBOX_TIMEOUT_SECONDS</code> | <code>900</code> | complete isolated backtest timeout |
+| <code>STRATEGY_BACKTEST_SANDBOX_MEMORY_MB</code> | <code>4096</code> | isolated backtest address-space limit |
+
+Untrusted strategy execution is supported through the official Linux-based deployment. The runtime currently requires a supported <code>x86_64</code> or <code>aarch64</code> Linux kernel with seccomp and Landlock. Native Windows or macOS development may still use the UI and supporting services, but it must not bypass a fail-closed sandbox error or enable in-process execution. Operators should not add secret environment variables, credential files, host sockets, or broad application-tree mounts to a sandbox process.
+
 The following exact identifiers are reserved sandbox capabilities and cannot be called, referenced as values, passed as callbacks, or reused as strategy variable/function names: <code>eval</code>, <code>exec</code>, <code>compile</code>, <code>__import__</code>, <code>getattr</code>, <code>setattr</code>, <code>delattr</code>, <code>globals</code>, <code>vars</code>, <code>dir</code>, <code>breakpoint</code>, <code>open</code>, <code>input</code>, <code>exit</code>, <code>quit</code>, <code>chr</code>, and <code>format</code>. Matching is by complete identifier, not by substring: descriptive names such as <code>open_long</code>, <code>open_position</code>, <code>format_signal</code>, and <code>dir_value</code> remain valid.
 
 Do not access dunder attributes or assemble dunder names dynamically through literals, variables, concatenation, multiplication, or f-strings. A name that resolves to a blocked dunder is rejected even when it is constructed indirectly.

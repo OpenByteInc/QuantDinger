@@ -5,7 +5,7 @@ from typing import Any
 
 from app.services.script_source import get_script_source_service
 from app.services.strategy_authoring import get_strategy_authoring_contract
-from app.services.strategy_v2 import canonical_source_metadata, compile_strategy_v2
+from app.services.strategy_v2 import canonical_source_metadata, inspect_strategy_v2
 from app.utils.agent_auth import SCOPE_R, SCOPE_W, agent_required, current_user_id
 from app.utils.logger import get_logger
 from flask import request
@@ -100,7 +100,7 @@ def compile_strategy_source():
         code = str(source.get("code") or "").strip()
     try:
         assert_strategy_code_size(code)
-        manifest = compile_strategy_v2(code).manifest.metadata()
+        manifest = inspect_strategy_v2(code).manifest.metadata()
     except ValueError as exc:
         return error(400, str(exc))
     except Exception as exc:

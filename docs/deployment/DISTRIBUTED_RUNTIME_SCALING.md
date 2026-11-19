@@ -38,11 +38,12 @@ fencing tokens, idempotency keys, or order reconciliation.
 
 | Strategy class | Current owner | Trigger and recovery path |
 | --- | --- | --- |
-| Ordinary closed-bar Strategy API V2 | `strategy-evaluator-worker` | Kafka shard batch, durable inbox, runtime lease, hot checkpoint |
+| Ordinary closed-bar Strategy API V2 | `strategy-evaluator-worker` | Kafka shard batch, durable inbox, credential-free sandbox callback, runtime lease, hot checkpoint |
 | Grid with resting exchange orders | `trading-worker` | Private fill stream or REST reconciliation, durable grid actor mailbox |
 | Martingale, DCA, tick-driven, and session-driven runtime | `trading-worker` | Realtime local scheduler protected by strategy lease and fencing |
 | Pending live order submission | `trading-worker` | PostgreSQL claim, runtime fencing validation, stable client order ID |
-| AI, backtest, report, and maintenance job | `celery-worker` | Durable Redis jobs queue and task retry policy |
+| AI, report, and maintenance job | `celery-worker` | Durable Redis jobs queue and task retry policy |
+| Backtest, factor research, and finite experiment | `celery-backtest-worker` | Dedicated backtest queue, disposable task child, credential-free strategy sandbox |
 
 Market identity must include venue/provider, market, market type, instrument ID,
 and timeframe. A symbol string such as `BTC/USDT` is not a globally unique price

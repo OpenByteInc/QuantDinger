@@ -26,6 +26,7 @@ from flask import current_app, g, jsonify, make_response, request
 from app.config.redis_urls import cache_redis_url
 from app.utils.db import get_db_connection
 from app.utils.logger import get_logger
+from app.utils.role_access import role_can_trade
 from app.utils.structured_redaction import is_sensitive_key
 
 logger = get_logger(__name__)
@@ -364,11 +365,13 @@ def _lookup_token(raw_token: str) -> Optional[dict]:
         cur = db.cursor()
         cur.execute(
             """
-            SELECT id, user_id, name, scopes, markets, instruments,
-                   paper_only, rate_limit_per_min, max_order_notional,
-                   max_daily_notional, status, expires_at
-            FROM qd_agent_tokens
-            WHERE token_hash = %s
+            SELECT t.id, t.user_id, t.name, t.scopes, t.markets, t.instruments,
+                   t.paper_only, t.rate_limit_per_min, t.max_order_notional,
+                   t.max_daily_notional, t.status, t.expires_at,
+                   u.role AS owner_role
+            FROM qd_agent_tokens t
+            JOIN qd_users u ON u.id = t.user_id
+            WHERE t.token_hash = %s
             """,
             (token_hash,),
         )
@@ -620,6 +623,16 @@ def agent_required(scope: str = SCOPE_R):
                 g.agent_token = row
                 resp, code = _err(403, f"Token lacks required scope: {scope}", status=403)
                 _audit(scope, 403, {"granted": sorted(scopes)}, int((time.time() - t0) * 1000))
+                return resp, code
+
+            if scope == SCOPE_T and not role_can_trade(row.get("owner_role")):
+                g.agent_token = row
+                resp, code = _err(
+                    403,
+                    "The token owner does not have trading access",
+                    status=403,
+                )
+                _audit(scope, 403, {"reason": "owner_role"}, int((time.time() - t0) * 1000))
                 return resp, code
 
             rate = _check_rate_limit(

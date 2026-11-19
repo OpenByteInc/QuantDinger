@@ -20,6 +20,10 @@ import numpy as np
 import pandas as pd
 
 from app.services.kline import KlineService
+from app.services.indicator_market_data import (
+    IndicatorMarketDataService,
+    extract_indicator_data_requests,
+)
 from app.services.signal_notifier import SignalNotifier
 from app.services.strategy_v2.frequencies import normalize_frequency
 from app.services.user_preferences import get_notification_settings
@@ -260,6 +264,7 @@ class IndicatorSignalAlertService:
 
     def __init__(self) -> None:
         self.kline = KlineService()
+        self.indicator_market_data = IndicatorMarketDataService(self.kline)
         self.notifier = SignalNotifier()
 
     def preview_chart(self, user_id: int, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -299,10 +304,27 @@ class IndicatorSignalAlertService:
         if df.empty:
             raise ValueError("No K-line data")
 
-        output = self._execute_indicator(code, df, params)
+        context = self._build_indicator_context(
+            code=code,
+            market=market,
+            symbol=symbol,
+            timeframe=timeframe,
+            base_count=len(df),
+            exchange_id=str(payload.get("exchange_id") or "").strip() or None,
+            market_type=str(payload.get("market_type") or "").strip() or None,
+            instrument_id=str(payload.get("instrument_id") or "").strip() or None,
+            params=params,
+        )
+        output = self._execute_indicator(code, df, params, context=context)
         plots = output.get("plots") if isinstance(output.get("plots"), list) else []
         layers = output.get("layers") if isinstance(output.get("layers"), list) else []
         signals = output.get("signals") if isinstance(output.get("signals"), list) else []
+        tables = output.get("tables") if isinstance(output.get("tables"), list) else []
+        bar_colors = output.get("bar_colors", output.get("barColors", []))
+        background_colors = output.get(
+            "background_colors",
+            output.get("backgroundColors", output.get("backgrounds", [])),
+        )
         latest_signal = self._latest_chart_signal(signals, df)
 
         return _json_safe({
@@ -317,6 +339,10 @@ class IndicatorSignalAlertService:
             "plots": plots,
             "layers": layers,
             "signals": signals,
+            "tables": tables if isinstance(tables, list) else [],
+            "bar_colors": bar_colors if isinstance(bar_colors, list) else [],
+            "background_colors": background_colors if isinstance(background_colors, list) else [],
+            "schema_version": int(output.get("schema_version") or output.get("version") or 1),
             "latest_signal": latest_signal,
         })
 
@@ -506,7 +532,20 @@ class IndicatorSignalAlertService:
             if df.empty:
                 raise ValueError("No K-line data")
 
-            output = self._execute_indicator(code, df, task.get("params") or {})
+            context = self._build_indicator_context(
+                code=code,
+                market=task["market"],
+                symbol=task["symbol"],
+                timeframe=task["timeframe"],
+                base_count=len(df),
+                params=task.get("params") or {},
+            )
+            output = self._execute_indicator(
+                code,
+                df,
+                task.get("params") or {},
+                context=context,
+            )
             signal = self._latest_matching_signal(output, df, task.get("signal_keys") or ["any"])
             if not signal:
                 self._mark_checked(task_id, next_check=next_check, last_error="")
@@ -682,11 +721,53 @@ class IndicatorSignalAlertService:
             df = df.dropna(subset=["open", "high", "low", "close"]).reset_index(drop=True)
         return df
 
-    def _execute_indicator(self, code: str, df: pd.DataFrame, params: Dict[str, Any]) -> Dict[str, Any]:
+    def _build_indicator_context(
+        self,
+        *,
+        code: str,
+        market: str,
+        symbol: str,
+        timeframe: str,
+        base_count: int,
+        exchange_id: str | None = None,
+        market_type: str | None = None,
+        instrument_id: str | None = None,
+        params: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        requests = extract_indicator_data_requests(code, params)
+        if not requests:
+            return {
+                "version": 1,
+                "market": market,
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "requests": [],
+                "series": {},
+            }
+        return self.indicator_market_data.build_context(
+            market=market,
+            symbol=symbol,
+            base_timeframe=timeframe,
+            base_count=base_count,
+            requests=requests,
+            exchange_id=exchange_id,
+            market_type=market_type,
+            instrument_id=instrument_id,
+        )
+
+    def _execute_indicator(
+        self,
+        code: str,
+        df: pd.DataFrame,
+        params: Dict[str, Any],
+        *,
+        context: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
         result = safe_exec_indicator_isolated(
             code=code,
             df=df,
             params=params,
+            context=context,
             timeout=20,
         )
         if not result.get("success"):

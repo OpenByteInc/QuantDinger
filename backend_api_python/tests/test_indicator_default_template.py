@@ -55,8 +55,12 @@ def test_default_template_executes_in_sandbox():
     assert result.get("success"), result.get("error")
     out = env.get("output")
     assert isinstance(out, dict)
+    assert out.get("schema_version") == 2
     assert out.get("plots")
     assert out.get("signals")
+    assert out.get("tables") == []
+    assert all(plot.get("type") == "line" for plot in out["plots"])
+    assert all(signal.get("renderMode") == "events" for signal in out["signals"])
     executed = env["df"]
     for col in ("open_long", "close_long", "open_short", "close_short"):
         assert col not in executed.columns

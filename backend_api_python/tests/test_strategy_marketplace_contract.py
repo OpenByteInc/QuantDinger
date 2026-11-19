@@ -43,7 +43,7 @@ def test_parameterized_binding_is_structurally_detected_and_adapted():
 def test_broker_metadata_does_not_change_marketplace_equity_identity(monkeypatch):
     from app.services import strategy_marketplace_contract as contract_module
 
-    original_compile = contract_module.compile_strategy_v2
+    original_compile = contract_module.inspect_strategy_v2
 
     class _Program:
         manifest = type("_Manifest", (), {"metadata": lambda self: {
@@ -60,7 +60,7 @@ def test_broker_metadata_does_not_change_marketplace_equity_identity(monkeypatch
             },
         }})()
 
-    monkeypatch.setattr(contract_module, "compile_strategy_v2", lambda _code: _Program())
+    monkeypatch.setattr(contract_module, "inspect_strategy_v2", lambda _code: _Program())
 
     contract = contract_module.derive_strategy_contract(PARAMETERIZED)
 

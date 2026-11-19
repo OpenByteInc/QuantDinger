@@ -8,7 +8,7 @@ from app.services.script_source import get_script_source_service
 from app.services.strategy_v2 import (
     StrategyBacktestRepository,
     canonical_source_metadata,
-    compile_strategy_v2,
+    inspect_strategy_v2,
     strategy_source_code_hash,
 )
 from app.utils.auth import login_required
@@ -189,7 +189,7 @@ def compile_script_source_v2():
             code = str((source or {}).get("code") or "").strip()
         if not code:
             return jsonify({"code": 0, "msg": "strategyV2.codeRequired", "data": None}), 400
-        compiled_manifest = compile_strategy_v2(code).manifest
+        compiled_manifest = inspect_strategy_v2(code).manifest
         manifest = compiled_manifest.metadata()
         range_policy = backtest_range_policy_metadata(
             markets=compiled_manifest.markets,
@@ -310,7 +310,7 @@ def publish_script_source():
         if not source:
             return jsonify({"code": 0, "msg": "script source not found", "data": None}), 404
 
-        compile_strategy_v2(str(source.get("code") or ""))
+        inspect_strategy_v2(str(source.get("code") or ""))
 
         if not _has_successful_script_backtest(
             g.user_id,

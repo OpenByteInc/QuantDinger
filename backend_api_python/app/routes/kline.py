@@ -6,6 +6,11 @@ from app.openapi.blueprint import HumanBlueprint as Blueprint
 import traceback
 
 from app.services.kline import KlineService
+from app.services.indicator_market_data import (
+    IndicatorMarketDataService,
+    normalize_indicator_data_requests,
+)
+from app.utils.auth import login_required
 from app.utils.logger import get_logger
 from app.services.market.watchlist import validate_watchlist_pair
 from app.services.market_context import MarketContext, SUPPORTED_CRYPTO_EXCHANGE_IDS
@@ -15,6 +20,7 @@ logger = get_logger(__name__)
 
 kline_blp = Blueprint('kline', __name__)
 kline_service = KlineService()
+indicator_market_data_service = IndicatorMarketDataService(kline_service)
 
 
 def _latest_kline_ttl(timeframe: str) -> int:
@@ -178,6 +184,94 @@ def get_kline():
             'code': 0,
             'msg': f'Failed to fetch kline data: {str(e)}',
             'data': None
+        }), 500
+
+
+@kline_blp.route('/multi-kline', methods=['POST'])
+@login_required
+def get_multi_kline_context():
+    """Return bounded same-symbol timeframe data for an indicator runtime."""
+    try:
+        payload = request.get_json(silent=True) or {}
+        market = str(payload.get('market') or 'USStock').strip()
+        symbol = str(payload.get('symbol') or '').strip()
+        base_timeframe = str(
+            payload.get('timeframe') or payload.get('base_timeframe') or '1D'
+        ).strip()
+        exchange_id = str(
+            payload.get('exchange_id') or payload.get('exchangeId') or ''
+        ).strip() or None
+        market_type = str(
+            payload.get('market_type') or payload.get('marketType') or ''
+        ).strip() or None
+        instrument_id = str(
+            payload.get('instrument_id') or payload.get('instrumentId') or ''
+        ).strip() or None
+        base_count = max(1, min(int(payload.get('base_count') or 300), 1000))
+        requests = normalize_indicator_data_requests(payload.get('requests') or [])
+
+        if not symbol:
+            return jsonify({'code': 0, 'msg': 'marketData.symbolRequired', 'data': None}), 400
+        if not requests:
+            return jsonify({
+                'code': 1,
+                'msg': 'success',
+                'data': {
+                    'version': 1,
+                    'market': market,
+                    'symbol': symbol,
+                    'timeframe': base_timeframe,
+                    'requests': [],
+                    'series': {},
+                },
+            })
+
+        context = MarketContext.from_mapping({
+            'market': market,
+            'symbol': symbol,
+            'exchange_id': exchange_id,
+            'market_type': market_type,
+            'instrument_id': instrument_id,
+            'timeframe': base_timeframe,
+        }, apply_crypto_defaults=False)
+        if market == 'Crypto':
+            if context.exchange_id and context.exchange_id not in SUPPORTED_CRYPTO_EXCHANGE_IDS:
+                return jsonify({
+                    'code': 0,
+                    'msg': 'marketData.unsupportedCryptoExchange',
+                    'data': None,
+                }), 400
+            symbol = context.symbol
+            exchange_id = context.exchange_id or None
+            market_type = context.market_type
+
+        validation_err = validate_watchlist_pair(market, symbol)
+        if validation_err:
+            return jsonify({'code': 0, 'msg': validation_err, 'data': None}), 400
+
+        data = indicator_market_data_service.build_context(
+            market=market,
+            symbol=symbol,
+            base_timeframe=base_timeframe,
+            base_count=base_count,
+            requests=requests,
+            exchange_id=exchange_id,
+            market_type=market_type,
+            instrument_id=instrument_id,
+        )
+        return jsonify({'code': 1, 'msg': 'success', 'data': data})
+    except ValueError:
+        return jsonify({
+            'code': 0,
+            'msg': 'marketData.invalidRequest',
+            'data': None,
+        }), 400
+    except Exception:
+        logger.exception('Failed to fetch indicator multi-timeframe context')
+        return jsonify({
+            'code': 0,
+            'msg': 'marketData.requestFailed',
+            'data': None,
         }), 500
 
 

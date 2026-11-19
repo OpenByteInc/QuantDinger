@@ -108,7 +108,7 @@ def source_service(monkeypatch):
     )
     monkeypatch.setattr(
         strategy_sources,
-        "compile_strategy_v2",
+        "inspect_strategy_v2",
         lambda code: SimpleNamespace(manifest=SimpleNamespace(metadata=lambda: {"strategyType": "single"})),
     )
     return service

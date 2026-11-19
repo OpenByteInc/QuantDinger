@@ -9,7 +9,7 @@ from typing import Any
 import pandas as pd
 
 from app.services.strategy_v2 import StrategyV2BacktestService
-from app.services.strategy_v2.contract import compile_strategy_v2
+from app.services.strategy_v2.contract import inspect_strategy_v2
 from app.services.strategy_v2.frequencies import periods_per_year
 from app.services.strategy_v2.service import (
     _attach_catalog_products,
@@ -47,7 +47,7 @@ class PreparedEvolutionEvaluator:
         self._results: dict[tuple[Any, ...], dict[str, Any]] = {}
         self.stats = {"backtestRuns": 0, "cacheHits": 0}
 
-        program = compile_strategy_v2(code)
+        program = inspect_strategy_v2(code)
         manifest = program.manifest
         self.strategy_type = manifest.strategy_type
         self.universe_kind = manifest.universe.kind

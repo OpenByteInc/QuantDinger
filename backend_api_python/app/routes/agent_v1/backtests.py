@@ -69,9 +69,9 @@ def _validate_request(body: dict) -> tuple[Any, Any]:
         return None, error(400, "initialCapital must be a positive number")
 
     try:
-        from app.services.strategy_v2 import compile_strategy_v2
+        from app.services.strategy_v2 import inspect_strategy_v2
 
-        program = compile_strategy_v2(code)
+        program = inspect_strategy_v2(code)
         manifest = program.manifest
         metadata = manifest.metadata()
     except Exception as exc:

@@ -138,6 +138,15 @@ SELECT *, NOW() AS archived_at, 'logical_asset_migration'::TEXT AS archived_reas
 FROM qd_watchlist
 WHERE FALSE;
 
+DO $watchlist_asset_migration$
+BEGIN
+IF EXISTS (
+  SELECT 1
+  FROM information_schema.columns
+  WHERE table_schema = current_schema()
+    AND table_name = 'qd_watchlist'
+    AND column_name = 'market'
+) THEN
 INSERT INTO qd_watchlist_migration_archive
 SELECT *, NOW(), 'logical_asset_migration'
 FROM qd_watchlist;
@@ -247,3 +256,6 @@ ALTER TABLE qd_watchlist DROP COLUMN IF EXISTS exchange_id;
 ALTER TABLE qd_watchlist DROP COLUMN IF EXISTS market_type;
 ALTER TABLE qd_watchlist DROP COLUMN IF EXISTS instrument_id;
 ALTER TABLE qd_watchlist DROP COLUMN IF EXISTS settle_currency;
+END IF;
+END;
+$watchlist_asset_migration$;

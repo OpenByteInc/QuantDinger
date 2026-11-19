@@ -1052,6 +1052,33 @@ def rebalance(context, data):
 
 策略运行在安全执行环境中。禁止文件、网络、数据库、进程、动态执行、反射和不安全导入。
 
+清单发现与运行时回调分别在无凭证的独立进程中执行。一次回测只接收不可变行情快照，运行结束后进程退出；每个实盘部署拥有一个持续运行的回调进程，用于保存可序列化策略状态。隔离进程只接收行情帧、策略参数、风险设置和订单状态快照，不接收数据库连接、交易所凭证、应用密钥或下单客户端。回调结果以经过校验的订单意图返回，可信交易进程继续负责账户校验、对账、fencing 和交易所下单。
+
+在 Linux 上，系统会在加载策略处理器前启用失败即关闭的文件系统与系统调用限制；内核隔离无法启用时，策略不会运行。回调超时会终止对应隔离进程，不会让不受信任代码继续留在 API、回测、策略评估或交易进程中。
+
+各执行阶段有意采用不同进程边界：
+
+| 阶段 | 进程生命周期 | 允许进入进程的数据 | 返回可信宿主的结果 |
+| --- | --- | --- | --- |
+| 清单发现 | 每次源码检查使用一个一次性进程 | 源码和固定发现助手 | 标的、订阅、调度、处理函数名称和元数据 |
+| 回测 | 每次运行使用一个一次性进程 | 已校验源码、序列化行情、参数、成交假设和标的规则 | 报告数据、成交、日志和可序列化状态 |
+| 实盘回调 | 每个运行中部署使用一个持久进程 | 增量行情、参数、风险设置、策略自有仓位和订单状态快照 | 经校验的订单意图、日志和可序列化状态 |
+
+沙箱不是下单网关。它不能建立交易所会话、查询数据库、解密凭证或直接提交订单。订单意图到达交易所前，交易工作进程仍会独立执行归属、余额、标的、账户模式、对账、风控、租约和 fencing 校验。
+
+只有可序列化的策略状态能够持久化。需要跨重启保存的状态应使用 <code>g</code> 和 <code>PERSIST_RUNTIME_STATE</code>。文件、Socket、线程、数据库对象、导入进程状态以及不能通过 JSON 传输边界的对象都不受支持。沙箱超时、协议失败或内核隔离失败都属于执行失败；QuantDinger 不会降级为在可信应用进程内运行回调。
+
+官方部署默认值如下：
+
+| 配置项 | 默认值 | 作用 |
+| --- | ---: | --- |
+| <code>STRATEGY_SCRIPT_CALLBACK_TIMEOUT_SEC</code> | <code>5</code> | 实盘单次回调的墙钟超时 |
+| <code>STRATEGY_RUNTIME_SANDBOX_MEMORY_MB</code> | <code>2048</code> | 实盘回调进程地址空间上限 |
+| <code>STRATEGY_BACKTEST_SANDBOX_TIMEOUT_SECONDS</code> | <code>900</code> | 完整隔离回测超时 |
+| <code>STRATEGY_BACKTEST_SANDBOX_MEMORY_MB</code> | <code>4096</code> | 隔离回测地址空间上限 |
+
+不受信任策略执行应使用官方 Linux 部署。当前运行时要求支持 seccomp 和 Landlock 的 <code>x86_64</code> 或 <code>aarch64</code> Linux 内核。Windows 或 macOS 原生开发仍可使用 UI 和其他服务，但不能绕过失败关闭的沙箱错误，也不能重新启用进程内执行。运营者不得向沙箱进程添加密钥环境变量、凭证文件、宿主机 Socket 或宽泛的应用目录挂载。
+
 以下完整标识符属于沙箱保留能力，不能被调用、作为值引用、作为回调传递，也不要复用为策略变量名或函数名：<code>eval</code>、<code>exec</code>、<code>compile</code>、<code>__import__</code>、<code>getattr</code>、<code>setattr</code>、<code>delattr</code>、<code>globals</code>、<code>vars</code>、<code>dir</code>、<code>breakpoint</code>、<code>open</code>、<code>input</code>、<code>exit</code>、<code>quit</code>、<code>chr</code> 和 <code>format</code>。校验按完整标识符匹配，不按子字符串匹配；<code>open_long</code>、<code>open_position</code>、<code>format_signal</code>、<code>dir_value</code> 等描述性名称仍然合法。
 
 不要访问 dunder 属性，也不要通过字面量、变量、字符串拼接、字符串乘法或 f-string 动态构造 dunder 名称。即使间接构造的结果最终才解析为受限 dunder，也会被拒绝。

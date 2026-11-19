@@ -52,13 +52,19 @@ def test_authoring_contract_ok(client, monkeypatch):
     data = body["data"]
     assert "starter_template" in data
     assert "my_indicator_name" in data["starter_template"]
-    assert data["version"] == "indicator-contract-v2-chart-only"
+    assert data["version"] == "indicator-contract-v3-chart-only"
     assert "minimal_indicator_snippet" in data
     assert "minimal_backtest_snippet" not in data
     assert any("open_long" in item for item in data["forbidden"])
     assert "Indicator-to-Strategy" in " ".join(data["workflow"])
-    assert "Supported types are line, bar, circle, and cloud" in data["required_fields"]["plots"]
-    assert "repeated per-bar zone or box layers" in data["required_fields"]["plots"]
+    assert "line, bar, circle, cloud, candlestick, and background" in data["required_fields"]["plots"]
+    assert "request_lower_tf" in data["required_fields"]["multi_timeframe"]
+    assert "indicator_timeframe_param" in data["required_fields"]["multi_timeframe"]
+    assert "1,000 bars" in data["required_fields"]["multi_timeframe"]
+    assert "1H and 4H" in data["required_fields"]["visual_quality"]
+    assert '"schema_version": 2' in data["starter_template"]
+    assert "'schema_version': 2" in data["minimal_indicator_snippet"]
+    assert "'tables': []" in data["minimal_indicator_snippet"]
 
 
 def test_save_indicator_requires_w_scope(client, monkeypatch):

@@ -53,7 +53,7 @@ from app.services.strategy_daily_pnl import load_strategy_daily_metrics
 from app.services.settings.capabilities import is_live_trading_enabled
 from app.services.strategy_runtime.bot_type import resolve_bot_type
 from app.services.strategy_runtime.health import load_runtime_health
-from app.services.strategy_v2 import compile_strategy_v2
+from app.services.strategy_v2 import inspect_strategy_v2
 from app.utils.auth import login_required
 from app.utils.logger import get_logger
 
@@ -350,7 +350,7 @@ def verify_strategy():
     if not code:
         return _error("strategyV2.codeRequired")
     try:
-        program = compile_strategy_v2(code)
+        program = inspect_strategy_v2(code)
         from app.services.strategy_marketplace_contract import derive_strategy_contract
         return _ok({
             "valid": True,
@@ -516,7 +516,7 @@ def _compile_or_repair_generated_strategy(
                 context=context,
                 prompt=prompt,
                 intent=resolved_intent,
-                compiler=compile_strategy_v2,
+                compiler=inspect_strategy_v2,
             )
             behavior_validation = validate_strategy_ai_behavior(
                 candidate, program.manifest, resolved_intent

@@ -76,9 +76,11 @@ The v5 runtime separates long-lived ownership from request handling:
 | `trading-worker` | Control/realtime runtimes, broker sessions, fenced order execution, reconciliation, and grid actors. |
 | `strategy-dispatcher-worker` | Converts closed bars into stable strategy-shard evaluation batches. |
 | `strategy-evaluator-worker` | Hosts hot distributed bar runtimes and produces fenced order intents. |
+| Strategy sandbox child | Runs untrusted indicator, discovery, backtest, and live callbacks without credentials or direct order authority; it is created by a trusted owner and is not a standalone Compose service. |
 | `kafka-audit-worker` | Audits the versioned runtime event stream. |
 | `scheduler-worker` | Portfolio, deployment, payment, and notification schedules. |
-| `celery-worker` | Finite retryable work such as AI jobs, backtests, reports, and maintenance. |
+| `celery-worker` | Finite retryable work such as AI jobs, reports, and maintenance. |
+| `celery-backtest-worker` | Backtests, factor research, and finite experiments on the dedicated backtest queue. |
 | `celery-beat` | Periodically enqueues Celery work. |
 
 PostgreSQL is the system of record. `redis` is an evictable cache;

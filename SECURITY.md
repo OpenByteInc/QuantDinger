@@ -2,15 +2,13 @@
 
 QuantDinger is a **local-first, self-hosted quantitative trading system**.
 
-Security is a core design principle of the project, but it is important to
-understand the **responsibility boundaries** that come with self-hosted software.
-
-This document explains what we support, how to report vulnerabilities,
-and what to expect from the process.
+This policy defines the supported versions, security scope, vulnerability
+reporting process, remediation targets, and public acknowledgments for the
+project.
 
 ---
 
-## 🔒 Supported Versions
+## Supported Versions
 
 QuantDinger is under active development.
 
@@ -23,7 +21,7 @@ or commit when running QuantDinger in production environments.
 
 ---
 
-## 🧠 Security Model & Scope
+## Security Model and Scope
 
 QuantDinger is designed to run **entirely under the user’s control**.
 
@@ -36,6 +34,30 @@ We consider the following areas in scope for security review:
 - Strategy execution logic and isolation boundaries
 - Default configuration security issues
 
+### Untrusted Code Boundary
+
+QuantDinger treats uploaded indicator and Strategy API V2 source as untrusted.
+Static source validation is a policy layer, not the sole security boundary.
+Supported deployments execute indicator code, strategy discovery, backtests,
+and live strategy callbacks in child processes that:
+
+- start with a clean environment and no inherited file descriptors;
+- receive only explicitly serialized market data, parameters, state, and
+  bounded runtime context;
+- exchange data with the trusted host through a typed JSON protocol;
+- have no database handle, exchange or broker credential, application secret,
+  or order-submission client;
+- apply timeout, memory, file-size, and output-size limits; and
+- on Linux, activate fail-closed seccomp and Landlock restrictions before
+  untrusted handlers run.
+
+Trusted API, evaluator, backtest, and trading workers retain authentication,
+durable-state, reconciliation, credential, and exchange-order authority. An
+order intent returned by a strategy sandbox is not authorization to trade; it
+must pass the normal ownership, account, risk, lease, and fencing checks.
+QuantDinger does not fall back to in-process untrusted-code execution when the
+kernel boundary cannot be activated.
+
 ### Out of Scope
 The following are outside the scope of this security policy:
 
@@ -46,10 +68,10 @@ The following are outside the scope of this security policy:
 
 ---
 
-## 📣 Reporting a Vulnerability
+## Reporting a Vulnerability
 
-If you believe you have found a security vulnerability in QuantDinger,
-we appreciate responsible disclosure.
+Submit suspected security vulnerabilities through the private reporting
+channel below.
 
 ### How to Report
 
@@ -68,7 +90,7 @@ Please include:
 
 ---
 
-## ⏱️ Response Expectations
+## Response Expectations
 
 We aim to:
 - acknowledge reports within **72 hours**
@@ -103,7 +125,7 @@ unless the reporter requests anonymity.
 
 ---
 
-## 🤝 Responsible Disclosure
+## Responsible Disclosure
 
 We ask security researchers to:
 - avoid exploiting vulnerabilities beyond proof of concept
@@ -148,6 +170,12 @@ encrypted with the previous `CREDENTIAL_ENCRYPTION_KEY` until they have been
 re-encrypted or re-entered; changing that key without a migration makes stored
 credentials unreadable.
 
+The current supported isolation model also separates manifest discovery,
+indicator execution, backtest callbacks, and live callbacks from trusted
+application processes. Operators upgrading from an older build must recreate
+the backend and worker containers so the new child-process boundary is active;
+restarting only the web frontend is insufficient.
+
 ### September 2026 — Broker and strategy execution hardening (resolved)
 
 Two authenticated security issues involving broker endpoint validation and
@@ -163,31 +191,25 @@ support responsible disclosure.
 
 ## Security Acknowledgments
 
-- **Risma Ajul**, security researcher — responsibly disclosed the critical JWT
-  authentication and authorization bypass resolved in July 2026. We sincerely
-  thank Risma for the responsible report and for helping make QuantDinger safer.
-- **Satrio**, independent security researcher — responsibly disclosed a
-  critical runtime-built attribute-traversal issue in the strategy and
-  indicator execution boundary in August 2026. The research was performed
-  against the public repository only and did not access the hosted service or
-  real user data.
-- **Jo Arsy**, security researcher — responsibly disclosed an issue involving
-  improper trust of client-supplied proxy IP headers in September 2026. The
-  report helped strengthen QuantDinger's IP-based authentication and anti-abuse
-  controls.
-- **Dan Aridor and the [SPR{K3](https://sprk3.com/) security research team** —
-  responsibly disclosed two backend security issues resolved in September
-  2026. Their clear reports and coordinated-disclosure approach helped us
-  validate and remediate both issues safely.
-- **Nikhil Agrawal of Mettle Labs** — responsibly disclosed multiple
-  authenticated authorization issues affecting indicator metadata, analysis
-  performance statistics, and strategy runtime-state isolation in October
-  2026. We appreciate the clear reproductions, remediation guidance, and
-  coordinated-disclosure approach.
+The following researchers reported security issues through the coordinated
+disclosure process. Descriptions are intentionally limited to information that
+is appropriate for public release.
+
+| Researcher | Area | Disclosure date |
+| --- | --- | --- |
+| Risma Ajul | JWT authentication and authorization | July 2026 |
+| Satrio | Strategy and indicator execution isolation | August 2026 |
+| Jo Arsy | Proxy-header trust and IP-based controls | September 2026 |
+| Dan Aridor and the [SPR{K3](https://sprk3.com/) security research team | Broker endpoint validation and strategy compilation resource controls | September 2026 |
+| Nikhil Agrawal, Mettle Labs | Authorization and tenant-isolation controls | October 2026 |
+| [Varkey Denny](https://github.com/mynamevarkey) | Strategy-code sandbox validation | November 2026 |
+| goranai | Credential redaction in agent-facing interfaces | November 2026 |
+| [Liam Giannini](https://github.com/Liam-G), [webcracy.ch](https://webcracy.ch) | Role authorization for trading operations; credited as finder | November 2026 |
+| Aleff | Strategy and indicator sandbox process and file-access isolation | November 2026 |
 
 ---
 
-## ⚠️ Disclaimer
+## Disclaimer
 
 QuantDinger is provided **as-is**, without warranty.
 
@@ -197,7 +219,3 @@ As a self-hosted system, users are responsible for:
 - complying with applicable laws and regulations
 
 ---
-
-Security is not a feature — it is a shared responsibility.
-
-Thank you for helping keep QuantDinger safe.
