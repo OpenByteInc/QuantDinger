@@ -10,7 +10,7 @@ through someone else's IBKR/TWS account.
 
 from flask import jsonify, request
 from app.openapi.blueprint import HumanBlueprint as Blueprint
-from app.utils.auth import login_required
+from app.utils.auth import login_required, trading_required
 
 from app.utils.logger import get_logger
 from app.utils.broker_session import BrokerSessionRegistry
@@ -82,6 +82,7 @@ def get_status():
 
 @ibkr_blp.route('/connect', methods=['POST'])
 @login_required
+@trading_required
 def connect():
     """
     Connect to TWS / IB Gateway.
@@ -141,6 +142,7 @@ def connect():
 
 @ibkr_blp.route('/disconnect', methods=['POST'])
 @login_required
+@trading_required
 def disconnect():
     """Disconnect from IBKR."""
     try:
@@ -228,6 +230,7 @@ def get_orders():
 
 @ibkr_blp.route('/order', methods=['POST'])
 @login_required
+@trading_required
 def place_order():
     """
     Place an IBKR order.
@@ -311,6 +314,7 @@ def place_order():
 
 @ibkr_blp.route('/order/<int:order_id>', methods=['DELETE'])
 @login_required
+@trading_required
 def cancel_order(order_id: int):
     """Cancel an IBKR order by ID."""
     try:

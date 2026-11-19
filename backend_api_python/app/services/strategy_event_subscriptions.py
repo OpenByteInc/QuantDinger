@@ -171,7 +171,7 @@ class StrategyEventSubscriptionPlanner:
         from app.services.strategy_runtime.timeframes import (
             daily_equity_execution_policy,
         )
-        from app.services.strategy_v2 import compile_strategy_v2
+        from app.services.strategy_v2 import inspect_strategy_v2
         from app.services.strategy_v2.service import StrategyV2BacktestService
         from app.services.trading_executor import TradingExecutor, _json_object
 
@@ -179,7 +179,7 @@ class StrategyEventSubscriptionPlanner:
         if not strategy or str(strategy.get("status") or "").lower() != "running":
             return set()
         _source_version_id, code = TradingExecutor._load_source(strategy)
-        program = compile_strategy_v2(code)
+        program = inspect_strategy_v2(code)
         user_id = int(strategy.get("user_id") or 0)
         trading_config = _json_object(strategy.get("trading_config"))
         execution_mode = str(strategy.get("execution_mode") or "signal").lower()
@@ -221,7 +221,7 @@ class StrategyEventSubscriptionPlanner:
         eligible = bool(
             daily_policy is None
             and bot_type not in {"grid", "martingale", "layered_martingale"}
-            and not callable(program.namespace.get("on_price_tick"))
+            and not program.has_handler("on_price_tick")
             and supports_bar_close_events(frequency, candidates)
         )
         if not eligible:

@@ -21,7 +21,7 @@ from app.services.strategy_direction import (
 from app.utils.db import get_db_connection
 from app.utils.trading_venue_visibility import is_trading_venue_enabled
 
-from .contract import PLATFORM_MAX_LEVERAGE, StrategyV2ContractError, compile_strategy_v2
+from .contract import PLATFORM_MAX_LEVERAGE, StrategyV2ContractError, inspect_strategy_v2
 
 
 class StrategyV2DeploymentService:
@@ -44,7 +44,7 @@ class StrategyV2DeploymentService:
             "id": source_id,
             "source_version_id": source_version_id,
         }
-        program = compile_strategy_v2(str(source.get("code") or ""))
+        program = inspect_strategy_v2(str(source.get("code") or ""))
         manifest = program.manifest
         source_metadata = self._object(source.get("metadata"))
         adaptation = self._object(source_metadata.get("marketplace_adaptation"))

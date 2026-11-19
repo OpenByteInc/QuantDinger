@@ -13,6 +13,9 @@ os.environ.setdefault("ADMIN_PASSWORD", "testpass123")
 os.environ.setdefault("TQDM_DISABLE", "1")
 os.environ.setdefault("CACHE_ENABLED", "false")
 os.environ.setdefault("SKIP_STARTUP_HOOKS", "1")
+# Direct runtime unit tests execute the same handler-loading path as the
+# credential-free strategy worker. Production processes never set this flag.
+os.environ.setdefault("QD_STRATEGY_RUNTIME_WORKER", "1")
 
 # Some optional trading dependencies still call asyncio.get_event_loop() at
 # import time. Python 3.13 warns when no current loop exists, so provide one for

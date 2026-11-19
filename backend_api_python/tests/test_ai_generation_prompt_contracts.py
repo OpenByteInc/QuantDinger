@@ -170,7 +170,7 @@ def test_indicator_generation_prompt_preserves_stateful_pine_object_lifecycle():
 
 
 def test_indicator_generation_prompt_uses_native_cloud_contract():
-    assert "`line`, `bar`, `circle`, and `cloud`" in INDICATOR_GENERATION_CONTRACT
+    assert "`line`, `bar`, `circle`, `cloud`, `candlestick`, and `background`" in INDICATOR_GENERATION_CONTRACT
     assert "'upper': number" in INDICATOR_GENERATION_CONTRACT
     assert "'lower': number" in INDICATOR_GENERATION_CONTRACT
     assert "Translate Pine `fill()`" in INDICATOR_GENERATION_CONTRACT
@@ -210,7 +210,49 @@ def test_indicator_ide_hidden_prompt_is_english_and_uses_central_contract():
     assert "`locals()` is allowed" not in ai_generate_source
     assert "shift(1, fill_value=False).astype(bool)" in ai_generate_source
     assert "~s.shift(1).fillna(False)" not in ai_generate_source
-    assert "Recognize native `line`, `bar`, `circle`, and `cloud` plots" in ai_generate_source
+    assert "Recognize native `line`, `bar`, `circle`, `cloud`, `candlestick`, and `background` plots" in ai_generate_source
+
+
+def test_indicator_generation_prompt_documents_unified_output_and_same_symbol_timeframes():
+    assert "`bar_colors` and `background_colors`" in INDICATOR_GENERATION_CONTRACT
+    assert "A fixed table is" in INDICATOR_GENERATION_CONTRACT
+    assert "request_series('1D'" in INDICATOR_GENERATION_CONTRACT
+    assert "request_lower_tf('1m'" in INDICATOR_GENERATION_CONTRACT
+    assert "at most eight host-prefetched timeframe requests" in INDICATOR_GENERATION_CONTRACT
+    assert "ordinary timeframe requests fetch at most 1,000 bars" in INDICATOR_GENERATION_CONTRACT
+    assert "lower-timeframe requests fetch at most 5,000 bars" in INDICATOR_GENERATION_CONTRACT
+    assert "indicator_timeframe_param" in INDICATOR_GENERATION_CONTRACT
+    assert "indicator_lower_timeframe_param" in INDICATOR_GENERATION_CONTRACT
+    assert "Never use `lookahead='on'`" in INDICATOR_GENERATION_CONTRACT
+
+
+def test_indicator_generation_and_repair_prompts_enforce_visual_acceptance():
+    assert "readability on both 1H and 4H" in INDICATOR_GENERATION_CONTRACT
+    assert "small recent and bar-spaced display budget" in INDICATOR_GENERATION_CONTRACT
+    assert "Do not let stale or distant helper levels distort the price scale" in INDICATOR_GENERATION_CONTRACT
+    assert "`min_periods=lookback`" in INDICATOR_GENERATION_CONTRACT
+    assert "mentally review the default 1H and 4H layouts" in INDICATOR_GENERATION_CONTRACT
+    assert "dense historical labels, zones, plans, targets" in INDICATOR_REPAIR_REQUIREMENTS
+    assert "suppress stale or distant helper overlays" in INDICATOR_REPAIR_REQUIREMENTS
+    assert "Preserve valid schema-version-2 candlestick plots" in INDICATOR_REPAIR_REQUIREMENTS
+
+
+def test_indicator_development_guides_match_the_current_runtime_contract():
+    root = Path(__file__).parents[2]
+    english = (root / "docs" / "trading" / "INDICATOR_DEV_GUIDE.md").read_text(encoding="utf-8")
+    chinese = (root / "docs" / "trading" / "INDICATOR_DEV_GUIDE_CN.md").read_text(encoding="utf-8")
+
+    assert "single-symbol, single-timeframe indicators" not in english
+    assert "cross-symbol/MTF | Not supported yet" not in english
+    assert "单标的、单周期指标" not in chinese
+    assert "跨标的/多周期 | 尚未支持" not in chinese
+    for guide in (english, chinese):
+        assert "indicator_timeframe_param" in guide
+        assert "indicator_lower_timeframe_param" in guide
+        assert "1,000" in guide
+        assert "5,000" in guide
+        assert "schema_version" in guide
+        assert "1H" in guide and "4H" in guide
 
 
 def test_indicator_quality_endpoint_can_skip_runtime_smoke_for_publishing():
@@ -263,7 +305,7 @@ def test_strategy_generator_repairs_invalid_model_output_once(monkeypatch):
         def get_code_generation_model(self):
             return "test-model"
 
-    monkeypatch.setattr(strategy_route, "compile_strategy_v2", fake_compile)
+    monkeypatch.setattr(strategy_route, "inspect_strategy_v2", fake_compile)
     llm = FakeLLM()
 
     code, program, behavior = strategy_route._compile_or_repair_generated_strategy(
@@ -309,7 +351,7 @@ def test_strategy_generator_uses_a_bounded_second_error_directed_repair(monkeypa
         def get_code_generation_model(self):
             return "test-model"
 
-    monkeypatch.setattr(strategy_route, "compile_strategy_v2", fake_compile)
+    monkeypatch.setattr(strategy_route, "inspect_strategy_v2", fake_compile)
     llm = FakeLLM()
 
     code, _program, _behavior = strategy_route._compile_or_repair_generated_strategy(
@@ -352,7 +394,7 @@ def test_strategy_generator_repairs_runtime_behavior_failures(monkeypatch):
         def get_code_generation_model(self):
             return "test-model"
 
-    monkeypatch.setattr(strategy_route, "compile_strategy_v2", lambda _code: FakeProgram())
+    monkeypatch.setattr(strategy_route, "inspect_strategy_v2", lambda _code: FakeProgram())
     monkeypatch.setattr(strategy_route, "validate_strategy_ai_behavior", fake_behavior)
     llm = FakeLLM()
 

@@ -15,13 +15,17 @@ roles:
 | --- | --- | --- |
 | API | `gunicorn -c gunicorn_config.py run:app` | HTTP, authentication, validation, and durable command submission. |
 | Migration | `python -m app.commands.migrate` | Fail-fast schema application before services start. |
-| Trading | `python -m app.commands.trading_worker` | Strategy runtimes, pending orders, broker sessions, and reconciliation. |
+| Trading | `python -m app.commands.trading_worker` | Strategy ownership, pending orders, broker sessions, reconciliation, and trusted order submission. |
 | Scheduler | `python -m app.commands.scheduler` | Portfolio, deployment, payment, and signal schedules. |
-| Celery worker | `celery -A app.celery_app:celery_app worker` | Finite AI, backtest, experiment, report, and maintenance jobs. |
+| Celery worker | `celery -A app.celery_app:celery_app worker` | Finite AI, experiment, report, and maintenance jobs. |
+| Backtest worker | `celery -A app.celery_app:celery_app worker -Q backtest` | Backtest orchestration and result persistence. |
+| Strategy sandbox child | internal `python -I` worker | Untrusted indicator, discovery, backtest, and live callback execution without credentials or direct order authority. |
 | Celery beat | `celery -A app.celery_app:celery_app beat` | Periodic task dispatch. |
 
 HTTP processes must not start trading or scheduler threads. Celery must not own
-long-lived strategy loops or broker sessions. See
+long-lived strategy ownership or broker sessions. Strategy sandbox children do
+not own leases or durable state and must never receive application credentials,
+database connections, or exchange clients. See
 [Process roles and durable tasks](../docs/architecture/PROCESS_ROLES_AND_TASKS.md).
 
 ## Storage model

@@ -32,13 +32,14 @@ from app.services.market.product_catalog import get_catalog_product
 from app.services.universe import UniverseService, get_universe_service
 from app.utils.logger import get_logger
 
-from .contract import StrategyV2ContractError, compile_strategy_v2
+from .contract import StrategyV2ContractError, inspect_strategy_v2
 from .factor_benchmark import FactorBenchmarkEngine
 from .factor_research import FactorResearchEngine
 from .frequencies import SUPPORTED_SUBSCRIPTION_FREQUENCIES, normalize_frequency, periods_per_year
 from .instruments import instrument_key_from_metadata
 from .models import InstrumentSpec, StrategyManifest
 from .market_data import load_strategy_frame
+from .sandbox import run_strategy_backtest_isolated
 from .runtime import StrategyV2BacktestRunner
 from .readiness import (
     fundamental_shortfalls,
@@ -92,7 +93,7 @@ class StrategyV2BacktestService:
         self.instrument_rules_provider = instrument_rules_provider or get_instrument_rules_provider()
 
     def compile(self, code: str) -> dict[str, Any]:
-        return compile_strategy_v2(code).manifest.metadata()
+        return inspect_strategy_v2(code).manifest.metadata()
 
     def research_factor(
         self,
@@ -109,7 +110,7 @@ class StrategyV2BacktestService:
         slippage: float = 0.0005,
         neutralize_industry: bool = False,
     ) -> dict[str, Any]:
-        program = compile_strategy_v2(code)
+        program = inspect_strategy_v2(code)
         manifest = program.manifest
         if manifest.strategy_type != "portfolio":
             raise StrategyV2ContractError("strategyV2.factorResearchPortfolioOnly")
@@ -561,7 +562,7 @@ class StrategyV2BacktestService:
                 on_progress({"phase": phase, "percent": percent, **details})
 
         emit("preparing", 5)
-        program = compile_strategy_v2(code)
+        program = inspect_strategy_v2(code)
         manifest = program.manifest
         custom_factor_cache = {
             str(reference).lower(): get_custom_factor(user_id, reference)
@@ -719,7 +720,21 @@ class StrategyV2BacktestService:
 
         replay_at = perf_counter()
         emit("running_simulation", 52, bars=sum(len(frame.index) for frame in frames.values()))
-        runner = StrategyV2BacktestRunner(
+        default_universe_members = [item["key"] for item in candidates]
+        universe_members_by_date: dict[str, list[str]] = {}
+        if universe_id:
+            trading_dates = sorted({
+                pd.Timestamp(timestamp).date()
+                for frame in frames.values()
+                for timestamp in frame.index
+                if start_date.date() <= pd.Timestamp(timestamp).date() <= end_date.date()
+            })
+            for trading_date in trading_dates:
+                universe_members_by_date[trading_date.isoformat()] = resolve_universe(
+                    manifest.universe.reference,
+                    pd.Timestamp(trading_date),
+                )
+        result = run_strategy_backtest_isolated(
             code=code,
             frames=frames,
             frequency_frames=frequency_frames,
@@ -729,11 +744,20 @@ class StrategyV2BacktestService:
             leverage=leverage,
             commission=commission,
             slippage=slippage,
-            universe_resolver=resolve_universe,
-            instrument_rules=rules_snapshot,
-            custom_factor_resolver=lambda factor_id: custom_factor_cache[str(factor_id).lower()],
+            universe_members_by_date=universe_members_by_date,
+            default_universe_members=default_universe_members,
+            instrument_rules=rules_snapshot.metadata() if rules_snapshot is not None else None,
+            custom_factors=custom_factor_cache,
+            start_date=start_date,
+            end_date=end_date,
+            timeout=max(
+                30.0,
+                float(os.getenv("STRATEGY_BACKTEST_SANDBOX_TIMEOUT_SECONDS", "900") or 900),
+            ),
+            max_memory_mb=int(
+                os.getenv("STRATEGY_BACKTEST_SANDBOX_MEMORY_MB", "4096") or 4096
+            ),
         )
-        result = runner.run(start_date=start_date, end_date=end_date)
         report_at = perf_counter()
         emit(
             "building_report",

@@ -76,7 +76,11 @@ def worker(args):
     input_path = contained_path(audit_root, args.input)
     output_path = contained_path(audit_root, args.output)
     sys.path.insert(0, str(args.app_root))
-    from app.services.strategy_v2 import StrategyV2BacktestRunner, StrategyV2LiveSession, compile_strategy_v2
+    from app.services.strategy_v2 import inspect_strategy_v2
+    from app.services.strategy_v2.sandbox import (
+        IsolatedStrategyV2LiveSession,
+        run_strategy_backtest_isolated,
+    )
     from app.services.strategy_v2.frequencies import frequency_seconds
     import pandas as pd
 
@@ -84,7 +88,7 @@ def worker(args):
     with output_path.open("w", encoding="utf-8") as output_stream:
         for scenario in json.loads(input_path.read_text(encoding="utf-8")):
             code = scenario["code"]
-            manifest = compile_strategy_v2(code).manifest
+            manifest = inspect_strategy_v2(code).manifest
             frames = {
                 item.key: frame_for(rank, manifest.driving_frequency, args.bars)
                 for rank, item in enumerate(manifest.universe.instruments)
@@ -96,10 +100,18 @@ def worker(args):
             durations, hashes = [], []
             for _ in range(args.repeats):
                 start = time.perf_counter()
-                result = StrategyV2BacktestRunner(
-                    code=code, frames=frames, initial_capital=100000,
-                    commission=.0005, slippage=.0005,
-                ).run()
+                result = run_strategy_backtest_isolated(
+                    code=code,
+                    frames=frames,
+                    frequency_frames=None,
+                    initial_capital=100000,
+                    params=None,
+                    leverage_enabled=False,
+                    leverage=1.0,
+                    commission=.0005,
+                    slippage=.0005,
+                    default_universe_members=list(frames),
+                )
                 durations.append(time.perf_counter() - start)
                 hashes.append(digest(result))
             assert len(set(hashes)) == 1, scenario["name"]
@@ -107,9 +119,10 @@ def worker(args):
                 assert result["totalExecutions"] > 0, scenario["name"]
 
             def session(current_frames):
-                return StrategyV2LiveSession(
+                return IsolatedStrategyV2LiveSession(
                     code=code, frames=current_frames, initial_capital=100000,
                     params={"persist_runtime_state": True}, schedule_timezone="UTC",
+                    universe_members=list(current_frames),
                 )
 
             live_records = []
@@ -121,6 +134,7 @@ def worker(args):
                     active = session(current)
                 elif offset == args.bars - 6:
                     saved = active.session_snapshot()
+                    active.close()
                     active = session(current)
                     active.restore_session_snapshot(saved)
                 # Fixed external snapshots exercise both flat and held legs without sending orders.
@@ -134,14 +148,24 @@ def worker(args):
                 when = next(iter(current.values())).index[-1]
                 clock = when + pd.Timedelta(seconds=frequency_seconds(manifest.driving_frequency))
                 start = time.perf_counter()
-                orders, logs, timestamp = active.process(current, schedule_time=clock)
+                orders, logs, timestamp = active.process(
+                    current,
+                    schedule_time=clock,
+                    universe_members=list(current),
+                )
                 live_seconds += time.perf_counter() - start
-                repeated, repeated_logs, _ = active.process(current, schedule_time=clock)
+                repeated, repeated_logs, _ = active.process(
+                    current,
+                    schedule_time=clock,
+                    universe_members=list(current),
+                )
                 live_records.append({
                     "orders": [asdict(item) for item in orders], "logs": logs,
                     "time": timestamp, "repeatedOrders": [asdict(item) for item in repeated],
                     "repeatedLogs": repeated_logs, "snapshot": active.session_snapshot(),
                 })
+            if active is not None:
+                active.close()
             entry = dict(
                 name=scenario["name"], strategy_type=manifest.strategy_type, symbols=len(frames),
                 seconds=durations, median_seconds=statistics.median(durations),

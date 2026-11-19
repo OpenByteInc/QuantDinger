@@ -196,6 +196,60 @@ output = {'plots': [{'name': f\"avg-{len(df)}\", 'data': df['average'].tolist()}
     assert isinstance(payload["df"].index, pd.DatetimeIndex)
     assert str(payload["df"].index.tz) == "UTC"
 
+
+def test_indicator_worker_exposes_aligned_series_and_lower_timeframe_arrays():
+    df = pd.DataFrame({
+        "time": [index * 14_400 for index in range(2)],
+        "open": [100.0, 110.0],
+        "high": [112.0, 122.0],
+        "low": [98.0, 108.0],
+        "close": [110.0, 120.0],
+        "volume": [400.0, 800.0],
+    })
+    hourly_rows = [
+        {
+            "time": index * 3_600,
+            "open": 100.0 + index,
+            "high": 101.0 + index,
+            "low": 99.0 + index,
+            "close": 100.5 + index,
+            "volume": 10.0 + index,
+        }
+        for index in range(8)
+    ]
+    daily_rows = [{
+        "time": -86_400,
+        "open": 90.0,
+        "high": 111.0,
+        "low": 88.0,
+        "close": 105.0,
+        "volume": 1000.0,
+    }]
+    result = safe_exec_indicator_isolated(
+        """
+daily = request_series('1D', field='close')
+hourly = request_lower_tf('1H', fields='volume')
+output = {
+    'plots': [{'name': 'Daily', 'data': daily.tolist()}],
+    'signals': [],
+    'calculatedVars': {'hourly_counts': [len(item) for item in hourly]},
+}
+""",
+        df,
+        {},
+        context={
+            "market": "Crypto",
+            "symbol": "BTC/USDT",
+            "timeframe": "4H",
+            "series": {"1D": daily_rows, "1H": hourly_rows},
+        },
+        timeout=10,
+    )
+    assert result["success"] is True, result["error"]
+    output = result["result"]["output"]
+    assert output["plots"][0]["data"] == [105.0, 105.0]
+    assert output["calculatedVars"]["hourly_counts"] == [4, 4]
+
 def test_operator_import_rejected():
     ok, _ = validate_code_safety("import operator\noutput = {}")
     assert ok is False

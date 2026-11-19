@@ -559,7 +559,7 @@ def executor_templates() -> Dict[str, Any]:
 
 
 def build_executor_strategy_payload(payload: Dict[str, Any], *, user_id: int) -> Dict[str, Any]:
-    from app.services.strategy_v2 import compile_strategy_v2
+    from app.services.strategy_v2 import inspect_strategy_v2
 
     cfg = normalize_executor_payload(payload)
     exchange_config = cfg.get("exchange_config") or cfg.get("exchangeConfig") or {}
@@ -706,7 +706,7 @@ def build_executor_strategy_payload(payload: Dict[str, Any], *, user_id: int) ->
         f'Strategy API V2 {kind.replace("_", " ")} robot generated from the visual builder.\n'
         f'"""\n\n{generated_code}'
     )
-    program = compile_strategy_v2(code)
+    program = inspect_strategy_v2(code)
     return {
         "user_id": user_id,
         "strategy_name": strategy_name,

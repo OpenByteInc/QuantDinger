@@ -124,10 +124,13 @@ _DANGEROUS_METHOD_NAMES: Set[str] = {
     'to_csv', 'to_excel', 'to_xml', 'to_html', 'to_json', 'to_pickle',
     'to_parquet', 'to_orc', 'to_feather', 'to_hdf', 'to_sql',
     'to_clipboard', 'to_gbq', 'to_stata', 'to_latex',
-    'tofile',
+    'tofile', 'dump', 'to_string', 'to_markdown', 'savefig', 'imsave',
     # numpy IO: arbitrary read / write / pickle deser.
     'save', 'savez', 'savez_compressed', 'savetxt',
-    'load', 'loadtxt', 'genfromtxt', 'fromfile', 'memmap', 'DataSource',
+    'load', 'loadtxt', 'genfromtxt', 'recfromcsv', 'recfromtxt',
+    'fromfile', 'fromregex', 'memmap', 'DataSource',
+    # pandas constructors that open local files directly.
+    'ExcelFile', 'ExcelWriter', 'HDFStore',
     # String-expression evaluators that execute attacker-controlled code.
     'eval', 'query',
     # Frame / introspection accessors should never be invoked.
@@ -153,10 +156,11 @@ _SAFE_MODULE_DUNDER_ATTRS: Set[str] = {'__name__', '__doc__', '__all__'}
 
 
 class _SafeModuleProxy(types.ModuleType):
-    """Read-only view of an allowed module without importer internals."""
+    """Restricted module view without blocked capabilities or importer internals."""
 
     def __getattribute__(self, name: str) -> Any:
-        if name in _BLOCKED_MODULE_ATTRS or (
+        # Enforce capability restrictions even if static validation misses a reference.
+        if name in _DANGEROUS_METHOD_NAMES or name in _BLOCKED_MODULE_ATTRS or (
             name.startswith('__')
             and name.endswith('__')
             and name not in _SAFE_MODULE_DUNDER_ATTRS
@@ -184,6 +188,8 @@ _DANGEROUS_FRAME_ATTRS: Set[str] = {
     'f_code', 'f_trace', 'f_lasti', 'f_lineno',
     'tb_frame', 'tb_next', 'tb_lasti', 'tb_lineno',
     'func_globals', 'func_code', 'func_closure', 'func_dict',
+    # ndarray.ctypes exposes a wrapper retaining the real ctypes module.
+    'ctypes', '_ctypes',
 }
 
 # Sub-modules of whitelisted packages that expose C/native escapes.
@@ -210,7 +216,7 @@ def _dangerous_pd_numpy_import(name: str) -> Optional[str]:
     if internal:
         return name
     for attr in attrs:
-        if attr in _DANGEROUS_SUBMODULE_ATTRS:
+        if attr in _DANGEROUS_SUBMODULE_ATTRS or attr in _DANGEROUS_METHOD_NAMES:
             return name
     return None
 
@@ -227,7 +233,7 @@ def _is_safe_import_name(name: str) -> Tuple[bool, Optional[str]]:
 
 
 def _wrap_imported_module(module: Any) -> Any:
-    """Copy a module into a proxy that hides loader/spec escape attributes."""
+    """Copy permitted exports without modifying the host's module namespace."""
     if isinstance(module, _SafeModuleProxy):
         return module
     if not isinstance(module, types.ModuleType):
@@ -235,7 +241,7 @@ def _wrap_imported_module(module: Any) -> Any:
 
     proxy = _SafeModuleProxy(getattr(module, '__name__', 'safe_module'))
     for name, value in module.__dict__.items():
-        if name in _BLOCKED_MODULE_ATTRS:
+        if name in _DANGEROUS_METHOD_NAMES or name in _BLOCKED_MODULE_ATTRS:
             continue
         if name.startswith('__') and name.endswith('__') and name not in _SAFE_MODULE_DUNDER_ATTRS:
             continue
@@ -768,8 +774,11 @@ def safe_exec_isolated(
     """Execute serializable user code in a clean-environment subprocess.
 
     The worker is started with ``python -I``, receives no parent environment
-    variables, and communicates using JSON only.  This prevents both process
-    secret inheritance and attacker-controlled pickle deserialization.
+    variables, and communicates using JSON only. On Linux it then applies a
+    fail-closed Landlock filesystem policy and seccomp capability filter before
+    user code runs. This prevents process-secret inheritance, application-file
+    access, network access, cross-process control, and attacker-controlled
+    pickle deserialization.
 
     Args:
         code: Python code to execute
@@ -994,6 +1003,7 @@ def safe_exec_indicator_isolated(
     code: str,
     df: Any,
     params: Optional[Dict[str, Any]] = None,
+    context: Optional[Dict[str, Any]] = None,
     *,
     timeout: int = 20,
     max_memory_mb: int = 1024,
@@ -1004,6 +1014,7 @@ def safe_exec_indicator_isolated(
         input_data={
             "df": df.copy(),
             "params": dict(params or {}),
+            "indicator_context": dict(context or {}),
             "output": None,
         },
         timeout=timeout,
@@ -1193,9 +1204,10 @@ def validate_code_safety(code: str) -> Tuple[bool, Optional[str]]:
         r'read_sas|read_spss|read_stata)\s*\(',
         r'\.(to_csv|to_excel|to_xml|to_html|to_json|to_pickle|to_parquet|'
         r'to_orc|to_feather|to_hdf|to_sql|to_clipboard|to_gbq|to_stata|'
-        r'to_latex|tofile)\s*\(',
+        r'to_latex|tofile|dump|to_string|to_markdown|savefig|imsave)\s*\(',
         r'\b(np|numpy)\.(save|savez|savez_compressed|savetxt|load|loadtxt|'
-        r'genfromtxt|fromfile|memmap|DataSource)\s*\(',
+        r'genfromtxt|recfromcsv|recfromtxt|fromfile|fromregex|memmap|DataSource)\s*\(',
+        r'\b(pd|pandas)\.(ExcelFile|ExcelWriter|HDFStore)\s*\(',
         r'\.(eval|query)\s*\(',
         # Frame / traceback / closure chains used to break out of the sandbox.
         r'\.(gi_frame|gi_code|cr_frame|cr_code|ag_frame|ag_code|'

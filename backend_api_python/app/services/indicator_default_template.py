@@ -58,25 +58,31 @@ death_marks = [
 ]
 
 output = {{
+    "schema_version": 2,
     "name": my_indicator_name,
     "plots": [
         {{
             "name": f"EMA{{fast_period}}",
             "data": plot_list(ema_fast),
             "color": "#FF9800",
+            "type": "line",
+            "lineWidth": 2,
             "overlay": True,
         }},
         {{
             "name": f"EMA{{slow_period}}",
             "data": plot_list(ema_slow),
             "color": "#3F51B5",
+            "type": "line",
+            "lineWidth": 2,
             "overlay": True,
         }},
     ],
     "signals": [
-        {{"type": "buy", "text": "Golden", "data": golden_marks, "color": "#00E676"}},
-        {{"type": "sell", "text": "Death", "data": death_marks, "color": "#FF5252"}},
+        {{"type": "buy", "text": "Golden", "data": golden_marks, "color": "#00E676", "renderMode": "events"}},
+        {{"type": "sell", "text": "Death", "data": death_marks, "color": "#FF5252", "renderMode": "events"}},
     ],
     "layers": [],
+    "tables": [],
 }}
 '''

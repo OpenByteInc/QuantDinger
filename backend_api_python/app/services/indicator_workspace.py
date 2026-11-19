@@ -42,7 +42,7 @@ def get_indicator_authoring_contract() -> Dict[str, Any]:
     """Machine-readable contract + starter template for external AI agents."""
     template = build_default_indicator_template()
     return {
-        "version": "indicator-contract-v2-chart-only",
+        "version": "indicator-contract-v3-chart-only",
         "doc": "docs/trading/INDICATOR_DEV_GUIDE_CN.md",
         "workflow": [
             "1. Call this contract (or MCP get_indicator_authoring_contract) before writing code.",
@@ -54,10 +54,14 @@ def get_indicator_authoring_contract() -> Dict[str, Any]:
         "required_fields": {
             "globals": ["my_indicator_name", "my_indicator_description"],
             "dataframe": "Use df = df.copy() before computations/mutations. Expected columns: open, high, low, close, volume.",
-            "output": "output = {'name', 'plots', 'signals', 'layers'}; every plot['data'] and signal['data'] length must equal len(df).",
-            "plots": "Each plot has name, data, color, overlay. Supported types are line, bar, circle, and cloud. A cloud point is None or {'upper': number, 'lower': number, 'color': '#RRGGBB'}; use opacity 0.02-0.30 and None for gaps. Prefer one cloud plot over repeated per-bar zone or box layers.",
+            "output": "Use schema_version 2. output may contain name, plots, signals, layers, tables, bar_colors, background_colors, and calculatedVars; every per-bar rendering list must have exactly len(df) values and use None instead of NaN or infinity.",
+            "plots": "Each plot has name, data, color, overlay. Supported types are line, bar, circle, cloud, candlestick, and background. A candlestick point provides open/high/low/close plus optional body, border, and wick colors.",
             "signals": "Chart markers only. Prefer one-bar edge/transition events, not continuous state markers, so notifications do not repeat every bar.",
-            "layers": "Optional sparse zones/lines/labels only when explicitly useful; default [] for normal indicators.",
+            "layers": "Optional sparse zones, lines, polylines, and labels only when explicitly useful; default [] for normal indicators.",
+            "tables": "Optional fixed chart panels with position, columns, and rows. Supported positions are top-left, top-right, bottom-left, and bottom-right.",
+            "chart_styles": "Use bar_colors and background_colors for per-bar host-candle and chart-background styling.",
+            "multi_timeframe": "At most eight same-symbol requests are available through request_series(timeframe, field=None, gaps='off', lookahead='off') and request_lower_tf(timeframe, fields=None). Direct calls use literal supported intervals; user-selectable intervals use indicator_timeframes/indicator_lower_timeframes allowlists and the matching indicator_timeframe_param/indicator_lower_timeframe_param binding. Series history is capped at 1,000 bars and lower-timeframe history at 5,000 bars, so code must guard unavailable coverage.",
+            "visual_quality": "Keep 1H and 4H previews readable: use sparse bar-spaced events, bound repeated historical layers, require full rolling-window warm-up unless progressive behavior is intentional, hide helper titles, and do not draw stale or distant levels that distort the active price scale.",
             "params": "Declare knobs with # @param name type default label and read each via params.get('name', default) with matching fallback.",
             "calculatedVars": "Optional JSON-safe diagnostics for the UI; never required for rendering.",
         },
@@ -87,16 +91,18 @@ def get_indicator_authoring_contract() -> Dict[str, Any]:
             "buy_marks = [float(df['low'].iloc[i] * 0.995) if bool(cross_up.iloc[i]) else None for i in range(len(df))]\n"
             "sell_marks = [float(df['high'].iloc[i] * 1.005) if bool(cross_dn.iloc[i]) else None for i in range(len(df))]\n"
             "output = {\n"
+            "    'schema_version': 2,\n"
             "    'name': my_indicator_name,\n"
             "    'plots': [\n"
-            "        {'name': 'EMA Fast', 'data': fast.tolist(), 'color': '#ffb020', 'overlay': True},\n"
-            "        {'name': 'EMA Slow', 'data': slow.tolist(), 'color': '#2d8cff', 'overlay': True},\n"
+            "        {'name': 'EMA Fast', 'data': fast.tolist(), 'color': '#ffb020', 'type': 'line', 'lineWidth': 2, 'overlay': True},\n"
+            "        {'name': 'EMA Slow', 'data': slow.tolist(), 'color': '#2d8cff', 'type': 'line', 'lineWidth': 2, 'overlay': True},\n"
             "    ],\n"
             "    'signals': [\n"
-            "        {'type': 'buy', 'text': 'Cross Up', 'color': '#22c55e', 'data': buy_marks},\n"
-            "        {'type': 'sell', 'text': 'Cross Down', 'color': '#ef4444', 'data': sell_marks},\n"
+            "        {'type': 'buy', 'text': 'Cross Up', 'color': '#22c55e', 'data': buy_marks, 'renderMode': 'events'},\n"
+            "        {'type': 'sell', 'text': 'Cross Down', 'color': '#ef4444', 'data': sell_marks, 'renderMode': 'events'},\n"
             "    ],\n"
             "    'layers': [],\n"
+            "    'tables': [],\n"
             "}\n"
         ),
     }

@@ -2796,9 +2796,9 @@ class CommunityService:
                     contract_manifest = {}
                     contract_source = 'published_code'
                     try:
-                        from app.services.strategy_v2 import compile_strategy_v2
+                        from app.services.strategy_v2 import inspect_strategy_v2
 
-                        contract_manifest = compile_strategy_v2(
+                        contract_manifest = inspect_strategy_v2(
                             str(asset_row.get('code') or '')
                         ).manifest.metadata()
                     except Exception:

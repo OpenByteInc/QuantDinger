@@ -282,6 +282,34 @@ def test_snapshot_is_content_addressed_and_replayable(tmp_path):
     assert restored.get("Crypto:BTC/USDT@binance:swap").amount_step == 0.001
 
 
+def test_snapshot_resolves_generic_crypto_key_without_runtime_config(monkeypatch):
+    rules = InstrumentRulesProvider.normalize(
+        "binance",
+        "swap",
+        "BTC/USDT",
+        {
+            "symbol": "BTCUSDT",
+            "filters": [{
+                "filterType": "LOT_SIZE",
+                "stepSize": "0.001",
+                "minQty": "0.001",
+            }],
+        },
+        captured_at="2025-01-01T00:00:00Z",
+    )
+    snapshot = InstrumentRulesSnapshot.build([rules])
+    monkeypatch.setattr(
+        "app.services.instrument_rules.default_crypto_exchange_id",
+        lambda: (_ for _ in ()).throw(AssertionError("runtime config must not be read")),
+    )
+
+    resolved = snapshot.get("Crypto:BTC/USDT@swap")
+
+    assert resolved is not None
+    assert resolved.key == "Crypto:BTC/USDT@binance:swap"
+    assert resolved.amount_step == 0.001
+
+
 def test_historical_backtest_without_snapshot_never_fetches_todays_rules(tmp_path):
     def unexpected_fetch(*_args):
         raise AssertionError("historical backtest must not fetch current exchange rules")

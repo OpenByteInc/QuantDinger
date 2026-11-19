@@ -39,3 +39,31 @@ def test_validation_rejects_legacy_zone_bounds():
     result = _validate_indicator_code_internal(code)
     assert result["success"] is False
     assert result["error_type"] == "InvalidZoneLayer"
+
+
+def test_validation_accepts_v2_chart_styles_tables_and_candles():
+    code = """
+my_indicator_name = 'Protocol V2'
+my_indicator_description = 'Unified renderer contract'
+df = df.copy()
+colors = ['#22c55e' if value >= 0 else '#ef4444' for value in df['close'].diff().fillna(0)]
+candles = [
+    {
+        'open': float(row.open), 'high': float(row.high),
+        'low': float(row.low), 'close': float(row.close),
+        'color': colors[index],
+    }
+    for index, row in enumerate(df.itertuples())
+]
+output = {
+    'schema_version': 2,
+    'plots': [{'name': 'Synthetic', 'type': 'candlestick', 'overlay': True, 'data': candles}],
+    'signals': [],
+    'bar_colors': colors,
+    'background_colors': [None] * len(df),
+    'tables': [{'position': 'top-right', 'rows': [['Trend', 'Up']]}],
+}
+"""
+    result = _validate_indicator_code_internal(code)
+    assert result["success"] is True
+    assert result["plots_count"] == 1

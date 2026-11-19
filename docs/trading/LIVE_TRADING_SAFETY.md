@@ -26,11 +26,12 @@ Bitget credentials default to automatic account-mode detection. Unified accounts
 1. **Account:** use a dedicated subaccount or low-balance account; grant required trading permissions only and disable withdrawals.
 2. **Instrument:** verify venue, market type, settlement currency, native symbol, and API family.
 3. **Strategy:** source, manifest, direction, and leverage declarations pass validation.
-4. **Backtest:** a person has reviewed data, costs, slippage, funding, execution ledger, and maximum drawdown.
-5. **Signal:** run `signal` first and check notification frequency, time zone, and state restoration after restart.
-6. **Positions:** identify manual and other-strategy holdings; resolve every unknown delta.
-7. **Limits:** set notional, per-symbol, gross exposure, leverage, and loss boundaries.
-8. **Incident path:** confirm an operator can stop the deployment, cancel orders, and use emergency stop.
+4. **Sandbox:** use the supported Linux deployment and confirm the strategy starts without a kernel-isolation or sandbox-protocol failure; never bypass that failure with in-process execution.
+5. **Backtest:** a person has reviewed data, costs, slippage, funding, execution ledger, and maximum drawdown.
+6. **Signal:** run `signal` first and check notification frequency, time zone, and state restoration after restart.
+7. **Positions:** identify manual and other-strategy holdings; resolve every unknown delta.
+8. **Limits:** set notional, per-symbol, gross exposure, leverage, and loss boundaries.
+9. **Incident path:** confirm an operator can stop the deployment, cancel orders, and use emergency stop.
 
 ## While running
 

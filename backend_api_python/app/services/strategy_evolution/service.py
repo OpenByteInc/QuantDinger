@@ -9,7 +9,7 @@ from typing import Any
 from app.services.backtest_limits import BacktestRangeLimitError
 from app.services.script_source import get_script_source_service
 from app.services.strategy_v2 import StrategyV2BacktestService
-from app.services.strategy_v2.contract import compile_strategy_v2
+from app.services.strategy_v2.contract import inspect_strategy_v2
 
 from .constraints import discover_parameter_constraints
 from .engine import StrategyEvolutionEngine, parameter_lookback_bars
@@ -112,7 +112,7 @@ class StrategyEvolutionService:
         if not parameters:
             raise ValueError("strategyEvolution.parametersRequired")
         code = adapt_source_for_parameters(code, parameter_rows)
-        manifest = compile_strategy_v2(code).manifest
+        manifest = inspect_strategy_v2(code).manifest
         try:
             evaluator = PreparedEvolutionEvaluator(
                 backtest_service=self.backtest_service,

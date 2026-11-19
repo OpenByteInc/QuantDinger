@@ -19,6 +19,7 @@ It complements, but does not replace, `MODULE_BOUNDARIES.md`,
 | Human Web API | `backend_api_python/app/routes`, `app/openapi` | Web and mobile UI endpoints under `/api/...` |
 | Agent Gateway | `backend_api_python/app/routes/agent_v1` | Scoped agent/MCP API under `/api/agent/v1/...` |
 | Strategy Runtime | `backend_api_python/app/services/trading_executor.py` and related services | Strategy loops, signal handling, pending order generation |
+| Untrusted Code Boundary | `backend_api_python/app/services/strategy_v2/sandbox.py`, `app/utils/safe_exec_worker.py`, `app/utils/strategy_runtime_worker.py` | Credential-free indicator, discovery, backtest, and live callback execution |
 | Market Data | `backend_api_python/app/data_sources`, `app/data_providers` | K-line, quote, symbol, fundamentals, macro and news data |
 | Live Trading | `backend_api_python/app/services/live_trading` | Exchange and broker REST adapters |
 | Background Workers | `backend_api_python/app/startup.py`, worker services | Pending orders, portfolio monitor, grid fill poller, USDT watchers |
@@ -85,6 +86,10 @@ When a route starts to need helpers, move the helpers to a service module first.
 - Services should not import Flask `request`, `g`, or `jsonify`.
 - Services that mutate state must document idempotency and failure behavior.
 - Long-running work should be callable from a worker without HTTP context.
+- User-authored indicator and strategy code must execute through the isolated
+  worker boundary. Trusted services may inspect manifests, prepare bounded
+  snapshots, validate returned intents, and persist state, but must not load or
+  invoke user handlers in the API, evaluator, backtest, or trading process.
 - Feature services should live in packages such as `services/quick_trade/` when
   the domain has more than one workflow.
 

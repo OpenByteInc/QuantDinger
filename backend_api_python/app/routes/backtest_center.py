@@ -25,7 +25,7 @@ from app.services.strategy_v2 import (
     FactorResearchRepository,
     StrategyBacktestRepository,
     StrategyV2BacktestService,
-    compile_strategy_v2,
+    inspect_strategy_v2,
 )
 from app.services.strategy_v2.factor_benchmark import FactorBenchmarkEngine
 from app.utils.auth import login_required
@@ -118,7 +118,7 @@ def _prepare_run(payload: dict[str, Any], user_id: int) -> dict[str, Any]:
     end_date = datetime.strptime(end_raw, "%Y-%m-%d").replace(hour=23, minute=59, second=59)
     leverage_enabled = bool(payload.get("leverageEnabled", False))
     leverage = max(1.0, float(payload.get("leverage") or 1)) if leverage_enabled else 1.0
-    manifest = compile_strategy_v2(code).manifest
+    manifest = inspect_strategy_v2(code).manifest
     if leverage > 1.0 and not manifest.leverage_allowed:
         raise ValueError("strategyV2.leverageNotAllowed")
     if leverage > manifest.max_leverage:

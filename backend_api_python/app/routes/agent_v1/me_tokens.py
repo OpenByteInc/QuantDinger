@@ -21,7 +21,12 @@ from app.services.agent_token_service import (
     list_agent_tokens,
     revoke_agent_token,
 )
-from app.utils.auth import get_current_user_id, login_required
+from app.utils.auth import (
+    get_current_user_id,
+    get_current_user_role,
+    login_required,
+)
+from app.utils.role_access import role_can_trade
 from flask import request
 
 from . import agent_v1_bp
@@ -31,7 +36,10 @@ from ._helpers import envelope, error, get_json_or_400
 @agent_v1_bp.route("/me/tokens/policy", methods=["GET"])
 @login_required
 def my_token_policy():
-    return envelope(get_token_policy(for_admin=False))
+    return envelope(get_token_policy(
+        for_admin=False,
+        allow_t_scope=role_can_trade(get_current_user_role()),
+    ))
 
 
 @agent_v1_bp.route("/me/tokens", methods=["POST"])
@@ -44,7 +52,12 @@ def issue_my_token():
     if not user_id:
         return error(401, "Authentication required", http=401)
     try:
-        data = issue_agent_token(user_id, body, allow_c_scope=False)
+        data = issue_agent_token(
+            user_id,
+            body,
+            allow_c_scope=False,
+            allow_t_scope=role_can_trade(get_current_user_role()),
+        )
     except TokenIssueError as exc:
         return error(exc.code, exc.message, details=exc.details, http=exc.http)
     return envelope(data, message="issued")

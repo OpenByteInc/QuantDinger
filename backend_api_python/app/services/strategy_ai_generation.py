@@ -18,7 +18,7 @@ from app.services.strategy_ai_capabilities import (
     validate_strategy_ai_semantics,
 )
 from app.services.strategy_ai_workspace import normalize_asset_type
-from app.services.strategy_v2 import StrategyV2ContractError, compile_strategy_v2
+from app.services.strategy_v2 import StrategyV2ContractError, inspect_strategy_v2
 from app.services.strategy_v2.instruments import normalize_frequency, parse_instrument
 
 
@@ -331,7 +331,7 @@ def validate_generated_strategy(
     prompt: str = "",
     existing_code: str = "",
     intent: StrategyAIGenerationIntent | None = None,
-    compiler: Callable[[str], Any] = compile_strategy_v2,
+    compiler: Callable[[str], Any] = inspect_strategy_v2,
 ):
     normalized_type = normalize_asset_type(asset_type)
     context = dict(context or {})

@@ -33,7 +33,7 @@ from app.openapi.schemas.high_risk import (
 )
 from app.utils.db import get_db_connection
 from app.utils.logger import get_logger
-from app.utils.auth import login_required
+from app.utils.auth import login_required, trading_required
 from app.utils.timeutil import to_utc_iso
 from app.services.quick_trade.balances import (
     empty_balance_dict,
@@ -218,6 +218,7 @@ def _record_quick_trade(
 # ---------- endpoints ----------
 @quick_trade_blp.route('/place-order', methods=['POST'])
 @login_required
+@trading_required
 @quick_trade_blp.arguments(QuickTradeOrderRequestSchema, location="json")
 @serialized_quick_trade_order
 def place_order(body):
@@ -1191,6 +1192,7 @@ def _quick_trade_net_base_qty(
 
 @quick_trade_blp.route('/close-position', methods=['POST'])
 @login_required
+@trading_required
 @quick_trade_blp.arguments(QuickTradeCloseRequestSchema, location="json")
 @serialized_quick_trade_close
 def close_position(body):
@@ -1638,6 +1640,7 @@ def close_position(body):
 
 @quick_trade_blp.route('/cancel-order', methods=['POST'])
 @login_required
+@trading_required
 @quick_trade_blp.arguments(QuickTradeCancelRequestSchema, location="json")
 def cancel_order(body):
     """Cancel an active Quick Trade limit order owned by the current user."""
@@ -1981,6 +1984,7 @@ def get_position_protection():
 
 @quick_trade_blp.route('/position-protection', methods=['POST'])
 @login_required
+@trading_required
 @quick_trade_blp.arguments(QuickTradeProtectionRequestSchema, location="json")
 def set_position_protection(body):
     from app.services.quick_trade.position_activity import gate_protection_orders, validate_exit_price

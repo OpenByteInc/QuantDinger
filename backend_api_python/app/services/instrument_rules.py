@@ -146,6 +146,16 @@ class InstrumentRulesSnapshot:
             parsed = _parse_strategy_crypto_key(key)
         except ValueError:
             return None
+        if not parsed[1]:
+            symbol = parsed[0].strip().upper().replace("-", "/").replace("_", "/")
+            market_type = parsed[2].strip().lower()
+            matches = [
+                rule
+                for rule in self.rules.values()
+                if rule.symbol.strip().upper().replace("-", "/").replace("_", "/") == symbol
+                and rule.market_type.strip().lower() == market_type
+            ]
+            return matches[0] if len(matches) == 1 else None
         canonical = instrument_rules_key(
             parsed[0], exchange_id=parsed[1], market_type=parsed[2]
         )

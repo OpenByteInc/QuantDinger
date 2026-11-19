@@ -73,7 +73,6 @@
     <img src="docs/badges/python-3.12.svg" alt="Python 3.12">
     <img src="https://img.shields.io/badge/PostgreSQL-18-4169E1?style=flat-square&logo=postgresql&logoColor=white" alt="PostgreSQL 18">
     <img src="https://img.shields.io/badge/Redis-8-DC382D?style=flat-square&logo=redis&logoColor=white" alt="Redis 8">
-    <a href="#jev-powered-pre-trade-decisions"><img src="https://img.shields.io/badge/JEV-Pre--trade%20Decisions-7C3AED?style=flat-square" alt="JEV pre-trade decisions"></a>
     <img src="docs/badges/docker-compose.svg" alt="Docker Compose">
     <a href="https://github.com/OpenByteInc/QuantDinger/releases/latest"><img src="docs/badges/latest-release.svg" alt="Latest release"></a>
   </p>
@@ -182,8 +181,9 @@ The v5 backend is organized around explicit runtime and operational boundaries:
 
 - the HTTP API no longer owns long-running trading or scheduler loops;
 - trading, scheduling, Celery jobs, and migrations run as separate processes;
-- Celery handles finite, retryable work while long-lived strategy runtimes stay
-  in the trading worker;
+- trusted workers retain strategy ownership, account checks, and order
+  submission, while untrusted Strategy API V2 discovery, backtests, and live
+  callbacks run in credential-free sandbox child processes;
 - cache Redis and durable job Redis use separate instances and eviction policies;
 - high-risk API contracts are represented in OpenAPI and protected by tests;
 - JSON logs, request IDs, Prometheus metrics, dashboards, and alert rules are
@@ -219,9 +219,10 @@ flowchart TB
     TW["Trading workers\ncontrol, realtime, execution, grid actors"]
     DISPATCH["Strategy dispatcher workers"]
     EVAL["Strategy evaluator workers\nhot bar runtimes"]
+    SBOX["Credential-free strategy sandboxes\none live process per deployment\none process per backtest"]
     AUDIT["Kafka audit worker"]
     SW["Scheduler worker"]
-    CW["Celery worker"]
+    CW["Celery workers\nAI/maintenance and backtest queues"]
     BEAT["Celery beat"]
     PROM["Prometheus"]
     GRAF["Grafana"]
@@ -236,11 +237,17 @@ flowchart TB
     KAFKA --> DISPATCH --> KAFKA
     KAFKA --> EVAL
     EVAL -->|"inbox, leases, checkpoints, order intents"| PG
+    EVAL -->|"bar and state snapshots"| SBOX
+    SBOX -->|"validated intents and state"| EVAL
     KAFKA --> AUDIT --> PG
     PG -->|"owned pending orders"| TW
+    TW -->|"market, position, and order snapshots"| SBOX
+    SBOX -->|"validated intents and state"| TW
     SW -->|"schedules, monitoring, heartbeats"| PG
     API -->|"finite async jobs"| JOBS
     BEAT --> JOBS --> CW
+    CW -->|"backtest snapshots"| SBOX
+    SBOX -->|"backtest results"| CW
     CW --> PG
     API -. metrics .-> PROM
     PG -. exporter .-> PROM
@@ -260,6 +267,7 @@ One backend image is reused by several containers with different commands:
 | `trading-worker` | Owns control/realtime runtimes, exchange sessions, the fenced order gateway, reconciliation, and durable grid actors. |
 | `strategy-dispatcher-worker` | Converts closed-bar events into stable strategy-shard evaluation batches. |
 | `strategy-evaluator-worker` | Owns hot distributed bar runtimes and evaluates fenced strategy inbox events. |
+| Strategy sandbox child | Executes untrusted Strategy API V2 discovery, backtest, or live callbacks with a clean environment, JSON-only transport, resource limits, and Linux kernel confinement. It is spawned by a trusted owner and is not a standalone Compose service. |
 | `kafka-audit-worker` | Validates and records the versioned event stream independently of execution. |
 | `scheduler-worker` | Runs portfolio, deployment, payment, and signal schedules. |
 | `celery-worker` | Executes finite AI, report, and maintenance jobs. |
@@ -525,6 +533,11 @@ receiver configuration.
 - Agent trading is paper-only by default; live access requires both token and
   server-side authorization.
 - Long-running strategy ownership uses leases, heartbeats, and fencing tokens.
+- Indicator code and Strategy API V2 discovery, backtests, and live callbacks
+  execute in credential-free child processes. Trusted workers keep database,
+  credential, reconciliation, and exchange-order authority.
+- Untrusted-code execution fails closed unless Linux seccomp and Landlock
+  confinement can be activated; there is no in-process fallback.
 - Production containers run without root privileges or Linux capabilities.
 - Host port defaults are loopback-only; public access should terminate at a TLS
   reverse proxy.
@@ -547,92 +560,16 @@ Start with the [Indicator guide](docs/trading/INDICATOR_DEV_GUIDE.md),
 [Strategy guide](docs/trading/STRATEGY_DEV_GUIDE.md), and
 [Extension guide](docs/architecture/EXTENSION_GUIDE.md).
 
-## JEV-powered pre-trade decisions
+## Optional pre-trade decision filter
 
-QuantDinger can place a structured AI decision gate directly in front of live
-entry orders. Enable **AI Decision Filter** when creating a regular live
-strategy. Before a strategy entry reaches the exchange,
-QuantDinger sends the order, strategy context, exposure, positions, and budget
-state to [TypeSafe Jev](https://docs.typesafe.ai/introduction). Jev returns typed
-Choice results, probabilities, and confidence instead of prose that must be
-parsed. The app shows the provider, checks, result, confidence, latency, and
-reason in an auditable decision timeline.
-
-| Previous LLM-only gate | JEV decision gate |
-| --- | --- |
-| Generate prose or JSON and recover a decision through parsing | Receive a typed Choice with the selected outcome, full probabilities, and confidence |
-| One opaque answer is difficult to inspect after execution | Independent entry and risk checks are stored with the order context and latency |
-| Provider failure can accidentally block position management | Provider failure is audited and fails open, while every exit bypasses AI |
-
-The execution policy stays in QuantDinger code: rejected entries never reach
-the exchange; exits, stop-loss, take-profit, and emergency actions bypass the
-filter. Grid, DCA, and martingale runtimes are excluded from this first version.
-When Jev is not configured, QuantDinger tries the configured LLM. If no AI
-provider is available, the order is allowed and the fail-open result is logged,
-so an AI outage cannot trap an existing position.
-
-### Decision flow
-
-```mermaid
-flowchart TD
-    A["Strategy entry signal"] --> B["Deterministic risk and order budget checks"]
-    B -->|"Basic checks fail"| R["Reject order"]
-    B -->|"Basic checks pass"| C["Build Decision Context V2"]
-
-    C --> C1["Strategy parameters and signal rationale"]
-    C --> C2["Multi-timeframe market data and indicators"]
-    C --> C3["Positions, exposure, equity, and drawdown"]
-    C --> C4["Recent PnL and consecutive losses"]
-    C --> C5["Take-profit, stop-loss, and execution conditions"]
-
-    C1 --> D
-    C2 --> D
-    C3 --> D
-    C4 --> D
-    C5 --> D
-
-    D{"JEV configured?"}
-
-    D -->|"Yes"| E["JEV System One"]
-    E --> E1["Evidence quality"]
-    E --> E2["Signal consistency"]
-    E --> E3["Market regime"]
-    E --> E4["Account risk"]
-    E --> E5["Execution quality"]
-    E --> E6["Entry decision: pass/reject"]
-
-    E1 --> F["Validate schema, probabilities, and confidence"]
-    E2 --> F
-    E3 --> F
-    E4 --> F
-    E5 --> F
-    E6 --> F
-
-    F -->|"Valid result and confidence threshold met"| G["Deterministic decision converger"]
-    F -->|"Timeout, error, invalid format, or low confidence"| H
-
-    D -->|"No"| H{"LLM configured?"}
-    H -->|"Yes"| I["LLM reads the same context"]
-    I --> J["Require strict JSON output"]
-    J --> K{"decision"}
-
-    H -->|"No"| O["Fail open and log the reason"]
-
-    G -->|"PASS"| P["Enter pending order queue"]
-    G -->|"REJECT"| R
-    K -->|"pass"| P
-    K -->|"reject"| R
-    K -->|"Invalid output or provider failure"| O
-
-    P --> Q["Submit to exchange asynchronously"]
-    R --> S["Record ai_rejected and the decision trace"]
-    O --> T["Place order normally and record provider unavailable"]
-```
-
-Configure `JEV_ENABLED`, `JEV_API_KEY`, `JEV_BASE_URL`, `JEV_MODEL`, and
-`JEV_TIMEOUT_SECONDS` in **System Settings → AI / LLM**. When JEV is disabled,
-the decision filter uses the configured LLM directly. TypeSafe documents the
-HTTP contract at [`POST /v1/systemone`](https://docs.typesafe.ai/introduction/quickstart).
+Regular live strategies can optionally evaluate new entries through an AI
+decision filter. The filter can use JEV or the configured LLM and records its
+result for audit. Deterministic risk checks remain authoritative; exits,
+stop-loss, take-profit, and emergency actions bypass the AI filter so provider
+availability cannot prevent position reduction. Configure providers under
+**System Settings → AI / LLM**. See the
+[live trading safety guide](docs/trading/LIVE_TRADING_SAFETY.md) for behavior and
+scope.
 
 ## AI agents and MCP
 

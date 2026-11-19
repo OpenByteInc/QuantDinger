@@ -14,6 +14,7 @@ reliability requirements.
 | `trading-worker` | Control and realtime runtimes, broker sessions, fenced order submission, reconciliation, durable grid actors | Public HTTP request handling and distributed bar evaluation |
 | `strategy-dispatcher-worker` | Closed-bar consumption and stable strategy-shard batch publication | Strategy code execution and exchange orders |
 | `strategy-evaluator-worker` | Hot distributed bar runtimes, inbox claims, runtime leases, checkpoints, order intents | Direct exchange submission |
+| Strategy sandbox child | Untrusted indicator, discovery, backtest, and live callback execution; serializable strategy state | Leases, credentials, database access, or direct exchange submission |
 | `kafka-audit-worker` | Independent event-contract and delivery audit | Strategy decisions and orders |
 | `scheduler-worker` | Portfolio, deployment, payment, and notification schedules | General Celery work |
 | `celery-worker` | Finite, serializable, retryable jobs | Persistent trading runtimes |
@@ -31,6 +32,10 @@ reliability requirements.
   must be monitored for memory pressure.
 - Idempotency keys, database claims, renewable leases, and fencing tokens
   protect duplicate or stale execution.
+- Strategy sandbox children are subordinate execution boundaries, not durable
+  service owners. A trusted worker creates them, supplies bounded snapshots,
+  validates their output, and remains responsible for recovery and order
+  authorization.
 
 ## Read by task
 

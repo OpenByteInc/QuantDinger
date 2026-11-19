@@ -7,6 +7,7 @@ from .contract import (
     StrategyV2ContractError,
     canonical_source_metadata,
     compile_strategy_v2,
+    inspect_strategy_v2,
     is_strategy_v2_code,
     strategy_source_code_hash,
 )
@@ -46,6 +47,7 @@ __all__ = [
     "SubscriptionSpec",
     "UniverseSpec",
     "compile_strategy_v2",
+    "inspect_strategy_v2",
     "strategy_source_code_hash",
     "canonical_source_metadata",
     "infer_market",

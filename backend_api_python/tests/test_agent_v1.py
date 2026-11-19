@@ -31,6 +31,7 @@ def _fake_token_row(scopes: str = "R", paper_only: bool = True, status: str = "a
         "id": 999,
         "user_id": 1,
         "name": "test-agent",
+        "owner_role": "user",
         "scopes": scopes,
         "markets": "*",
         "instruments": "*",
@@ -107,6 +108,28 @@ def test_scope_mismatch_returns_403(client, monkeypatch):
               "timeframe": "1D", "start_date": "2024-01-01", "end_date": "2024-12-31"},
     )
     assert resp.status_code == 403
+
+
+def test_viewer_owned_token_cannot_use_trading_scope(client, monkeypatch):
+    """Existing T-scope tokens stop trading when their owner becomes a viewer."""
+    agent_auth._schema_ready = True
+    token = _fake_token_row(scopes="R,T")
+    token["owner_role"] = "viewer"
+    monkeypatch.setattr(agent_auth, "_lookup_token", lambda raw: token)
+    monkeypatch.setattr(agent_auth, "_touch_token_last_used", lambda *_: None)
+    monkeypatch.setattr(agent_auth, "_audit", lambda *a, **kw: None)
+
+    resp = client.post(
+        "/api/agent/v1/quick-trade/orders",
+        headers=_bearer({
+            "Content-Type": "application/json",
+            "Idempotency-Key": "viewer-trading-denied",
+        }),
+        json={"market": "Crypto", "symbol": "BTC/USDT", "side": "buy", "qty": 0.01},
+    )
+
+    assert resp.status_code == 403
+    assert "owner" in resp.get_json()["message"].lower()
 
 
 def test_whoami_with_valid_token(client, monkeypatch):

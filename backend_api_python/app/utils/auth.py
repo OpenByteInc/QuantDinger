@@ -14,6 +14,7 @@ from flask import g, jsonify, request
 
 from app.config.settings import Config
 from app.utils.logger import get_logger
+from app.utils.role_access import role_can_trade
 
 logger = get_logger(__name__)
 _RECOMMENDED_JWT_SECRET_BYTES = 32
@@ -338,6 +339,25 @@ def admin_required(f):
         role = getattr(g, 'user_role', None)
         if role != 'admin':
             return jsonify({'code': 403, 'msg': 'Admin access required', 'data': None}), 403
+        return f(*args, **kwargs)
+    return decorated
+
+
+def trading_required(f):
+    """Require a database-backed role that is allowed to trade.
+
+    This decorator must be applied after :func:`login_required`. Read-only
+    ``viewer`` users may inspect trading data, but cannot connect an
+    order-capable broker session or mutate orders and positions.
+    """
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not role_can_trade(getattr(g, 'user_role', None)):
+            return jsonify({
+                'code': 403,
+                'msg': 'Trading access required',
+                'data': None,
+            }), 403
         return f(*args, **kwargs)
     return decorated
 

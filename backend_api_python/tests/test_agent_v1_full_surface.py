@@ -15,6 +15,7 @@ def _token(scopes: str = "R,W,B,N,T") -> dict:
         "id": 501,
         "user_id": 7,
         "name": "full-surface-agent",
+        "owner_role": "user",
         "scopes": scopes,
         "markets": "*",
         "instruments": "*",
