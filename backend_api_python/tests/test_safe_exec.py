@@ -14,6 +14,7 @@ from app.utils.safe_exec import (
     timeout_context,
     validate_code_safety,
 )
+from app.utils.safe_exec_worker import _format_worker_error
 
 # Classic subclass-chain escape (CVE-class pattern for restricted exec).
 _SUBCLASS_ESCAPE = """
@@ -511,6 +512,25 @@ def test_legit_pandas_strategy_passes_validator():
     ok, err = validate_code_safety(_LEGIT_PANDAS_STRATEGY)
     assert ok is True
     assert err is None
+
+
+def test_worker_normalizes_native_loader_memory_failures():
+    error = _format_worker_error(
+        ImportError("/host/path/native.so: failed to map segment from shared object"),
+        memory_limited=True,
+    )
+
+    assert error == "Sandbox worker error: execution exceeded the configured memory limit"
+    assert "/host/path" not in error
+
+
+def test_worker_preserves_non_memory_import_failures():
+    error = _format_worker_error(
+        ImportError("approved module is unavailable"),
+        memory_limited=True,
+    )
+
+    assert error == "Sandbox worker error: ImportError: approved module is unavailable"
 
 
 def test_non_main_thread_timeouts_share_one_watchdog_thread():

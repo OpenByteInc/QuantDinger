@@ -427,6 +427,26 @@ def _apply_resource_limits(timeout: int, max_memory_mb: int) -> bool:
         return False
 
 
+def _format_worker_error(exc: Exception, *, memory_limited: bool) -> str:
+    """Return a stable error without leaking host paths from native loaders."""
+    detail = str(exc)
+    normalized = detail.lower()
+    memory_markers = (
+        "cannot allocate memory",
+        "failed to map segment from shared object",
+        "out of memory",
+    )
+    if memory_limited and (
+        isinstance(exc, MemoryError)
+        or (
+            isinstance(exc, (ImportError, OSError))
+            and any(marker in normalized for marker in memory_markers)
+        )
+    ):
+        return "Sandbox worker error: execution exceeded the configured memory limit"
+    return f"Sandbox worker error: {type(exc).__name__}: {detail[:1000]}"
+
+
 class _StrategyDiscoveryState:
     pass
 
@@ -871,6 +891,7 @@ def main() -> int:
     finally:
         os.close(devnull_fd)
     request: dict[str, Any] = {}
+    memory_limited = False
     try:
         decoded_request = json.loads(sys.stdin.buffer.read())
         if not isinstance(decoded_request, dict):
@@ -890,7 +911,7 @@ def main() -> int:
     except Exception as exc:
         response = {
             "success": False,
-            "error": f"Sandbox worker error: {type(exc).__name__}: {str(exc)[:1000]}",
+            "error": _format_worker_error(exc, memory_limited=memory_limited),
             "result": None,
         }
     output_limit = (
