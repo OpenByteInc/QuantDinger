@@ -36,11 +36,12 @@ Actor 邮箱、租约、fencing token、幂等键或订单对账。
 
 | 策略类型 | 当前所有者 | 触发与恢复路径 |
 | --- | --- | --- |
-| 普通 K 线收盘 Strategy API V2 | `strategy-evaluator-worker` | Kafka 分片批次、持久收件箱、运行时租约、热状态检查点 |
+| 普通 K 线收盘 Strategy API V2 | `strategy-evaluator-worker` | Kafka 分片批次、持久收件箱、无凭证沙箱回调、运行时租约、热状态检查点 |
 | 使用交易所挂单的网格 | `trading-worker` | 私有成交流或 REST 对账、持久化网格 Actor 邮箱 |
 | 马丁、DCA、tick 驱动和交易时段驱动策略 | `trading-worker` | 带策略租约和 fencing 的本地实时调度器 |
 | 实盘待执行订单 | `trading-worker` | PostgreSQL 认领、运行时 fencing 校验、稳定客户端订单 ID |
-| AI、回测、报告与维护任务 | `celery-worker` | 持久 Redis 任务队列与任务重试策略 |
+| AI、报告与维护任务 | `celery-worker` | 持久 Redis 任务队列与任务重试策略 |
+| 回测、因子研究与有限实验 | `celery-backtest-worker` | 专用回测队列、一次性任务子进程、无凭证策略沙箱 |
 
 行情身份必须包含交易所/数据提供方、市场、市场类型、instrument ID 和周期。
 `BTC/USDT` 这样的符号字符串不是全局唯一行情源，绝不能作为唯一的路由键。

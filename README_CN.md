@@ -244,7 +244,7 @@ flowchart TB
 | `trading-worker` | 管理控制/实时策略、交易所会话、带 fencing 的下单网关、对账和持久化网格 Actor。 |
 | `strategy-dispatcher-worker` | 将 K 线收盘事件转换为稳定策略分片的求值批次。 |
 | `strategy-evaluator-worker` | 管理常驻的分布式 K 线策略运行时，并处理带 fencing 的策略收件箱事件。 |
-| 策略沙箱子进程 | 在干净环境、仅 JSON 传输、资源限制和 Linux 内核隔离下执行不受信任的 Strategy API V2 清单发现、回测或实盘回调。它由可信所有者创建，不是独立的 Compose 服务。 |
+| 策略沙箱子进程 | 在干净环境、仅 JSON 传输、资源限制和 Linux 内核隔离下执行不受信任的指标代码及 Strategy API V2 清单发现、回测或实盘回调。它由可信所有者创建，不是独立的 Compose 服务。 |
 | `kafka-audit-worker` | 独立校验和记录版本化事件流，不参与下单决策。 |
 | `scheduler-worker` | 运行投资组合、部署、支付和信号调度。 |
 | `celery-worker` | 执行有限的 AI、报告和维护任务。 |
@@ -572,6 +572,7 @@ QuantDinger/
 |   |   |   |-- ibkr_trading/          Interactive Brokers 集成
 |   |   |   |-- strategy_runtime/      策略信号、交易意图、执行与状态
 |   |   |   |-- strategy_v2/           版本化策略合同与运行时服务
+|   |   |   |   `-- sandbox.py         回调沙箱的可信宿主与 JSON 传输边界
 |   |   |   `-- virtual_trading.py     隔离的仅通知模拟账户、持仓与成交
 |   |   |-- data_sources/              原始行情数据源适配器
 |   |   |-- data_providers/            聚合行情、宏观、新闻和情绪提供商
@@ -580,7 +581,10 @@ QuantDinger/
 |   |   |-- workers/                   长期运行的工作进程外壳
 |   |   |-- runtime/                   进程角色与所有权辅助模块
 |   |   |-- observability/             请求上下文、指标与 HTTP 检测
-|   |   `-- utils/                     共享的底层数据库、缓存、认证和日志辅助模块
+|   |   `-- utils/                     共享底层基础设施与沙箱工作进程
+|   |       |-- safe_exec.py           AST 安全策略、受限命名空间与沙箱启动器
+|   |       |-- safe_exec_worker.py    一次性指标与策略合同发现沙箱
+|   |       `-- strategy_runtime_worker.py  无凭证回测/实盘回调沙箱
 |   |-- migrations/                    PostgreSQL 结构与种子迁移
 |   |-- scripts/                       后端维护与校验命令
 |   |-- tests/                         单元、合同、集成和发布门禁测试
@@ -619,7 +623,8 @@ QuantDinger/
 | --- | --- |
 | 同步 API 请求 | `app/routes` -> `app/services` -> 数据库、缓存、行情数据或交易适配器 |
 | 持久策略命令 | API 路由 -> PostgreSQL 命令记录 -> `trading-worker` -> 策略运行时与券商适配器 |
-| 有限后台任务 | API 或 Celery beat -> 任务 Redis -> `celery-worker` 中的 `app/tasks` -> PostgreSQL 结果 |
+| Strategy API V2 回调 | 可信求值、交易或回测工作进程 -> 沙箱子进程 -> 已校验交易意图与状态 -> 可信所有者 |
+| 有限后台任务 | API 或 Celery beat -> 任务 Redis -> 队列专属 Celery Worker 中的 `app/tasks` -> PostgreSQL 结果 |
 | 计划领域任务 | `app/commands/scheduler.py` -> 调度服务 -> 持久状态与通知 |
 | 监控 | API 与工作进程 -> `app/observability` 指标 -> Prometheus -> Grafana 与 Alertmanager |
 | Agent 或 MCP 调用 | MCP 客户端 -> `mcp_server` -> `/api/agent/v1` -> 与 Human API 共用的服务层 |

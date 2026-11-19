@@ -51,8 +51,13 @@ app/
   openapi/              Human API schemas, registration, and export metadata
   routes/               HTTP facades and compatibility routes
   services/             Domain workflows and integration orchestration
+    strategy_v2/
+      sandbox.py        Trusted supervisor and JSON boundary for callback sandboxes
   tasks/                Celery task definitions
-  utils/                Small infrastructure helpers
+  utils/                Small infrastructure helpers and sandbox workers
+    safe_exec.py        AST policy, restricted namespace, and worker launchers
+    safe_exec_worker.py One-shot indicator and contract-discovery sandbox
+    strategy_runtime_worker.py  Credential-free backtest/live callback sandbox
 migrations/             PostgreSQL schema and incremental migrations
 scripts/                Backend quality, export, and production checks
 tests/                  Unit, integration, contract, and release-gate tests

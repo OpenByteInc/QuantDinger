@@ -267,7 +267,7 @@ One backend image is reused by several containers with different commands:
 | `trading-worker` | Owns control/realtime runtimes, exchange sessions, the fenced order gateway, reconciliation, and durable grid actors. |
 | `strategy-dispatcher-worker` | Converts closed-bar events into stable strategy-shard evaluation batches. |
 | `strategy-evaluator-worker` | Owns hot distributed bar runtimes and evaluates fenced strategy inbox events. |
-| Strategy sandbox child | Executes untrusted Strategy API V2 discovery, backtest, or live callbacks with a clean environment, JSON-only transport, resource limits, and Linux kernel confinement. It is spawned by a trusted owner and is not a standalone Compose service. |
+| Strategy sandbox child | Executes untrusted indicator code and Strategy API V2 discovery, backtest, or live callbacks with a clean environment, JSON-only transport, resource limits, and Linux kernel confinement. It is spawned by a trusted owner and is not a standalone Compose service. |
 | `kafka-audit-worker` | Validates and records the versioned event stream independently of execution. |
 | `scheduler-worker` | Runs portfolio, deployment, payment, and signal schedules. |
 | `celery-worker` | Executes finite AI, report, and maintenance jobs. |
@@ -642,6 +642,7 @@ QuantDinger/
 |   |   |   |-- ibkr_trading/          Interactive Brokers integration
 |   |   |   |-- strategy_runtime/      Strategy signals, intents, execution, and state
 |   |   |   |-- strategy_v2/           Versioned strategy contracts and runtime services
+|   |   |   |   `-- sandbox.py         Trusted host and JSON transport for callback sandboxes
 |   |   |   `-- virtual_trading.py     Isolated signal-mode account, positions, and fills
 |   |   |-- data_sources/              Raw market-data source adapters
 |   |   |-- data_providers/            Aggregated market, macro, news, and sentiment providers
@@ -650,7 +651,10 @@ QuantDinger/
 |   |   |-- workers/                   Long-lived worker process shells
 |   |   |-- runtime/                   Process-role and ownership helpers
 |   |   |-- observability/             Request context, metrics, and HTTP instrumentation
-|   |   `-- utils/                     Shared low-level database, cache, auth, and logging helpers
+|   |   `-- utils/                     Shared low-level infrastructure and sandbox workers
+|   |       |-- safe_exec.py           AST policy, restricted namespace, and sandbox launchers
+|   |       |-- safe_exec_worker.py    One-shot indicator and contract-discovery sandbox
+|   |       `-- strategy_runtime_worker.py  Credential-free backtest/live callback sandbox
 |   |-- migrations/                    PostgreSQL schema and seed migrations
 |   |-- scripts/                       Backend maintenance and validation commands
 |   |-- tests/                         Unit, contract, integration, and release-gate tests
@@ -689,6 +693,7 @@ QuantDinger/
 | --- | --- |
 | Synchronous API request | `app/routes` -> `app/services` -> database, cache, market-data, or trading adapter |
 | Durable strategy command | API route -> PostgreSQL command record -> `trading-worker` -> strategy runtime and broker adapter |
+| Strategy API V2 callback | trusted evaluator, trading, or backtest worker -> sandbox child -> validated intents and state -> trusted owner |
 | Finite background job | API or Celery beat -> job Redis -> `app/tasks` in the queue-specific Celery worker -> PostgreSQL result |
 | Scheduled domain work | `app/commands/scheduler.py` -> scheduling services -> durable state and notifications |
 | Monitoring | API and workers -> `app/observability` metrics -> Prometheus -> Grafana and Alertmanager |
