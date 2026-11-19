@@ -2,7 +2,7 @@
 import os
 import requests
 import re
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional, Callable
 from app.services.search_models import BaseSearchProvider, SearchResponse, SearchResult
 
@@ -551,6 +551,61 @@ class AlphaVantageNewsProvider(BaseSearchProvider):
             return SearchResponse(query=query, results=[], provider=self.name, success=False, error_message=str(e))
 
 
+class KeenableSearchProvider(BaseSearchProvider):
+    """Keenable web search. Works without an API key; a key only raises rate limits."""
+
+    BASE_URL = "https://api.keenable.ai/v1"
+
+    def __init__(self, api_key: str = ""):
+        super().__init__([api_key] if api_key else ['free'], "Keenable")
+
+    def _do_search(self, query: str, api_key: str, max_results: int, days: int = 7) -> SearchResponse:
+        headers = {
+            "Content-Type": "application/json",
+            "X-Keenable-Title": "QuantDinger",
+        }
+        if api_key and api_key != "free":
+            url = f"{self.BASE_URL}/search"
+            headers["X-API-Key"] = api_key
+        else:
+            url = f"{self.BASE_URL}/search/public"
+
+        payload: Dict[str, Any] = {"query": query, "max_results": min(max(max_results, 1), 50)}
+        if days and days <= 30:
+            since = datetime.now(timezone.utc).date() - timedelta(days=days)
+            payload["published_after"] = since.isoformat()
+
+        try:
+            response = requests.post(url, headers=headers, json=payload, timeout=15)
+            if response.status_code != 200:
+                raise RuntimeError(f"HTTP {response.status_code}: {response.text[:200]}")
+            data = response.json()
+            items = data.get("results") if isinstance(data, dict) else None
+        except Exception as e:
+            return SearchResponse(query=query, results=[], provider=self.name, success=False, error_message=str(e))
+
+        results = [self._to_result(item) for item in items or [] if isinstance(item, dict) and item.get("url")]
+        results = results[:max_results]
+        return SearchResponse(
+            query=query,
+            results=results,
+            provider=self.name,
+            success=bool(results),
+            error_message=None if results else "Keenable returned no results",
+        )
+
+    def _to_result(self, item: Dict[str, Any]) -> SearchResult:
+        link = item["url"]
+        published = item.get("published_at")
+        return SearchResult(
+            title=item.get("title") or link,
+            snippet=" ".join((item.get("snippet") or "").split())[:500],
+            url=link,
+            source=self._extract_domain(link),
+            published_date=published if isinstance(published, str) else "",
+        )
+
+
 class DuckDuckGoSearchProvider(BaseSearchProvider):
     """DuckDuckGo 搜索引擎（免费，无需 API Key）"""
     
@@ -712,13 +767,18 @@ class SearchService:
             provider_map["google"] = GoogleSearchProvider(google_api_key, google_cx)
             logger.info("Google CSE search is configured")
 
+        keenable_api_key = self._search_config_value('keenable', 'api_key', 'KEENABLE_API_KEY')
+        if self.provider == "keenable" or keenable_api_key:
+            provider_map["keenable"] = KeenableSearchProvider(keenable_api_key)
+            logger.info("Keenable search is configured")
+
         provider_map["duckduckgo"] = DuckDuckGoSearchProvider()
 
         preferred = self.provider if self.provider in provider_map else ""
         if preferred:
             self._providers.append(provider_map.pop(preferred))
 
-        for key in ("tavily", "searxng", "gdelt", "serpapi", "alpha_vantage", "google", "duckduckgo"):
+        for key in ("tavily", "searxng", "gdelt", "serpapi", "alpha_vantage", "google", "keenable", "duckduckgo"):
             provider = provider_map.pop(key, None)
             if provider:
                 self._providers.append(provider)
@@ -736,12 +796,14 @@ class SearchService:
 
         google_api_key = self._search_config_value('google', 'api_key', 'SEARCH_GOOGLE_API_KEY')
         google_cx = self._search_config_value('google', 'cx', 'SEARCH_GOOGLE_CX')
+        keenable_api_key = self._search_config_value('keenable', 'api_key', 'KEENABLE_API_KEY')
         configured = {
             "Google": bool(google_api_key and google_cx),
             "Tavily": bool(APIKeys.TAVILY_API_KEYS),
             "SearXNG": bool(SearXNGConfig.CONFIGURED),
             "SerpAPI": bool(APIKeys.SERPAPI_KEYS),
             "AlphaVantage": bool(APIKeys.ALPHA_VANTAGE_API_KEY),
+            "Keenable": self.provider == "keenable" or bool(keenable_api_key),
             "GDELT": self.provider not in {"none", "off", "disabled"},
             "DuckDuckGo": self.provider not in {"none", "off", "disabled"},
         }
@@ -755,7 +817,7 @@ class SearchService:
                 "available": bool(active_available.get(name)),
                 "note": _search_provider_note(name, bool(configured.get(name)), name in active_names),
             }
-            for name in ("Tavily", "SearXNG", "GDELT", "SerpAPI", "AlphaVantage", "Google", "DuckDuckGo")
+            for name in ("Tavily", "SearXNG", "GDELT", "SerpAPI", "AlphaVantage", "Google", "Keenable", "DuckDuckGo")
         ]
 
     def _effective_result_limit(self, requested: Optional[int]) -> int:
@@ -957,6 +1019,8 @@ def _search_provider_note(name: str, configured: bool, registered: bool) -> str:
         return "Set SERPAPI_KEYS to enable SerpAPI Google/Bing search."
     if name == "AlphaVantage" and not configured:
         return "Set ALPHA_VANTAGE_API_KEY to enable company news and sentiment."
+    if name == "Keenable" and not configured:
+        return "Set SEARCH_PROVIDER=keenable for keyless Keenable web search; KEENABLE_API_KEY raises rate limits."
     if name == "GDELT" and configured:
         return "Free global news fallback, no API key required."
     if configured and not registered:

@@ -26,7 +26,7 @@ def _set_search_env(monkeypatch, **overrides):
 
 def test_settings_schema_exposes_only_supported_search_providers():
     source = (Path(__file__).resolve().parents[1] / "app" / "routes" / "settings.py").read_text(encoding="utf-8")
-    assert "'options': ['tavily', 'searxng', 'gdelt', 'serpapi', 'google', 'duckduckgo', 'none']" in source
+    assert "'options': ['tavily', 'searxng', 'gdelt', 'serpapi', 'google', 'keenable', 'duckduckgo', 'none']" in source
     assert "SEARCH_BING_API_KEY" not in source
 
 
