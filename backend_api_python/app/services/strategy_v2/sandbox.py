@@ -29,6 +29,7 @@ from .runtime import OrderIntent
 _MAX_REQUEST_BYTES = 512 * 1024 * 1024
 _MAX_RESPONSE_BYTES = 256 * 1024 * 1024
 _DEFAULT_CALL_TIMEOUT = 20.0
+_DEFAULT_LIVE_REQUEST_TIMEOUT = 120.0
 _DEFAULT_BACKTEST_TIMEOUT = 900.0
 _ORDER_KINDS = frozenset({
     "quantity",
@@ -41,6 +42,22 @@ _ORDER_KINDS = frozenset({
 
 class StrategySandboxError(RuntimeError):
     pass
+
+
+class StrategySandboxTerminatedError(StrategySandboxError):
+    """The session cannot safely service another request."""
+
+
+def live_sandbox_timeout_seconds() -> float:
+    """Budget a complete live request, including frame decoding and all callbacks."""
+    configured = os.getenv("STRATEGY_RUNTIME_SANDBOX_TIMEOUT_SECONDS", "").strip()
+    try:
+        value = float(configured or _DEFAULT_LIVE_REQUEST_TIMEOUT)
+    except (TypeError, ValueError):
+        value = _DEFAULT_LIVE_REQUEST_TIMEOUT
+    if not math.isfinite(value):
+        value = _DEFAULT_LIVE_REQUEST_TIMEOUT
+    return min(300.0, max(2.0, value))
 
 
 def _clean_worker_environment() -> dict[str, str]:
@@ -62,6 +79,7 @@ class _JsonSandboxProcess:
         self._responses: queue.Queue[Any] = queue.Queue(maxsize=1)
         self._stderr = bytearray()
         self._closed = False
+        self._terminal_error: str | None = None
         self._temporary = tempfile.TemporaryDirectory(prefix="quantdinger-strategy-runtime-")
         worker = Path(__file__).parents[2] / "utils" / "strategy_runtime_worker.py"
         self._process = subprocess.Popen(
@@ -141,8 +159,13 @@ class _JsonSandboxProcess:
 
     def request(self, request: Mapping[str, Any], *, timeout: float = _DEFAULT_CALL_TIMEOUT) -> Any:
         with self._lock:
+            if self._terminal_error is not None:
+                raise StrategySandboxTerminatedError(self._terminal_error)
             if self._closed or self._process.poll() is not None:
-                raise StrategySandboxError(self._failure_detail("strategy sandbox is not running"))
+                raise self._abort(self._failure_detail(
+                    f"strategy sandbox is not running (exit_code={self._process.poll()})"
+                ))
+            operation = str(request.get("op") or "unknown")[:80]
             try:
                 encoded = _sandbox_transport_encode(dict(request))
                 payload = json.dumps(
@@ -157,29 +180,36 @@ class _JsonSandboxProcess:
                 raise StrategySandboxError("strategy sandbox request exceeded its limit")
             stdin = self._process.stdin
             if stdin is None:
-                raise StrategySandboxError("strategy sandbox stdin unavailable")
+                raise self._abort("strategy sandbox stdin unavailable")
             try:
                 stdin.write(payload)
                 stdin.flush()
                 response = self._responses.get(timeout=max(0.1, float(timeout)))
             except queue.Empty as exc:
-                self._terminate()
-                raise StrategySandboxError(
-                    f"strategy sandbox timed out after {float(timeout):g} seconds"
+                raise self._abort(
+                    f"strategy sandbox timed out after {float(timeout):g} seconds "
+                    f"(operation={operation})"
                 ) from exc
             except (BrokenPipeError, OSError) as exc:
-                self._terminate()
-                raise StrategySandboxError(self._failure_detail(str(exc))) from exc
+                raise self._abort(self._failure_detail(str(exc))) from exc
             if isinstance(response, Exception):
-                self._terminate()
-                raise StrategySandboxError(self._failure_detail(str(response)))
+                raise self._abort(self._failure_detail(str(response)))
             if not isinstance(response, dict):
-                self._terminate()
-                raise StrategySandboxError("strategy sandbox returned a non-object response")
+                raise self._abort("strategy sandbox returned a non-object response")
             if not response.get("success"):
                 error = _redact_sensitive_text(response.get("error") or "strategy sandbox failed")
-                raise StrategySandboxError(str(error)[:4000])
-            return _sandbox_transport_decode(response.get("result"))
+                # The worker exits after a failed operation; never retry its partial state.
+                raise self._abort(str(error)[:4000])
+            try:
+                return _sandbox_transport_decode(response.get("result"))
+            except (TypeError, ValueError, ArithmeticError) as exc:
+                raise self._abort(f"strategy sandbox result is invalid (operation={operation})") from exc
+
+    def _abort(self, message: str) -> StrategySandboxTerminatedError:
+        if self._terminal_error is None:
+            self._terminal_error = message
+        self._terminate()
+        return StrategySandboxTerminatedError(self._terminal_error)
 
     def _failure_detail(self, message: str) -> str:
         detail = _redact_sensitive_text(
@@ -259,11 +289,11 @@ class IsolatedStrategyV2LiveSession:
         universe_members: list[str] | None = None,
         schedule_timezone: str = "UTC",
         program: CompiledStrategyV2 | None = None,
-        timeout: float = _DEFAULT_CALL_TIMEOUT,
+        timeout: float | None = None,
         max_memory_mb: int = 2048,
     ) -> None:
         self.program = program or inspect_strategy_v2(code)
-        self._timeout = max(1.0, float(timeout))
+        self._timeout = live_sandbox_timeout_seconds() if timeout is None else max(1.0, float(timeout))
         self.context = _IsolatedContextProxy(self)
         self._process = _JsonSandboxProcess({
             "op": "init_live",

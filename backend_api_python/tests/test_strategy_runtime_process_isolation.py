@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 import sys
+import time
 
 import pandas as pd
 import pytest
@@ -9,6 +10,7 @@ import pytest
 from app.services.strategy_v2.contract import compile_strategy_v2, inspect_strategy_v2
 from app.services.strategy_v2.sandbox import (
     IsolatedStrategyV2LiveSession,
+    StrategySandboxTerminatedError,
     run_strategy_backtest_isolated,
 )
 
@@ -128,3 +130,66 @@ def test_backtest_callbacks_execute_through_isolated_process():
 
     assert result["totalExecutions"] >= 1
     assert result["manifest"]["codeHash"] == inspect_strategy_v2(SOURCE).manifest.code_hash
+
+
+PORTFOLIO_SOURCE = '''
+import time
+
+def initialize(context):
+    g.symbols = ["USStock:S" + str(i) for i in range(96)]
+    g.emitted = False
+    context.set_universe(g.symbols)
+    context.subscribe(frequency="1d")
+
+def handle_data(context, data):
+    if g.emitted:
+        return
+    time.sleep(6)
+    for symbol in g.symbols:
+        bars = get_history(20, "1d", "close", symbol)
+        if len(bars) >= 20:
+            order_target_percent(symbol, 0.005, reason="portfolio_entry")
+    g.emitted = True
+'''
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="kernel sandbox requires Linux")
+def test_multi_asset_live_request_can_exceed_legacy_five_second_limit(monkeypatch):
+    monkeypatch.delenv("STRATEGY_RUNTIME_SANDBOX_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.setenv("STRATEGY_SCRIPT_CALLBACK_TIMEOUT_SEC", "5")
+    frame = pd.DataFrame(
+        {"open": 100., "high": 102., "low": 99., "close": 101., "volume": 10.},
+        index=pd.date_range("2025-01-01", periods=500, freq="D", tz="UTC"),
+    )
+    frames = {f"USStock:S{i}": frame for i in range(96)}
+    session = IsolatedStrategyV2LiveSession(
+        code=PORTFOLIO_SOURCE, frames=frames, initial_capital=10_000,
+    )
+    try:
+        assert session._timeout == 120
+        started = time.monotonic()
+        orders, _, _ = session.process(frames)
+        assert time.monotonic() - started >= 6
+        assert len(orders) == 96
+        assert {order.symbol for order in orders} == set(frames)
+        assert session.process(frames)[0] == []
+        assert session._process._process.poll() is None
+    finally:
+        session.close()
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="kernel sandbox requires Linux")
+def test_live_request_deadline_still_kills_child_and_preserves_cause():
+    frames = {f"USStock:S{i}": _frame() for i in range(96)}
+    session = IsolatedStrategyV2LiveSession(
+        code=PORTFOLIO_SOURCE, frames=frames, initial_capital=10_000, timeout=1,
+    )
+    try:
+        with pytest.raises(StrategySandboxTerminatedError, match="timed out after 1 seconds") as first:
+            session.process(frames)
+        assert session._process._process.poll() is not None
+        with pytest.raises(StrategySandboxTerminatedError) as repeated:
+            session.context.order_references()
+        assert str(first.value) == str(repeated.value)
+    finally:
+        session.close()
