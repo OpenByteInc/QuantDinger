@@ -260,14 +260,17 @@ def get_multi_kline_context():
             instrument_id=instrument_id,
         )
         return jsonify({'code': 1, 'msg': 'success', 'data': data})
-    except ValueError as exc:
-        return jsonify({'code': 0, 'msg': str(exc), 'data': None}), 400
-    except Exception as exc:
-        logger.error(f'Failed to fetch indicator multi-timeframe context: {str(exc)}')
-        logger.error(traceback.format_exc())
+    except ValueError:
         return jsonify({
             'code': 0,
-            'msg': f'Failed to fetch indicator timeframe data: {str(exc)}',
+            'msg': 'marketData.invalidRequest',
+            'data': None,
+        }), 400
+    except Exception:
+        logger.exception('Failed to fetch indicator multi-timeframe context')
+        return jsonify({
+            'code': 0,
+            'msg': 'marketData.requestFailed',
             'data': None,
         }), 500
 

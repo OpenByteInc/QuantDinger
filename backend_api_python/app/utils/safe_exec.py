@@ -575,6 +575,7 @@ def safe_exec_code(
         with timeout_context(timeout):
             # Intentional execution point after validation and namespace
             # sanitization, used by credential-free isolated workers only.
+            # codeql[py/code-injection]
             exec(code, exec_globals, exec_locals)  # NOSONAR
 
         return {'success': True, 'error': None, 'result': None}

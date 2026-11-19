@@ -1,4 +1,5 @@
 from importlib import import_module
+from inspect import unwrap
 from urllib.parse import urlencode
 
 from flask import Flask
@@ -108,3 +109,52 @@ def test_kline_route_rejects_conflicting_identity_before_fetch(monkeypatch):
     assert status == 400
     assert response.get_json()["msg"] == "marketData.cryptoExchangeConflict"
     assert calls == []
+
+
+def _call_multi_kline_error(monkeypatch, error):
+    route = import_module("app.routes.kline")
+    app = Flask(__name__)
+    monkeypatch.setattr(route, "validate_watchlist_pair", lambda *_args: None)
+
+    def fail_context(**_kwargs):
+        raise error
+
+    monkeypatch.setattr(
+        route.indicator_market_data_service,
+        "build_context",
+        fail_context,
+    )
+    payload = {
+        "market": "USStock",
+        "symbol": "AAPL",
+        "timeframe": "1D",
+        "requests": [{"timeframe": "1W", "mode": "series"}],
+    }
+    with app.test_request_context("/api/indicator/multi-kline", method="POST", json=payload):
+        result = unwrap(route.get_multi_kline_context)()
+
+    if isinstance(result, tuple):
+        return result
+    return result, result.status_code
+
+
+def test_multi_kline_route_does_not_expose_validation_exception(monkeypatch):
+    response, status = _call_multi_kline_error(
+        monkeypatch,
+        ValueError("sensitive validation detail"),
+    )
+
+    assert status == 400
+    assert response.get_json()["msg"] == "marketData.invalidRequest"
+    assert "sensitive" not in response.get_data(as_text=True)
+
+
+def test_multi_kline_route_does_not_expose_internal_exception(monkeypatch):
+    response, status = _call_multi_kline_error(
+        monkeypatch,
+        RuntimeError("internal provider traceback detail"),
+    )
+
+    assert status == 500
+    assert response.get_json()["msg"] == "marketData.requestFailed"
+    assert "internal provider" not in response.get_data(as_text=True)
