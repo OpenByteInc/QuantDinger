@@ -105,6 +105,18 @@ def test_broker_projection_preserves_full_stop_but_not_partial_take_profit():
     assert result == (95, 0)
 
 
+@pytest.mark.parametrize("fraction,expected_stop", [
+    ("0.999999999999999999", 0), ("NaN", 0), ("Infinity", 0),
+    ("invalid", 0), (-0.1, 0), (1.1, 0), (0, 0), ("1.000", 90), (1.0, 90),
+])
+def test_native_full_exit_requires_exact_valid_fraction(fraction, expected_stop):
+    result = protection_prices_from_payload(
+        {"protection": {"stop_loss_pct": 0.1, "exit_fraction": fraction}},
+        entry_price=100, pos_side="long",
+    )
+    assert result[0] == pytest.approx(expected_stop)
+
+
 def test_binance_uses_current_algo_order_endpoint():
     from app.services.live_trading.binance import BinanceFuturesClient
 

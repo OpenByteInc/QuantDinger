@@ -94,10 +94,19 @@ def protection_prices_from_payload(
         return 0.0
 
     def full_exit(override: str) -> bool:
-        fraction = number(spec.get(override), payload.get(override)) or number(
-            spec.get("exit_fraction"), payload.get("exit_fraction")
-        ) or 1.0
-        return fraction == 1.0
+        for name in (override, "exit_fraction"):
+            for raw in (spec.get(name), payload.get(name)):
+                if raw is None:
+                    continue
+                try:
+                    fraction = Decimal(str(raw))
+                except (ArithmeticError, ValueError):
+                    return False
+                if not fraction.is_finite() or not 0 <= fraction <= 1:
+                    return False
+                if fraction > 0 or name == "exit_fraction":
+                    return fraction == Decimal("1")
+        return True
 
     stop = number(payload.get("stop_loss_price"), payload.get("stopLossPrice"), spec.get("stop_loss_price"))
     take = number(payload.get("take_profit_price"), payload.get("takeProfitPrice"), spec.get("take_profit_price"))
