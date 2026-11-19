@@ -168,3 +168,19 @@ def test_canonical_template_contains_every_packaged_backend_key():
     packaged_keys = {entry.key for entry in sync_env_module._entries(packaged)}
 
     assert packaged_keys <= canonical_keys
+
+
+def test_strategy_sandbox_templates_share_current_defaults():
+    expected = {
+        "STRATEGY_RUNTIME_SANDBOX_TIMEOUT_SECONDS": "120",
+        "STRATEGY_RUNTIME_SANDBOX_MEMORY_MB": "2048",
+        "STRATEGY_BACKTEST_SANDBOX_TIMEOUT_SECONDS": "900",
+        "STRATEGY_BACKTEST_SANDBOX_MEMORY_MB": "4096",
+    }
+    for template in (REPO_ROOT / ".env.example", REPO_ROOT / "backend_api_python" / "env.example"):
+        values = {
+            entry.key: entry.line.partition("=")[2].strip()
+            for entry in sync_env_module._entries(template)
+        }
+        assert "STRATEGY_SCRIPT_CALLBACK_TIMEOUT_SEC" not in values, template
+        assert expected.items() <= values.items(), template
