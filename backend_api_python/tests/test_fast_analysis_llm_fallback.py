@@ -41,3 +41,5 @@ def test_analysis_market_is_normalized_for_report_contracts():
     assert FastAnalysisService._normalize_analysis_market("FUTURES") == "Futures"
     assert FastAnalysisService._normalize_analysis_market("FOREX") == "Forex"
     assert FastAnalysisService._normalize_analysis_market("HKSTOCK") == "HKStock"
+    assert FastAnalysisService._normalize_analysis_market("CNSTOCK") == "CNStock"
+    assert FastAnalysisService._normalize_analysis_market("A_SHARE") == "CNStock"

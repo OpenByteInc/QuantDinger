@@ -216,6 +216,14 @@ def test_requested_symbols_preserve_message_order_without_related_products():
     ]
 
 
+def test_chinese_a_share_names_resolve_to_cn_stock_targets():
+    requested = _requested_symbol_candidates("比较贵州茅台和宁德时代的日线趋势")
+    assert [(item["market"], item["symbol"]) for item in requested] == [
+        ("CNStock", "600519"),
+        ("CNStock", "300750"),
+    ]
+
+
 def test_crypto_pairs_do_not_also_resolve_as_stock_tickers():
     message = "比较 BTC/USDT、ETH/USDT、SOL/USDT 最近 5 个交易日的收益并排名"
     requested = _requested_symbol_candidates(message)

@@ -15,7 +15,7 @@ from app.professional_report.providers import (
 
 
 def test_catalog_only_contains_supported_markets_and_two_tiers():
-    assert SUPPORTED_MARKETS == {"USStock", "HKStock", "Crypto", "Forex", "Futures"}
+    assert SUPPORTED_MARKETS == {"USStock", "HKStock", "CNStock", "Crypto", "Forex", "Futures"}
     assert SUPPORTED_TIERS == {"community", "professional"}
     assert {provider.tier for provider in PROVIDER_CATALOG} == SUPPORTED_TIERS
     assert set().union(*(provider.markets for provider in PROVIDER_CATALOG)) == SUPPORTED_MARKETS
@@ -62,6 +62,7 @@ def test_catalog_contains_only_active_adapters():
         "yahoo_finance", "finnhub", "twelve_data", "alpha_vantage",
         "fred", "sec_edgar", "gate_public", "okx_public", "native_crypto_public",
         "coingecko", "coinglass", "cryptoquant", "cftc_cot",
+        "tencent_cn", "eastmoney_cn",
     }.issubset(active)
     assert active == {provider.key for provider in PROVIDER_CATALOG}
 
@@ -88,7 +89,7 @@ def test_configured_filter_does_not_read_network_or_require_process_env():
 @pytest.mark.parametrize(
     ("kwargs", "message"),
     [
-        ({"market": "CNStock"}, "unsupported market"),
+        ({"market": "MOEX"}, "unsupported market"),
         ({"tier": "premium"}, "unsupported tier"),
         ({"capability": "  "}, "capability cannot be blank"),
     ],

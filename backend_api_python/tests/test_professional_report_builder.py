@@ -11,7 +11,12 @@ from app.professional_report.snapshot import build_evidence_snapshot
 
 def _collector_payload(market="USStock"):
     now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    symbol = {"USStock": "AAPL", "HKStock": "00700", "Crypto": "ETH/USDT@swap"}[market]
+    symbol = {
+        "USStock": "AAPL",
+        "HKStock": "00700",
+        "CNStock": "600519",
+        "Crypto": "ETH/USDT@swap",
+    }[market]
     payload = {
         "market": market,
         "symbol": symbol,
@@ -33,7 +38,8 @@ def _collector_payload(market="USStock"):
         "news": [{"title": "Confirmed product update", "source": "wire", "published_at": now}],
         "_meta": {"success_items": ["price", "kline", "indicators"], "failed_items": [], "duration_ms": 12},
     }
-    if market in {"USStock", "HKStock"}:
+    if market in {"USStock", "HKStock", "CNStock"}:
+        currency = {"USStock": "USD", "HKStock": "HKD", "CNStock": "CNY"}[market]
         payload["fundamental"] = {
             "source": "test_fundamental",
             "market_cap": 1_000_000_000,
@@ -43,7 +49,7 @@ def _collector_payload(market="USStock"):
             "field_metadata": {
                 key: {"source": "test_fundamental", "as_of": now, "unit": unit}
                 for key, unit in {
-                    "market_cap": "USD" if market == "USStock" else "HKD",
+                    "market_cap": currency,
                     "revenue_growth": "percent",
                     "profit_margin": "percent",
                     "pe_ratio": "ratio",
@@ -51,6 +57,10 @@ def _collector_payload(market="USStock"):
             },
             "financial_statements": {"latest_quarter": {"period_end": now[:10]}},
             "identity": {"verified": True, "reported_symbol": symbol},
+        }
+        payload["company"] = {
+            "name": "Kweichow Moutai" if market == "CNStock" else symbol,
+            "industry": "Consumer Staples" if market == "CNStock" else "",
         }
     else:
         payload["crypto_instrument"] = {"venue": "binance", "market_type": "perpetual"}
@@ -93,7 +103,7 @@ def _analysis(payload, evidence_claims=None):
     }
 
 
-@pytest.mark.parametrize("market", ["USStock", "HKStock", "Crypto"])
+@pytest.mark.parametrize("market", ["USStock", "HKStock", "CNStock", "Crypto"])
 def test_professional_builder_produces_valid_contract_for_supported_markets(market):
     payload = _collector_payload(market)
     snapshot = build_evidence_snapshot(payload)
@@ -112,6 +122,20 @@ def test_professional_builder_produces_valid_contract_for_supported_markets(mark
     assert report["price_chart"]["bars"][0]["close"] == 100
     assert report["price_chart"]["support"] == 95
     assert report["price_chart"]["resistance"] == 110
+
+
+def test_cn_stock_report_uses_cn_identity_workflow_and_market_features():
+    payload = _collector_payload("CNStock")
+    report = build_professional_report(payload, _analysis(payload))
+
+    assert report["contract_validation"]["valid"] is True
+    assert report["instrument"]["quote_currency"] == "CNY"
+    assert report["instrument"]["timezone"] == "Asia/Shanghai"
+    assert report["market_features"]["market"] == "CNStock"
+    assert report["research_intelligence"]["workflow_id"] == "cn_equity_deep_dive_v1"
+    dimension = next(item for item in report["dimensions"] if item["key"] == "market_specific")
+    assert "A股特有证据" in dimension["narrative"]
+    assert report["provider_options"]["community"]
 
 
 @pytest.mark.parametrize(
@@ -550,6 +574,7 @@ def test_llm_contract_drops_unknown_and_ungrounded_claims():
 @pytest.mark.parametrize("market, marker", [
     ("USStock", "reported filings"),
     ("HKStock", "HKEX disclosures"),
+    ("CNStock", "mainland China A-shares"),
     ("Crypto", "spot from perpetual"),
 ])
 def test_prompt_is_market_specific_grounded_and_injection_resistant(market, marker):

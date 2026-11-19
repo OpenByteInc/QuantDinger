@@ -66,7 +66,7 @@ def build_equity_features(
     payload: Mapping[str, Any],
     evidence: list[Mapping[str, Any]],
 ) -> dict[str, Any]:
-    """Build common and US/HK-specific feature coverage.
+    """Build common and market-specific equity feature coverage.
 
     Missing professional capabilities are explicit.  They are not silently
     converted into neutral scores, which would overstate report completeness.
@@ -134,6 +134,15 @@ def build_equity_features(
         missing = [
             key for key, value in market_specific.items()
             if applicable.get(key, True) and not value
+        ]
+    elif market == "CNStock":
+        market_specific = {
+            "company_profile": payload.get("company") or {},
+            "financial_statements": statements,
+        }
+        missing = [
+            key for key, value in market_specific.items()
+            if not value
         ]
     else:
         raise ValueError(f"unsupported equity market: {market}")

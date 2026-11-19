@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Iterable, Mapping
 
 
-SUPPORTED_MARKETS = frozenset({"USStock", "HKStock", "Crypto", "Forex", "Futures"})
+SUPPORTED_MARKETS = frozenset({"USStock", "HKStock", "CNStock", "Crypto", "Forex", "Futures"})
 SUPPORTED_TIERS = frozenset({"community", "professional"})
 SUPPORTED_COST_LEVELS = frozenset({"free", "low", "medium", "high", "enterprise"})
 SUPPORTED_INTEGRATION_STATUSES = frozenset({"active"})
@@ -87,7 +87,7 @@ PROVIDER_CATALOG: tuple[ProviderSpec, ...] = (
         key="yahoo_finance",
         name="Yahoo Finance",
         tier="community",
-        markets=frozenset({"USStock", "HKStock", "Forex", "Futures"}),
+        markets=frozenset({"USStock", "HKStock", "CNStock", "Forex", "Futures"}),
         capabilities=frozenset({
             "market_data", "corporate_actions", "fundamentals", "options",
             "analyst_estimates", "short_data", "ownership",
@@ -117,7 +117,7 @@ PROVIDER_CATALOG: tuple[ProviderSpec, ...] = (
         key="twelve_data",
         name="Twelve Data",
         tier="community",
-        markets=frozenset({"USStock", "HKStock", "Forex", "Futures"}),
+        markets=frozenset({"USStock", "HKStock", "CNStock", "Forex", "Futures"}),
         capabilities=frozenset({"market_data", "fundamentals"}),
         api_env_keys=("TWELVE_DATA_API_KEY",),
         cost_level="low",
@@ -204,6 +204,36 @@ PROVIDER_CATALOG: tuple[ProviderSpec, ...] = (
         cost_level="free",
         license_warning=(
             "Best-effort community data intended for research and source verification; "
+            "confirm display and redistribution rights before commercial use."
+        ),
+        default_priority=8,
+        integration_status="active",
+    ),
+    ProviderSpec(
+        key="tencent_cn",
+        name="Tencent China Market Data",
+        tier="community",
+        markets=frozenset({"CNStock"}),
+        capabilities=frozenset({"market_data"}),
+        keyless=True,
+        cost_level="free",
+        license_warning=(
+            "Best-effort public market data is intended for research; confirm delay, display, "
+            "retention and redistribution terms before commercial use."
+        ),
+        default_priority=5,
+        integration_status="active",
+    ),
+    ProviderSpec(
+        key="eastmoney_cn",
+        name="Eastmoney China A-Shares via AkShare",
+        tier="community",
+        markets=frozenset({"CNStock"}),
+        capabilities=frozenset({"market_data", "fundamentals"}),
+        keyless=True,
+        cost_level="free",
+        license_warning=(
+            "Best-effort community data is intended for research and source verification; "
             "confirm display and redistribution rights before commercial use."
         ),
         default_priority=8,

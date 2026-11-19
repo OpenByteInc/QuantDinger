@@ -12,6 +12,7 @@ from typing import Any, Iterable, Mapping
 _MARKET_DEFAULTS = {
     "USStock": {"currency": "USD", "timezone": "America/New_York", "asset_type": "equity"},
     "HKStock": {"currency": "HKD", "timezone": "Asia/Hong_Kong", "asset_type": "equity"},
+    "CNStock": {"currency": "CNY", "timezone": "Asia/Shanghai", "asset_type": "equity"},
     "Crypto": {"currency": None, "timezone": "UTC", "asset_type": "crypto"},
     "Forex": {"currency": None, "timezone": "UTC", "asset_type": "forex"},
     "Futures": {"currency": "USD", "timezone": "America/New_York", "asset_type": "futures"},

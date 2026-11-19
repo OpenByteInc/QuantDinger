@@ -23,6 +23,14 @@ _WORKFLOWS: dict[str, dict[str, Any]] = {
             "southbound_holdings", "short_selling", "ccass", "analyst_expectations",
         ],
     },
+    "CNStock": {
+        "workflow_id": "cn_equity_deep_dive_v1",
+        "artifact_type": "equity_research",
+        "required_capabilities": ["price_history", "financials", "company_profile"],
+        "optional_capabilities": [
+            "exchange_disclosures", "northbound_flow", "margin_financing", "analyst_expectations",
+        ],
+    },
     "Crypto": {
         "workflow_id": "crypto_market_structure_v1",
         "artifact_type": "crypto_research",

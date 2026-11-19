@@ -25,6 +25,7 @@ def instrument(market: str = "USStock") -> InstrumentIdentity:
     symbols = {
         "USStock": "aapl",
         "HKStock": "00700",
+        "CNStock": "600519",
         "Crypto": "btc/usdt",
         "Forex": "eurusd",
         "Futures": "gc",
@@ -32,6 +33,7 @@ def instrument(market: str = "USStock") -> InstrumentIdentity:
     currencies = {
         "USStock": "usd",
         "HKStock": "hkd",
+        "CNStock": "cny",
         "Crypto": "usdt",
         "Forex": "usd",
         "Futures": "usd",
@@ -122,11 +124,11 @@ def test_snapshot_rejects_duplicate_evidence_ids():
         )
 
 
-@pytest.mark.parametrize("market", ["USStock", "HKStock", "Crypto", "Forex", "Futures"])
+@pytest.mark.parametrize("market", ["USStock", "HKStock", "CNStock", "Crypto", "Forex", "Futures"])
 def test_contract_supports_professional_report_markets(market: str):
     identity = instrument(market)
     assert identity.market == market
-    assert identity.quote_currency in {"USD", "HKD", "USDT"}
+    assert identity.quote_currency in {"USD", "HKD", "CNY", "USDT"}
 
 
 def test_candidate_setup_is_explicitly_watch_only():
