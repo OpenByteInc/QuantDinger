@@ -147,6 +147,7 @@ The project combines:
 
 - multi-provider AI market research and analysis;
 - Python indicators and Strategy API V2 development;
+- a community-maintained library of ready-to-copy indicators and strategies;
 - server-side backtesting and experiment workflows;
 - paper and live execution across crypto exchanges and traditional brokers;
 - web, mobile H5, human API, Agent Gateway, and MCP access;
@@ -154,6 +155,20 @@ The project combines:
 
 It is not a black-box signal service. Strategy code, risk settings, credentials,
 and deployment remain under the operator's control.
+
+### Community indicator and strategy library
+
+QuantDinger includes a file-based [community library](library/) for users who
+want working examples without installing a package or importing database seed
+data. Browse the ready-to-copy [indicators](library/indicators/) and
+[Strategy API V2 strategies](library/strategies/), open a Python file, and paste
+it into the corresponding QuantDinger editor.
+
+The library is designed to grow through community pull requests. Indicator and
+strategy authors are encouraged to contribute their own work, validation
+evidence, fixes, and improvements so the collection can be maintained together.
+See the [library contribution requirements](library/README.md#contributing) and
+the main [contribution guide](CONTRIBUTING.md).
 
 ### Strategy evolution and signal-only virtual accounts
 
@@ -615,9 +630,10 @@ OpenAPI artifact when required, and pass the compatibility workflow.
 ## Repository layout
 
 This repository contains the backend, worker processes, deployment definitions,
-operations configuration, documentation, and MCP server. The desktop and mobile
-client source code live in separate repositories; this repository consumes their
-published images in the Compose stacks.
+operations configuration, documentation, community indicator and strategy
+library, and MCP server. The desktop and mobile client source code live in
+separate repositories; this repository consumes their published images in the
+Compose stacks.
 
 ```text
 QuantDinger/
@@ -671,6 +687,9 @@ QuantDinger/
 |   |-- getting-started/               Onboarding and first-run guides
 |   |-- product/                       Product workflows and feature documentation
 |   `-- security/                      Security model and operational guidance
+|-- library/                           Community-maintained Python indicator and strategy library
+|   |-- indicators/                    Ready-to-copy indicator source files
+|   `-- strategies/                    Ready-to-copy Strategy API V2 source files and validation table
 |-- mcp_server/                        Standalone QuantDinger MCP server package
 |   |-- src/quantdinger_mcp/           MCP server and security implementation
 |   `-- tests/                         MCP contract and security tests
@@ -715,6 +734,7 @@ loops, exchange-specific behavior, or large database workflows.
 | Add a finite asynchronous task | `app/tasks/` | `celery_app.py`, queue routing, task tests |
 | Add long-lived process behavior | `app/workers/`, `app/commands/`, or `app/runtime/` | Compose command, health checks, ownership tests |
 | Change the database schema | `backend_api_python/migrations/` | migration/release-gate tests and docs |
+| Contribute an indicator or strategy | `library/indicators/` or `library/strategies/` | validation evidence and the applicable library README |
 | Add metrics or alerts | `app/observability/` and `ops/` | dashboard, alert rule, observability docs |
 | Add an MCP tool | `mcp_server/src/quantdinger_mcp/` | Agent Gateway scope, security tests, agent docs |
 
@@ -771,6 +791,11 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md) and [DEVELOPMENT.md](DEVELOPMENT.md)
 before opening a pull request. Keep routes thin, preserve API compatibility,
 place long-running behavior in the correct process, and include focused tests
 for high-risk changes.
+
+Indicators and strategies are community-maintained too. Add compatible Python
+files under [`library/indicators/`](library/indicators/) or
+[`library/strategies/`](library/strategies/) and include chart-preview or
+backtest evidence with the pull request.
 
 The [public roadmap](ROADMAP.md) lists active product themes, planning stages,
 and the process for claiming scoped contributor work.

@@ -136,12 +136,23 @@ QuantDinger 是面向独立交易者、Python 策略开发者和小型团队的*
 
 - 支持多家提供商的 AI 市场研究与分析；
 - Python 指标和 Strategy API V2 策略开发；
+- 由社区共同维护、可直接复制使用的指标与策略代码库；
 - 服务端回测与实验工作流；
 - 覆盖加密货币交易所和传统券商的模拟及实盘执行；
 - Web、移动 H5、Human API、Agent Gateway 与 MCP 接入；
 - 由 PostgreSQL 持久化的状态、可靠工作进程、审计日志和可选监控。
 
 它不是黑盒信号服务。策略代码、风险设置、凭据和部署始终由运营者掌控。
+
+### 社区指标与策略代码库
+
+QuantDinger 提供基于文件的[社区代码库](library/)，用户不需要安装额外软件包或导入数据库种子，
+即可浏览并复制可用的 [Python 指标](library/indicators/)和
+[Strategy API V2 策略](library/strategies/)，然后粘贴到对应的 QuantDinger 编辑器中。
+
+该代码库通过社区 Pull Request 持续扩充。欢迎指标与策略作者贡献自己的实现、验证证据、修复和改进，
+与社区共同维护这套代码集合。提交前请阅读[代码库贡献要求](library/README.md#contributing)和
+[贡献指南](CONTRIBUTING.md)。
 
 ### 策略进化与仅通知虚拟账户
 
@@ -546,8 +557,8 @@ API 变更应遵循 [API 约定](docs/architecture/API_CONVENTIONS.md)，在需�
 
 ## 仓库结构
 
-本仓库包含后端、工作进程、部署定义、运维配置、文档和 MCP Server。桌面端与移动端客户端源码
-位于独立仓库；本仓库在 Compose 服务栈中使用它们发布的镜像。
+本仓库包含后端、工作进程、部署定义、运维配置、文档、社区指标与策略代码库以及 MCP Server。
+桌面端与移动端客户端源码位于独立仓库；本仓库在 Compose 服务栈中使用它们发布的镜像。
 
 ```text
 QuantDinger/
@@ -601,6 +612,9 @@ QuantDinger/
 |   |-- getting-started/               入门与首次运行指南
 |   |-- product/                       产品流程与功能文档
 |   `-- security/                      安全模型与运维指南
+|-- library/                           社区共同维护的 Python 指标与策略代码库
+|   |-- indicators/                    可直接复制的指标源码
+|   `-- strategies/                    可直接复制的 Strategy API V2 源码与验收表
 |-- mcp_server/                        独立 QuantDinger MCP Server 包
 |   |-- src/quantdinger_mcp/           MCP Server 与安全实现
 |   `-- tests/                         MCP 合同与安全测试
@@ -644,6 +658,7 @@ QuantDinger/
 | 新增有限异步任务 | `app/tasks/` | `celery_app.py`、队列路由、任务测试 |
 | 新增长期运行进程行为 | `app/workers/`、`app/commands/` 或 `app/runtime/` | Compose 命令、健康检查、所有权测试 |
 | 修改数据库结构 | `backend_api_python/migrations/` | 迁移/发布门禁测试与文档 |
+| 贡献指标或策略 | `library/indicators/` 或 `library/strategies/` | 验证证据与对应的代码库 README |
 | 新增指标或告警 | `app/observability/` 与 `ops/` | 仪表盘、告警规则、可观测性文档 |
 | 新增 MCP 工具 | `mcp_server/src/quantdinger_mcp/` | Agent Gateway 权限范围、安全测试、Agent 文档 |
 
@@ -685,6 +700,10 @@ Web 与移动端仓库分别发布自己的 GHCR 镜像。只有从源码构建�
 提交 Pull Request 前，请阅读 [CONTRIBUTING.md](CONTRIBUTING.md) 和
 [DEVELOPMENT.md](DEVELOPMENT.md)。保持路由轻量，维护 API 兼容性，将长期运行行为放入正确的进程，
 并为高风险变更提供有针对性的测试。
+
+指标和策略同样由社区共同维护。欢迎将兼容的 Python 文件提交到
+[`library/indicators/`](library/indicators/) 或 [`library/strategies/`](library/strategies/)，
+并在 Pull Request 中附上图表预览或回测验证证据。
 
 [公开路线图](ROADMAP.md)列出了当前产品主题、规划阶段以及认领范围明确的贡献任务的流程。
 
