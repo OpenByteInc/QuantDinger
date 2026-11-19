@@ -278,6 +278,13 @@ def build_evidence_snapshot(payload: Mapping[str, Any]) -> dict[str, Any]:
         collector.add(metric, value, category="technical", source="quantdinger", unit=unit)
 
     fundamental = payload.get("fundamental") or {}
+    company = payload.get("company") or {}
+    if collector.market == "CNStock":
+        collector.add(
+            "company.name", company.get("name") or company.get("company_name"),
+            category="fundamental", source=company.get("source"),
+            as_of=company.get("as_of"), required=True,
+        )
     field_metadata = fundamental.get("field_metadata") or {}
     skip = {"source", "field_metadata", "financial_statements", "earnings", "data_quality", "identity"}
     for key, value in fundamental.items():
@@ -452,6 +459,11 @@ def build_evidence_snapshot(payload: Mapping[str, Any]) -> dict[str, Any]:
 
     meta = payload.get("_meta") or {}
     required_by_market = {
+        "CNStock": [
+            "quote.price", "ohlcv.latest_bar", "indicator.rsi.value",
+            "indicator.moving_averages.trend", "market_cap", "revenue_growth", "profit_margin",
+            "company.name",
+        ],
         "USStock": [
             "quote.price", "ohlcv.latest_bar", "indicator.rsi.value",
             "indicator.moving_averages.trend", "market_cap", "revenue_growth", "profit_margin",

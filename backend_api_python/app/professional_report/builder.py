@@ -542,7 +542,9 @@ def _build_scenarios(
     current_price: float,
     trading_plan: Mapping[str, Any],
     market_data: Mapping[str, Any],
+    language: str = "en-US",
 ) -> list[dict[str, Any]]:
+    zh = str(language).lower().startswith("zh")
     stop = trading_plan.get("stop_loss") or trading_plan.get("stopLoss")
     target = trading_plan.get("take_profit") or trading_plan.get("takeProfit")
     support = market_data.get("support")
@@ -561,21 +563,21 @@ def _build_scenarios(
             "case": "bull",
             "probability": None,
             "target_price": bull_target,
-            "trigger": "Price and evidence confirm the upside thesis.",
+            "trigger": "价格走势与支持证据共同确认乐观情景。" if zh else "Price and evidence confirm the upside thesis.",
             "invalidation": bear_target,
         },
         {
             "case": "base",
             "probability": None,
             "target_price": base_target,
-            "trigger": "Current evidence remains mixed or follows the central path.",
+            "trigger": "当前证据仍然分化，维持基准路径。" if zh else "Current evidence remains mixed or follows the central path.",
             "invalidation": None,
         },
         {
             "case": "bear",
             "probability": None,
             "target_price": bear_target,
-            "trigger": "Downside catalyst or technical breakdown is confirmed.",
+            "trigger": "下行催化因素出现，或技术形态确认破位。" if zh else "Downside catalyst or technical breakdown is confirmed.",
             "invalidation": bull_target,
         },
     ]
@@ -851,7 +853,7 @@ def build_professional_report(
     generated_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     from app.research import build_research_intelligence
 
-    scenarios = _build_scenarios(decision, current_price, trading_plan, market_data)
+    scenarios = _build_scenarios(decision, current_price, trading_plan, market_data, report_language)
     research_intelligence = build_research_intelligence(
         collector_payload,
         quality=quality,

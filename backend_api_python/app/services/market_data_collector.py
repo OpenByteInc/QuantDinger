@@ -2517,7 +2517,7 @@ class MarketDataCollector:
                     raw_news = self._finnhub_client.company_news(symbol, _from=start_date, to=end_date)
                 elif market == 'Crypto':
                     raw_news = self._finnhub_client.general_news('crypto', min_id=0)
-                else:
+                elif market != 'CNStock':
                     raw_news = self._finnhub_client.general_news('general', min_id=0)
                 
                 if raw_news:
@@ -2622,14 +2622,24 @@ class MarketDataCollector:
             
             if response.success and response.results:
                 for result in response.results:
-                    news_list.append({
+                    item = {
                         "datetime": result.published_date or datetime.now().strftime('%Y-%m-%d'),
                         "headline": result.title,
                         "summary": result.snippet[:200] if result.snippet else '',
                         "source": f"搜索:{result.source}",
                         "url": result.url,
                         "sentiment": result.sentiment,
-                    })
+                    }
+                    if market == 'CNStock':
+                        # Search ranking alone does not establish issuer relevance.
+                        text = f"{result.title} {result.snippet}".casefold()
+                        code = ''.join(char for char in str(symbol) if char.isdigit())
+                        names = [str(company_name or '').strip(), code if len(code) == 6 else '']
+                        item["asset_relevance"] = (
+                            "direct" if any(name and name.casefold() in text for name in names)
+                            else "background"
+                        )
+                    news_list.append(item)
                 logger.info(f"搜索引擎新闻补充: {len(news_list)} 条 (来源: {response.provider})")
         except Exception as e:
             logger.debug(f"搜索引擎新闻获取失败: {e}")
