@@ -586,6 +586,12 @@ availability cannot prevent position reduction. Configure providers under
 [live trading safety guide](docs/trading/LIVE_TRADING_SAFETY.md) for behavior and
 scope.
 
+To use [Nace Drex](https://console.nace.ai/docs/drex) instead, set `AI_DECISION_PROVIDER` to
+`drex` and add `NACE_API_KEY` (model `NACE_DEFAULT_DECISION_MODEL`, default
+`drex-max-finance`). Drex serves the same System One contract and runs the same
+checks, `JEV_TIMEOUT_SECONDS`, `JEV_MIN_CONFIDENCE`, and fallbacks; `JEV_ENABLED`
+applies to Jev only. The decision timeline records it as provider `drex`.
+
 ## AI agents and MCP
 
 The Agent Gateway is exposed under `/api/agent/v1`. The included MCP server lets
