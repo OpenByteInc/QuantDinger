@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from app.services.exchange_execution import _load_credential_config, resolve_exchange_config
 from app.services.grid.config import GridBotConfig
@@ -102,6 +105,7 @@ def test_grid_startup_places_limits_when_client_ok():
         return True
 
     client = MagicMock()
+    client.get_instrument.return_value = {"ctVal": "0.01", "lotSz": "0.01", "minSz": "0.01"}
     client.place_limit_order.return_value = MagicMock(exchange_order_id="ex1")
 
     def _create_client():
@@ -116,8 +120,10 @@ def test_grid_startup_places_limits_when_client_ok():
             "app.services.grid.engine.GridCellRepository"
         ) as cell_repo_cls:
             repo = repo_cls.return_value
+            open_orders = []
+            repo.list_open.side_effect = lambda *_args: open_orders
             repo.has_open_for_cell.return_value = False
-            repo.insert.return_value = 1
+            repo.insert.side_effect = lambda order: open_orders.append(order) or len(open_orders)
             cell_repo_cls.return_value.list_cells.return_value = []
             runner = GridRestingRunner(
                 2,
@@ -153,7 +159,8 @@ def test_grid_startup_places_limits_when_client_ok():
     assert place.called
 
 
-def test_grid_startup_rolls_back_new_seed_without_resting_coverage(monkeypatch):
+@pytest.mark.parametrize("rollback_ok", [True, False])
+def test_grid_startup_rolls_back_new_seed_without_resting_coverage(monkeypatch, rollback_ok):
     runner = GridRestingRunner(
         3,
         "ETH/USDT",
@@ -179,6 +186,7 @@ def test_grid_startup_rolls_back_new_seed_without_resting_coverage(monkeypatch):
     engine = runner.engine
     monkeypatch.setattr(engine, "bootstrap", lambda _price: (True, ""))
     monkeypatch.setattr(engine, "handle_boundary", lambda _price: False)
+    monkeypatch.setattr(engine, "validate_startup_order_sizes", lambda _client: (True, ""))
 
     def seed(_price):
         engine._initial_done = True
@@ -190,7 +198,7 @@ def test_grid_startup_rolls_back_new_seed_without_resting_coverage(monkeypatch):
     monkeypatch.setattr(engine, "sync_exit_coverage", lambda _price: 0)
     monkeypatch.setattr(engine._orders, "list_open", lambda *_args, **_kwargs: [])
     cancel_all = MagicMock()
-    rollback = MagicMock(return_value=True)
+    rollback = MagicMock(return_value=rollback_ok)
     monkeypatch.setattr(engine, "cancel_all_orders_on_exchange", cancel_all)
     monkeypatch.setattr(engine, "rollback_startup_initial_fills", rollback)
     monkeypatch.setattr(
@@ -209,7 +217,10 @@ def test_grid_startup_rolls_back_new_seed_without_resting_coverage(monkeypatch):
     ok, message = runner.startup(2500.0)
 
     assert ok is False
-    assert message == "strategyRuntime.gridStartupCoverageFailedRolledBack"
+    assert message == (
+        "strategyRuntime.gridStartupCoverageFailedRolledBack"
+        if rollback_ok else "strategyRuntime.gridStartupCoverageFailedRollbackFailed"
+    )
     cancel_all.assert_called_once_with()
     rollback.assert_called_once_with(2500.0)
 
@@ -275,3 +286,192 @@ def test_grid_config_rejects_spacing_that_cannot_cover_round_trip_fees():
     assert ok is False
     assert warnings == []
     assert "too narrow after fees" in msg
+
+
+def _doge_startup_runner(monkeypatch, *, capital=5.0, params=None):
+    from app.services import instrument_rules
+    from app.services.live_trading.okx import OkxClient
+
+    orders = MagicMock()
+    orders.list_open.return_value = []
+    orders.has_open_for_cell.return_value = False
+    cells = MagicMock()
+    cells.list_cells.return_value = []
+    monkeypatch.setattr("app.services.grid.engine.GridRestingOrderRepository", lambda: orders)
+    monkeypatch.setattr("app.services.grid.engine.GridCellRepository", lambda: cells)
+    monkeypatch.setattr("app.services.grid.actor.GridActorRepository", MagicMock())
+    monkeypatch.setattr("app.services.grid.engine.persist_grid_resting_state", lambda *_args: None)
+    monkeypatch.setattr("app.services.grid.runner.register_runner", MagicMock())
+    monkeypatch.setattr("app.services.grid.poller.sync_strategy_grid_orders", lambda _sid: 0)
+    logs = []
+    monkeypatch.setattr("app.services.grid.runner.append_strategy_log", lambda *args: logs.append(args))
+    monkeypatch.setattr("app.services.grid.engine.append_strategy_log", lambda *args: logs.append(args))
+    monkeypatch.setattr(
+        "app.services.grid.exchange_requirements.validate_neutral_grid_exchange_support",
+        lambda *_args, **_kwargs: (True, ""),
+    )
+    monkeypatch.setattr(
+        "app.services.grid.exchange_requirements.fetch_exchange_dual_leg_snapshot",
+        lambda *_args, **_kwargs: {"long_size": 0.0, "short_size": 0.0, "position_mode_label": "okx_net_mode"},
+    )
+    provider = instrument_rules.InstrumentRulesProvider()
+    monkeypatch.setattr(instrument_rules, "get_instrument_rules_provider", lambda: provider)
+    client = OkxClient.__new__(OkxClient)
+    client.get_instrument = lambda **_kwargs: {
+        "instId": "DOGE-USDT-SWAP", "ctVal": "1000", "ctMult": "1", "ctValCcy": "DOGE",
+        "lotSz": "0.01", "minSz": "0.01", "tickSz": "0.00001",
+    }
+    runner = GridRestingRunner(
+        901, "DOGE/USDT",
+        {
+            "market_type": "swap", "leverage": 1,
+            "bot_params": {
+                "lowerPrice": 0.0295, "upperPrice": 0.0738,
+                "gridCount": 80, "gridCountUnit": "cells", "amountPerGridPct": 1 / 80,
+                "gridDirection": "long", "initialPositionPct": 0.6, "maxOpenOrders": 4,
+                **(params or {}),
+            },
+        },
+        {"exchange_id": "okx", "credential_id": 9},
+        initial_capital=capital, create_client_fn=lambda: client,
+        enqueue_market_fn=MagicMock(),
+    )
+    return runner, client, provider, logs
+
+
+@pytest.mark.parametrize("direction", ["long", "short", "neutral"])
+def test_grid_startup_rejects_doge_sub_contract_cells_before_any_order(monkeypatch, direction):
+    runner, client, _provider, logs = _doge_startup_runner(monkeypatch, params={"gridDirection": direction})
+    initial = MagicMock()
+    limits = MagicMock()
+    rollback = MagicMock()
+    reconcile = MagicMock()
+    monkeypatch.setattr(runner.engine, "run_initial_market_position", initial)
+    monkeypatch.setattr(runner.engine, "sync_grid_orders", limits)
+    monkeypatch.setattr(runner.engine, "rollback_startup_initial_fills", rollback)
+    monkeypatch.setattr(runner.engine, "reconcile_grid_ladder_orders", reconcile)
+
+    assert runner.startup(0.0515) == (False, "strategyRuntime.gridStartupCoverageFailed")
+    assert not runner._started
+    initial.assert_not_called()
+    limits.assert_not_called()
+    rollback.assert_not_called()
+    reconcile.assert_not_called()
+    assert any("requested_qty=" in row[2] and "min_qty=10 qty_step=10" in row[2] for row in logs)
+
+
+def test_grid_startup_size_check_accepts_tradable_doge_without_mutating_budget(monkeypatch):
+    runner, client, _provider, _logs = _doge_startup_runner(monkeypatch, capital=100)
+    before = dict(runner.trading_config["bot_params"])
+
+    assert runner.engine.validate_startup_order_sizes(client) == (True, "")
+    assert runner.trading_config["bot_params"] == before
+    assert runner.engine.cfg.leverage == 1
+
+
+def test_grid_startup_checks_source_weights_beyond_open_order_cap(monkeypatch):
+    weights = [1 / 80] * 80
+    weights[50] = 0.0001
+    runner, client, _provider, _logs = _doge_startup_runner(
+        monkeypatch, capital=100, params={"cellBudgetPcts": weights, "maxOpenOrders": 1},
+    )
+
+    ok, detail = runner.engine.validate_startup_order_sizes(client)
+
+    assert not ok
+    assert "cell=50 " in detail
+
+
+@pytest.mark.parametrize("funded", [False, True])
+def test_grid_startup_ignores_zero_weight_cells_but_requires_funded_cells(monkeypatch, funded):
+    weights = [0.0] * 80
+    if funded:
+        weights[40] = 1.0
+    runner, client, _provider, _logs = _doge_startup_runner(
+        monkeypatch, params={"cellBudgetPcts": weights},
+    )
+
+    ok, detail = runner.engine.validate_startup_order_sizes(client)
+
+    assert ok is funded
+    if not funded:
+        assert "reason=grid_no_funded_cells" in detail
+
+
+def test_grid_startup_missing_rules_fails_before_initial_order(monkeypatch):
+    runner, _client, provider, logs = _doge_startup_runner(monkeypatch, capital=100)
+    monkeypatch.setattr(provider, "get_rules", MagicMock(side_effect=RuntimeError("offline")))
+    initial = MagicMock()
+    monkeypatch.setattr(runner.engine, "run_initial_market_position", initial)
+
+    assert runner.startup(0.0515)[0] is False
+    initial.assert_not_called()
+    assert any("reason=instrument_rules_unavailable" in row[2] for row in logs)
+
+
+@pytest.mark.parametrize("initial_pct", [0, 0.6])
+def test_grid_startup_with_no_fill_and_no_orders_cannot_report_success(monkeypatch, initial_pct):
+    runner, _client, _provider, logs = _doge_startup_runner(
+        monkeypatch, capital=100, params={"initialPositionPct": initial_pct},
+    )
+    monkeypatch.setattr(runner.engine, "run_initial_market_position", lambda _price: not initial_pct)
+    monkeypatch.setattr(runner.engine, "sync_grid_orders", lambda _price: 0)
+    monkeypatch.setattr(runner.engine, "sync_exit_coverage", lambda _price: 0)
+    cancel_entries, cancel_all, rollback = MagicMock(), MagicMock(), MagicMock()
+    monkeypatch.setattr(runner.engine, "cancel_entry_orders_on_exchange", cancel_entries)
+    monkeypatch.setattr(runner.engine, "cancel_all_orders_on_exchange", cancel_all)
+    monkeypatch.setattr(runner.engine, "rollback_startup_initial_fills", rollback)
+
+    assert runner.startup(0.0515) == (False, "strategyRuntime.gridStartupCoverageFailed")
+    assert not runner._started
+    assert not any("live started" in row[2] for row in logs)
+    cancel_entries.assert_called_once()
+    cancel_all.assert_not_called()
+    rollback.assert_not_called()
+
+
+@pytest.mark.parametrize("purpose", ["long_entry", "long_exit"])
+def test_grid_startup_preserves_verified_orders_on_recovery(monkeypatch, purpose):
+    runner, _client, _provider, _logs = _doge_startup_runner(monkeypatch, capital=100)
+    monkeypatch.setattr(runner.engine, "reconcile_grid_ladder_orders", lambda: 0)
+    runner.engine._orders.list_open.return_value = [
+        SimpleNamespace(purpose=purpose, exchange_order_id="verified-order"),
+    ]
+    monkeypatch.setattr(runner.engine, "run_initial_market_position", lambda _price: True)
+    monkeypatch.setattr(runner.engine, "sync_grid_orders", lambda _price: 0)
+    monkeypatch.setattr(runner.engine, "sync_exit_coverage", lambda _price: 0)
+    cancel_all = MagicMock()
+    monkeypatch.setattr(runner.engine, "cancel_all_orders_on_exchange", cancel_all)
+
+    assert runner.startup(0.0515) == (True, "")
+    assert runner._started
+    cancel_all.assert_not_called()
+
+
+def test_grid_startup_rejects_unverified_orders_without_new_fill(monkeypatch):
+    runner, _client, _provider, _logs = _doge_startup_runner(monkeypatch, capital=100)
+    monkeypatch.setattr(runner.engine, "reconcile_grid_ladder_orders", lambda: 0)
+    runner.engine._orders.list_open.return_value = [
+        SimpleNamespace(purpose="long_entry", exchange_order_id=""),
+    ]
+    monkeypatch.setattr(runner.engine, "run_initial_market_position", lambda _price: False)
+    monkeypatch.setattr(runner.engine, "sync_grid_orders", lambda _price: 0)
+    monkeypatch.setattr(runner.engine, "cancel_entry_orders_on_exchange", MagicMock())
+
+    assert runner.startup(0.0515) == (False, "strategyRuntime.gridStartupCoverageFailed")
+    assert not runner._started
+
+
+def test_grid_startup_can_wait_outside_bounds_without_orders(monkeypatch):
+    runner, _client, _provider, _logs = _doge_startup_runner(
+        monkeypatch, capital=100, params={"boundaryAction": "pause"},
+    )
+    initial, limits = MagicMock(), MagicMock()
+    monkeypatch.setattr(runner.engine, "run_initial_market_position", initial)
+    monkeypatch.setattr(runner.engine, "sync_grid_orders", limits)
+
+    assert runner.startup(0.02) == (True, "")
+    assert runner._started
+    assert runner.engine._paused_entries
+    initial.assert_not_called()
+    limits.assert_not_called()

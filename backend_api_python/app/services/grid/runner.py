@@ -184,7 +184,6 @@ class GridRestingRunner:
         ok2, msg2 = self._engine.bootstrap(current_price)
         if not ok2:
             return False, msg2
-        self._engine.reconcile_grid_ladder_orders()
         try:
             client = self._engine._create_client()
         except Exception as e:
@@ -205,6 +204,13 @@ class GridRestingRunner:
         if not ok_mode:
             append_strategy_log(self.strategy_id, "error", mode_msg)
             return False, mode_msg
+        sizes_ok, size_detail = self._engine.validate_startup_order_sizes(client)
+        if not sizes_ok:
+            diagnostic = f"grid.startupPreflightRejected {size_detail}"
+            logger.warning("strategy=%s %s", self.strategy_id, diagnostic)
+            append_strategy_log(self.strategy_id, "error", diagnostic)
+            return False, "strategyRuntime.gridStartupCoverageFailed"
+        self._engine.reconcile_grid_ladder_orders()
         try:
             snap = fetch_exchange_dual_leg_snapshot(
                 client,
@@ -247,11 +253,15 @@ class GridRestingRunner:
         startup_snapshot = self.operational_snapshot(force=True)
         has_new_initial_fills = self._engine.has_new_startup_initial_fills
         startup_coverage_failed = bool(
-            has_new_initial_fills
-            and not startup_snapshot.get("healthy")
+            not startup_snapshot.get("healthy")
+            and (
+                has_new_initial_fills
+                or not startup_snapshot.get("open_orders")
+                or startup_snapshot.get("unverified_orders")
+            )
         )
         if self._engine.stop_requested or startup_coverage_failed:
-            if has_new_initial_fills or startup_coverage_failed:
+            if has_new_initial_fills:
                 self._engine.cancel_all_orders_on_exchange()
             else:
                 self._engine.cancel_entry_orders_on_exchange()

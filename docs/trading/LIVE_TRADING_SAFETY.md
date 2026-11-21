@@ -33,6 +33,12 @@ Bitget credentials default to automatic account-mode detection. Unified accounts
 8. **Limits:** set notional, per-symbol, gross exposure, leverage, and loss boundaries.
 9. **Incident path:** confirm an operator can stop the deployment, cancel orders, and use emergency stop.
 
+## Resting-grid startup
+
+Before opening an initial market position, the runner checks every funded grid cell against the venue's quantity step, minimum quantity and minimum notional. It uses the actual per-cell budget, swap leverage, contract multiplier and tick-normalized entry/exit prices. Zero-weight cells are skipped; a grid with no funded cells is rejected. Unavailable instrument rules or an untradable cell block startup, with the cell budget, requested quantity and available minimums recorded in the strategy log. The runner does not round orders up, increase capital or leverage, or reduce the grid count automatically.
+
+A grid with no confirmed working orders must not report successful startup, unless it is deliberately paused outside its price bounds. Recovery can retain verified exit orders without opening new exposure. These checks do not reserve margin or guarantee venue acceptance. If later order placement fails after a new initial position has filled, the existing rollback path remains responsible for closing only that startup's new exposure; a failed rollback is reported separately.
+
 ## While running
 
 - Monitor runtime state, order status, fills, positions, available balance, and notifications.

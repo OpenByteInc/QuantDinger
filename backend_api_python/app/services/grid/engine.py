@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -240,6 +241,63 @@ class GridEngine:
         upper, lower = self.cfg.effective_bounds(self._runtime_params)
         levels = generate_levels(lower, upper, self.cfg.grid_line_count, self.cfg.grid_mode)
         return levels, generate_cells(levels)
+
+    def validate_startup_order_sizes(self, client: Any) -> Tuple[bool, str]:
+        """Check the whole funded ladder without submitting or enlarging orders."""
+        from app.services.instrument_rules import get_instrument_rules_provider
+
+        exchange_id = str(self.exchange_config.get("exchange_id") or "")
+        rules = None
+        try:
+            if exchange_id:
+                rules = get_instrument_rules_provider().get_rules(
+                    self.symbol, exchange_id=exchange_id,
+                    market_type=self.cfg.market_type, client=client,
+                )
+        except Exception:
+            logger.warning("Grid startup rules unavailable sid=%s symbol=%s", self.strategy_id, self.symbol)
+            return False, f"reason=instrument_rules_unavailable symbol={self.symbol}"
+
+        _, cells = self._levels_and_cells()
+        funded_cells = 0
+        for cell in cells:
+            budget = self._grid_budget_usdt(cell.index)
+            if budget == 0:
+                continue
+            funded_cells += 1
+            # Check both boundaries: seed exits use their own cell budget, and
+            # a filled entry must still be tradable at the paired exit price.
+            for entry_price, exit_price in (
+                (cell.lower_price, cell.upper_price),
+                (cell.upper_price, cell.lower_price),
+            ):
+                quantity = self._qty_from_usdt(budget, entry_price)
+                normalized = quantity
+                for price in (entry_price, exit_price):
+                    limit_price = rules.normalize_price(price) if rules else price
+                    if not math.isfinite(normalized) or normalized <= 0 or limit_price <= 0:
+                        normalized = 0.0
+                        break
+                    normalized = normalize_grid_order_quantity(
+                        client, symbol=self.symbol, quantity=normalized,
+                        market_type=self.cfg.market_type, exchange_config=self.exchange_config,
+                        price=limit_price,
+                    )
+                if not math.isfinite(normalized) or normalized <= 0:
+                    detail = (
+                        f"reason=grid_order_size_untradable symbol={self.symbol} cell={cell.index} "
+                        f"budget={budget:.12g} price={entry_price:.12g} paired_price={exit_price:.12g} "
+                        f"requested_qty={quantity:.12g} normalized_qty={normalized:.12g}"
+                    )
+                    if rules:
+                        detail += (
+                            f" min_qty={rules.min_amount:.12g} qty_step={rules.amount_step:.12g} "
+                            f"min_notional={rules.min_notional:.12g}"
+                        )
+                    return False, detail
+        if not funded_cells:
+            return False, f"reason=grid_no_funded_cells symbol={self.symbol}"
+        return True, ""
 
     def bootstrap(self, current_price: float) -> Tuple[bool, str]:
         if current_price <= 0:
