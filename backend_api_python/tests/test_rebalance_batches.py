@@ -160,7 +160,9 @@ def test_dead_producer_sealed_after_fence_lost(ledger):
 
 def test_active_producer_never_sealed_by_elapsed_time(ledger):
     batch_id = add_batch(ledger, "active", [1], sealed=False, token=99)
-    ledger.query("INSERT INTO qd_strategy_runtime_leases VALUES (7, 99, NOW()+INTERVAL '1 hour')")
+    ledger.query("""INSERT INTO qd_strategy_runtime_leases
+                    (strategy_id, owner_id, fencing_token, lease_expires_at)
+                    VALUES (7, 'test-owner', 99, NOW()+INTERVAL '1 hour')""")
     ledger.query("UPDATE qd_strategy_order_batches SET created_at=NOW()-INTERVAL '1 hour'")
     assert batches._reconcile_batch(batch_id) is None
     assert ledger.query("SELECT sealed_at FROM qd_strategy_order_batches WHERE id=%s", (batch_id,))[0]["sealed_at"] is None
@@ -187,10 +189,10 @@ def test_batch_context_seals_on_exception_and_replay_uses_same_key(ledger):
 
 
 def test_ten_results_send_once_per_channel_and_delivery_failure_does_not_spam(ledger, monkeypatch):
-    from app.services import portfolio_monitor_notifications
-    monkeypatch.setattr(portfolio_monitor_notifications, "resolve_notification_delivery", lambda _user, cfg: cfg)
     channels = ["email", "browser", "telegram", "discord", "webhook", "phone"]
     ledger.query("UPDATE qd_strategies_trading SET notification_config=%s", (json.dumps({"channels": channels}),))
+    ledger.query("UPDATE qd_users SET email='batch@example.com', notification_settings=%s WHERE id=3",
+                 (json.dumps({"language": "zh-CN", "telegram_chat_id": "batch-chat"}),))
     add_batch(ledger, "email", range(1, 11))
     for order_id in range(1, 9):
         accept(ledger, order_id)
@@ -206,7 +208,13 @@ def test_ten_results_send_once_per_channel_and_delivery_failure_does_not_spam(le
     batches.reconcile_order_batches(notifier)
     for transport in transports.values():
         transport.assert_called_once()
-    assert len(transports["webhook"].call_args.kwargs["payload"]["orders"]) == 10
+    payload = transports["webhook"].call_args.kwargs["payload"]
+    assert len(payload["orders"]) == 10
+    assert payload["strategy"]["name"] == "Failure test strategy"
+    assert payload["counts"]["accepted"] == 8
+    assert payload["counts"]["failed"] == 2
+    assert transports["email"].call_args.kwargs["to_email"] == "batch@example.com"
+    assert transports["telegram"].call_args.kwargs["chat_id"] == "batch-chat"
 
 
 @pytest.mark.parametrize("language", ["zh-CN", "en-US"])
@@ -264,7 +272,9 @@ def test_stale_epoch_batch_cannot_stop_restarted_strategy(ledger):
 def test_batch_registration_failure_rolls_back_order_and_batch(ledger):
     with pytest.raises(ValueError), ledger.connect() as db:
         cur = db.cursor()
-        cur.execute("INSERT INTO pending_orders (id) VALUES (1)")
+        cur.execute("""INSERT INTO pending_orders
+                       (id, user_id, strategy_id, strategy_run_id, symbol, signal_type, idempotency_key)
+                       VALUES (1, 3, 7, 11, 'TEST', 'open_long', 'rolled-back')""")
         batches.register_order_batch(cur, SimpleNamespace(
             user_id=3, strategy_id=7, strategy_run_id=11, rebalance_group_id="rolled-back",
             execution_mode="live", runtime_fencing_token=0,

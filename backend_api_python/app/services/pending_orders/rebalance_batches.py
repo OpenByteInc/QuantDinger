@@ -177,13 +177,13 @@ def _reconcile_batch(batch_id):
             (batch_id, outcome is not None),
         )
         if cur.fetchone() and orders:
-            cur.execute("SELECT name, notification_config FROM qd_strategies_trading WHERE id = %s AND user_id = %s",
+            cur.execute("SELECT strategy_name, notification_config FROM qd_strategies_trading WHERE id = %s AND user_id = %s",
                         (batch["strategy_id"], batch["user_id"]))
             strategy = cur.fetchone()
             if strategy:
                 config = safe_json_loads(strategy.get("notification_config"), {})
                 notice = (batch, [{**order, "summary_status": order_result(order)} for order in orders],
-                          config, str(strategy.get("name") or ""))
+                          config, str(strategy.get("strategy_name") or ""))
         db.commit()
         cur.close()
     return notice
