@@ -446,6 +446,13 @@ def test_reported_pnl_database_claims_limit_accounts_and_reuse_cache(ledger, mon
     rows[0]["amount"] = 2
     pnl.enrich_reported_order_pnl(rows, user_id=1, trading_config={})
     assert rows[0]["exchange_pnl"]["status"] == "pending"
+    rows[0]["amount"] = 1
+    ledger.query("UPDATE qd_exchange_order_pnl SET checked_at=NOW() - INTERVAL '1 day' WHERE credential_id=1 AND exchange_order_id='order1'")
+    monkeypatch.setattr(pnl, "_claim", lambda *a: pytest.fail("Confirmed database report must not expire"))
+    for _ in range(2):
+        pnl.enrich_reported_order_pnl(rows, user_id=1, trading_config={})
+        assert rows[0]["exchange_pnl"]["amount"] == -3
+        assert rows[0]["profit"] == 100
 
 
 def test_reported_pnl_reads_durable_events_without_another_venue_query(ledger, monkeypatch):

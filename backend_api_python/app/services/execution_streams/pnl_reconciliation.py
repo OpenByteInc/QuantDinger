@@ -1,7 +1,6 @@
 """Bounded read-only venue queries for reported order P&L; no trade placement."""
 from collections import defaultdict
 import json
-import time
 from datetime import datetime
 
 from app.services.execution_streams.reported_pnl import fetch_order_report, json_object, number, same_quantity, websocket_report
@@ -125,8 +124,8 @@ def enrich_reported_order_pnl(rows, *, user_id, trading_config):
             continue
         expected = sum(quantities)
         report = reports.get(key) or {}
-        if (report.get("status") != "reported" or not same_quantity(report.get("quantity"), expected)
-                or time.time() - float(report.get("checked_at") or 0) > 300):
+        # Confirmed execution history does not expire; new fills require reconciliation.
+        if report.get("status") != "reported" or not same_quantity(report.get("quantity"), expected):
             report = {}
             quote = key[3].rsplit("/", 1)[-1].upper() if "/" in key[3] else ""
             if (key[1] in {"binance", "bybit"} and quote in {"USDT", "USDC"}) or key[1] == "ibkr":
