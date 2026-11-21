@@ -118,6 +118,24 @@ def test_close_size_error_does_not_recommend_increasing_leverage():
     assert "Increase capital" not in message
 
 
+@pytest.mark.parametrize("equity, expected", [(36.36, "36.3600"), (0, "0.0000"), (None, "500.0000")])
+def test_sizing_diagnostics_report_effective_equity(monkeypatch, equity, expected):
+    worker = object.__new__(PendingOrderWorker)
+    monkeypatch.setattr(worker, "_estimate_min_order_notional", lambda *args, **kwargs: (0.0001, 6))
+    logs = []
+    monkeypatch.setattr("app.services.pending_order_worker.append_strategy_log", lambda *args: logs.append(args))
+    payload = {"sizing": {"initial_capital": 500, "current_equity": equity, "source": "strategy_v2"}}
+    common = dict(client=object(), exchange_id="okx", symbol="BTC/USDT", signal_type="open_long",
+                  amount=0.0001, payload=payload)
+    worker._log_live_order_sizing(
+        strategy_id=7, market_type="swap", reduce_only=False, ref_price=60000,
+        leverage=2, phases={}, **common,
+    )
+    assert f"capital={expected}" in logs[0][2]
+    message = worker._friendly_order_error("invalid amount", price=60000, **common)
+    assert f"capital={expected}" in message
+
+
 def test_grid_template_limits_fractional_literals_and_preserves_budget():
     source = build_robot_v2_source(
         "grid",

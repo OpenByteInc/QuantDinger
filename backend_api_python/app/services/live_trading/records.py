@@ -14,9 +14,11 @@ Live ownership:
 from __future__ import annotations
 
 import json
+import math
 from typing import Any, Dict, List, Mapping, Optional, Set, Tuple, TYPE_CHECKING
 
 from app.utils.db import get_db_connection
+from app.utils.numeric_precision import to_decimal
 from app.utils.pnl import calc_unrealized_pnl
 
 if TYPE_CHECKING:
@@ -699,6 +701,7 @@ def patch_position_markers(
                 pnl_percent = %s,
                 updated_at = NOW()
             WHERE strategy_id = %s AND symbol = %s AND side = %s AND size > 0
+              AND size = %s AND entry_price = %s
             """,
             (
                 px,
@@ -711,6 +714,8 @@ def patch_position_markers(
                 int(strategy_id),
                 str(sym_key),
                 side_l,
+                row.get("size"),
+                row.get("entry_price"),
             ),
         )
         updated = int(getattr(cur, "rowcount", 0) or 0) > 0
@@ -770,7 +775,7 @@ def mark_live_positions(
                 continue
             size = max(0.0, float(row.get("size") or 0.0))
             entry_price = max(0.0, float(row.get("entry_price") or 0.0))
-            if size <= 1e-12 or entry_price <= 0:
+            if size <= 0 or entry_price <= 0:
                 continue
             side = str(row.get("side") or "long").strip().lower()
             unrealized = calc_unrealized_pnl(side, entry_price, current_price, size)
@@ -839,20 +844,26 @@ def upsert_position(
     if not mt:
         mt = "swap"
 
+    unrealized = calc_unrealized_pnl(side, entry_price, current_price, size)
+    notional = float(entry_price or 0.0) * float(size or 0.0)
+    pnl_percent = unrealized / notional * 100.0 if notional > 0 else 0.0
     with get_db_connection() as db:
         cur = db.cursor()
         cur.execute(
             """
             INSERT INTO qd_strategy_positions
             (user_id, strategy_id, symbol, symbol_canonical, side, size, entry_price, current_price,
-             highest_price, lowest_price, market_type, credential_id, inst_id, strategy_run_id, updated_at)
+             highest_price, lowest_price, market_type, credential_id, inst_id, strategy_run_id,
+             unrealized_pnl, pnl_percent, updated_at)
             VALUES
-            (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+            (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
             ON CONFLICT(strategy_id, symbol, side) DO UPDATE SET
                 symbol_canonical = excluded.symbol_canonical,
                 size = excluded.size,
                 entry_price = excluded.entry_price,
                 current_price = excluded.current_price,
+                unrealized_pnl = excluded.unrealized_pnl,
+                pnl_percent = excluded.pnl_percent,
                 highest_price = CASE WHEN excluded.highest_price > 0 THEN excluded.highest_price ELSE qd_strategy_positions.highest_price END,
                 lowest_price = CASE WHEN excluded.lowest_price > 0 THEN excluded.lowest_price ELSE qd_strategy_positions.lowest_price END,
                 market_type = excluded.market_type,
@@ -881,6 +892,8 @@ def upsert_position(
                 cred,
                 iid,
                 int(strategy_run_id or 0),
+                unrealized,
+                pnl_percent,
             ),
         )
         db.commit()
@@ -937,7 +950,7 @@ def apply_fill_to_local_position(
     matched_entry: Optional[float] = None
 
     if is_open:
-        new_size = cur_size + filled_qty
+        new_size = float(to_decimal(current.get("size") or 0) + to_decimal(filled))
         if new_size <= 0:
             return None, None, None
         # Weighted average entry.
@@ -971,8 +984,10 @@ def apply_fill_to_local_position(
                 profit = (cur_entry - px) * close_qty
             matched_entry = cur_entry
 
-        new_size = cur_size - filled_qty
-        if new_size <= 0:
+        new_size = float(to_decimal(current.get("size") or 0) - to_decimal(filled))
+        # Only absorb binary rounding noise relative to this fill, not real small holdings.
+        rounding_noise = 2 * max(math.ulp(cur_size), math.ulp(filled_qty))
+        if new_size <= rounding_noise:
             _delete_position(sid, sym_key, side)
             return profit, None, matched_entry
         # Keep entry price for remaining position.

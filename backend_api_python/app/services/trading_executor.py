@@ -2775,6 +2775,11 @@ class TradingExecutor:
         current_prices: Optional[Mapping[str, float]] = None,
         strategy_run_id: int = 0,
     ) -> float:
+        """Value the deployment ledger across all runs, never the account balance.
+
+        A new run identifies runtime ownership, not a fresh capital allocation.
+        Keep strategy_run_id for callers, but do not use it to reset P&L.
+        """
         realized = 0.0
         strategy = self._load_strategy(strategy_id) or {}
         is_virtual = str(strategy.get("execution_mode") or "").strip().lower() == "signal"
@@ -2794,51 +2799,26 @@ class TradingExecutor:
                             SELECT SUM(COALESCE(profit, 0) - COALESCE(commission_quote, commission, 0))
                             FROM qd_strategy_trades
                             WHERE strategy_id = %s
-                              AND (%s <= 0 OR strategy_run_id = %s)
                           ), 0)
                           + COALESCE((
                             SELECT SUM(COALESCE(amount, 0))
                             FROM qd_strategy_funding_fees
                             WHERE strategy_id = %s
-                              AND (
-                                %s <= 0
-                                OR occurred_at >= (
-                                  SELECT started_at FROM strategy_runs
-                                  WHERE id = %s AND strategy_id = %s
-                                )
-                              )
                           ), 0)
                           + COALESCE((
                             SELECT SUM(COALESCE(amount, 0))
                             FROM qd_strategy_broker_activities
                             WHERE strategy_id = %s
-                              AND (
-                                %s <= 0
-                                OR occurred_at >= (
-                                  SELECT started_at FROM strategy_runs
-                                  WHERE id = %s AND strategy_id = %s
-                                )
-                              )
                           ), 0) AS realized_pnl
                         """,
-                        (
-                            strategy_id,
-                            int(strategy_run_id or 0),
-                            int(strategy_run_id or 0),
-                            strategy_id,
-                            int(strategy_run_id or 0),
-                            int(strategy_run_id or 0),
-                            strategy_id,
-                            strategy_id,
-                            int(strategy_run_id or 0),
-                            int(strategy_run_id or 0),
-                            strategy_id,
-                        ),
+                        (strategy_id, strategy_id, strategy_id),
                     )
                 realized = float((cur.fetchone() or {}).get("realized_pnl") or 0)
                 cur.close()
         except Exception as exc:
             logger.warning("Failed to calculate realized PnL for strategy %s: %s", strategy_id, exc)
+            # Do not size new orders from initial capital when the ledger is unavailable.
+            raise
         unrealized = 0.0
         def normalized_symbol(value: Any) -> str:
             text = str(value or "").strip()

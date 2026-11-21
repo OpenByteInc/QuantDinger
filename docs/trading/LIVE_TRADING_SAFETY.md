@@ -47,6 +47,18 @@ A grid with no confirmed working orders must not report successful startup, unle
 - WebSocket improves latency; REST reconciliation remains the recovery source after disconnects.
 - A strategy manages only its allocated position and must not absorb manual or other-strategy inventory.
 
+### Strategy equity and shared accounts
+
+Strategy API V2 sizes orders from the deployment's current equity: configured initial capital plus lifetime realized price P&L, minus recorded trading fees, plus signed funding and broker activities, plus unrealized P&L on strategy-owned positions. Stopping and starting a strategy or restarting a worker does not reset that ledger. The runtime uses the same lifetime basis as the equity display; marks may differ briefly as prices update. Non-positive equity provides no opening budget. If the ledger query fails, the evaluation cycle fails instead of falling back to initial capital; existing runtime-failure handling applies. This does not cancel submitted orders or liquidate holdings.
+
+For example, equity of 36.36 with 2x leverage gives a nominal capacity of 72.72 before the existing budget buffer, costs and venue constraints, not the original 500 times 2. Percentage targets use current equity. Explicit quantities must still pass the strategy budget guard; a valid reduce-only exit is not blocked by that opening budget.
+
+Strategy net P&L uses the strategy's own recorded fills and allocated opening/closing fees. Venue-reported order P&L remains a separate value with the venue's fee basis. When manual trades share the same venue position, the venue's average entry cost can differ from the strategy's cost. Do not replace strategy P&L, equity or position cost with that order report, and do not import manual inventory to make the figures match. Use a dedicated account/subaccount for physical separation; advanced ownership mode protects quantities but cannot separate the venue's cost basis or margin.
+
+### Closing precision and floating P&L
+
+Full-fill quantity arithmetic uses decimal addition/subtraction and absorbs only binary rounding noise at the closing fill's scale. Position writes update unrealized P&L together with quantity and price; a delayed mark cannot overwrite a changed quantity or entry cost. Live equity metrics and the equity curve derive floating P&L from the current row's quantity, entry price and mark, so an old cached profit cannot inflate equity after a close. Normal mark updates also revalue positive precision-tail rows. This does not introduce a universal small-position cutoff, delete historical trades or bulk-delete residual inventory.
+
 ### Alpaca fractional-share residuals
 
 For live `USStock` strategies using Alpaca, a full-exit intent is not queued when the remaining strategy position is at most `0.01` shares. This prevents repeated tail-close attempts and their failure notifications. The threshold is in shares, not dollars, and is an application policy rather than a broker minimum. The position and its value remain in the ledger; skipping an intent does not record a fill or mark the position flat. Larger closes, partial reductions, entries, signal mode, other brokers, and Crypto precision are unchanged. Existing queued orders are not cancelled by this rule.
