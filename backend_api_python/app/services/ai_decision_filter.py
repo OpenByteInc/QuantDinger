@@ -11,6 +11,7 @@ from typing import Any
 
 import requests
 
+from app.services.decision_providers import JevDecisionProvider
 from app.services.llm import LLMService
 from app.utils.db import get_db_connection
 from app.utils.logger import get_logger
@@ -247,42 +248,29 @@ class AIDecisionFilter:
         started: float,
         config: dict[str, Any],
     ) -> AIDecisionResult:
-        base_url = config["base_url"].strip().rstrip("/")
-        url = base_url if base_url.endswith("/systemone") else f"{base_url}/systemone"
-        model = config["model"].strip() or "jev-latest"
-        timeout = max(1.0, min(float(config["timeout_seconds"] or 8), 30.0))
-        response = requests.post(
-            url,
-            headers={
-                "Authorization": f"Bearer {config['api_key']}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": model,
-                "state": self._state_payload(request),
-                "questions": JEV_QUESTIONS,
-            },
-            timeout=timeout,
+        provider = JevDecisionProvider(
+            api_key=config["api_key"],
+            base_url=config["base_url"],
+            model=config["model"],
+            timeout_seconds=config["timeout_seconds"],
+            post=requests.post,
         )
-        response.raise_for_status()
-        payload = response.json()
-        answers = payload.get("answers") or payload.get("result") or payload.get("data") or {}
+        model = provider.model
+        answers = provider.evaluate(self._state_payload(request), JEV_QUESTIONS)
         results: dict[str, tuple[str, dict[str, float], float | None]] = {}
         checks: list[dict[str, Any]] = []
-        for name, options in JEV_CHECK_OPTIONS.items():
-            answer = self._answer(answers, name)
-            choice, probabilities = self._validate_choice_answer(
-                answer,
-                question=name,
-                options=options,
-            )
-            confidence = self._confidence(answer, probabilities, choice)
-            results[name] = (choice, probabilities, confidence)
+        for name in JEV_CHECK_OPTIONS:
+            answer = answers[name]
+            # The pre-trade filter requires an explicit provider confidence for every check.
+            if answer.confidence is None:
+                raise ValueError(f"Jev response confidence was invalid for {name}")
+            confidence = self._bounded_float(answer.confidence)
+            results[name] = (answer.choice, answer.probabilities, confidence)
             checks.append({
                 "name": name,
-                "result": choice,
+                "result": answer.choice,
                 "confidence": confidence,
-                "probabilities": probabilities,
+                "probabilities": answer.probabilities,
             })
 
         min_confidence = max(0.0, min(float(config.get("min_confidence") or 0.55), 1.0))
@@ -419,62 +407,6 @@ class AIDecisionFilter:
             separators=(",", ":"),
             default=str,
         )
-
-    @staticmethod
-    def _answer(answers: Any, key: str) -> dict[str, Any]:
-        if isinstance(answers, dict):
-            value = answers.get(key)
-            if isinstance(value, dict):
-                return value
-            nested = answers.get("answers")
-            if isinstance(nested, dict) and isinstance(nested.get(key), dict):
-                return nested[key]
-        return {}
-
-    @staticmethod
-    def _probabilities(answer: dict[str, Any]) -> dict[str, Any]:
-        value = answer.get("probabilities") or answer.get("probability") or {}
-        return dict(value) if isinstance(value, dict) else {}
-
-    @classmethod
-    def _validate_choice_answer(
-        cls,
-        answer: dict[str, Any],
-        *,
-        question: str,
-        options: set[str],
-    ) -> tuple[str, dict[str, float]]:
-        choice = str(answer.get("choice") or answer.get("selected") or "").strip().lower()
-        if choice not in options:
-            raise ValueError(f"Jev response did not contain a valid {question}")
-        raw_probabilities = cls._probabilities(answer)
-        if set(raw_probabilities) != options:
-            raise ValueError(f"Jev response probabilities were incomplete for {question}")
-        probabilities: dict[str, float] = {}
-        for option, value in raw_probabilities.items():
-            try:
-                probability = float(value)
-            except (TypeError, ValueError) as exc:
-                raise ValueError(f"Jev response probability was invalid for {question}") from exc
-            if probability < 0 or probability > 1:
-                raise ValueError(f"Jev response probability was out of range for {question}")
-            probabilities[str(option)] = probability
-        if abs(sum(probabilities.values()) - 1.0) > 0.001:
-            raise ValueError(f"Jev response probabilities did not sum to one for {question}")
-        maximum = max(probabilities.values())
-        if probabilities.get(choice) != maximum:
-            raise ValueError(f"Jev response choice was not the highest probability for {question}")
-        confidence = cls._bounded_float(answer.get("confidence"))
-        if confidence is None:
-            raise ValueError(f"Jev response confidence was invalid for {question}")
-        return choice, probabilities
-
-    @classmethod
-    def _confidence(cls, answer: dict[str, Any], probabilities: dict[str, Any], choice: str) -> float | None:
-        direct = cls._bounded_float(answer.get("confidence"))
-        if direct is not None:
-            return direct
-        return cls._bounded_float(probabilities.get(choice))
 
     @staticmethod
     def _bounded_float(value: Any) -> float | None:
