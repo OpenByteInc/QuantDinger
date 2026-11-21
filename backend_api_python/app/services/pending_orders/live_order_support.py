@@ -8,10 +8,15 @@ top of this API.
 
 from __future__ import annotations
 
+import hashlib
+import json
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Optional, Tuple
 
 from app.services.live_trading.base import LiveTradingError
+from app.services.pending_orders.error_classification import exit_size_rejection_kind
+from app.utils.db import get_db_connection
 from app.utils.pnl import calc_notional_value
 from app.utils.logger import get_logger
 from app.services.pending_orders.execution_contract import (
@@ -123,6 +128,8 @@ class LiveOrderNotifier:
     notifier: Any
     load_notification_config: Callable[[int], Dict[str, Any]]
     load_strategy_name: Callable[[int], str]
+    resolved_exchange_id: str = ""
+    resolved_credential_id: int = 0
 
     def notify(
         self,
@@ -134,12 +141,20 @@ class LiveOrderNotifier:
         price_hint: Optional[float] = None,
         amount_hint: Optional[float] = None,
     ) -> None:
+        notice_claim = ("", "")
         try:
             notification_config = self.payload.get("notification_config") or {}
             if (not notification_config) and self.strategy_id:
                 notification_config = self.load_notification_config(int(self.strategy_id))
             if not notification_config:
                 return
+
+            if status == "failed":
+                notice_claim = self._claim_exit_failure_notice(error, exchange_id)
+                if notice_claim is None:
+                    return
+            elif status in {"sent", "filled"}:
+                self._clear_exit_failure_notices(exchange_id)
 
             strategy_name = str(self.payload.get("strategy_name") or "").strip()
             if not strategy_name:
@@ -174,6 +189,8 @@ class LiveOrderNotifier:
             )
             ok_channels = [c for c, r in (results or {}).items() if (r or {}).get("ok")]
             fail_channels = [c for c, r in (results or {}).items() if not (r or {}).get("ok")]
+            if not ok_channels:
+                self._release_exit_failure_notice(notice_claim)
             if ok_channels or fail_channels:
                 logger.info(
                     "live notify: pending_id=%s, strategy_id=%s, ok=%s fail=%s",
@@ -183,7 +200,89 @@ class LiveOrderNotifier:
                     ",".join(fail_channels) if fail_channels else "-",
                 )
         except Exception as e:
+            self._release_exit_failure_notice(notice_claim)
             logger.info("live notify skipped/failed: pending_id=%s, strategy_id=%s, err=%s", self.order_id, self.strategy_id, e)
+
+    def _exit_notice_scope(self, exchange_id: str) -> tuple[int, str]:
+        signal = str(self.payload.get("signal_type") or self.order_row.get("signal_type") or "")
+        if not signal.startswith(("close_", "reduce_")):
+            return 0, ""
+        scope = [
+            self.order_row.get("user_id", 0),
+            self.resolved_credential_id or self.order_row.get("credential_id") or self.payload.get("credential_id") or 0,
+            self.resolved_exchange_id or self.order_row.get("exchange_id") or exchange_id or "",
+            self.payload.get("symbol") or self.order_row.get("symbol") or "",
+            self.payload.get("market_type") or self.order_row.get("market_type") or "",
+            signal,
+        ]
+        digest = hashlib.sha256(json.dumps(scope, default=str).encode()).hexdigest()[:32]
+        return 0, f"exit_notice:{digest}:"
+
+    def _claim_exit_failure_notice(self, error: str, exchange_id: str) -> tuple[str, str] | None:
+        kind = exit_size_rejection_kind(error)
+        run_id, prefix = self._exit_notice_scope(exchange_id)
+        if not kind or not prefix or self.strategy_id <= 0:
+            return "", ""
+        # No expiry: a restart or a new timestamp does not make dust tradable.
+        quantity = float(self.payload.get("amount") or self.order_row.get("amount") or 0)
+        fingerprint = hashlib.sha256(f"{kind}:{quantity:.12g}".encode()).hexdigest()[:32]
+        key, token = prefix + fingerprint, uuid.uuid4().hex
+        try:
+            with get_db_connection() as db:
+                cur = db.cursor()
+                cur.execute(
+                    """
+                    INSERT INTO strategy_runtime_state
+                      (strategy_run_id, strategy_id, state_key, state_json, updated_at)
+                    VALUES (%s, %s, %s, %s, NOW())
+                    ON CONFLICT (strategy_run_id, strategy_id, state_key) DO NOTHING
+                    RETURNING state_key
+                    """,
+                    (run_id, self.strategy_id, key, json.dumps({"claim": token, "order_id": self.order_id})),
+                )
+                claimed = bool(cur.fetchone())
+                db.commit()
+                cur.close()
+            return (key, token) if claimed else None
+        except Exception:
+            logger.warning("Exit notification deduplication unavailable: strategy=%s", self.strategy_id, exc_info=True)
+            return "", ""
+
+    def _release_exit_failure_notice(self, claim: tuple[str, str] | None) -> None:
+        if not claim or not claim[0]:
+            return
+        try:
+            run_id, _ = self._exit_notice_scope("")
+            with get_db_connection() as db:
+                cur = db.cursor()
+                cur.execute(
+                    """DELETE FROM strategy_runtime_state
+                       WHERE strategy_run_id = %s AND strategy_id = %s AND state_key = %s
+                         AND state_json->>'claim' = %s""",
+                    (run_id, self.strategy_id, claim[0], claim[1]),
+                )
+                db.commit()
+                cur.close()
+        except Exception:
+            logger.warning("Exit notification claim release failed: strategy=%s", self.strategy_id, exc_info=True)
+
+    def _clear_exit_failure_notices(self, exchange_id: str) -> None:
+        run_id, prefix = self._exit_notice_scope(exchange_id)
+        if not prefix or self.strategy_id <= 0:
+            return
+        try:
+            with get_db_connection() as db:
+                cur = db.cursor()
+                cur.execute(
+                    """DELETE FROM strategy_runtime_state
+                       WHERE strategy_run_id = %s AND strategy_id = %s AND state_key LIKE %s
+                         AND (state_json->>'order_id')::bigint <= %s""",
+                    (run_id, self.strategy_id, prefix + "%", self.order_id),
+                )
+                db.commit()
+                cur.close()
+        except Exception:
+            logger.warning("Exit notification recovery reset failed: strategy=%s", self.strategy_id, exc_info=True)
 
 
 def console_print(msg: str) -> None:

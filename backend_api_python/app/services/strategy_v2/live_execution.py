@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import math
 import threading
 from dataclasses import dataclass
 from typing import Any
 
+from app.services.pending_orders.error_classification import exit_size_rejection_kind
 from app.services.strategy_runtime.order_intents import OrderIntentService
 from app.services.strategy_runtime.signals import StrategySignal
 from app.utils.db import get_db_connection
@@ -40,6 +42,8 @@ class LiveOrderRequest:
     strategy_type: str = ""
     decision_context: dict[str, Any] | None = None
     runtime_fencing_token: int = 0
+    exchange_id: str = ""
+    credential_id: int = 0
 
 
 class StrategyV2OrderGateway:
@@ -166,6 +170,8 @@ class StrategyV2OrderGateway:
     def submit(self, request: LiveOrderRequest) -> int | None:
         request = self._validate(request)
         self._assert_runtime_fence(request)
+        if self._exit_size_retry_deferred(request):
+            return None
         if (
             request.execution_mode == "live"
             and request.ai_decision_filter
@@ -302,6 +308,8 @@ class StrategyV2OrderGateway:
             "client_order_id": client_order_id,
             "ai_decision_filter": bool(request.ai_decision_filter),
             "runtime_fencing_token": int(request.runtime_fencing_token or 0),
+            "exchange_id": request.exchange_id,
+            "credential_id": request.credential_id,
         }
         with get_db_connection() as db:
             cur = db.cursor()
@@ -312,10 +320,10 @@ class StrategyV2OrderGateway:
                    order_type, amount, price, execution_mode, status, priority,
                    attempts, max_attempts, last_error, payload_json, strategy_run_id,
                    order_intent_id, idempotency_key, runtime_fencing_token,
-                   created_at, updated_at)
+                   exchange_id, credential_id, created_at, updated_at)
                 VALUES
                   (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending', 0,
-                   0, 10, '', %s, %s, %s, %s, %s, NOW(), NOW())
+                   0, 10, '', %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
                 ON CONFLICT (idempotency_key) DO NOTHING
                 RETURNING id
                 """,
@@ -335,6 +343,8 @@ class StrategyV2OrderGateway:
                     intent.id,
                     key,
                     max(0, int(request.runtime_fencing_token or 0)),
+                    request.exchange_id,
+                    request.credential_id,
                 ),
             )
             row = cur.fetchone() or {}
@@ -342,6 +352,45 @@ class StrategyV2OrderGateway:
             cur.close()
         pending_id = int(row.get("id") or 0)
         return pending_id or self._pending_id(key)
+
+    def _exit_size_retry_deferred(self, request: LiveOrderRequest) -> bool:
+        """Skip an unchanged rejected exit; elapsed time never retries a tail."""
+        if (request.execution_mode != "live"
+                or not request.action.startswith(("close_", "reduce_"))
+                or not math.isfinite(request.quantity) or request.quantity <= 0):
+            return False
+        lane = self._position_lane(request.action)
+        with get_db_connection() as db:
+            cur = db.cursor()
+            cur.execute(
+                """
+                SELECT status, signal_type, amount, filled, last_error, payload_json
+                FROM pending_orders
+                WHERE user_id = %s AND strategy_id = %s AND symbol = %s AND market_type = %s
+                  AND execution_mode = 'live' AND signal_type IN (%s, %s, %s, %s)
+                  AND COALESCE(exchange_id, '') = %s AND COALESCE(credential_id, 0) = %s
+                ORDER BY id DESC LIMIT 1
+                """,
+                (request.user_id, request.strategy_id, request.symbol, request.market_type,
+                 f"open_{lane}", f"add_{lane}", f"reduce_{lane}", f"close_{lane}",
+                 request.exchange_id, request.credential_id),
+            )
+            row = cur.fetchone() or {}
+            cur.close()
+        if row.get("status") != "failed" or not str(row.get("signal_type") or "").startswith(("close_", "reduce_")):
+            return False
+        if not exit_size_rejection_kind(row.get("last_error")):
+            return False
+        try:
+            payload = row.get("payload_json")
+            if isinstance(payload, str):
+                payload = json.loads(payload)
+            if not isinstance(payload, dict) or float(row.get("filled") or 0) != 0:
+                return False
+            quantity = float(payload.get("amount", row.get("amount")) or 0)
+            return math.isclose(quantity, request.quantity, rel_tol=1e-9, abs_tol=0)
+        except (TypeError, ValueError, OverflowError):
+            return False
 
     @staticmethod
     def _assert_runtime_fence(request: LiveOrderRequest) -> None:

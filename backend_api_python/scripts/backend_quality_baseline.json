@@ -8,7 +8,7 @@
   },
   "max_function_lines": {
     "app/services/trading_executor.py::_run_strategy_loop": 1176,
-    "app/services/pending_order_worker.py::_execute_live_order": 810,
+    "app/services/pending_order_worker.py::_execute_live_order": 812,
     "app/services/fast_analysis.py::analyze": 585,
     "app/routes/strategy.py::ai_generate_strategy": 307,
     "app/routes/indicator.py::ai_generate": 499

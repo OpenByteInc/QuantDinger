@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, Mapping, Optional
 
@@ -36,22 +37,33 @@ def evaluate_exit_residual(
     rules: InstrumentRules,
 ) -> ExitResidualDecision:
     """Return a classification only when the exchange snapshot is conclusive."""
+    if rules.market_type != "spot":
+        return ExitResidualDecision(False)
+    try:
+        valid = all(math.isfinite(float(value)) and float(value) >= 0 for value in (
+            local_size, total_size, available_size, price,
+            rules.amount_step, rules.min_amount, rules.min_notional,
+        ))
+    except (TypeError, ValueError, OverflowError):
+        valid = False
+    if not valid:
+        return ExitResidualDecision(False)
     local = max(0.0, float(local_size or 0.0))
     total = max(0.0, float(total_size or 0.0))
     available = max(0.0, float(available_size or 0.0))
     px = max(0.0, float(price or 0.0))
     step = max(0.0, float(rules.amount_step or 0.0))
-    tolerance = max(1e-12, step * 0.51, local * 1e-8)
+    tolerance = max(1e-12, local * 1e-8)
 
     if local <= 0 or total <= 0:
         return ExitResidualDecision(False, total_size=total, available_size=available, price=px)
     if abs(total - local) > tolerance:
         return ExitResidualDecision(False, total_size=total, available_size=available, price=px)
-    if total - available > tolerance:
+    if abs(total - available) > tolerance:
         return ExitResidualDecision(False, total_size=total, available_size=available, price=px)
 
     tradable = max(0.0, float(rules.normalize_amount(available, enforce_minimum=True)))
-    if tradable <= tolerance:
+    if tradable == 0 and available > 0 and (step > 0 or rules.min_amount > 0):
         return ExitResidualDecision(
             True,
             reason="below_min_amount",

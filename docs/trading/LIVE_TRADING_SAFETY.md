@@ -41,6 +41,20 @@ Bitget credentials default to automatic account-mode detection. Unified accounts
 - WebSocket improves latency; REST reconciliation remains the recovery source after disconnects.
 - A strategy manages only its allocated position and must not absorb manual or other-strategy inventory.
 
+### Alpaca fractional-share residuals
+
+For live `USStock` strategies using Alpaca, a full-exit intent is not queued when the remaining strategy position is at most `0.01` shares. This prevents repeated tail-close attempts and their failure notifications. The threshold is in shares, not dollars, and is an application policy rather than a broker minimum. The position and its value remain in the ledger; skipping an intent does not record a fill or mark the position flat. Larger closes, partial reductions, entries, signal mode, other brokers, and Crypto precision are unchanged. Existing queued orders are not cancelled by this rule.
+
+### Rejected exits and notification limits
+
+There is no universal `0.01` quantity cutoff for Crypto or other brokers. Spot residual classification uses venue quantity steps, minimum quantities and minimum notionals, and requires a fresh, unlocked account balance consistent with the strategy's allocation. Missing rules or inconsistent balances do not establish a residual. Classified inventory retains its quantity and value and is reconsidered during reconciliation.
+
+Strategy V2 skips a repeated live exit with the same quantity after an explicit minimum-quantity or minimum-notional rejection. The latest order is checked within the same user, strategy, credential, venue, symbol, market type and position side. There is no timed retry: restarting the strategy, changing the timestamp/reason or a price movement does not requeue the same rejected quantity. A changed quantity, partial fill or subsequent order is assessed normally. No holding is rounded, deleted or recorded as filled. Signal mode, entries, native zero-quantity full closes and unrelated balance, ownership, authentication or network failures are unaffected. Generic precision, `LOT_SIZE` and `invalid amount` errors alone do not establish a small residual and are not ignored.
+
+The first size-rejection notification is sent normally; equivalent failures are deduplicated without a time expiry, including across worker and strategy restarts. PostgreSQL arbitrates concurrent notifications. Successful submission resets earlier failure notices; failed delivery releases its claim. A database error leaves alerts enabled. All failure records remain available for inspection.
+
+Derivative closes retain the venue's reduce-only/full-close path; opening-order minimum notionals do not preemptively discard positions. Hong Kong odd lots remain holdings, not zero-value dust; only an explicit below-minimum rejection suppresses identical requests. This does not add an odd-lot execution channel or extend live-broker support. Existing queued orders are not cancelled. A residual that becomes tradable without changing quantity may require operator handling; there is no new automatic recovery service.
+
 ## Exchange-native flat closes
 
 An exchange-native stop loss, take profit, liquidation, ADL event, or manual close can flatten the venue position before the normal pending-order path records the close. Position sync treats this as an account shortfall and blocks new entries or additions on that leg while keeping reconciliation and reduce-only risk controls available.

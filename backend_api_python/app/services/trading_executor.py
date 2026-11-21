@@ -65,6 +65,7 @@ from app.utils.strategy_runtime_logs import append_strategy_log, format_market_d
 logger = get_logger(__name__)
 
 MIN_LIVE_ORDER_NOTIONAL = 1.0
+ALPACA_CLOSE_RESIDUAL_SHARES = 0.01
 __all__ = ["TradingExecutor", "live_history_days"]
 # Compatibility name for internal integrations and tests. The implementation
 # is the credential-free process proxy, never the in-process runtime session.
@@ -1766,6 +1767,20 @@ class TradingExecutor:
 
         closes_position = abs(target_amount) <= 1e-12 and abs(current_amount) > 1e-12
         if (
+            closes_position
+            and execution_mode == "live"
+            and str(member.get("market") or "") == "USStock"
+            and str(
+                exchange_config.get("exchange_id")
+                or exchange_config.get("exchangeId")
+                or member.get("exchange_id")
+                or ""
+            ).strip().lower() == "alpaca"
+            and abs(current_amount) <= ALPACA_CLOSE_RESIDUAL_SHARES
+        ):
+            # Keep the ledger intact; do not enqueue recurring tail-close attempts.
+            return False
+        if (
             str(member.get("market") or "") == "Crypto"
             and symbol.upper().endswith(("/USDT", "/USDC", "/USD"))
             and intent.kind.startswith("target_")
@@ -1937,6 +1952,8 @@ class TradingExecutor:
             signal_timestamp=int(values.get("signal_ts") or time.time()),
             market_type=str(values.get("market_type") or "spot"),
             execution_mode=str(values.get("execution_mode") or "signal"),
+            exchange_id=str((values.get("exchange_config") or {}).get("exchange_id") or ""),
+            credential_id=int((values.get("exchange_config") or {}).get("credential_id") or 0),
             leverage=leverage,
             margin_mode=str(
                 trading_config.get("margin_mode")

@@ -222,8 +222,28 @@ def classify_strategy_exchange_log(message: Any) -> dict[str, Any] | None:
     return classified
 
 
+def exit_size_rejection_kind(error: Any) -> str:
+    """Recognize explicit minimum-size rejections, not generic filter failures."""
+    # The friendly suffix includes generic minimum-size advice even for a
+    # position mismatch. Only classify the original rejection before it.
+    raw = str(error or "").split("; actual", 1)[0].strip()
+    lower = raw.lower()
+    if classify_exchange_order_error(raw)["category"] not in {"order_size", "exchange_rejected"}:
+        return ""
+    if re.search(r"min_?notional|notional.*(?:too small|below|less than|smaller than|at least|minimum)", lower):
+        return "notional"
+    if re.search(
+        r"(?:qty|quantity|size).*(?:too small|below (?:the )?min|less than (?:the )?min)"
+        r"|minqty|min qty|minsize|min size",
+        lower,
+    ):
+        return "quantity"
+    return ""
+
+
 __all__ = [
     "classify_exchange_order_error",
     "classify_strategy_exchange_log",
     "is_exchange_price_band_error",
+    "exit_size_rejection_kind",
 ]
