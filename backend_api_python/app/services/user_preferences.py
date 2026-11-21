@@ -8,6 +8,7 @@ from app.services.signal_notifier import SignalNotifier
 from app.services.user_service import get_user_service
 from app.utils.db import get_db_connection
 from app.utils.logger import get_logger
+from app.utils.language import normalize_language
 
 logger = get_logger(__name__)
 
@@ -39,6 +40,7 @@ def update_notification_settings(user_id: int, data: dict[str, Any]) -> dict:
         channels = ["browser"]
 
     settings = {
+        "language": normalize_language(data.get("language")),
         "default_channels": channels,
         "telegram_bot_token": str(data.get("telegram_bot_token") or "").strip(),
         "telegram_chat_id": str(data.get("telegram_chat_id") or "").strip(),
@@ -84,7 +86,7 @@ def send_test_notification(user_id: int, accept_language: str = "") -> tuple[boo
         "webhook_token": (settings.get("webhook_token") or "").strip(),
         "webhook_signing_secret": (settings.get("webhook_signing_secret") or "").strip(),
     }
-    language = "zh-CN" if "zh" in (accept_language or "").lower() else "en-US"
+    language = normalize_language(accept_language or settings.get("language"))
     results = SignalNotifier().send_profile_test_notifications(
         user_id=int(user_id),
         channels=channels,

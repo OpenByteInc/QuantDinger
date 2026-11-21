@@ -44,6 +44,7 @@ class LiveOrderRequest:
     runtime_fencing_token: int = 0
     exchange_id: str = ""
     credential_id: int = 0
+    rebalance_group_id: str = ""
 
 
 class StrategyV2OrderGateway:
@@ -215,6 +216,7 @@ class StrategyV2OrderGateway:
             price_hint=request.reference_price,
             reason=request.reason,
             source="strategy_v2",
+            rebalance_group_id=request.rebalance_group_id,
         )
         intent = service.create_intent(
             idempotency_key=key,
@@ -310,6 +312,7 @@ class StrategyV2OrderGateway:
             "runtime_fencing_token": int(request.runtime_fencing_token or 0),
             "exchange_id": request.exchange_id,
             "credential_id": request.credential_id,
+            "rebalance_group_id": request.rebalance_group_id,
         }
         with get_db_connection() as db:
             cur = db.cursor()
@@ -348,6 +351,10 @@ class StrategyV2OrderGateway:
                 ),
             )
             row = cur.fetchone() or {}
+            if row.get("id") and request.rebalance_group_id:
+                from app.services.pending_orders.rebalance_batches import register_order_batch
+
+                register_order_batch(cur, request, int(row["id"]))
             db.commit()
             cur.close()
         pending_id = int(row.get("id") or 0)

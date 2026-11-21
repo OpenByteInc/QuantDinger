@@ -10,6 +10,9 @@ class FakeCursor:
     def execute(self, sql, params=()):
         self.calls.append((sql, params))
 
+    def fetchone(self):
+        return {"id": 42}
+
     def close(self):
         return None
 
@@ -46,7 +49,8 @@ def test_alpaca_fill_snapshot_updates_intent_without_an_undefined_order_id(monke
         final=False,
     )
 
-    assert len(calls) == 2
-    intent_sql, intent_params = calls[1]
+    assert len(calls) == 3
+    assert "FOR UPDATE" in calls[0][0]
+    intent_sql, intent_params = calls[2]
     assert "po.exchange_order_id" in intent_sql
     assert intent_params == ("sent", "sent", "sent", 0.25, 42)

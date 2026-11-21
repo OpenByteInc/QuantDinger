@@ -35,6 +35,13 @@ from zoneinfo import ZoneInfo
 
 import requests
 
+from app.services.notifications.email_templates import (
+    email_messages,
+    render_detail_email,
+    render_strategy_event_email,
+    render_test_email,
+    strategy_messages,
+)
 from app.utils.db import get_db_connection
 from app.utils.logger import get_logger
 from app.utils.notification_display import with_display
@@ -127,7 +134,7 @@ def _signal_payload_text(payload: Dict[str, Any]) -> str:
     strategy_text = f"{strategy.get('name') or '-'} (#{int(strategy.get('id') or 0)})"
 
     lines = [
-        f"QuantDinger Signal - {symbol} - {' '.join([action, side]).strip()}",
+        f"{email_messages()['signal_title']} - {symbol} - {' '.join([action, side]).strip()}",
         f"Strategy: {strategy_text}",
         f"Symbol: {symbol}",
         f"Signal: {signal_type}",
@@ -145,7 +152,7 @@ def _signal_payload_text(payload: Dict[str, Any]) -> str:
 
 
 def _profile_test_text(payload: Dict[str, Any]) -> str:
-    title = str((payload or {}).get("title") or "QuantDinger notification test")
+    title = str((payload or {}).get("title") or email_messages()["test_title"])
     message = str((payload or {}).get("message") or "This channel is configured correctly.")
     return f"{title}\n{message}"
 
@@ -272,17 +279,17 @@ def _signal_meta(signal_type: str) -> Dict[str, str]:
     return {"action": action, "side": side, "type": st}
 
 
-def _load_user_timezone_for_strategy(strategy_id: int) -> str:
+def _load_user_notification_preferences_for_strategy(strategy_id: int) -> Dict[str, Any]:
     try:
         sid = int(strategy_id)
     except Exception:
-        return ""
+        return {}
     try:
         with get_db_connection() as db:
             cur = db.cursor()
             cur.execute(
                 """
-                SELECT COALESCE(u.timezone, '') AS tz
+                SELECT COALESCE(u.timezone, '') AS tz, u.notification_settings
                 FROM qd_strategies_trading s
                 JOIN qd_users u ON u.id = s.user_id
                 WHERE s.id = ?
@@ -291,9 +298,10 @@ def _load_user_timezone_for_strategy(strategy_id: int) -> str:
             )
             row = cur.fetchone() or {}
             cur.close()
-        return str(row.get("tz") or "").strip()
+        settings = _safe_json(row.get("notification_settings"))
+        return {"timezone": str(row.get("tz") or "").strip(), "language": settings.get("language")}
     except Exception:
-        return ""
+        return {}
 
 
 def _utc_ts_to_user_display(now: int, user_timezone: str) -> Tuple[str, str, str]:
@@ -351,6 +359,71 @@ class SignalNotifier:
         self.twilio_token = (os.getenv("TWILIO_AUTH_TOKEN") or "").strip()
         self.twilio_from = (os.getenv("TWILIO_FROM_NUMBER") or "").strip()
 
+    def notify_strategy_stopped(
+        self, *, strategy_id: int, strategy_name: str, reason: str,
+        consecutive_failures: int, notification_config: Dict[str, Any],
+        failure_unit: str = "order",
+    ) -> Dict[str, Dict[str, Any]]:
+        cfg = _safe_json(notification_config)
+        messages = strategy_messages(cfg.get("language"))
+        title = messages["title"]
+        body_key = "batch_body" if failure_unit == "rebalance" else "body"
+        message = messages[body_key].format(name=strategy_name, id=strategy_id, count=consecutive_failures, reason=reason)
+        payload = {"event": "qd.strategy.stopped", "strategy_id": strategy_id, "reason": reason,
+                   "consecutive_failures": consecutive_failures, "failure_unit": failure_unit}
+        # Always leave an in-app stop notice; external channels follow opt-ins.
+        channels = list(dict.fromkeys(["browser", *_as_list(cfg.get("channels"))]))
+        return self._notify_strategy_event(
+            strategy_id=strategy_id, strategy_name=strategy_name, signal_type="strategy_stopped",
+            cfg={**cfg, "channels": channels}, title=title, message=message, payload=payload,
+        )
+
+    def notify_rebalance_summary(
+        self, *, strategy_id: int, strategy_name: str, group_id: str,
+        execution_mode: str, orders: List[Dict[str, Any]], notification_config: Dict[str, Any],
+    ) -> Dict[str, Dict[str, Any]]:
+        cfg = _safe_json(notification_config)
+        messages = strategy_messages(cfg.get("language"))["rebalance"]
+        counts = {key: sum(order["summary_status"] == key for order in orders) for key in messages["statuses"]}
+        lines = [messages["header"].format(name=strategy_name, id=strategy_id, batch=group_id[:12], total=len(orders)),
+                 messages["modes"].get(execution_mode, execution_mode),
+                 " | ".join(f"{label}: {counts[key]}" for key, label in messages["statuses"].items()), ""]
+        for order in orders:
+            action = str(order.get("signal_type") or "")
+            lines.append(messages["row"].format(
+                symbol=str(order.get("symbol") or ""), action=messages["actions"].get(action, action),
+                quantity=_fmt_float(order.get("amount"), 12), filled=_fmt_float(order.get("filled"), 12),
+                status=messages["statuses"][order["summary_status"]],
+                error=_shorten(order.get("last_error"), 300),
+            ))
+        lines.extend(["", messages["footnote"]])
+        message = "\n".join(lines)
+        payload = {
+            "event": "qd.strategy.rebalance", "strategy_id": strategy_id,
+            "group_id": group_id, "execution_mode": execution_mode, "counts": counts,
+            "orders": [{
+                "id": order.get("id"), "symbol": str(order.get("symbol") or ""),
+                "signal_type": str(order.get("signal_type") or ""),
+                "amount": _fmt_float(order.get("amount"), 12),
+                "filled": _fmt_float(order.get("filled"), 12),
+                "status": order["summary_status"], "error": _shorten(order.get("last_error"), 300),
+            } for order in orders],
+        }
+        return self._notify_strategy_event(
+            strategy_id=strategy_id, strategy_name=strategy_name, signal_type="rebalance_summary",
+            cfg=cfg, title=messages["title"], message=message, payload=payload,
+        )
+
+    def _notify_strategy_event(self, *, strategy_id, strategy_name, signal_type, cfg, title, message, payload):
+        payload = {**payload, "version": 1, "timestamp": int(time.time()),
+                   "strategy": {"id": strategy_id, "name": strategy_name}, "title": title, "message": message}
+        return self._deliver_channels(
+            strategy_id=strategy_id, symbol="", signal_type=signal_type,
+            cfg=cfg, channels=_as_list(cfg.get("channels")) or ["browser"], payload=payload,
+            rendered={"title": title, "plain": message,
+                      "email_html": render_strategy_event_email(payload, cfg.get("language", "en-US"))},
+        )
+
     def notify_signal(
         self,
         *,
@@ -364,15 +437,16 @@ class SignalNotifier:
         notification_config: Optional[Dict[str, Any]] = None,
         extra: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Dict[str, Any]]:
-        cfg = _safe_json(notification_config or {})
+        cfg = dict(_safe_json(notification_config or {}))
         channels = _as_list(cfg.get("channels"))
         if not channels:
             channels = ["browser"]
 
-        targets = _safe_json(cfg.get("targets") or {})
         extra = extra if isinstance(extra, dict) else {}
 
-        user_tz = _load_user_timezone_for_strategy(int(strategy_id))
+        preferences = _load_user_notification_preferences_for_strategy(int(strategy_id))
+        cfg["language"] = cfg.get("language") or preferences.get("language") or "en-US"
+        user_tz = preferences.get("timezone", "")
         payload = self._build_payload(
             strategy_id=strategy_id,
             strategy_name=strategy_name,
@@ -384,9 +458,7 @@ class SignalNotifier:
             extra=extra,
             user_timezone=user_tz,
         )
-        rendered = self._render_messages(payload)
-        title = rendered.get("title") or ""
-        message_plain = rendered.get("plain") or ""
+        rendered = self._render_messages(payload, language=cfg.get("language", "en-US"))
 
         strategy = (payload or {}).get("strategy") or {}
         instrument = (payload or {}).get("instrument") or {}
@@ -412,6 +484,16 @@ class SignalNotifier:
             },
         )
 
+        return self._deliver_channels(
+            strategy_id=strategy_id, symbol=symbol, signal_type=signal_type, cfg=cfg,
+            channels=channels, payload=payload, rendered=rendered,
+        )
+
+    def _deliver_channels(self, *, strategy_id, symbol, signal_type, cfg, channels, payload, rendered):
+        targets = _safe_json(cfg.get("targets") or {})
+        title = rendered.get("title") or ""
+        message_plain = rendered.get("plain") or ""
+        channels = list(dict.fromkeys(str(ch or "").strip().lower() for ch in channels))
         results: Dict[str, Dict[str, Any]] = {}
         for ch in channels:
             c = (ch or "").strip().lower()
@@ -462,7 +544,7 @@ class SignalNotifier:
                         chat_id=chat_id,
                         text=rendered.get("telegram_html") or message_plain,
                         token_override=token_override,
-                        parse_mode="HTML",
+                        parse_mode="HTML" if rendered.get("telegram_html") else "",
                     )
                 elif c == "email":
                     to_email = (targets.get("email") or "").strip()
@@ -543,85 +625,52 @@ class SignalNotifier:
             "extra": extra or {},
         }
 
-    def _render_messages(self, payload: Dict[str, Any]) -> Dict[str, str]:
-        strategy = (payload or {}).get("strategy") or {}
-        instrument = (payload or {}).get("instrument") or {}
-        sig = (payload or {}).get("signal") or {}
-        order = (payload or {}).get("order") or {}
-        trace = (payload or {}).get("trace") or {}
-
+    def _render_messages(self, payload: Dict[str, Any], language: str = "en-US") -> Dict[str, str]:
+        messages = email_messages(language)
+        labels = messages["signal_labels"]
+        actions = strategy_messages(language)["rebalance"]["actions"]
+        strategy = payload.get("strategy") or {}
+        instrument = payload.get("instrument") or {}
+        sig = payload.get("signal") or {}
+        order = payload.get("order") or {}
+        trace = payload.get("trace") or {}
         symbol = str(instrument.get("symbol") or "")
         stype = str(sig.get("type") or "")
-        action = str(sig.get("action") or "").upper()
-        side = str(sig.get("side") or "").upper()
-        title = f"QD Signal | {symbol} | {action} {side}".strip()
-
+        action_label = actions.get(stype, stype or labels["signal"])
+        title = f'{messages["signal_title"]} | {symbol} | {action_label}'
         price_s = _fmt_float(order.get("ref_price") or 0.0, max_decimals=10)
         stake_s = _fmt_float(order.get("stake_amount") or 0.0, max_decimals=12)
-        pending_id = int(trace.get("pending_order_id") or 0) if trace.get("pending_order_id") else 0
+        pending_id = int(trace.get("pending_order_id") or 0)
         mode = str(trace.get("mode") or "")
-        ts_iso = str(payload.get("timestamp_iso") or "")
-        ts_disp = str(payload.get("timestamp_display") or "") or ts_iso
-        ts_lbl = str(payload.get("time_label") or "Time")
-
-        plain_lines = [
-            "QuantDinger Signal",
-            f"Strategy: {strategy.get('name') or ''} (#{int(strategy.get('id') or 0)})",
-            f"Symbol: {symbol}",
-            f"Signal: {stype}",
-            f"Price: {price_s}",
-            f"Stake: {stake_s}",
+        mode_label = messages["signal_modes"].get(mode, mode)
+        ts_disp = str(payload.get("timestamp_display") or payload.get("timestamp_iso") or "")
+        original_label = str(payload.get("time_label") or "Time")
+        ts_lbl = labels["time"] + original_label[4:] if original_label.startswith("Time") else original_label
+        strategy_text = f"{strategy.get('name') or ''} (#{int(strategy.get('id') or 0)})"
+        rows = [
+            (labels["strategy"], strategy_text), (labels["symbol"], symbol),
+            (labels["signal"], action_label), (labels["price"], price_s), (labels["stake"], stake_s),
         ]
         if pending_id:
-            plain_lines.append(f"PendingOrder: {pending_id}")
+            rows.append((labels["pending"], str(pending_id)))
         if mode:
-            plain_lines.append(f"Mode: {mode}")
+            rows.append((labels["mode"], mode_label))
         if ts_disp:
-            plain_lines.append(f"{ts_lbl}: {ts_disp}")
-
-        # Telegram (HTML) message. Escape all dynamic values.
-        t_strategy = f"{strategy.get('name') or ''} (#{int(strategy.get('id') or 0)})"
-        action_label = " ".join([action, side]).strip() or "SIGNAL"
-        telegram_lines = [
-            f"<b>QuantDinger Signal</b> | <code>{html.escape(symbol or '-')}</code>",
-            f"<b>{html.escape(action_label)}</b>",
-            "",
-            f"<b>Strategy</b>: <code>{html.escape(str(t_strategy))}</code>",
-            f"<b>Signal</b>: <code>{html.escape(stype)}</code>",
-            f"<b>Reference price</b>: <code>{html.escape(price_s)}</code>",
-            f"<b>Stake</b>: <code>{html.escape(stake_s)}</code>",
-        ]
-        if pending_id:
-            telegram_lines.append(f"<b>Pending order</b>: <code>{pending_id}</code>")
-        if mode:
-            telegram_lines.append(f"<b>Mode</b>: <code>{html.escape(mode)}</code>")
-        if ts_disp:
-            telegram_lines.append(f"<b>{html.escape(ts_lbl)}</b>: <code>{html.escape(ts_disp)}</code>")
-        telegram_lines.append("")
-        telegram_lines.append("<i>Generated by QuantDinger signal engine.</i>")
-        telegram_html = "\n".join([x for x in telegram_lines if x is not None])
-
-        # Email (HTML) message. Keep inline CSS for maximum compatibility.
+            rows.append((ts_lbl, ts_disp))
+        plain = "\n".join([messages["signal_title"], *[f"{key}: {value}" for key, value in rows]])
+        telegram_html = "\n".join([
+            f'<b>{html.escape(messages["signal_title"])}</b>', "",
+            *[f"<b>{html.escape(key)}</b>: {html.escape(value)}" for key, value in rows],
+            "", f'<i>{html.escape(messages["signal_note"])}</i>',
+        ])
         email_html = self._build_email_html(
-            title_text="QuantDinger Signal",
-            action_text=action_label,
-            strategy_text=t_strategy,
-            symbol=symbol,
-            signal_type=stype,
-            price_text=price_s,
-            stake_text=stake_s,
-            pending_id=pending_id or None,
-            mode_text=mode or "",
-            timestamp_display=ts_disp or "",
-            time_row_label=ts_lbl or "Time",
+            title_text=messages["signal_title"], action_text=action_label,
+            strategy_text=strategy_text, symbol=symbol, signal_type=action_label,
+            price_text=price_s, stake_text=stake_s, pending_id=pending_id or None,
+            mode_text=mode_label, timestamp_display=ts_disp, time_row_label=ts_lbl,
+            language=language,
         )
-
-        return {
-            "title": title,
-            "plain": "\n".join(plain_lines),
-            "telegram_html": telegram_html,
-            "email_html": email_html,
-        }
+        return {"title": title, "plain": plain, "telegram_html": telegram_html, "email_html": email_html}
 
     def _build_email_html(
         self,
@@ -637,70 +686,26 @@ class SignalNotifier:
         mode_text: str,
         timestamp_display: str,
         time_row_label: str,
+        language: str = "en-US",
     ) -> str:
-        def esc(s: Any) -> str:
-            return html.escape(str(s or ""))
-
+        messages = email_messages(language)
+        labels = messages["signal_labels"]
         rows: List[Tuple[str, str]] = [
-            ("Strategy", strategy_text),
-            ("Symbol", symbol),
-            ("Signal", signal_type),
-            ("Price", price_text),
-            ("Stake", stake_text),
+            (labels["strategy"], strategy_text),
+            (labels["symbol"], symbol),
+            (labels["signal"], signal_type),
+            (labels["price"], price_text),
+            (labels["stake"], stake_text),
         ]
         if pending_id:
-            rows.append(("PendingOrder", str(int(pending_id))))
+            rows.append((labels["pending"], str(int(pending_id))))
         if mode_text:
-            rows.append(("Mode", mode_text))
+            rows.append((labels["mode"], mode_text))
         if timestamp_display:
-            rows.append((time_row_label or "Time", timestamp_display))
-
-        tr_html = "\n".join(
-            [
-                (
-                    "<tr>"
-                    "<td style='padding:12px 14px;border-top:1px solid #202633;color:#9ca3af;width:170px;font-size:13px;'>"
-                    f"{esc(k)}"
-                    "</td>"
-                    "<td style='padding:12px 14px;border-top:1px solid #202633;color:#f8fafc;font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, \"Liberation Mono\", \"Courier New\", monospace;font-size:13px;text-align:right;'>"
-                    f"{esc(v)}"
-                    "</td>"
-                    "</tr>"
-                )
-                for (k, v) in rows
-            ]
+            rows.append((time_row_label or labels["time"], timestamp_display))
+        return render_detail_email(
+            title_text, rows, subtitle=f"{symbol} · {action_text}", note=messages["signal_note"], language=language,
         )
-
-        accent = "#22c55e"
-        action_lower = str(action_text or "").lower()
-        if any(x in action_lower for x in ("short", "sell", "close", "reduce")):
-            accent = "#ef4444"
-        elif "signal" in action_lower:
-            accent = "#3b82f6"
-
-        return f"""\
-<!doctype html>
-<html>
-  <body style="margin:0;padding:0;background:#090b10;">
-    <div style="max-width:680px;margin:0 auto;padding:28px 18px;font-family:Inter,Arial,sans-serif;">
-      <div style="background:#141821;border:1px solid #252b38;border-radius:8px;overflow:hidden;box-shadow:0 20px 50px rgba(0,0,0,.35);">
-        <div style="padding:22px 24px;background:linear-gradient(135deg, rgba(239,68,68,.18), rgba(59,130,246,.10));border-bottom:1px solid #252b38;">
-          <div style="font-size:12px;color:#9ca3af;font-weight:700;text-transform:uppercase;">{esc(title_text)}</div>
-          <div style="margin-top:8px;font-size:24px;line-height:1.2;font-weight:800;color:#ffffff;">{esc(symbol or "-")}</div>
-          <div style="margin-top:14px;display:inline-block;padding:7px 11px;border-radius:6px;border:1px solid {accent};background:rgba(255,255,255,.04);color:{accent};font-size:13px;font-weight:800;">{esc(action_text or "SIGNAL")}</div>
-          <div style="margin-top:12px;font-size:12px;color:#9ca3af;">{esc(timestamp_display) if timestamp_display else ""}</div>
-        </div>
-        <table cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;background:#11151d;">
-          {tr_html}
-        </table>
-        <div style="padding:14px 18px;color:#9ca3af;font-size:12px;border-top:1px solid #252b38;background:#0f131a;">
-          Generated by QuantDinger signal engine. Review execution mode and exchange account before acting.
-        </div>
-      </div>
-    </div>
-  </body>
-</html>
-"""
 
     def _notify_browser(
         self,
@@ -933,12 +938,21 @@ class SignalNotifier:
         if not str(urlsplit(validated_url).path or "").startswith("/api/webhooks/"):
             return False, "invalid_discord_webhook_url"
 
+        if payload.get("event") in {"qd.strategy.stopped", "qd.strategy.rebalance"}:
+            return self._post_discord_embed(
+                url=validated_url,
+                embed={"title": str(payload.get("title") or "")[:256],
+                       "description": _payload_text(payload)[:3800],
+                       "color": 0xE74C3C if payload["event"] == "qd.strategy.stopped" else 0x3498DB},
+                fallback_text=fallback_text,
+            )
+
         if str((payload or {}).get("event") or "") == "qd.profile_test":
             embed = {
-                "title": str((payload or {}).get("title") or "QuantDinger notification test"),
+                "title": str((payload or {}).get("title") or email_messages()["test_title"]),
                 "description": str((payload or {}).get("message") or fallback_text or "Channel configured correctly.")[:3800],
                 "color": 0x22C55E,
-                "footer": {"text": "QuantDinger notification channel check"},
+                "footer": {"text": email_messages()["test_note"]},
             }
             if (payload or {}).get("timestamp_iso"):
                 embed["timestamp"] = str((payload or {}).get("timestamp_iso") or "")
@@ -965,7 +979,7 @@ class SignalNotifier:
         stake_text = _fmt_float(order.get("stake_amount") or 0.0, max_decimals=12)
 
         embed: Dict[str, Any] = {
-            "title": f"QuantDinger Signal | {str(instrument.get('symbol') or '-')}",
+            "title": f"{email_messages()['signal_title']} | {str(instrument.get('symbol') or '-')}",
             "description": f"**{action_label}**",
             "color": int(color),
             "fields": [
@@ -975,12 +989,12 @@ class SignalNotifier:
                 {"name": "Reference price", "value": price_text, "inline": True},
                 {"name": "Stake", "value": stake_text, "inline": True},
             ],
-            "footer": {"text": "Generated by QuantDinger signal engine"},
+            "footer": {"text": email_messages()["footer"]},
         }
         if payload.get("timestamp_iso"):
             embed["timestamp"] = str(payload.get("timestamp_iso") or "")
         if trace.get("pending_order_id"):
-            embed["footer"] = {"text": f"Generated by QuantDinger signal engine | pending_order_id={int(trace.get('pending_order_id'))}"}
+            embed["footer"] = {"text": f"{email_messages()['footer']} | pending_order_id={int(trace.get('pending_order_id'))}"}
         return self._post_discord_embed(url=validated_url, embed=embed, fallback_text=fallback_text)
 
     def _post_discord_embed(self, *, url: str, embed: Dict[str, Any], fallback_text: str) -> Tuple[bool, str]:
@@ -1141,42 +1155,14 @@ class SignalNotifier:
         Send a short test message to each selected channel (profile / notification settings).
         Used by POST /api/users/notification-settings/test.
         """
-        lang = (language or "en-US").strip().lower()
-        zh = lang.startswith("zh")
-        title = "QuantDinger 通知测试" if zh else "QuantDinger notification test"
-        plain = (
-            "这是一条来自 QuantDinger 个人中心「通知设置」的测试消息。若您收到本条消息，说明该渠道配置正确。"
-            if zh
-            else "This is a test message from QuantDinger profile notification settings. "
-            "If you received this, the channel is configured correctly."
+        messages = email_messages(language)
+        title = messages["test_title"]
+        plain = messages["test_body"]
+        html_body = render_test_email(language)
+        telegram_html = (
+            f"<b>{html.escape(title)}</b>\n\n{html.escape(plain)}"
+            f"\n\n<i>{html.escape(messages['test_note'])}</i>"
         )
-        html_body = f"<p>{html.escape(plain)}</p>"
-        telegram_html = f"<b>{html.escape(title)}</b>\n\n{html.escape(plain)}"
-        title = "QuantDinger \u901a\u77e5\u6d4b\u8bd5" if zh else "QuantDinger notification test"
-        plain = (
-            "\u8fd9\u662f\u4e00\u6761\u6765\u81ea QuantDinger \u4e2a\u4eba\u4e2d\u5fc3\u300c\u901a\u77e5\u8bbe\u7f6e\u300d\u7684\u6d4b\u8bd5\u6d88\u606f\u3002\u82e5\u60a8\u6536\u5230\u672c\u6761\u6d88\u606f\uff0c\u8bf4\u660e\u8be5\u6e20\u9053\u914d\u7f6e\u6b63\u786e\u3002"
-            if zh
-            else "This is a test message from QuantDinger profile notification settings. "
-            "If you received this, the channel is configured correctly."
-        )
-        html_body = f"""\
-<!doctype html>
-<html>
-  <body style="margin:0;padding:0;background:#090b10;">
-    <div style="max-width:640px;margin:0 auto;padding:28px 18px;font-family:Inter,Arial,sans-serif;">
-      <div style="background:#141821;border:1px solid #252b38;border-radius:8px;overflow:hidden;">
-        <div style="padding:22px 24px;background:linear-gradient(135deg, rgba(59,130,246,.20), rgba(34,197,94,.10));border-bottom:1px solid #252b38;">
-          <div style="font-size:12px;color:#9ca3af;font-weight:700;text-transform:uppercase;">QuantDinger Notification</div>
-          <div style="margin-top:8px;font-size:22px;line-height:1.25;font-weight:800;color:#ffffff;">{html.escape(title)}</div>
-          <div style="margin-top:14px;display:inline-block;padding:7px 11px;border-radius:6px;border:1px solid #22c55e;color:#22c55e;font-size:13px;font-weight:800;">OK</div>
-        </div>
-        <div style="padding:18px 24px;color:#d1d5db;font-size:14px;line-height:1.7;background:#11151d;">{html.escape(plain)}</div>
-      </div>
-    </div>
-  </body>
-</html>
-"""
-        telegram_html = f"<b>{html.escape(title)}</b>\n\n{html.escape(plain)}\n\n<i>QuantDinger notification channel check passed.</i>"
 
         now = int(time.time())
         iso = datetime.now(timezone.utc).isoformat()

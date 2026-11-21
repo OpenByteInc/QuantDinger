@@ -1,0 +1,376 @@
+{
+  "en-US": {
+    "title": "{brand} | Strategy automatically stopped",
+    "body": "Strategy: {name} (#{id})\nConsecutive order failures: {count}\nReason: {reason}\n\nThe strategy has stopped. This action does not liquidate existing positions. Review positions and exchange-side orders, correct the cause, and restart manually when ready.",
+    "batch_body": "Strategy: {name} (#{id})\nConsecutive failed rebalance batches: {count}\nReason: {reason}\n\nNo order was accepted in these failed batches. The strategy has stopped without liquidating existing positions. Review positions and exchange-side orders, correct the cause, and restart manually when ready.",
+    "rebalance": {
+      "title": "{brand} | Portfolio rebalance summary",
+      "virtual_log": "Virtual order result recorded; notifications are aggregated by rebalance batch. Symbol: {symbol}, order #{id}.",
+      "header": "Strategy: {name} (#{id})\nBatch: {batch}\nQueued orders: {total}",
+      "modes": {
+        "live": "Mode: live",
+        "signal": "Mode: signal / virtual account (no real orders)"
+      },
+      "statuses": {
+        "filled": "Filled",
+        "partial": "Partially filled",
+        "accepted": "Accepted / awaiting fill",
+        "failed": "Failed",
+        "cancelled": "Cancelled",
+        "pending": "Pending confirmation"
+      },
+      "actions": {
+        "open_long": "Open long",
+        "add_long": "Add long",
+        "close_long": "Close long",
+        "reduce_long": "Reduce long",
+        "open_short": "Open short",
+        "add_short": "Add short",
+        "close_short": "Close short",
+        "reduce_short": "Reduce short"
+      },
+      "row": "{symbol} | {action} | Requested: {quantity} | Filled: {filled} | {status} {error}",
+      "footnote": "This is a snapshot of the queued orders, not confirmation that the whole rebalance completed. Accepted and pending orders are not necessarily filled. Later results and individual order records remain available in the application. Individual failures do not undo successful orders."
+    }
+  },
+  "zh-CN": {
+    "title": "{brand} | 策略已自动停止",
+    "body": "策略：{name}（#{id}）\n连续下单失败：{count} 次\n停止原因：{reason}\n\n策略已停止，本次操作不会自动平仓。请检查现有持仓和交易所挂单，解决上述问题后再手动启动。",
+    "batch_body": "策略：{name}（#{id}）\n连续调仓批次失败：{count} 次\n停止原因：{reason}\n\n这些失败批次均无成功接单。策略已停止，不会自动平仓。请检查现有持仓和交易所挂单，解决上述问题后再手动启动。",
+    "rebalance": {
+      "title": "{brand} | 组合调仓汇总",
+      "virtual_log": "虚拟订单处理结果已记录，通知按调仓批次汇总。标的：{symbol}，订单：#{id}。",
+      "header": "策略：{name}（#{id}）\n批次：{batch}\n已入队订单：{total} 笔",
+      "modes": {
+        "live": "模式：实盘",
+        "signal": "模式：仅信号／虚拟账户（未下真实订单）"
+      },
+      "statuses": {
+        "filled": "已成交",
+        "partial": "部分成交",
+        "accepted": "已接单／待成交",
+        "failed": "失败",
+        "cancelled": "已取消",
+        "pending": "待确认"
+      },
+      "actions": {
+        "open_long": "开多",
+        "add_long": "加多",
+        "close_long": "平多",
+        "reduce_long": "减多",
+        "open_short": "开空",
+        "add_short": "加空",
+        "close_short": "平空",
+        "reduce_short": "减空"
+      },
+      "row": "{symbol} | {action} | 委托数量：{quantity} | 已成交数量：{filled} | {status} {error}",
+      "footnote": "此通知是已入队订单的状态快照，不代表整批调仓已完成。已接单或待确认不等于已成交，后续结果和逐笔订单记录请在系统内查看。个别订单失败不会撤销其他已成功执行的订单。"
+    }
+  },
+  "zh-TW": {
+    "title": "{brand} | 策略已自動停止",
+    "body": "策略: {name} (#{id})\n連續下單失敗: {count}\n停止原因: {reason}\n\n本次停止不會自動平倉。請檢查現有持倉和交易所掛單，解決問題後再手動啟動。",
+    "batch_body": "策略: {name} (#{id})\n連續調倉批次失敗: {count}\n停止原因: {reason}\n\n這些失敗批次均無成功接單。 本次停止不會自動平倉。請檢查現有持倉和交易所掛單，解決問題後再手動啟動。",
+    "rebalance": {
+      "title": "{brand} | 投資組合調倉彙總",
+      "virtual_log": "虛擬訂單處理結果已記錄，通知按調倉批次彙總。標的：{symbol}，訂單：#{id}。",
+      "header": "策略: {name} (#{id})\n批次: {batch}\n已入佇列訂單: {total}",
+      "modes": {
+        "live": "模式: 實盤",
+        "signal": "模式: 僅訊號／虛擬帳戶（未下真實訂單）"
+      },
+      "statuses": {
+        "filled": "已成交",
+        "partial": "部分成交",
+        "accepted": "已接單／待成交",
+        "failed": "失敗",
+        "cancelled": "已取消",
+        "pending": "待確認"
+      },
+      "actions": {
+        "open_long": "開多",
+        "add_long": "加多",
+        "close_long": "平多",
+        "reduce_long": "減多",
+        "open_short": "開空",
+        "add_short": "加空",
+        "close_short": "平空",
+        "reduce_short": "減空"
+      },
+      "row": "{symbol} | {action} | 委託數量: {quantity} | 已成交數量: {filled} | {status} {error}",
+      "footnote": "此通知是已入佇列訂單的狀態快照，不代表整批調倉已完成。已接單或待確認不等於已成交，後續結果和逐筆訂單紀錄請在系統內查看。個別訂單失敗不會撤銷其他已成功執行的訂單。"
+    }
+  },
+  "ja-JP": {
+    "title": "{brand} | ストラテジーを自動停止しました",
+    "body": "ストラテジー: {name} (#{id})\n連続注文失敗数: {count}\n停止理由: {reason}\n\n今回の停止では既存のポジションは決済されません。ポジションと取引所の未約定注文を確認し、原因を解消してから手動で再開してください。",
+    "batch_body": "ストラテジー: {name} (#{id})\n連続リバランス失敗数: {count}\n停止理由: {reason}\n\nこれらの失敗したバッチでは、受け付けられた注文はありません。 今回の停止では既存のポジションは決済されません。ポジションと取引所の未約定注文を確認し、原因を解消してから手動で再開してください。",
+    "rebalance": {
+      "title": "{brand} | ポートフォリオ・リバランスの概要",
+      "virtual_log": "仮想注文の結果を記録しました。通知はリバランスのバッチ単位でまとめられます。銘柄：{symbol}、注文：#{id}。",
+      "header": "ストラテジー: {name} (#{id})\nバッチ: {batch}\nキュー登録済み注文: {total}",
+      "modes": {
+        "live": "モード: ライブ取引",
+        "signal": "モード: シグナルのみ／仮想口座（実際の発注なし）"
+      },
+      "statuses": {
+        "filled": "約定済み",
+        "partial": "一部約定",
+        "accepted": "受付済み／約定待ち",
+        "failed": "失敗",
+        "cancelled": "取消済み",
+        "pending": "確認待ち"
+      },
+      "actions": {
+        "open_long": "ロング新規",
+        "add_long": "ロング追加",
+        "close_long": "ロング決済",
+        "reduce_long": "ロング縮小",
+        "open_short": "ショート新規",
+        "add_short": "ショート追加",
+        "close_short": "ショート決済",
+        "reduce_short": "ショート縮小"
+      },
+      "row": "{symbol} | {action} | 注文数量: {quantity} | 約定数量: {filled} | {status} {error}",
+      "footnote": "これはキュー登録済み注文の状態のスナップショットであり、リバランス全体の完了確認ではありません。受付済み・確認待ちの注文が約定済みとは限りません。その後の結果と個別の注文記録はアプリで確認してください。一部の注文の失敗によって、成功した注文が取り消されることはありません。"
+    }
+  },
+  "ko-KR": {
+    "title": "{brand} | 전략이 자동으로 중지되었습니다",
+    "body": "전략: {name} (#{id})\n연속 주문 실패 횟수: {count}\n중지 사유: {reason}\n\n이번 중지로 기존 포지션이 자동 청산되지는 않습니다. 보유 포지션과 거래소 미체결 주문을 확인하고 원인을 해결한 뒤 수동으로 다시 시작하세요.",
+    "batch_body": "전략: {name} (#{id})\n연속 리밸런싱 배치 실패 횟수: {count}\n중지 사유: {reason}\n\n실패한 이 배치들에서는 접수된 주문이 없습니다. 이번 중지로 기존 포지션이 자동 청산되지는 않습니다. 보유 포지션과 거래소 미체결 주문을 확인하고 원인을 해결한 뒤 수동으로 다시 시작하세요.",
+    "rebalance": {
+      "title": "{brand} | 포트폴리오 리밸런싱 요약",
+      "virtual_log": "가상 주문 결과가 기록되었습니다. 알림은 리밸런싱 배치별로 통합됩니다. 종목: {symbol}, 주문 #{id}.",
+      "header": "전략: {name} (#{id})\n배치: {batch}\n대기열에 등록된 주문: {total}",
+      "modes": {
+        "live": "모드: 실거래",
+        "signal": "모드: 신호 전용／가상 계좌（실제 주문 없음）"
+      },
+      "statuses": {
+        "filled": "체결 완료",
+        "partial": "부분 체결",
+        "accepted": "접수됨／체결 대기",
+        "failed": "실패",
+        "cancelled": "취소됨",
+        "pending": "확인 대기"
+      },
+      "actions": {
+        "open_long": "롱 진입",
+        "add_long": "롱 추가",
+        "close_long": "롱 청산",
+        "reduce_long": "롱 축소",
+        "open_short": "숏 진입",
+        "add_short": "숏 추가",
+        "close_short": "숏 청산",
+        "reduce_short": "숏 축소"
+      },
+      "row": "{symbol} | {action} | 주문 수량: {quantity} | 체결 수량: {filled} | {status} {error}",
+      "footnote": "이 알림은 대기열에 등록된 주문의 상태 요약이며 전체 리밸런싱 완료를 확인하는 것은 아닙니다. 접수됨 또는 확인 대기 상태가 체결을 의미하지는 않습니다. 이후 결과와 개별 주문 기록은 앱에서 확인하세요. 일부 주문이 실패해도 성공한 주문은 취소되지 않습니다."
+    }
+  },
+  "de-DE": {
+    "title": "{brand} | Strategie automatisch gestoppt",
+    "body": "Strategie: {name} (#{id})\nAufeinanderfolgende Orderfehler: {count}\nGrund: {reason}\n\nBestehende Positionen wurden durch diesen Stopp nicht geschlossen. Prüfen Sie Positionen und offene Orders an der Börse, beheben Sie die Ursache und starten Sie die Strategie anschließend manuell neu.",
+    "batch_body": "Strategie: {name} (#{id})\nAufeinanderfolgende fehlgeschlagene Batches: {count}\nGrund: {reason}\n\nIn diesen fehlgeschlagenen Batches wurde keine Order angenommen. Bestehende Positionen wurden durch diesen Stopp nicht geschlossen. Prüfen Sie Positionen und offene Orders an der Börse, beheben Sie die Ursache und starten Sie die Strategie anschließend manuell neu.",
+    "rebalance": {
+      "title": "{brand} | Zusammenfassung der Portfolio-Umschichtung",
+      "virtual_log": "Ergebnis der virtuellen Order erfasst. Benachrichtigungen werden je Umschichtungsbatch zusammengefasst. Symbol: {symbol}, Order #{id}.",
+      "header": "Strategie: {name} (#{id})\nBatch: {batch}\nEingereihte Orders: {total}",
+      "modes": {
+        "live": "Modus: Live-Handel",
+        "signal": "Modus: Nur Signale / virtuelles Konto (keine echten Orders)"
+      },
+      "statuses": {
+        "filled": "Ausgeführt",
+        "partial": "Teilweise ausgeführt",
+        "accepted": "Angenommen / Ausführung ausstehend",
+        "failed": "Fehlgeschlagen",
+        "cancelled": "Storniert",
+        "pending": "Bestätigung ausstehend"
+      },
+      "actions": {
+        "open_long": "Long eröffnen",
+        "add_long": "Long aufstocken",
+        "close_long": "Long schließen",
+        "reduce_long": "Long reduzieren",
+        "open_short": "Short eröffnen",
+        "add_short": "Short aufstocken",
+        "close_short": "Short schließen",
+        "reduce_short": "Short reduzieren"
+      },
+      "row": "{symbol} | {action} | Ordermenge: {quantity} | Ausgeführte Menge: {filled} | {status} {error}",
+      "footnote": "Dies ist eine Momentaufnahme der eingereihten Orders, keine Bestätigung der vollständigen Umschichtung. Angenommene Orders und Orders mit ausstehender Bestätigung sind nicht unbedingt ausgeführt. Spätere Ergebnisse und einzelne Orders finden Sie in der Anwendung. Einzelne Fehler machen erfolgreiche Orders nicht rückgängig."
+    }
+  },
+  "fr-FR": {
+    "title": "{brand} | Stratégie arrêtée automatiquement",
+    "body": "Stratégie: {name} (#{id})\nÉchecs d’ordres consécutifs: {count}\nMotif: {reason}\n\nCet arrêt ne clôture pas les positions existantes. Vérifiez vos positions et les ordres ouverts sur la plateforme, corrigez la cause, puis redémarrez manuellement la stratégie.",
+    "batch_body": "Stratégie: {name} (#{id})\nLots de rééquilibrage en échec consécutifs: {count}\nMotif: {reason}\n\nAucun ordre n’a été accepté dans ces lots en échec. Cet arrêt ne clôture pas les positions existantes. Vérifiez vos positions et les ordres ouverts sur la plateforme, corrigez la cause, puis redémarrez manuellement la stratégie.",
+    "rebalance": {
+      "title": "{brand} | Récapitulatif du rééquilibrage du portefeuille",
+      "virtual_log": "Résultat de l’ordre virtuel enregistré ; les notifications sont regroupées par lot de rééquilibrage. Symbole : {symbol}, ordre n° {id}.",
+      "header": "Stratégie: {name} (#{id})\nLot: {batch}\nOrdres en file d’attente: {total}",
+      "modes": {
+        "live": "Mode: Trading réel",
+        "signal": "Mode: Signaux uniquement / compte virtuel (aucun ordre réel)"
+      },
+      "statuses": {
+        "filled": "Exécuté",
+        "partial": "Partiellement exécuté",
+        "accepted": "Accepté / en attente d’exécution",
+        "failed": "Échec",
+        "cancelled": "Annulé",
+        "pending": "En attente de confirmation"
+      },
+      "actions": {
+        "open_long": "Ouvrir une position longue",
+        "add_long": "Renforcer une position longue",
+        "close_long": "Clôturer une position longue",
+        "reduce_long": "Réduire une position longue",
+        "open_short": "Ouvrir une position courte",
+        "add_short": "Renforcer une position courte",
+        "close_short": "Clôturer une position courte",
+        "reduce_short": "Réduire une position courte"
+      },
+      "row": "{symbol} | {action} | Quantité demandée: {quantity} | Quantité exécutée: {filled} | {status} {error}",
+      "footnote": "Cette notification est un instantané des ordres en file d’attente, pas une confirmation de l’achèvement du rééquilibrage. Un ordre accepté ou en attente de confirmation n’est pas nécessairement exécuté. Consultez les résultats ultérieurs et les ordres individuels dans l’application. L’échec d’un ordre n’annule pas les ordres exécutés avec succès."
+    }
+  },
+  "ru-RU": {
+    "title": "{brand} | Стратегия автоматически остановлена",
+    "body": "Стратегия: {name} (#{id})\nНеудачных заявок подряд: {count}\nПричина: {reason}\n\nЭта остановка не закрывает существующие позиции. Проверьте позиции и открытые заявки на бирже, устраните причину и затем перезапустите стратегию вручную.",
+    "batch_body": "Стратегия: {name} (#{id})\nНеудачных пакетов ребалансировки подряд: {count}\nПричина: {reason}\n\nВ этих неудачных пакетах не было принято ни одной заявки. Эта остановка не закрывает существующие позиции. Проверьте позиции и открытые заявки на бирже, устраните причину и затем перезапустите стратегию вручную.",
+    "rebalance": {
+      "title": "{brand} | Сводка ребалансировки портфеля",
+      "virtual_log": "Результат виртуальной заявки записан. Уведомления объединяются по пакетам ребалансировки. Инструмент: {symbol}, заявка № {id}.",
+      "header": "Стратегия: {name} (#{id})\nПакет: {batch}\nЗаявки в очереди: {total}",
+      "modes": {
+        "live": "Режим: Реальная торговля",
+        "signal": "Режим: Только сигналы / виртуальный счёт (без реальных заявок)"
+      },
+      "statuses": {
+        "filled": "Исполнена",
+        "partial": "Частично исполнена",
+        "accepted": "Принята / ожидает исполнения",
+        "failed": "Ошибка",
+        "cancelled": "Отменена",
+        "pending": "Ожидает подтверждения"
+      },
+      "actions": {
+        "open_long": "Открыть лонг",
+        "add_long": "Увеличить лонг",
+        "close_long": "Закрыть лонг",
+        "reduce_long": "Сократить лонг",
+        "open_short": "Открыть шорт",
+        "add_short": "Увеличить шорт",
+        "close_short": "Закрыть шорт",
+        "reduce_short": "Сократить шорт"
+      },
+      "row": "{symbol} | {action} | Запрошенный объём: {quantity} | Исполненный объём: {filled} | {status} {error}",
+      "footnote": "Это снимок состояния заявок в очереди, а не подтверждение завершения всей ребалансировки. Принятие заявки или ожидание подтверждения не означает исполнение. Последующие результаты и отдельные заявки доступны в приложении. Ошибки отдельных заявок не отменяют успешно исполненные заявки."
+    }
+  },
+  "vi-VN": {
+    "title": "{brand} | Chiến lược đã tự động dừng",
+    "body": "Chiến lược: {name} (#{id})\nSố lệnh thất bại liên tiếp: {count}\nLý do: {reason}\n\nViệc dừng này không tự động đóng các vị thế hiện có. Hãy kiểm tra vị thế và lệnh đang mở trên sàn, khắc phục nguyên nhân rồi khởi động lại chiến lược theo cách thủ công.",
+    "batch_body": "Chiến lược: {name} (#{id})\nSố đợt tái cân bằng thất bại liên tiếp: {count}\nLý do: {reason}\n\nKhông có lệnh nào được chấp nhận trong các đợt thất bại này. Việc dừng này không tự động đóng các vị thế hiện có. Hãy kiểm tra vị thế và lệnh đang mở trên sàn, khắc phục nguyên nhân rồi khởi động lại chiến lược theo cách thủ công.",
+    "rebalance": {
+      "title": "{brand} | Tóm tắt tái cân bằng danh mục",
+      "virtual_log": "Đã ghi nhận kết quả lệnh ảo; thông báo được tổng hợp theo đợt tái cân bằng. Mã: {symbol}, lệnh #{id}.",
+      "header": "Chiến lược: {name} (#{id})\nĐợt: {batch}\nLệnh trong hàng đợi: {total}",
+      "modes": {
+        "live": "Chế độ: Giao dịch thực",
+        "signal": "Chế độ: Chỉ tín hiệu / tài khoản ảo (không đặt lệnh thực)"
+      },
+      "statuses": {
+        "filled": "Đã khớp",
+        "partial": "Khớp một phần",
+        "accepted": "Đã chấp nhận / chờ khớp",
+        "failed": "Thất bại",
+        "cancelled": "Đã hủy",
+        "pending": "Chờ xác nhận"
+      },
+      "actions": {
+        "open_long": "Mở vị thế mua",
+        "add_long": "Tăng vị thế mua",
+        "close_long": "Đóng vị thế mua",
+        "reduce_long": "Giảm vị thế mua",
+        "open_short": "Mở vị thế bán",
+        "add_short": "Tăng vị thế bán",
+        "close_short": "Đóng vị thế bán",
+        "reduce_short": "Giảm vị thế bán"
+      },
+      "row": "{symbol} | {action} | Khối lượng đặt: {quantity} | Khối lượng đã khớp: {filled} | {status} {error}",
+      "footnote": "Đây là ảnh chụp trạng thái của các lệnh trong hàng đợi, không phải xác nhận toàn bộ đợt tái cân bằng đã hoàn tất. Lệnh đã được chấp nhận hoặc đang chờ xác nhận chưa chắc đã khớp. Hãy xem kết quả tiếp theo và từng lệnh trong ứng dụng. Một số lệnh thất bại không hủy các lệnh đã thực hiện thành công."
+    }
+  },
+  "th-TH": {
+    "title": "{brand} | กลยุทธ์หยุดทำงานโดยอัตโนมัติ",
+    "body": "กลยุทธ์: {name} (#{id})\nจำนวนคำสั่งที่ล้มเหลวติดต่อกัน: {count}\nเหตุผล: {reason}\n\nการหยุดครั้งนี้จะไม่ปิดสถานะที่มีอยู่โดยอัตโนมัติ โปรดตรวจสอบสถานะและคำสั่งที่ค้างอยู่ในตลาด แก้ไขสาเหตุ แล้วเริ่มกลยุทธ์ใหม่ด้วยตนเอง",
+    "batch_body": "กลยุทธ์: {name} (#{id})\nจำนวนชุดปรับพอร์ตที่ล้มเหลวติดต่อกัน: {count}\nเหตุผล: {reason}\n\nไม่มีคำสั่งใดได้รับการยอมรับในชุดที่ล้มเหลวเหล่านี้ การหยุดครั้งนี้จะไม่ปิดสถานะที่มีอยู่โดยอัตโนมัติ โปรดตรวจสอบสถานะและคำสั่งที่ค้างอยู่ในตลาด แก้ไขสาเหตุ แล้วเริ่มกลยุทธ์ใหม่ด้วยตนเอง",
+    "rebalance": {
+      "title": "{brand} | สรุปการปรับสมดุลพอร์ต",
+      "virtual_log": "บันทึกผลคำสั่งเสมือนแล้ว โดยรวมการแจ้งเตือนตามชุดปรับพอร์ต สัญลักษณ์: {symbol}, คำสั่ง #{id}",
+      "header": "กลยุทธ์: {name} (#{id})\nชุดคำสั่ง: {batch}\nคำสั่งที่เข้าคิวแล้ว: {total}",
+      "modes": {
+        "live": "โหมด: ซื้อขายจริง",
+        "signal": "โหมด: เฉพาะสัญญาณ / บัญชีเสมือน (ไม่มีคำสั่งจริง)"
+      },
+      "statuses": {
+        "filled": "จับคู่แล้ว",
+        "partial": "จับคู่บางส่วน",
+        "accepted": "ยอมรับแล้ว / รอจับคู่",
+        "failed": "ล้มเหลว",
+        "cancelled": "ยกเลิกแล้ว",
+        "pending": "รอยืนยัน"
+      },
+      "actions": {
+        "open_long": "เปิดสถานะ Long",
+        "add_long": "เพิ่มสถานะ Long",
+        "close_long": "ปิดสถานะ Long",
+        "reduce_long": "ลดสถานะ Long",
+        "open_short": "เปิดสถานะ Short",
+        "add_short": "เพิ่มสถานะ Short",
+        "close_short": "ปิดสถานะ Short",
+        "reduce_short": "ลดสถานะ Short"
+      },
+      "row": "{symbol} | {action} | จำนวนที่สั่ง: {quantity} | จำนวนที่จับคู่แล้ว: {filled} | {status} {error}",
+      "footnote": "นี่คือภาพรวมสถานะของคำสั่งในคิว ไม่ใช่การยืนยันว่าการปรับพอร์ตทั้งชุดเสร็จสมบูรณ์ คำสั่งที่ยอมรับแล้วหรือรอยืนยันอาจยังไม่ได้จับคู่ ตรวจสอบผลล่าสุดและคำสั่งแต่ละรายการในแอป คำสั่งบางรายการที่ล้มเหลวจะไม่ยกเลิกคำสั่งอื่นที่สำเร็จแล้ว"
+    }
+  },
+  "ar-SA": {
+    "title": "{brand} | تم إيقاف الاستراتيجية تلقائيًا",
+    "body": "الاستراتيجية: {name} (#{id})\nعدد الأوامر الفاشلة المتتالية: {count}\nالسبب: {reason}\n\nهذا الإيقاف لا يغلق المراكز الحالية تلقائيًا. راجع المراكز والأوامر المفتوحة في منصة التداول، وعالج السبب، ثم أعد تشغيل الاستراتيجية يدويًا.",
+    "batch_body": "الاستراتيجية: {name} (#{id})\nعدد دفعات إعادة الموازنة الفاشلة المتتالية: {count}\nالسبب: {reason}\n\nلم يُقبل أي أمر في هذه الدفعات الفاشلة. هذا الإيقاف لا يغلق المراكز الحالية تلقائيًا. راجع المراكز والأوامر المفتوحة في منصة التداول، وعالج السبب، ثم أعد تشغيل الاستراتيجية يدويًا.",
+    "rebalance": {
+      "title": "{brand} | ملخص إعادة موازنة المحفظة",
+      "virtual_log": "تم تسجيل نتيجة الأمر الافتراضي؛ تُجمع الإشعارات حسب دفعة إعادة الموازنة. الرمز: {symbol}، الأمر رقم {id}.",
+      "header": "الاستراتيجية: {name} (#{id})\nالدفعة: {batch}\nالأوامر في قائمة الانتظار: {total}",
+      "modes": {
+        "live": "الوضع: تداول حقيقي",
+        "signal": "الوضع: إشارات فقط / حساب افتراضي (دون أوامر حقيقية)"
+      },
+      "statuses": {
+        "filled": "منفذ",
+        "partial": "منفذ جزئيًا",
+        "accepted": "مقبول / بانتظار التنفيذ",
+        "failed": "فشل",
+        "cancelled": "ملغى",
+        "pending": "بانتظار التأكيد"
+      },
+      "actions": {
+        "open_long": "فتح مركز شراء",
+        "add_long": "زيادة مركز شراء",
+        "close_long": "إغلاق مركز شراء",
+        "reduce_long": "تقليص مركز شراء",
+        "open_short": "فتح مركز بيع",
+        "add_short": "زيادة مركز بيع",
+        "close_short": "إغلاق مركز بيع",
+        "reduce_short": "تقليص مركز بيع"
+      },
+      "row": "{symbol} | {action} | الكمية المطلوبة: {quantity} | الكمية المنفذة: {filled} | {status} {error}",
+      "footnote": "هذا الإشعار لقطة لحالة الأوامر في قائمة الانتظار، وليس تأكيدًا لاكتمال إعادة الموازنة بالكامل. قبول الأمر أو انتظار تأكيده لا يعني بالضرورة تنفيذه. راجع النتائج اللاحقة وسجلات الأوامر الفردية في التطبيق. فشل بعض الأوامر لا يلغي الأوامر الأخرى التي نُفذت بنجاح."
+    }
+  }
+}

@@ -138,6 +138,7 @@ def test_apply_init_sql_includes_public_universe_expansion(tmp_path, monkeypatch
     assert 'default-global-universe-members-20261025' in applied
     assert 'remove-manager-role-20261104' in applied
     assert 'strategy-runtime-epoch-20261111' in applied
+    assert 'strategy-order-batches-20261121' in applied
 
 
 def test_strategy_runtime_epoch_migration_separates_desired_and_actual_lifecycle():

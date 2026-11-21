@@ -24,6 +24,7 @@ from app.services.user_service import get_user_service
 from app.utils.auth import login_required, admin_required
 from app.utils.db import get_db_connection
 from app.utils.logger import get_logger
+from app.utils.language import detect_request_language
 
 logger = get_logger(__name__)
 
@@ -786,7 +787,10 @@ def update_notification_settings():
         user_id = getattr(g, 'user_id', None)
         if not user_id:
             return jsonify({'code': 0, 'msg': 'Not authenticated', 'data': None}), 401
-        settings = update_notification_settings_service(int(user_id), request.get_json() or {})
+        data = request.get_json() or {}
+        settings = update_notification_settings_service(
+            int(user_id), {**data, "language": detect_request_language(request, data)},
+        )
         return jsonify({'code': 1, 'msg': 'Notification settings updated', 'data': settings})
     except Exception as e:
         logger.error(f"update_notification_settings failed: {e}")
@@ -842,8 +846,8 @@ def test_notification_settings():
         user_id = getattr(g, 'user_id', None)
         if not user_id:
             return jsonify({'code': 0, 'msg': 'Not authenticated', 'data': None}), 401
-        accept = (request.headers.get('Accept-Language') or '') + ' ' + (request.headers.get('X-Locale') or '')
-        ok, msg, data = send_test_notification(int(user_id), accept)
+        language = detect_request_language(request, default="")
+        ok, msg, data = send_test_notification(int(user_id), language)
         return jsonify({'code': 1 if ok else 0, 'msg': msg, 'data': data})
     except Exception as e:
         logger.error(f"test_notification_settings failed: {e}")

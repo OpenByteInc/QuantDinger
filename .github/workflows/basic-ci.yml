@@ -155,10 +155,14 @@ jobs:
         if: matrix.shard_index == 0
         working-directory: ./backend_api_python
         shell: bash
+        env:
+          ORDER_FAILURE_TEST_DSN: ${{ env.DATABASE_URL }}
         run: |
           QD_TEST_POSTGRES_DSN="$DATABASE_URL" python -m pytest \
             tests/integration/test_execution_projection_atomic.py \
             tests/integration/test_grid_fill_accounting.py \
+            tests/test_order_failure_stop.py \
+            tests/test_rebalance_batches.py \
             --cov=. \
             --cov-append \
             --cov-branch \

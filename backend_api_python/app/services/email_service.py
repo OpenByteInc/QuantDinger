@@ -8,6 +8,7 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from typing import Tuple
+from app.services.notifications.email_templates import render_verification_email
 from app.utils.db import get_db_connection
 from app.utils.logger import get_logger
 
@@ -247,7 +248,7 @@ class EmailService:
     # Email Sending
     # =========================================================================
     
-    def send_email(self, to_email: str, subject: str, html_body: str) -> Tuple[bool, str]:
+    def send_email(self, to_email: str, subject: str, html_body: str, *, text_body: str = None) -> Tuple[bool, str]:
         """
         Send an email.
         
@@ -269,11 +270,10 @@ class EmailService:
             msg['From'] = self.smtp_from
             msg['To'] = to_email
             
-            # Plain text version (fallback)
-            text_body = html_body.replace('<br>', '\n').replace('<br/>', '\n')
-            # Simple HTML tag removal for plain text
-            import re
-            text_body = re.sub('<[^<]+?>', '', text_body)
+            if text_body is None:
+                import re
+                text_body = html_body.replace('<br>', '\n').replace('<br/>', '\n')
+                text_body = re.sub('<[^<]+?>', '', text_body)
             
             part1 = MIMEText(text_body, 'plain', 'utf-8')
             part2 = MIMEText(html_body, 'html', 'utf-8')
@@ -306,8 +306,8 @@ class EmailService:
             logger.error(f"Email error: {e}")
             return False, 'Failed to send email'
     
-    def send_verification_code(self, email: str, code_type: str, 
-                                ip_address: str = None) -> Tuple[bool, str]:
+    def send_verification_code(self, email: str, code_type: str,
+                                ip_address: str = None, *, language: str = "en-US") -> Tuple[bool, str]:
         """
         Generate and send a verification code email.
         
@@ -324,62 +324,10 @@ class EmailService:
         if not success:
             return False, code_or_msg
         
-        code = code_or_msg
-        
-        # Prepare email content based on type
-        if code_type == 'register':
-            subject = 'QuantDinger - Verification Code for Registration'
-            action_text = 'complete your registration'
-        elif code_type == 'login':
-            subject = 'QuantDinger - Quick Login Verification Code'
-            action_text = 'log in to your account'
-        elif code_type == 'reset_password':
-            subject = 'QuantDinger - Password Reset Verification Code'
-            action_text = 'reset your password'
-        elif code_type == 'change_password':
-            subject = 'QuantDinger - Verification Code for Password Change'
-            action_text = 'change your password'
-        elif code_type == 'change_email':
-            subject = 'QuantDinger - Verification Code for Email Change'
-            action_text = 'change your email address'
-        else:
-            subject = 'QuantDinger - Verification Code'
-            action_text = 'complete the verification'
-        
-        html_body = f"""
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-            <div style="text-align: center; margin-bottom: 30px;">
-                <h1 style="color: #1890ff; margin: 0;">QuantDinger</h1>
-                <p style="color: #666; margin-top: 5px;">AI-Driven Quantitative Insights</p>
-            </div>
-            
-            <div style="background: #f5f5f5; border-radius: 8px; padding: 30px; text-align: center;">
-                <p style="color: #333; font-size: 16px; margin: 0 0 20px 0;">
-                    Your verification code to {action_text} is:
-                </p>
-                <div style="background: #fff; border: 2px solid #1890ff; border-radius: 8px; padding: 20px; display: inline-block;">
-                    <span style="font-size: 32px; font-weight: bold; letter-spacing: 8px; color: #1890ff;">{code}</span>
-                </div>
-                <p style="color: #999; font-size: 14px; margin-top: 20px;">
-                    This code will expire in {self.code_expire_minutes} minutes.
-                </p>
-            </div>
-            
-            <div style="margin-top: 30px; padding: 20px; background: #fff8e6; border-radius: 8px;">
-                <p style="color: #d48806; font-size: 14px; margin: 0;">
-                    <strong>Security Notice:</strong> If you did not request this code, 
-                    please ignore this email. Do not share this code with anyone.
-                </p>
-            </div>
-            
-            <div style="text-align: center; margin-top: 30px; color: #999; font-size: 12px;">
-                <p>&copy; QuantDinger. All rights reserved.</p>
-            </div>
-        </div>
-        """
-        
-        # Send email
-        return self.send_email(email, subject, html_body)
+        subject, html_body, text_body = render_verification_email(
+            code_or_msg, code_type, self.code_expire_minutes, language,
+        )
+        return self.send_email(email, subject, html_body, text_body=text_body)
     
     # =========================================================================
     # Email Validation

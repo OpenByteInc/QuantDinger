@@ -34,6 +34,7 @@ from app.services.strategy_runtime.identity import ensure_strategy_run, finish_s
 from app.services.strategy_runtime.order_intents import OrderIntentService
 from app.services.strategy_runtime.scheduler import CooperativeRuntimeScheduler
 from app.services.strategy_runtime.state import RuntimeStateStore
+from app.services.pending_orders.rebalance_batches import rebalance_batch
 from app.services.strategy_runtime.live_portfolio import refresh_members, positions_by_symbol, available_strategy_cash, pricing_members
 from app.services.strategy_runtime.cancellations import persist_cancellations
 from app.services.strategy_runtime.timeframes import (
@@ -1495,35 +1496,40 @@ class TradingExecutor:
                                 pending_count += len(intents)
                                 for message in messages:
                                     append_strategy_log(strategy_id, "info", message)
-                                for intent in intents:
-                                    submitted = self._execute_strategy_v2_intent(
-                                        strategy_id=strategy_id,
-                                        strategy_name=strategy_name,
-                                        intent=intent,
-                                        frames=frames,
-                                        frequency_frames=frequency_frames,
-                                        candidates=candidates,
-                                        initial_capital=initial_capital,
-                                        strategy_equity=current_equity,
-                                        leverage=leverage,
-                                        execution_mode=execution_mode,
-                                        notification_config=notification_config,
-                                        trading_config=trading_config,
-                                        exchange_config=exchange_config,
-                                        signal_ts=self._intent_signal_timestamp(intent, timestamp),
-                                        current_price_override=active_prices.get(str(intent.symbol)) if daily_policy else None,
-                                        strategy_run_id=run_id,
-                                        direction_mode=direction_mode,
-                                    )
-                                    if intent.client_order_id:
-                                        session.context.update_order_statuses({
-                                            intent.client_order_id: {
-                                                "client_order_id": intent.client_order_id,
-                                                "status": (
-                                                    "submitted" if submitted else "rejected"
-                                                ),
-                                            },
-                                        })
+                                with rebalance_batch(
+                                    strategy_id=strategy_id, run_id=run_id, timestamp=timestamp,
+                                    enabled=program.manifest.strategy_type == "portfolio",
+                                ) as group_id:
+                                    for intent in intents:
+                                        submitted = self._execute_strategy_v2_intent(
+                                            strategy_id=strategy_id,
+                                            strategy_name=strategy_name,
+                                            intent=intent,
+                                            frames=frames,
+                                            frequency_frames=frequency_frames,
+                                            candidates=candidates,
+                                            initial_capital=initial_capital,
+                                            strategy_equity=current_equity,
+                                            leverage=leverage,
+                                            execution_mode=execution_mode,
+                                            notification_config=notification_config,
+                                            trading_config=trading_config,
+                                            exchange_config=exchange_config,
+                                            signal_ts=self._intent_signal_timestamp(intent, timestamp),
+                                            current_price_override=active_prices.get(str(intent.symbol)) if daily_policy else None,
+                                            strategy_run_id=run_id,
+                                            direction_mode=direction_mode,
+                                            rebalance_group_id=group_id,
+                                        )
+                                        if intent.client_order_id:
+                                            session.context.update_order_statuses({
+                                                intent.client_order_id: {
+                                                    "client_order_id": intent.client_order_id,
+                                                    "status": (
+                                                        "submitted" if submitted else "rejected"
+                                                    ),
+                                                },
+                                            })
                                 finish_signal_cycle = getattr(
                                     self.order_gateway,
                                     "finish_signal_cycle",
@@ -1715,6 +1721,7 @@ class TradingExecutor:
         current_price_override: float | None = None,
         direction_mode: str = "",
         strategy_equity: float | None = None,
+        rebalance_group_id: str = "",
     ) -> bool:
         intent_key = parse_instrument(intent.symbol).key
         member = next(
@@ -1835,6 +1842,7 @@ class TradingExecutor:
                 client_order_id=str(intent.client_order_id or ""),
                 signal_ts=signal_ts,
                 strategy_run_id=strategy_run_id,
+                rebalance_group_id=rebalance_group_id,
                 price_exchange_id=str(member.get("exchange_id") or ""),
                 price_instrument_id=str(member.get("instrument_id") or ""),
                 market_frame=frame,
@@ -1954,6 +1962,7 @@ class TradingExecutor:
             execution_mode=str(values.get("execution_mode") or "signal"),
             exchange_id=str((values.get("exchange_config") or {}).get("exchange_id") or ""),
             credential_id=int((values.get("exchange_config") or {}).get("credential_id") or 0),
+            rebalance_group_id=str(values.get("rebalance_group_id") or ""),
             leverage=leverage,
             margin_mode=str(
                 trading_config.get("margin_mode")

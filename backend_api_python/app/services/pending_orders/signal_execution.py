@@ -7,6 +7,7 @@ import time
 from typing import Any, Callable, Mapping
 
 from app.utils.pnl import calc_notional_value
+from app.services.notifications.email_templates import strategy_messages
 
 
 def dispatch_virtual_signal_order(
@@ -50,6 +51,9 @@ def dispatch_virtual_signal_order(
     resolved_notification_config = notification_config
     if not resolved_notification_config and strategy_id:
         resolved_notification_config = worker._load_notification_config(int(strategy_id))
+    from app.services.pending_orders.rebalance_batches import individual_notification_config
+
+    resolved_notification_config = individual_notification_config(resolved_notification_config, payload)
 
     stake_quote = calc_notional_value(price, amount) or amount
     results = worker._notifier.notify_signal(
@@ -72,7 +76,7 @@ def dispatch_virtual_signal_order(
             "virtual_fill_price": float(virtual_fill.get("fill_price") or 0.0),
             "deferred_reason": str(virtual_fill.get("deferred_reason") or ""),
         },
-    )
+    ) if resolved_notification_config.get("channels") or not payload.get("rebalance_group_id") else {}
 
     attempted = list(results.keys())
     ok_channels = [channel for channel, result in results.items() if (result or {}).get("ok")]
@@ -81,7 +85,12 @@ def dispatch_virtual_signal_order(
     deferred_reason = str(virtual_fill.get("deferred_reason") or "").strip().lower()
     virtual_note = f"virtual_{virtual_status}={int(virtual_fill.get('virtual_order_id') or 0)}"
 
-    if ok_channels:
+    if not results and payload.get("rebalance_group_id"):
+        note = f"{virtual_note};batch_notification_pending={payload['rebalance_group_id']}"
+        level = "signal"
+        messages = strategy_messages(resolved_notification_config.get("language"))
+        message = messages["rebalance"]["virtual_log"].format(symbol=symbol, id=order_id)
+    elif ok_channels:
         note = f"{virtual_note};notified_ok={','.join(ok_channels)}"
         if fail_channels:
             note += f";fail={','.join(fail_channels)}"

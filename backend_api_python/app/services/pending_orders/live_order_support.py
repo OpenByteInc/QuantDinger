@@ -148,6 +148,11 @@ class LiveOrderNotifier:
                 notification_config = self.load_notification_config(int(self.strategy_id))
             if not notification_config:
                 return
+            from app.services.pending_orders.rebalance_batches import individual_notification_config
+
+            notification_config = individual_notification_config(notification_config, self.payload)
+            if self.payload.get("rebalance_group_id") and not notification_config.get("channels"):
+                return
 
             if status == "failed":
                 notice_claim = self._claim_exit_failure_notice(error, exchange_id)

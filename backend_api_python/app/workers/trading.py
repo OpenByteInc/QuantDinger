@@ -207,10 +207,15 @@ class TradingWorker:
             if command.command_type == "start":
                 result = self._start(command.strategy_id)
             elif command.command_type == "stop":
-                result = self._stop_strategy(
-                    command.strategy_id,
-                    close_positions=bool(command.payload.get("close_positions")),
-                )
+                if command.payload.get("auto_stop"):
+                    from app.services.strategy_lifecycle import complete_order_failure_stop
+
+                    result = complete_order_failure_stop(command, self._stop_strategy)
+                else:
+                    result = self._stop_strategy(
+                        command.strategy_id,
+                        close_positions=bool(command.payload.get("close_positions")),
+                    )
             elif command.command_type == "restart":
                 from app.services.strategy import StrategyService
 

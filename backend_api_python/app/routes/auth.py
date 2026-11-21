@@ -26,6 +26,7 @@ from app.services.auth_session import (
 )
 from app.utils.auth import login_required, authenticate_legacy
 from app.utils.logger import get_logger
+from app.utils.language import detect_request_language
 
 logger = get_logger(__name__)
 
@@ -688,7 +689,9 @@ def send_verification_code():
                 return jsonify({'code': 1, 'msg': 'If the email exists, a verification code has been sent', 'data': None})
         
         # Send verification code
-        success, msg = email_service.send_verification_code(email, code_type, ip_address)
+        success, msg = email_service.send_verification_code(
+            email, code_type, ip_address, language=detect_request_language(request, data),
+        )
         
         if success:
             security.log_security_event('verification_code_sent', None, ip_address, 

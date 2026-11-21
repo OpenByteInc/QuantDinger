@@ -141,7 +141,12 @@ def test_submit_does_not_reconsider_an_ai_rejected_signal(monkeypatch):
     assert StrategyV2OrderGateway().submit(_request()) is None
 
 
-def test_submit_persists_margin_mode_in_pending_order_payload(monkeypatch):
+@pytest.mark.parametrize("group_id", ["", "rebalance-batch"])
+def test_submit_persists_margin_mode_in_pending_order_payload(monkeypatch, group_id):
+    from app.services.pending_orders import rebalance_batches
+    registrations = []
+    intent_values = {}
+    monkeypatch.setattr(rebalance_batches, "register_order_batch", lambda cur, request, oid: registrations.append((request, oid)))
     class _IntentService:
         def __init__(self, **_kwargs):
             pass
@@ -152,6 +157,7 @@ def test_submit_persists_margin_mode_in_pending_order_payload(monkeypatch):
 
         @staticmethod
         def create_intent(**_kwargs):
+            intent_values.update(_kwargs)
             return SimpleNamespace(id=91, existing=False, status="intent_created")
 
     cursor = _Cursor({"id": 123})
@@ -160,11 +166,14 @@ def test_submit_persists_margin_mode_in_pending_order_payload(monkeypatch):
 
     assert StrategyV2OrderGateway().submit(_request(
         margin_mode="isolated", exchange_id="okx", credential_id=25,
+        rebalance_group_id=group_id,
     )) == 123
     payload = json.loads(cursor.params[10])
     assert payload["margin_mode"] == "isolated"
     assert payload["exchange_id"] == "okx" and payload["credential_id"] == 25
     assert cursor.params[-2:] == ("okx", 25)
+    assert payload["rebalance_group_id"] == intent_values["rebalance_group_id"] == group_id
+    assert len(registrations) == bool(group_id)
 
 
 def test_ai_rejection_is_latched_until_the_signal_disappears(monkeypatch):
