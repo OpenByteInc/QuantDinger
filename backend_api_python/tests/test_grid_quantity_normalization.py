@@ -1,7 +1,10 @@
+from unittest.mock import MagicMock
+
 import pytest
 
 from app.services import instrument_rules
 from app.services.grid.exchange_orders import normalize_grid_order_quantity
+from app.services.grid.engine import GridEngine
 from app.services.instrument_rules import InstrumentRules
 from app.services.live_trading.base import BaseRestClient
 from app.services.live_trading.gate import GateSpotClient, GateUsdtFuturesClient
@@ -152,3 +155,70 @@ def test_all_grid_exchanges_apply_common_minimum_rules(
         exchange_config={"exchange_id": exchange_id},
         price=100,
     ) == pytest.approx(0.123)
+
+
+def _startup_engine(monkeypatch, rules, *, budget, leverage=1, lower=100, upper=110):
+    monkeypatch.setattr("app.services.grid.engine.GridRestingOrderRepository", MagicMock())
+    monkeypatch.setattr("app.services.grid.engine.GridCellRepository", MagicMock())
+    provider = MagicMock()
+    provider.get_rules.return_value = rules
+    monkeypatch.setattr(instrument_rules, "get_instrument_rules_provider", lambda: provider)
+    client = BaseRestClient("https://example.invalid")
+    engine = GridEngine(
+        91, rules.symbol,
+        {
+            "market_type": rules.market_type, "leverage": leverage,
+            "bot_params": {
+                "lowerPrice": lower, "upperPrice": upper, "gridCount": 2,
+                "gridCountUnit": "lines", "amountPerGrid": budget,
+            },
+        },
+        {"exchange_id": rules.exchange_id},
+        create_client_fn=lambda: client, enqueue_market=MagicMock(),
+    )
+    return engine, client
+
+
+@pytest.mark.parametrize("exchange_id", ["binance", "okx", "bitget", "bybit", "gate", "htx"])
+@pytest.mark.parametrize("market_type", ["spot", "swap"])
+def test_grid_startup_checks_paired_exit_notional(monkeypatch, exchange_id, market_type):
+    rules = InstrumentRules(
+        key="test-pair", exchange_id=exchange_id, market_type=market_type,
+        symbol="BTC/USDT", amount_step=0.01, min_amount=0.01, min_notional=5.5,
+    )
+    engine, client = _startup_engine(monkeypatch, rules, budget=6)
+    assert normalize_grid_order_quantity(
+        client, symbol=rules.symbol, quantity=6 / 110, market_type=market_type,
+        exchange_config=engine.exchange_config, price=110,
+    ) == pytest.approx(0.05)
+
+    ok, detail = engine.validate_startup_order_sizes(client)
+
+    assert not ok
+    assert "price=110 paired_price=100" in detail
+    assert "min_notional=5.5" in detail
+    engine, client = _startup_engine(monkeypatch, rules, budget=7)
+    assert engine.validate_startup_order_sizes(client) == (True, "")
+
+
+@pytest.mark.parametrize("market_type, expected", [("spot", False), ("swap", True)])
+def test_grid_startup_applies_leverage_only_to_swaps(monkeypatch, market_type, expected):
+    rules = InstrumentRules(
+        key="test-leverage", exchange_id="binance", market_type=market_type,
+        symbol="BTC/USDT", amount_step=0.01, min_amount=0.01, min_notional=5.5,
+    )
+    engine, client = _startup_engine(monkeypatch, rules, budget=0.7, leverage=10)
+
+    assert engine.validate_startup_order_sizes(client)[0] is expected
+
+
+@pytest.mark.parametrize("price_tick, expected", [(0.01, True), (1, False)])
+def test_grid_startup_checks_notional_at_tick_normalized_price(monkeypatch, price_tick, expected):
+    rules = InstrumentRules(
+        key="test-price", exchange_id="binance", market_type="spot",
+        symbol="BTC/USDT", amount_step=0.001, min_amount=0.001,
+        min_notional=5.0005, price_tick=price_tick,
+    )
+    engine, client = _startup_engine(monkeypatch, rules, budget=5.55, lower=100.09, upper=110.09)
+
+    assert engine.validate_startup_order_sizes(client)[0] is expected

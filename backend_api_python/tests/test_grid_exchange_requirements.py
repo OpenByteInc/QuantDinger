@@ -229,9 +229,10 @@ def test_runner_startup_places_both_neutral_legs_in_hedge_mode(monkeypatch):
         )
         with patch("app.services.grid.engine.GridRestingOrderRepository") as orders_cls:
             orders = orders_cls.return_value
-            orders.list_open.return_value = []
+            open_orders = []
+            orders.list_open.side_effect = lambda *_args: open_orders
             orders.has_open_for_cell.return_value = False
-            orders.insert.return_value = 1
+            orders.insert.side_effect = lambda order: open_orders.append(order) or len(open_orders)
             with patch("app.services.grid.engine.GridCellRepository") as cells_cls:
                 cells = cells_cls.return_value
                 cells.list_cells.return_value = []

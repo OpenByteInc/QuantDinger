@@ -445,6 +445,72 @@ def test_target_rebalance_skips_sub_dollar_dust_order():
     assert calls == []
 
 
+@pytest.mark.parametrize(
+    "size, target, kind, mode, market, member_exchange, exchange_config, expected_action",
+    [
+        pytest.param(1e-8, 0, "target_quantity", "live", "USStock", "alpaca", {}, None, id="meta-tail"),
+        pytest.param(0.009, 0, "target_quantity", "live", "USStock", "alpaca", {}, None, id="below-threshold"),
+        pytest.param(0.01, 0, "target_quantity", "live", "USStock", "alpaca", {}, None, id="inclusive-threshold"),
+        pytest.param(0.01, 0, "target_percent", "live", "USStock", "alpaca", {}, None, id="zero-weight"),
+        pytest.param(0.01, 0, "target_value", "live", "USStock", "alpaca", {}, None, id="zero-value"),
+        pytest.param(0.01, -0.01, "quantity", "live", "USStock", "alpaca", {}, None, id="sell-entire-tail"),
+        pytest.param(0.01, 0, "target_quantity", "live", "USStock", "", {"exchange_id": "alpaca"}, None, id="account-exchange"),
+        pytest.param(0.01, 0, "target_quantity", "live", "USStock", "", {"exchangeId": "Alpaca"}, None, id="account-exchange-alias"),
+        pytest.param(0.01000001, 0, "target_quantity", "live", "USStock", "alpaca", {}, "close_long", id="above-threshold"),
+        pytest.param(0.25, 0, "target_quantity", "live", "USStock", "alpaca", {}, "close_long", id="fractional-close"),
+        pytest.param(0.01, 0, "target_quantity", "signal", "USStock", "alpaca", {}, "close_long", id="signal-unchanged"),
+        pytest.param(0.01, 0, "target_quantity", "live", "USStock", "ibkr", {}, "close_long", id="ibkr-unchanged"),
+        pytest.param(0.01, 0, "target_quantity", "live", "USStock", "alpaca", {"exchange_id": "ibkr"}, "close_long", id="account-takes-precedence"),
+        pytest.param(1e-8, 0, "target_quantity", "live", "Crypto", "okx", {}, "close_long", id="crypto-unchanged"),
+        pytest.param(3, 2.995, "target_quantity", "live", "USStock", "alpaca", {}, "reduce_long", id="partial-reduction-unchanged"),
+        pytest.param(0, 0.005, "target_quantity", "live", "USStock", "alpaca", {}, "open_long", id="entry-unchanged"),
+        pytest.param(0.005, 0.1, "target_quantity", "live", "USStock", "alpaca", {}, "add_long", id="scale-in-unchanged"),
+    ],
+)
+def test_alpaca_residual_close_is_filtered_before_queueing(
+    size, target, kind, mode, market, member_exchange, exchange_config, expected_action,
+):
+    executor = TradingExecutor.__new__(TradingExecutor)
+    positions = [{"side": "long", "size": size}] if size else []
+    executor._get_current_positions = lambda *_args: positions
+    calls = []
+    executor._execute_signal = lambda **kwargs: calls.append(kwargs) or True
+    member = _member() if market == "Crypto" else {
+        "key": "USStock:META",
+        "market": "USStock",
+        "symbol": "META",
+        "market_type": "spot",
+    }
+    member["exchange_id"] = member_exchange
+    intent = OrderIntent(symbol=member["key"], kind=kind, value=target)
+
+    for signal_ts in range(1, 11):
+        result = executor._execute_strategy_v2_intent(
+            strategy_id=9,
+            strategy_name="Portfolio",
+            intent=intent,
+            frames={member["key"]: _frame(price=700.0)},
+            candidates=[member],
+            initial_capital=1000.0,
+            leverage=1.0,
+            execution_mode=mode,
+            notification_config={"channels": ["email"]},
+            trading_config={},
+            exchange_config=exchange_config,
+            signal_ts=signal_ts,
+            strategy_run_id=43,
+        )
+        assert result is (expected_action is not None)
+
+    assert positions == ([{"side": "long", "size": size}] if size else [])
+    if expected_action is None:
+        assert calls == []
+    else:
+        assert len(calls) == 10
+        assert all(call["signal_type"] == expected_action for call in calls)
+        assert all(call["script_base_qty"] == pytest.approx(abs(target - size)) for call in calls)
+
+
 @pytest.mark.parametrize("lease_owned", [None, True, False])
 def test_live_order_carries_run_sizing_diagnostics(lease_owned):
     executor = TradingExecutor()

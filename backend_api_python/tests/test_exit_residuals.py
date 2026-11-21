@@ -1,3 +1,7 @@
+from dataclasses import replace
+
+import pytest
+
 from app.services.instrument_rules import InstrumentRules
 from app.services.strategy_runtime.exit_residuals import evaluate_exit_residual
 
@@ -69,3 +73,27 @@ def test_does_not_classify_when_residual_is_still_tradable():
     )
     assert decision.classified is False
     assert decision.tradable_size == 10.0
+
+
+@pytest.mark.parametrize("changes", [
+    {"available_size": 0}, {"available_size": 0.0002}, {"available_size": 0.0006},
+    {"total_size": 0.0005}, {"total_size": float("nan")},
+    {"available_size": float("inf")}, {"price": float("nan")},
+    {"available_size": None}, {"price": "unknown"},
+    {"rules": _rules(step=float("inf"))},
+    {"rules": replace(_rules(), market_type="swap")},
+    {"rules": _rules(step=0, minimum=0, notional=0)},
+])
+def test_small_inventory_requires_consistent_snapshot_and_real_rules(changes):
+    values = {"local_size": 0.0004, "total_size": 0.0004, "available_size": 0.0004,
+              "price": 1, "rules": _rules()}
+    values.update(changes)
+    assert evaluate_exit_residual(**values).classified is False
+
+
+def test_crypto_is_not_subject_to_a_fixed_share_threshold():
+    decision = evaluate_exit_residual(
+        local_size=0.001, total_size=0.001, available_size=0.001, price=60000,
+        rules=_rules(step=0.00001, minimum=0.00001, notional=5),
+    )
+    assert decision.classified is False

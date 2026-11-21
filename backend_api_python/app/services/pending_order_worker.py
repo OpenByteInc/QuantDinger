@@ -1680,6 +1680,8 @@ class PendingOrderWorker(
             notifier=self._notifier,
             load_notification_config=self._load_notification_config,
             load_strategy_name=self._load_strategy_name,
+            resolved_exchange_id=exchange_id,
+            resolved_credential_id=int(credential_id_from_exchange_config(exchange_config) or 0),
         )
         _notify_live_best_effort = live_notifier.notify
 
