@@ -109,6 +109,68 @@ def test_ws_total_once_per_order_and_never_overwrites_grid_return(monkeypatch):
     assert result[1]["profit"] == 999
 
 
+@pytest.mark.parametrize("exchange,market,symbol", [
+    (exchange, "swap", "BTC/USDT") for exchange in ["binance", "okx", "bybit", "bitget", "gate", "htx"]
+] + [("ibkr", "usstock", "AAPL"), ("tiger", "usstock", "AAPL"), ("tiger", "hkstock", "00700")])
+@pytest.mark.parametrize("amount", [-7, 0, 30.04187915771823])
+def test_confirmed_database_report_does_not_expire_or_query_venue(monkeypatch, exchange, market, symbol, amount):
+    rows = [dict(row(), exchange_id=exchange, market_type=market, symbol=symbol)]
+    key = reconciliation.order_key(rows[0])
+    report = dict(status="reported", amount=amount, quantity=.5, checked_at=1700000000)
+    monkeypatch.setattr(reconciliation, "_load", lambda keys: ({key: dict(report)}, {}))
+    for name in ("_claim", "_client", "_save", "fetch_order_report", "websocket_report"):
+        monkeypatch.setattr(reconciliation, name, lambda *a, **k: pytest.fail("Confirmed history must be read from the database"))
+
+    for _ in range(2):
+        reconciliation.enrich_reported_order_pnl(rows, user_id=1, trading_config={})
+        assert rows[0]["exchange_pnl"] == dict(report, order_id="o1")
+        assert rows[0]["profit"] == 999
+
+
+def test_old_okx_report_is_shown_once_for_split_fills(monkeypatch):
+    rows = [dict(row(), exchange_id="okx", amount=.0068), dict(row(2), exchange_id="okx", amount=.0084)]
+    key = reconciliation.order_key(rows[0])
+    report = dict(status="reported", amount=30.04187915771823, quantity=.0152, checked_at=1700000000)
+    monkeypatch.setattr(reconciliation, "_load", lambda keys: ({key: dict(report)}, {}))
+    monkeypatch.setattr(reconciliation, "_claim", lambda *a: False)
+    monkeypatch.setattr(reconciliation, "_client", lambda *a: pytest.fail("Venue is unavailable"))
+
+    result = reconciliation.enrich_reported_order_pnl(rows, user_id=1, trading_config={})
+
+    assert result[0]["exchange_pnl"] == dict(status="order_total_elsewhere", order_id="o1", row_id=2)
+    assert result[1]["exchange_pnl"] == dict(report, order_id="o1")
+    assert all(r["profit"] == 999 for r in result)
+
+
+@pytest.mark.parametrize("can_refresh", [False, True])
+def test_changed_fill_quantity_invalidates_report_and_saves_reconciliation(monkeypatch, can_refresh):
+    rows = [row(), row(2)]
+    key = reconciliation.order_key(rows[0])
+    old = dict(status="reported", amount=3, quantity=.5, checked_at=1700000000)
+    updated = fill_report([dict(id="f1", quantity=1, pnl=7)], expected=1, source="rest:test", currency="USDT")
+    monkeypatch.setattr(reconciliation, "_load", lambda keys: ({key: dict(old)}, {}))
+    monkeypatch.setattr(reconciliation, "_claim", lambda *a: can_refresh)
+    make_client = MagicMock(return_value=(MagicMock(), {}))
+    fetch_report = MagicMock(return_value=updated)
+    save = MagicMock()
+    monkeypatch.setattr(reconciliation, "_client", make_client)
+    monkeypatch.setattr(reconciliation, "fetch_order_report", fetch_report)
+    monkeypatch.setattr(reconciliation, "_save", save)
+
+    reconciliation.enrich_reported_order_pnl(rows, user_id=1, trading_config={})
+
+    if can_refresh:
+        assert rows[0]["exchange_pnl"]["status"] == "order_total_elsewhere"
+        assert rows[1]["exchange_pnl"]["amount"] == 7
+        assert fetch_report.call_args.kwargs["expected"] == 1
+        save.assert_called_once_with(key, updated)
+    else:
+        assert all(r["exchange_pnl"]["status"] == "pending" for r in rows)
+        make_client.assert_not_called()
+        fetch_report.assert_not_called()
+        save.assert_not_called()
+
+
 def test_account_symbol_market_and_order_are_isolated(monkeypatch):
     rows = [row()]
     event = dict(exchange_fill_id="f1", quantity=.5, raw_json={"o": {"rp": "999"}})
@@ -211,13 +273,17 @@ def test_supported_derivatives_keep_venue_pnl_pending_until_evidence_is_complete
 
 def test_rest_budget_and_failures_leave_reports_pending(monkeypatch):
     rows = [dict(row(i), exchange_order_id=str(i)) for i in range(1, 6)]
-    monkeypatch.setattr(reconciliation, "_load", lambda keys: ({}, {}))
+    cached_row = dict(row(6), exchange_order_id="cached")
+    key = reconciliation.order_key(cached_row)
+    report = dict(status="reported", amount=12, quantity=.5, checked_at=1700000000)
+    monkeypatch.setattr(reconciliation, "_load", lambda keys: ({key: dict(report)}, {}))
     monkeypatch.setattr(reconciliation, "_claim", lambda *a: True)
     make_client = MagicMock(side_effect=RuntimeError("offline"))
     monkeypatch.setattr(reconciliation, "_client", make_client)
-    reconciliation.enrich_reported_order_pnl(rows, user_id=1, trading_config={})
+    reconciliation.enrich_reported_order_pnl(rows + [cached_row], user_id=1, trading_config={})
     assert make_client.call_count == 2
     assert all(r["exchange_pnl"]["status"] == "pending" for r in rows)
+    assert cached_row["exchange_pnl"] == dict(report, order_id="cached")
 
 
 @pytest.mark.parametrize("pnl,expected", [("-5.2", -5.2), ("0", 0), (None, None), ("1.7976931348623157e308", None)])
