@@ -102,7 +102,7 @@ from app.utils.db import get_db_connection
 from app.services.pending_order_loops import PendingOrderLoops
 from app.utils.logger import get_logger
 from app.utils.strategy_runtime_logs import append_strategy_log
-from app.services.strategy_lifecycle import auto_stop_live_strategy, is_fatal_exchange_error
+from app.services.strategy_lifecycle import auto_stop_live_strategy, is_fatal_exchange_error, record_pending_order_outcome
 
 # Lazy import IBKR to avoid ImportError if ib_insync not installed
 IBKRClient = None
@@ -131,6 +131,7 @@ class PendingOrderWorker(
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._sync_thread: Optional[threading.Thread] = None
+        self._batch_thread: Optional[threading.Thread] = None
         self.lease_guard = None
         self._lock = threading.Lock()
         self._notifier = SignalNotifier()
@@ -169,7 +170,7 @@ class PendingOrderWorker(
 
     def start(self) -> bool:
         with self._lock:
-            if self._thread and self._thread.is_alive() and self._sync_thread and self._sync_thread.is_alive():
+            if all(thread and thread.is_alive() for thread in (self._thread, self._sync_thread, self._batch_thread)):
                 return True
             try:
                 ensure_position_ledger_schema()
@@ -182,6 +183,9 @@ class PendingOrderWorker(
             if not self._sync_thread or not self._sync_thread.is_alive():
                 self._sync_thread = threading.Thread(target=self._run_sync_loop, name="PendingOrderReconciliation", daemon=True)
                 self._sync_thread.start()
+            if not self._batch_thread or not self._batch_thread.is_alive():
+                self._batch_thread = threading.Thread(target=self._run_batch_loop, name="PendingOrderBatches", daemon=True)
+                self._batch_thread.start()
             logger.info("PendingOrderWorker started")
             return True
 
@@ -193,6 +197,8 @@ class PendingOrderWorker(
             th.join(timeout=timeout_sec)
         if self._sync_thread and self._sync_thread.is_alive():
             self._sync_thread.join(timeout=timeout_sec)
+        if self._batch_thread and self._batch_thread.is_alive():
+            self._batch_thread.join(timeout=timeout_sec)
         logger.info("PendingOrderWorker stopped")
 
     def _sync_quick_trade_orders(self, limit: int = 50) -> None:
@@ -1174,6 +1180,8 @@ class PendingOrderWorker(
         exchange_response_json = _redact_exchange_json(exchange_response_json)
         with get_db_connection() as db:
             cur = db.cursor()
+            cur.execute("SELECT * FROM pending_orders WHERE id = %s FOR UPDATE", (int(order_id),))
+            previous = cur.fetchone() or {}
             cur.execute(
                 """
                 UPDATE pending_orders
@@ -1232,6 +1240,8 @@ class PendingOrderWorker(
                     int(order_id),
                 ),
             )
+            if filled > 0 or exchange_status in {"new", "open", "live", "accepted", "partial", "filled", "submitted"}:
+                record_pending_order_outcome(cur, previous, accepted=True)
             db.commit()
             cur.close()
 
@@ -2844,6 +2854,8 @@ class PendingOrderWorker(
         exchange_response_json = _redact_exchange_json(exchange_response_json)
         with get_db_connection() as db:
             cur = db.cursor()
+            cur.execute("SELECT * FROM pending_orders WHERE id = %s FOR UPDATE", (int(order_id),))
+            previous = cur.fetchone() or {}
             # Use NOW() for timestamp fields; executed_at is set to NOW() if provided, else NULL
             cur.execute(
                 """
@@ -2902,6 +2914,8 @@ class PendingOrderWorker(
                     int(order_id),
                 ),
             )
+            if (exchange_order_id or filled > 0) and previous.get("status") != "failed":
+                record_pending_order_outcome(cur, previous, accepted=True)
             db.commit()
             cur.close()
         self._register_pending_order_binding(
@@ -2993,6 +3007,11 @@ class PendingOrderWorker(
         error = str(redact_partner_attribution(str(error or "failed")))
         with get_db_connection() as db:
             cur = db.cursor()
+            cur.execute("SELECT * FROM pending_orders WHERE id = %s FOR UPDATE", (int(order_id),))
+            previous = cur.fetchone() or {}
+            if previous.get("status") in {"failed", "filled", "cancelled"}:
+                cur.close()
+                return
             cur.execute(
                 """
                 UPDATE pending_orders
@@ -3014,6 +3033,7 @@ class PendingOrderWorker(
                 """,
                 (int(order_id),),
             )
+            record_pending_order_outcome(cur, previous, accepted=False, reason=error)
             db.commit()
             cur.close()
 

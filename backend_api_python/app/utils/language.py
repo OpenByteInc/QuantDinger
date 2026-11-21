@@ -28,7 +28,7 @@ SUPPORTED_LANGS = {
 def _normalize_lang(raw: Optional[str]) -> Optional[str]:
     if not raw:
         return None
-    s = str(raw).strip()
+    s = str(raw).strip().replace("_", "-")
     if not s:
         return None
 
@@ -44,14 +44,25 @@ def _normalize_lang(raw: Optional[str]) -> Optional[str]:
         return "en-US"
     if lower in ("zh", "zh-cn", "zh-hans"):
         return "zh-CN"
-    if lower in ("zh-tw", "zh-hant"):
+    if lower in ("zh-tw", "zh-hant", "zh-hk", "zh-mo", "zh-hant-tw", "zh-hant-hk"):
         return "zh-TW"
 
     # Keep canonical casing if already supported
     for lang in SUPPORTED_LANGS:
         if lang.lower() == lower:
             return lang
+    base = lower.split("-", 1)[0]
+    if base == "zh":
+        return "zh-CN"
+    for lang in SUPPORTED_LANGS:
+        if lang.split("-", 1)[0] == base:
+            return lang
     return None
+
+
+def normalize_language(raw: Optional[str], default: str = "en-US") -> str:
+    """Resolve a saved language tag to a supported locale."""
+    return _normalize_lang(raw) or default
 
 
 def detect_request_language(flask_request, body: Optional[dict] = None, default: str = "en-US") -> str:

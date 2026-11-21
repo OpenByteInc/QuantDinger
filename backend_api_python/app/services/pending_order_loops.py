@@ -24,6 +24,17 @@ class PendingOrderLoops:
                     logger.warning("Order reconciliation failed: %s", sync.__name__, exc_info=True)
             self._stop_event.wait(self.poll_interval_sec)
 
+    def _run_batch_loop(self) -> None:
+        from app.services.pending_orders.rebalance_batches import reconcile_order_batches
+
+        while not self._stop_event.is_set():
+            try:
+                if not self.lease_guard or self.lease_guard():
+                    reconcile_order_batches(self._notifier)
+            except Exception:
+                logger.warning("Order batch reconciliation failed", exc_info=True)
+            self._stop_event.wait(self.poll_interval_sec)
+
     def _tick(self) -> None:
         if self.lease_guard and not self.lease_guard():
             return

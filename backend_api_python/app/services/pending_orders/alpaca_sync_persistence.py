@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from app.utils.db import get_db_connection
+from app.services.strategy_lifecycle import record_pending_order_outcome
 from app.utils.logger import get_logger
 
 
@@ -135,6 +136,8 @@ class AlpacaOrderSyncPersistenceMixin:
     ) -> None:
         with get_db_connection() as db:
             cur = db.cursor()
+            cur.execute("SELECT * FROM pending_orders WHERE id = %s FOR UPDATE", (int(order_id),))
+            previous = cur.fetchone() or {}
             cur.execute(
                 """
                 UPDATE pending_orders
@@ -196,5 +199,7 @@ class AlpacaOrderSyncPersistenceMixin:
                     int(order_id),
                 ),
             )
+            if filled > 0 or exchange_status in {"new", "open", "accepted", "partially_filled", "filled"}:
+                record_pending_order_outcome(cur, previous, accepted=True)
             db.commit()
             cur.close()

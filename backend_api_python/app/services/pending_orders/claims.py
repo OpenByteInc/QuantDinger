@@ -22,6 +22,13 @@ def claim_pending_order(order_id: int) -> bool:
                     processed_at = NOW(),
                     updated_at = NOW()
                 WHERE pending.id = %s AND pending.status = 'pending'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM strategy_runtime_state state
+                      WHERE state.strategy_id = pending.strategy_id
+                        AND state.strategy_run_id = pending.strategy_run_id
+                        AND state.state_key = 'exchange_failures'
+                        AND (state.state_json->>'count')::integer >= 5
+                  )
                   AND (
                       COALESCE(pending.runtime_fencing_token, 0) = 0
                       OR EXISTS (
@@ -37,6 +44,31 @@ def claim_pending_order(order_id: int) -> bool:
             )
             claimed = getattr(cur, "rowcount", None)
             if claimed is not None and int(claimed) == 0:
+                cur.execute(
+                    """
+                    UPDATE pending_orders AS pending
+                    SET status = 'cancelled', last_error = 'strategy_auto_stopped_after_order_failures',
+                        updated_at = NOW()
+                    WHERE pending.id = %s AND pending.status = 'pending'
+                      AND EXISTS (
+                          SELECT 1 FROM strategy_runtime_state state
+                          WHERE state.strategy_id = pending.strategy_id
+                            AND state.strategy_run_id = pending.strategy_run_id
+                            AND state.state_key = 'exchange_failures'
+                            AND (state.state_json->>'count')::integer >= 5
+                      )
+                    """,
+                    (int(order_id),),
+                )
+                cur.execute(
+                    """
+                    UPDATE strategy_order_intents intent SET status = 'cancelled', updated_at = NOW()
+                    FROM pending_orders pending
+                    WHERE pending.id = %s AND pending.status = 'cancelled'
+                      AND pending.order_intent_id = intent.id
+                    """,
+                    (int(order_id),),
+                )
                 cur.execute(
                     """
                     UPDATE pending_orders AS pending

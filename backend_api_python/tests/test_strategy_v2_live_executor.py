@@ -541,6 +541,7 @@ def test_live_order_carries_run_sizing_diagnostics(lease_owned):
         leverage=2.0,
         initial_capital=100.0,
         signal_ts=4,
+        rebalance_group_id="portfolio-batch",
     )
 
     assert result is False
@@ -554,6 +555,7 @@ def test_live_order_carries_run_sizing_diagnostics(lease_owned):
         "leverage": 2.0,
         "source": "strategy_v2",
     }
+    assert captured["request"].rebalance_group_id == "portfolio-batch"
 
 
 def test_live_order_is_not_submitted_when_position_leg_has_inflight_work():

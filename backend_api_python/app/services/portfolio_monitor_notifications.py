@@ -7,6 +7,7 @@ from typing import Any, Dict, Optional
 from app.utils.db import get_db_connection
 from app.utils.json_helpers import safe_json_loads
 from app.utils.logger import get_logger
+from app.utils.language import normalize_language
 
 logger = get_logger(__name__)
 
@@ -16,7 +17,7 @@ def resolve_notification_delivery(user_id: int, notification_config: Optional[Di
     cfg: Dict[str, Any] = dict(notification_config) if isinstance(notification_config, dict) else {}
     raw_channels = cfg.get("channels")
     if isinstance(raw_channels, str):
-        raw_channels = [raw_channels]
+        raw_channels = raw_channels.split(",")
     elif not isinstance(raw_channels, list):
         raw_channels = []
 
@@ -52,6 +53,11 @@ def resolve_notification_delivery(user_id: int, notification_config: Optional[Di
         if not (targets.get("email") or "").strip():
             configured_email = (settings.get("email") or "").strip()
             targets["email"] = configured_email or account_email
+        cfg["language"] = normalize_language(cfg.get("language") or settings.get("language"))
+        if not (targets.get("phone") or "").strip():
+            targets["phone"] = (settings.get("phone") or "").strip()
+        if not (targets.get("discord") or "").strip():
+            targets["discord"] = (settings.get("discord_webhook") or "").strip()
         if not (targets.get("telegram") or "").strip():
             targets["telegram"] = (settings.get("telegram_chat_id") or "").strip()
         if not (targets.get("telegram_bot_token") or "").strip():
@@ -74,6 +80,8 @@ def resolve_notification_delivery(user_id: int, notification_config: Optional[Di
             return bool((targets.get("telegram") or "").strip())
         if channel == "webhook":
             return bool((targets.get("webhook") or "").strip())
+        if channel in {"phone", "discord"}:
+            return bool((targets.get(channel) or "").strip())
         return False
 
     if not any(can_deliver(channel) for channel in channels):
