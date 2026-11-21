@@ -2,6 +2,7 @@
 
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+import json
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -70,7 +71,7 @@ def test_stop_email_respects_channel_opt_out(monkeypatch):
 
 
 @pytest.fixture
-def ledger(monkeypatch):
+def ledger(monkeypatch, request):
     """Opt-in isolated schema on a disposable PostgreSQL instance."""
     dsn = os.getenv("ORDER_FAILURE_TEST_DSN")
     if not dsn:
@@ -84,6 +85,13 @@ def ledger(monkeypatch):
     admin.autocommit = True
     with admin.cursor() as cur:
         cur.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
+
+    def cleanup():
+        with admin.cursor() as cur:
+            cur.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema)))
+        admin.close()
+
+    request.addfinalizer(cleanup)
 
     @contextmanager
     def connect():
@@ -99,47 +107,45 @@ def ledger(monkeypatch):
     def query(statement, params=()):
         with connect() as conn:
             with conn.cursor() as cur:
-                cur.execute(statement, params)
+                cur.execute(statement, params or None)
                 rows = cur.fetchall() if cur.description else []
             conn.commit()
         return rows
 
+    @contextmanager
+    def app_connect():
+        from app.utils.db_postgres import PostgresCursor
+
+        with connect() as conn:
+            yield SimpleNamespace(cursor=lambda: PostgresCursor(conn.cursor()),
+                                  commit=conn.commit, rollback=conn.rollback)
+
+    migrations = Path(__file__).parents[1] / "migrations"
+    query((migrations / "init.sql").read_text(encoding="utf-8"))
     query("""
-        CREATE TABLE qd_strategies_trading (id integer PRIMARY KEY, user_id integer, status text,
-            execution_mode text, desired_runtime_epoch integer, updated_at timestamp DEFAULT NOW(),
-            name text DEFAULT 'Test', notification_config jsonb DEFAULT '{}');
-        CREATE TABLE strategy_runs (id integer PRIMARY KEY, strategy_id integer, user_id integer,
-            runtime_status text, runtime_epoch integer, stopped_at timestamp, stop_reason text);
-        CREATE TABLE strategy_runtime_state (id serial PRIMARY KEY, strategy_run_id integer,
-            strategy_id integer, state_key text, state_json jsonb, version integer DEFAULT 1,
-            updated_at timestamp DEFAULT NOW(), UNIQUE(strategy_run_id, strategy_id, state_key));
-        CREATE TABLE qd_strategy_commands (id serial PRIMARY KEY, strategy_id integer, user_id integer,
-            command_type text, idempotency_key text UNIQUE, payload_json jsonb);
-        CREATE TABLE pending_orders (id integer PRIMARY KEY, user_id integer DEFAULT 3,
-            strategy_id integer DEFAULT 7, strategy_run_id integer DEFAULT 11, execution_mode text DEFAULT 'live',
-            status text DEFAULT 'processing', signal_type text DEFAULT 'open_long', last_error text,
-            updated_at timestamp, order_intent_id integer, attempts integer DEFAULT 0,
-            processed_at timestamp, runtime_fencing_token bigint DEFAULT 0, dispatch_note text,
-            sent_at timestamp, executed_at timestamp, exchange_id text, client_order_id text,
-            exchange_order_id text, exchange_response_json text, filled numeric DEFAULT 0, avg_price numeric DEFAULT 0,
-            symbol text DEFAULT 'TEST', amount numeric DEFAULT 1,
-            payload_json text DEFAULT '{}', fee_status text, fee_source text);
-        CREATE TABLE strategy_order_intents (id integer PRIMARY KEY, status text, exchange_order_id text, updated_at timestamp);
-        CREATE TABLE qd_strategy_runtime_leases (strategy_id integer, fencing_token bigint, lease_expires_at timestamp);
-        INSERT INTO qd_strategies_trading (id, user_id, status, execution_mode, desired_runtime_epoch)
-            VALUES (7, 3, 'running', 'live', 2);
+        INSERT INTO qd_users (id, username, password_hash)
+            VALUES (3, 'failure-test', 'unused'), (99, 'other-tenant', 'unused');
+        INSERT INTO qd_strategies_trading (id, user_id, strategy_name, status, execution_mode, desired_runtime_epoch)
+            VALUES (7, 3, 'Failure test strategy', 'running', 'live', 2);
         INSERT INTO strategy_runs (id, strategy_id, user_id, runtime_status, runtime_epoch)
             VALUES (11, 7, 3, 'running', 2);
     """)
-    migration = (Path(__file__).parents[1] / "migrations/20261121_strategy_order_batches.sql").read_text()
+    migration = (migrations / "20261121_strategy_order_batches.sql").read_text(encoding="utf-8")
     query(migration)
     query(migration)
     for module in (lifecycle, worker_module, claims, alpaca_sync_persistence, rebalance_batches):
-        monkeypatch.setattr(module, "get_db_connection", connect)
+        monkeypatch.setattr(module, "get_db_connection", app_connect)
+    from app.services import portfolio_monitor_notifications, signal_notifier, strategy_command_repository
+    for module in (portfolio_monitor_notifications, signal_notifier, strategy_command_repository):
+        monkeypatch.setattr(module, "get_db_connection", app_connect)
     worker = object.__new__(worker_module.PendingOrderWorker)
     monkeypatch.setattr(worker, "_register_pending_order_binding", Mock())
     def add(order_id, **kwargs):
-        query("INSERT INTO pending_orders(id) VALUES (%s)", (order_id,))
+        query("""INSERT INTO pending_orders
+                 (id, user_id, strategy_id, strategy_run_id, execution_mode, status,
+                  signal_type, symbol, amount, idempotency_key, payload_json)
+                 VALUES (%s, 3, 7, 11, 'live', 'processing', 'open_long', 'TEST', 1, %s, '{}')""",
+              (order_id, f"test-order-{order_id}"))
         for key, value in kwargs.items():
             query(sql.SQL("UPDATE pending_orders SET {} = %s WHERE id = %s").format(sql.Identifier(key)), (value, order_id))
         return order_id
@@ -148,12 +154,7 @@ def ledger(monkeypatch):
     def count():
         rows = query("SELECT state_json FROM strategy_runtime_state WHERE state_key = 'exchange_failures'")
         return rows[0]["state_json"]["count"] if rows else 0
-    try:
-        yield SimpleNamespace(query=query, connect=connect, add=add, fail=fail, count=count, worker=worker)
-    finally:
-        with admin.cursor() as cur:
-            cur.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema)))
-        admin.close()
+    return SimpleNamespace(query=query, connect=connect, add=add, fail=fail, count=count, worker=worker)
 
 
 def test_fifth_failure_stops_and_claim_cancels_queued_orders(ledger):
@@ -277,6 +278,7 @@ def test_stop_notice_is_deduplicated_and_stale_stop_is_ignored(ledger, monkeypat
     lifecycle.complete_order_failure_stop(command, stop)
     lifecycle.complete_order_failure_stop(command, stop)
     notify.assert_called_once()
+    assert notify.call_args.kwargs["strategy_name"] == "Failure test strategy"
     stop.assert_called_with(7, close_positions=False, persist_status=False)
     ledger.query("UPDATE qd_strategies_trading SET status='running', desired_runtime_epoch=3")
     stop.reset_mock()
@@ -292,3 +294,56 @@ def test_outcome_transaction_rollback_does_not_count(ledger):
         lifecycle.record_pending_order_outcome(cur, cur.fetchone(), accepted=False, reason="insufficient margin")
         conn.rollback()
     assert ledger.count() == 0
+
+
+@pytest.mark.parametrize("close_positions", [False, True])
+def test_auto_stop_command_completes_and_notifies_with_real_schema(ledger, monkeypatch, close_positions):
+    from app.services.strategy_command_repository import StrategyCommandRepository
+    from app.workers.trading import TradingWorker
+    from tests.test_trading_worker_boundaries import FakeExecutor
+
+    monkeypatch.setenv("STRATEGY_DISTRIBUTED_BAR_ENABLED", "false")
+    monkeypatch.setattr(lifecycle, "append_strategy_log", Mock())
+    monkeypatch.setattr("app.workers.trading.append_strategy_log", Mock())
+    channels = ["email", "telegram", "discord", "webhook", "phone"]
+    ledger.query("UPDATE qd_strategies_trading SET notification_config=%s",
+                 (json.dumps({"channels": channels}),))
+    ledger.query("UPDATE qd_users SET email=%s, notification_settings=%s WHERE id=3", (
+        "account@example.com", json.dumps({"language": "zh-CN", "telegram_chat_id": "test-chat",
+            "telegram_bot_token": "test-token", "discord_webhook": "https://example.com/discord",
+            "webhook_url": "https://example.com/webhook", "phone": "+15555550123"}),
+    ))
+    transports = {}
+    for channel in channels:
+        transports[channel] = Mock(return_value=(channel != "email", "simulated delivery failure"))
+        monkeypatch.setattr(SignalNotifier, f"_notify_{channel}", transports[channel])
+    for number in range(1, 6):
+        ledger.fail(ledger.add(number))
+
+    repository = StrategyCommandRepository()
+    if close_positions:
+        repository.enqueue(strategy_id=7, user_id=3, command_type="stop", payload={"close_positions": True})
+    executor = FakeExecutor()
+    executor.running_strategies[7] = object()
+    worker = TradingWorker(executor, repository)
+    command = repository.claim_next(owner_id=worker.worker_id, lease_seconds=30, max_attempts=3)
+    worker._execute(command)
+    assert repository.get(command.id).status == "succeeded"
+    assert executor.stopped == [7]
+    assert executor.policy_stops == ([(7, True)] if close_positions else [])
+    for transport in transports.values():
+        transport.assert_called_once()
+    assert transports["email"].call_args.kwargs["to_email"] == "account@example.com"
+    assert "Failure test strategy" in transports["email"].call_args.kwargs["body_text"]
+    assert "连续" in transports["email"].call_args.kwargs["body_text"]
+    assert transports["telegram"].call_args.kwargs["chat_id"] == "test-chat"
+    notices = ledger.query("SELECT user_id, signal_type, payload_json FROM qd_strategy_notifications")
+    assert len(notices) == 1
+    assert notices[0]["user_id"] == 3
+    assert notices[0]["signal_type"] == "strategy_stopped"
+    assert json.loads(notices[0]["payload_json"])["strategy"]["name"] == "Failure test strategy"
+    assert repository.claim_next(owner_id=worker.worker_id, lease_seconds=30, max_attempts=3) is None
+    lifecycle.complete_order_failure_stop(command, Mock())
+    assert len(ledger.query("SELECT id FROM qd_strategy_notifications")) == 1
+    for transport in transports.values():
+        transport.assert_called_once()

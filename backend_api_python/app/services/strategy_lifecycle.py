@@ -205,7 +205,7 @@ def complete_order_failure_stop(command, stop_strategy) -> dict:
     with get_db_connection() as db:
         cur = db.cursor()
         cur.execute(
-            "SELECT status, desired_runtime_epoch, name, notification_config FROM qd_strategies_trading WHERE id = %s AND user_id = %s",
+            "SELECT status, desired_runtime_epoch, strategy_name, notification_config FROM qd_strategies_trading WHERE id = %s AND user_id = %s",
             (command.strategy_id, command.user_id),
         )
         strategy = cur.fetchone() or {}
@@ -213,7 +213,8 @@ def complete_order_failure_stop(command, stop_strategy) -> dict:
     if (strategy.get("status") != "stopped" or
             int(strategy.get("desired_runtime_epoch") or 0) != int(command.payload["expected_runtime_epoch"])):
         return {"strategy_id": command.strategy_id, "status": "superseded"}
-    result = stop_strategy(command.strategy_id, close_positions=False, persist_status=False)
+    result = stop_strategy(command.strategy_id, close_positions=bool(command.payload.get("close_positions")),
+                           persist_status=False)
     reason = str(command.payload.get("reason") or "")
     append_strategy_log(command.strategy_id, "error", f"Auto-stopped (pending_order): {reason}")
     notify_order_failure_stop(command, strategy)
@@ -246,7 +247,7 @@ def notify_order_failure_stop(command, strategy: dict) -> None:
             config = json.loads(config)
         delivery = resolve_notification_delivery(command.user_id, config)
         results = SignalNotifier().notify_strategy_stopped(
-            strategy_id=command.strategy_id, strategy_name=str(strategy.get("name") or ""),
+            strategy_id=command.strategy_id, strategy_name=str(strategy.get("strategy_name") or ""),
             reason=str(command.payload.get("reason") or ""),
             consecutive_failures=int(command.payload.get("consecutive_failures") or 5),
             failure_unit=str(command.payload.get("failure_unit") or "order"),
