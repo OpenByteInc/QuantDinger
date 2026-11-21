@@ -1,6 +1,7 @@
 """Tests for local position snapshot helpers used by live sync and UI."""
 
 from contextlib import contextmanager
+import sqlite3
 
 import pytest
 
@@ -241,3 +242,135 @@ def test_mark_live_positions_rejects_ambiguous_cross_venue_prices(monkeypatch):
     )
 
     assert count == 0
+
+
+@pytest.fixture
+def position_ledger(monkeypatch):
+    from app.services.live_trading import records
+
+    db = sqlite3.connect(":memory:")
+    db.row_factory = sqlite3.Row
+    db.create_function("NOW", 0, lambda: "2026-01-01")
+    db.create_function("GREATEST", -1, max)
+    db.create_function("LEAST", -1, min)
+    db.execute("""CREATE TABLE qd_strategy_positions (
+        id INTEGER PRIMARY KEY, user_id INTEGER, strategy_id INTEGER,
+        symbol TEXT, symbol_canonical TEXT, side TEXT, size REAL, entry_price REAL,
+        current_price REAL, highest_price REAL, lowest_price REAL,
+        market_type TEXT, credential_id INTEGER, inst_id TEXT, strategy_run_id INTEGER,
+        unrealized_pnl REAL DEFAULT 0, pnl_percent REAL DEFAULT 0, updated_at TEXT,
+        position_state TEXT, tradable_size REAL, residual_reason TEXT,
+        residual_evidence_json TEXT, residual_classified_at TEXT,
+        UNIQUE(strategy_id, symbol, side)
+    )""")
+
+    class Cursor:
+        def __init__(self):
+            self.inner = db.cursor()
+
+        def execute(self, query, params=()):
+            self.inner.execute(query.replace("%s", "?").replace("::jsonb", "").replace("FOR UPDATE", ""), params)
+
+        @property
+        def rowcount(self):
+            return self.inner.rowcount
+
+        def fetchall(self):
+            return [dict(row) for row in self.inner.fetchall()]
+
+        def close(self):
+            self.inner.close()
+
+    class Connection:
+        def cursor(self):
+            return Cursor()
+
+        def commit(self):
+            db.commit()
+
+    @contextmanager
+    def connection():
+        yield Connection()
+
+    def fetch(strategy_id, symbol, side):
+        row = db.execute(
+            "SELECT * FROM qd_strategy_positions WHERE strategy_id = ? AND symbol = ? AND side = ?",
+            (strategy_id, symbol, side),
+        ).fetchone()
+        return dict(row) if row else {}
+
+    monkeypatch.setattr(records, "get_db_connection", connection)
+    monkeypatch.setattr(records, "_get_user_id_from_strategy", lambda _sid: 2)
+    monkeypatch.setattr(records, "_purge_position_symbol_duplicates", lambda *_args: None)
+    monkeypatch.setattr(records, "_fetch_position", fetch)
+    monkeypatch.setattr(records, "_fetch_position_fuzzy", lambda sid, sym, side: (fetch(sid, sym, side), sym))
+    yield db
+    db.close()
+
+
+@pytest.mark.parametrize("side", ["long", "short"])
+def test_split_full_close_removes_position_and_floating_profit(position_ledger, side):
+    from app.services.live_trading import records
+
+    args = dict(strategy_id=7, symbol="BTC/USDT", side=side)
+    records.upsert_position(**args, size=.0152, entry_price=58529.55302631579, current_price=60313.3)
+    fill_args = dict(strategy_id=7, symbol="BTC/USDT", signal_type=f"close_{side}")
+    records.apply_fill_to_local_position(**fill_args, filled=.0068, avg_price=60313.4)
+    remaining = records._fetch_position(7, "BTC/USDT", side)
+    sign = 1 if side == "long" else -1
+    assert remaining["size"] == .0084
+    assert remaining["unrealized_pnl"] == pytest.approx(sign * (60313.4 - 58529.55302631579) * .0084)
+    records.apply_fill_to_local_position(**fill_args, filled=.0084, avg_price=60313.3)
+    assert records._fetch_position(7, "BTC/USDT", side) == {}
+
+
+def test_full_close_absorbs_preexisting_binary_rounding_tail(position_ledger):
+    from app.services.live_trading import records
+
+    records.upsert_position(strategy_id=7, symbol="BTC/USDT", side="long",
+                            size=.008400000000000001, entry_price=58529, current_price=60313)
+    records.apply_fill_to_local_position(strategy_id=7, symbol="BTC/USDT", signal_type="close_long",
+                                         filled=.0084, avg_price=60313)
+    assert records._fetch_position(7, "BTC/USDT", "long") == {}
+
+
+@pytest.mark.parametrize("symbol,quantity,closed", [
+    ("BTC/USDT", .00002, .00001), ("00700", .02, .01), ("META", .002, .001),
+    ("TINY/USDT", 2e-15, 1e-15),
+])
+def test_partial_close_preserves_real_small_holdings(position_ledger, symbol, quantity, closed):
+    from app.services.live_trading import records
+
+    records.upsert_position(strategy_id=7, symbol=symbol, side="long", size=quantity,
+                            entry_price=100, current_price=200)
+    records.apply_fill_to_local_position(strategy_id=7, symbol=symbol, signal_type="reduce_long",
+                                         filled=closed, avg_price=200)
+    row = records._fetch_position(7, symbol, "long")
+    assert row["size"] == pytest.approx(quantity - closed, rel=1e-12, abs=0)
+    assert row["unrealized_pnl"] == pytest.approx(100 * (quantity - closed), rel=1e-12, abs=0)
+
+
+def test_mark_revalues_historical_precision_tail_without_deleting_inventory(position_ledger):
+    from app.services.live_trading import records
+
+    records.upsert_position(strategy_id=7, symbol="BTC/USDT", side="long", size=2e-18,
+                            entry_price=58529.55302631579, current_price=60313.3)
+    position_ledger.execute("UPDATE qd_strategy_positions SET unrealized_pnl = 27.114474")
+    assert records.mark_live_positions(7, {"BTC/USDT": 60313.3}) == 1
+    row = records._fetch_position(7, "BTC/USDT", "long")
+    assert row["size"] == 2e-18
+    assert row["unrealized_pnl"] == pytest.approx(0, abs=1e-12)
+
+
+def test_delayed_mark_cannot_restore_profit_from_pre_close_size(position_ledger, monkeypatch):
+    from app.services.live_trading import records
+
+    records.upsert_position(strategy_id=7, symbol="BTC/USDT", side="long", size=.0152,
+                            entry_price=58529, current_price=60313)
+    stale = records._fetch_position(7, "BTC/USDT", "long")
+    records.upsert_position(strategy_id=7, symbol="BTC/USDT", side="long", size=.0084,
+                            entry_price=58529, current_price=60313)
+    monkeypatch.setattr(records, "_fetch_position_fuzzy", lambda *_args: (stale, "BTC/USDT"))
+    assert not records.patch_position_markers(strategy_id=7, symbol="BTC/USDT", side="long", current_price=60314)
+    row = records._fetch_position(7, "BTC/USDT", "long")
+    assert row["unrealized_pnl"] == pytest.approx((60313 - 58529) * .0084)

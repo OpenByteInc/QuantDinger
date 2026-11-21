@@ -415,6 +415,8 @@ Common context fields:
 | <code>context.portfolio.positions</code> | current position map |
 | <code>context.data</code> | data view |
 
+In live Strategy API V2 execution, `total_value` uses the deployment's lifetime strategy ledger, including recorded trading costs, funding, broker activities and unrealized P&L. A new runtime run does not reset equity to `starting_cash`. Percentage targets and opening-budget checks use current equity, not the shared exchange account balance. See [strategy equity and shared accounts](LIVE_TRADING_SAFETY.md#strategy-equity-and-shared-accounts) for the accounting boundary.
+
 Use <code>data.current(symbol, field, frequency="1h")</code> for a current visible value, <code>data.history(symbols, count, fields, frequency="4h")</code> for a selected timeframe, and <code>data[symbol]</code> for the driving timeframe's current visible DataFrame.
 
 Use <code>is_trade()</code> to filter scheduled callbacks. It returns <code>True</code> when the current event timestamp exists in at least one subscribed data frame and <code>False</code> otherwise. It answers “does this event have tradable data?”, not whether an exchange is open, an account may submit orders, or a product is suspended; live eligibility is still validated by deployment and execution layers.

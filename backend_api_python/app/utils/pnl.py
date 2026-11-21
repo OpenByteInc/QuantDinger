@@ -2,6 +2,14 @@
 from __future__ import annotations
 
 
+# Derive valuations from the same row's quantity and mark, never a stale P&L cache.
+POSITION_UNREALIZED_PNL_SQL = """CASE
+    WHEN size > 0 AND entry_price > 0 AND current_price > 0 THEN
+        (CASE WHEN LOWER(COALESCE(side, '')) = 'short'
+              THEN entry_price - current_price ELSE current_price - entry_price END) * size
+    ELSE 0 END"""
+
+
 def is_derivatives_market(market_type: str) -> bool:
     mt = str(market_type or "").strip().lower()
     return mt in ("swap", "futures", "future", "perp", "perpetual")

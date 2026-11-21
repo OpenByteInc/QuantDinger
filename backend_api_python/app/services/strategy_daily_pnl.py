@@ -16,6 +16,7 @@ from typing import Any, Dict, Iterable
 
 from app.utils.db import get_db_connection
 from app.utils.logger import get_logger
+from app.utils.pnl import POSITION_UNREALIZED_PNL_SQL
 
 try:
     from zoneinfo import ZoneInfo
@@ -218,7 +219,7 @@ def _load_current_equity(strategy_ids: Iterable[int], user_id: int | None = None
                 GROUP BY strategy_id
             ), position_totals AS (
                 SELECT strategy_id,
-                       SUM(COALESCE(unrealized_pnl, 0)) AS unrealized,
+                       SUM({POSITION_UNREALIZED_PNL_SQL}) AS unrealized,
                        SUM(CASE WHEN ABS(COALESCE(size, 0)) > 0 THEN 1 ELSE 0 END) AS open_positions
                 FROM qd_strategy_positions
                 WHERE strategy_id IN ({placeholders})

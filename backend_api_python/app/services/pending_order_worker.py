@@ -1501,7 +1501,9 @@ class PendingOrderWorker(
         sizing = sizing if isinstance(sizing, dict) else {}
         source = str(sizing.get("source") or "unknown")
         entry_pct = sizing.get("entry_pct")
-        capital = sizing.get("initial_capital")
+        capital = sizing.get("current_equity")
+        if capital is None:
+            capital = sizing.get("initial_capital")
         leverage = sizing.get("leverage") or payload.get("leverage")
 
         parts = [
@@ -1564,12 +1566,15 @@ class PendingOrderWorker(
             )
             sizing = payload.get("sizing") if isinstance(payload, dict) else {}
             sizing = sizing if isinstance(sizing, dict) else {}
+            capital = sizing.get("current_equity")
+            if capital is None:
+                capital = sizing.get("initial_capital")
             append_strategy_log(
                 strategy_id,
                 "info",
                 (
                     "Live order sizing: "
-                    f"capital={self._as_float(sizing.get('initial_capital'), 0.0):.4f}, "
+                    f"capital={self._as_float(capital, 0.0):.4f}, "
                     f"entry_pct={self._as_float(sizing.get('entry_pct'), 0.0):.4f}%, "
                     f"leverage={self._as_float(sizing.get('leverage') or leverage, 1.0):.4f}x, "
                     f"price={format_decimal(ref_price, decimal_places=8)}, "

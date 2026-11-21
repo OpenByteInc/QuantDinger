@@ -67,7 +67,7 @@ def test_live_equity_uses_latest_prices_for_every_strategy_position(monkeypatch)
     assert equity == 1090.0
 
 
-def test_live_equity_is_scoped_to_current_strategy_run(monkeypatch):
+def test_live_equity_keeps_lifetime_pnl_across_strategy_runs(monkeypatch):
     captured = {}
 
     class Cursor:
@@ -106,8 +106,9 @@ def test_live_equity_is_scoped_to_current_strategy_run(monkeypatch):
     )
 
     assert equity == 950.0
-    assert "strategy_run_id = %s" in captured["sql"]
-    assert captured["params"][:3] == (9, 77, 77)
+    assert "strategy_run_id" not in captured["sql"]
+    assert "occurred_at" not in captured["sql"]
+    assert captured["params"] == (9, 9, 9)
 
 
 def test_generic_stop_loss_is_noop_for_grid_bot(monkeypatch):

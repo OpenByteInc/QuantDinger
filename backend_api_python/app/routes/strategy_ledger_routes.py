@@ -11,6 +11,7 @@ from app.utils.auth import login_required
 from app.utils.db import get_db_connection
 from app.utils.logger import get_logger
 from app.utils.pnl import (
+    POSITION_UNREALIZED_PNL_SQL,
     calc_margin_notional,
     calc_notional_value,
     is_derivatives_market,
@@ -446,8 +447,8 @@ def _build_strategy_equity_curve(user_id: int, strategy_id: int):
         )
         rows = cur.fetchall() or []
         cur.execute(
-            """
-            SELECT COALESCE(SUM(unrealized_pnl), 0) AS u
+            f"""
+            SELECT COALESCE(SUM({POSITION_UNREALIZED_PNL_SQL}), 0) AS u
             FROM qd_strategy_positions
             WHERE strategy_id = ?
             """,

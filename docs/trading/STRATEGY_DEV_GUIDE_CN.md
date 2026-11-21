@@ -417,6 +417,8 @@ def initialize(context):
 | <code>context.portfolio.positions</code> | 当前持仓字典 |
 | <code>context.data</code> | 数据视图 |
 
+Strategy API V2 实盘中的 `total_value` 按部署的历史累计策略账本计算，包含已记录的交易费用、资金费、经纪商流水和浮动盈亏。新的运行批次不会把净值恢复为 `starting_cash`。百分比目标和开仓预算检查使用当前策略净值，而非共用交易所账户的余额。核算边界见[策略净值与共用账户](LIVE_TRADING_SAFETY_CN.md#策略净值与共用账户)。
+
 <code>data.current(symbol, field, frequency="1h")</code> 读取当前可见值；<code>data.history(symbols, count, fields, frequency="4h")</code> 读取指定周期历史；<code>data[symbol]</code> 返回驱动周期的当前可见 DataFrame。
 
 <code>is_trade()</code> 用于定时回调中的事件过滤：当前事件时间戳只要存在于至少一个已订阅数据帧就返回 <code>True</code>，否则返回 <code>False</code>。它判断的是“当前事件是否有可交易数据”，不是交易所是否开市、账户是否可下单或产品是否暂停；这些实盘资格仍由部署和执行层校验。
