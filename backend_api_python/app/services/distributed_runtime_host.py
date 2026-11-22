@@ -35,6 +35,7 @@ class DistributedRuntimeHost:
         self._lock = threading.RLock()
         self._lost_strategies: set[int] = set()
         self._owned_strategies: set[int] = set()
+        self._owned_epochs: dict[int, int] = {}
         self._start_failures: dict[int, str] = {}
         self._lease_heartbeat = LeaseHeartbeat(
             self.owner_id,
@@ -45,10 +46,27 @@ class DistributedRuntimeHost:
         self._lease_heartbeat.start()
 
     def evaluate(self, strategy_id: int, event, *, timeout: float = 60.0) -> bool:
+        if not self.prepare(strategy_id):
+            return self.repository.runtime_request(strategy_id).get("status") != "running"
+        return self.executor.trigger_bar_evaluation(
+            int(strategy_id), event,
+            timeout=max(live_sandbox_timeout_seconds() + 30.0, float(timeout)),
+        )
+
+    def prepare(self, strategy_id: int, _event=None, *, timeout: float = 60.0) -> bool:
+        """Create the requested generation without submitting a bar callback."""
         strategy_id = int(strategy_id)
-        # The host must allow the child deadline plus orchestration overhead.
+        request = self.repository.runtime_request(strategy_id)
+        if request.get("status") != "running":
+            return False
+        epoch = int(request.get("desired_runtime_epoch") or 1)
         startup_timeout = live_sandbox_timeout_seconds() + 30.0
-        timeout = max(startup_timeout, float(timeout))
+        if self.executor.is_running(strategy_id) and (
+            self._owned_epochs.get(strategy_id) != epoch or not self._runtime_valid(strategy_id)
+        ):
+            if not self.executor.stop_strategy(strategy_id, persist_status=False):
+                return False
+            self._release_runtime(strategy_id)
         started = False
         with self._lock:
             self._release_dead_runtime(strategy_id)
@@ -62,6 +80,7 @@ class DistributedRuntimeHost:
                     return False
                 self.executor.set_runtime_fencing_token(strategy_id, token)
                 self._owned_strategies.add(strategy_id)
+                self._owned_epochs[strategy_id] = epoch
                 self._lease_heartbeat.watch_strategy(strategy_id)
                 if not self.executor.start_strategy(strategy_id):
                     detail = str(
@@ -82,17 +101,18 @@ class DistributedRuntimeHost:
                     strategy_id,
                     str(hint or "strategyRuntime.startFailed"),
                 )
-                self.executor.stop_strategy(strategy_id, persist_status=False)
-                self._release_runtime(strategy_id)
+                if self.executor.stop_strategy(strategy_id, persist_status=False):
+                    self._release_runtime(strategy_id)
                 return False
         with self._lock:
             self._start_failures.pop(strategy_id, None)
         if not self._runtime_valid(strategy_id):
             return False
-        return self.executor.trigger_bar_evaluation(
-            strategy_id,
-            event,
-            timeout=timeout,
+        request = self.repository.runtime_request(strategy_id)
+        return bool(
+            request.get("status") == "running"
+            and int(request.get("desired_runtime_epoch") or 1) == epoch
+            and request.get("ready")
         )
 
     def _record_start_failure(self, strategy_id: int, detail: str) -> None:
@@ -105,13 +125,19 @@ class DistributedRuntimeHost:
 
     def reconcile(self, running_strategy_ids: set[int] | None = None) -> None:
         local_ids = set(self.local_strategy_ids())
+        requests = self.repository.runtime_requests(local_ids)
         desired = local_ids if running_strategy_ids is None else {
             int(strategy_id) for strategy_id in running_strategy_ids
         }
-        for strategy_id in sorted(local_ids - desired):
-            self.executor.stop_strategy(strategy_id, persist_status=False)
-            self._release_runtime(strategy_id)
         for strategy_id in sorted(local_ids):
+            request = requests.get(strategy_id, {})
+            if (
+                strategy_id not in desired
+                or request.get("status") != "running"
+                or int(request.get("desired_runtime_epoch") or 1) != self._owned_epochs.get(strategy_id)
+            ):
+                if self.executor.stop_strategy(strategy_id, persist_status=False):
+                    self._release_runtime(strategy_id)
             self._release_dead_runtime(strategy_id)
 
     def local_strategy_ids(self) -> list[int]:
@@ -124,11 +150,13 @@ class DistributedRuntimeHost:
         released = 0
         for strategy_id in sorted({int(value) for value in strategy_ids}):
             if self.executor.is_running(strategy_id):
-                self.executor.stop_strategy(
+                stopped = self.executor.stop_strategy(
                     strategy_id,
                     persist_status=False,
                     preserve_run=True,
                 )
+                if not stopped:
+                    continue
             with self._lock:
                 owned = strategy_id in self._owned_strategies
             if owned:
@@ -145,11 +173,13 @@ class DistributedRuntimeHost:
             owned_ids = set(self._owned_strategies)
         for strategy_id in sorted(local_ids | owned_ids):
             if strategy_id in local_ids:
-                self.executor.stop_strategy(
+                stopped = self.executor.stop_strategy(
                     strategy_id,
                     persist_status=False,
                     preserve_run=True,
                 )
+                if not stopped:
+                    continue
             self._release_runtime(strategy_id)
         self._lease_heartbeat.close()
         self.executor.close()
@@ -165,16 +195,14 @@ class DistributedRuntimeHost:
             return
         strategy_id = int(strategy_id)
         with self._lock:
+            if self._lease_heartbeat.strategy_valid(strategy_id):
+                return
             self._lost_strategies.add(strategy_id)
+            self.executor.request_runtime_handoff(strategy_id)
         logger.error(
             "Distributed runtime lease lost: strategy=%s owner=%s",
             strategy_id,
             self.owner_id,
-        )
-        self.executor.stop_strategy(
-            strategy_id,
-            persist_status=False,
-            preserve_run=True,
         )
 
     def _release_dead_runtime(self, strategy_id: int) -> None:
@@ -190,6 +218,7 @@ class DistributedRuntimeHost:
         with self._lock:
             owned = strategy_id in self._owned_strategies
             self._owned_strategies.discard(strategy_id)
+            self._owned_epochs.pop(strategy_id, None)
         if not owned:
             return
         self._lease_heartbeat.forget_strategy(strategy_id)

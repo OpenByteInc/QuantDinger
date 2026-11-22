@@ -29,6 +29,9 @@ class FakeRepository:
         self.lookups.append((event_type, partition_key))
         return list(self.strategy_ids)
 
+    def unready_strategy_ids(self):
+        return list(self.strategy_ids)
+
 
 class FakeProducer:
     def __init__(self, succeeds=True):
@@ -86,3 +89,17 @@ def test_dispatcher_retries_source_event_when_batch_flush_fails():
 
     assert dispatcher.dispatch(_bar_event()) is False
     assert dispatcher.snapshot()["source_events"] == 0
+
+
+def test_unready_daily_strategies_are_prepared_without_market_events():
+    from app.events.protocol import StrategyRuntimePrepareV1
+
+    producer = FakeProducer()
+    dispatcher = StrategyDueDispatcher(repository=FakeRepository([1, 129, 2]), producer=producer)
+    assert dispatcher.prepare_due_runtimes()
+    events = producer.batches[0][0]
+    assert [event.payload["strategy_ids"] for event in events] == [[1, 129], [2]]
+    assert all(event.event_type == StrategyRuntimePrepareV1.event_type for event in events)
+    assert all("closed_bar_token" not in event.payload for event in events)
+    producer.succeeds = False
+    assert not dispatcher.prepare_due_runtimes()

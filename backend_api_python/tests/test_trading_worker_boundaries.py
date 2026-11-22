@@ -77,6 +77,17 @@ class FakeRepository:
         self.released = []
         self.revoked = []
         self.active_leases = set()
+        self.deferred = []
+        self.ready = True
+
+    def runtime_request(self, _strategy_id):
+        return {"status": "running", "desired_runtime_epoch": 1, "ready": self.ready}
+
+    def defer_start(self, command_id, **kwargs):
+        self.deferred.append((command_id, kwargs))
+
+    def begin_restart(self, _command):
+        return 2
 
     def complete(self, command_id, result=None):
         self.completed.append((command_id, result))
@@ -135,21 +146,72 @@ def test_failed_command_is_retried_with_backoff(monkeypatch):
     assert repository.failed == [(1, "boom", 1)]
 
 
+def test_starting_command_is_deferred_until_real_readiness(monkeypatch):
+    repository = FakeRepository()
+    worker = TradingWorker(FakeExecutor(), repository)
+    monkeypatch.setattr(worker, "_start", lambda sid: {"status": "starting", "runtime_epoch": 6})
+    worker._execute(_command("start"))
+    assert not repository.completed and not repository.failed
+    assert repository.deferred[0][1]["result"]["status"] == "starting"
+    monkeypatch.setattr(worker, "_start", lambda sid: {"status": "running", "runtime_epoch": 6})
+    worker._execute(_command("start"))
+    assert repository.completed[0][1]["status"] == "running"
+
+
+def test_readiness_deadline_is_a_failure_not_infinite_polling(monkeypatch):
+    from dataclasses import replace
+
+    repository = FakeRepository()
+    worker = TradingWorker(FakeExecutor(), repository)
+    monkeypatch.setattr(worker, "_start", lambda sid: {"status": "starting"})
+    worker._execute(replace(_command("start"), elapsed_seconds=10000))
+    assert repository.deferred == []
+    assert repository.failed[0][1] == "strategyRuntime.startFailed"
+
+
+def test_delayed_stop_command_cannot_stop_a_later_start(monkeypatch):
+    from dataclasses import replace
+
+    repository = FakeRepository()
+    executor = FakeExecutor()
+    worker = TradingWorker(executor, repository)
+    monkeypatch.setattr(repository, "runtime_request", lambda sid: {"desired_runtime_epoch": 6})
+    worker._execute(replace(_command("stop"), payload={"requested_runtime_epoch": 1}))
+    assert executor.stopped == [] and repository.revoked == []
+    assert repository.completed[0][1]["status"] == "skipped"
+
+
+def test_resumed_restart_does_not_stop_the_new_runtime_again(monkeypatch):
+    from dataclasses import replace
+
+    repository = FakeRepository()
+    worker = TradingWorker(FakeExecutor(), repository)
+    monkeypatch.setattr(repository, "runtime_request", lambda sid: {"desired_runtime_epoch": 2})
+    monkeypatch.setattr(worker, "_start", lambda sid: {"status": "starting", "runtime_epoch": 2})
+    worker._execute(replace(_command("restart"), payload={"runtime_epoch": 2}))
+    assert worker.executor.stopped == []
+    assert repository.deferred and not repository.completed
+
+
+def test_live_but_unready_executor_does_not_report_startup_success():
+    from types import SimpleNamespace
+
+    executor = object.__new__(TradingExecutor)
+    executor.lock = threading.Lock()
+    executor.running_strategies = {55: SimpleNamespace(is_alive=lambda: True, is_ready=lambda: False)}
+    assert executor.wait_strategy_running(55, timeout=0) == (False, "strategyRuntime.startFailed")
+
+
 def test_restart_advances_generation_and_stops_runtime_without_changing_desired_state(
     monkeypatch,
 ):
-    from app.services.strategy import StrategyService
-
     repository = FakeRepository()
     worker = TradingWorker(FakeExecutor(), repository)
     calls = []
     monkeypatch.setattr(
-        StrategyService,
-        "request_strategy_runtime_restart",
-        lambda _self, strategy_id, user_id=None: calls.append(
-            ("request", strategy_id, user_id)
-        )
-        or True,
+        repository,
+        "begin_restart",
+        lambda command: calls.append(("request", command.strategy_id, command.user_id)) or 2,
     )
     monkeypatch.setattr(
         worker,

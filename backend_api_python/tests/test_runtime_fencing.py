@@ -118,20 +118,39 @@ def test_revoking_runtime_lease_invalidates_any_owner(monkeypatch):
     assert params == (11,)
 
 
-def test_stop_command_can_be_claimed_across_runtime_owners(monkeypatch):
-    connection = FakeConnection(None)
+@pytest.mark.parametrize("command_type", ["start", "stop", "restart", "reconcile"])
+def test_control_commands_are_claimed_without_runtime_owner_restrictions(monkeypatch, command_type):
+    connection = FakeConnection({
+        "id": 17,
+        "strategy_id": 11,
+        "command_type": command_type,
+        "status": "processing",
+        "attempts": 1,
+    })
     connection.commit = lambda: None
     connection.rollback = lambda: None
     monkeypatch.setattr(repository_module, "get_db_connection", lambda: connection)
 
-    assert StrategyCommandRepository().claim_next(
+    command = StrategyCommandRepository().claim_next(
         owner_id="worker-a",
         lease_seconds=30,
         max_attempts=3,
-    ) is None
+    )
 
-    sql, _params = connection.cursor_value.executions[0]
-    assert "command.command_type IN ('start', 'stop', 'reconcile')" in sql
+    assert command.id == 17
+    assert command.command_type == command_type
+    select_sql, select_params = connection.cursor_value.executions[0]
+    claim_sql, claim_params = connection.cursor_value.executions[1]
+    assert "qd_strategy_runtime_leases" not in select_sql
+    assert "command.command_type" not in select_sql
+    assert "FOR UPDATE OF command, strategy SKIP LOCKED" in select_sql
+    for sql in (select_sql, claim_sql):
+        assert "NOT EXISTS" in sql
+        assert "active.strategy_id = command.strategy_id" in sql
+        assert "active.status = 'processing'" in sql
+        assert "active.lease_expires_at >= NOW()" in sql
+    assert select_params == (3,)
+    assert claim_params == ("worker-a", 30, 17)
 
 
 def test_releasing_shard_lease_preserves_fencing_row(monkeypatch):

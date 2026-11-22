@@ -6,7 +6,9 @@ import os
 from collections import defaultdict
 
 from app.events.kafka import KafkaEventProducer
-from app.events.protocol import EventEnvelope, MarketBarClosedV1, StrategyEvaluationBatchV1
+from app.events.protocol import (
+    EventEnvelope, MarketBarClosedV1, StrategyEvaluationBatchV1, StrategyRuntimePrepareV1,
+)
 from app.services.strategy_event_subscriptions import (
     StrategyEventSubscriptionRepository,
     strategy_shard,
@@ -74,6 +76,20 @@ class StrategyDueDispatcher:
             "batches_dispatched": self.batches_dispatched,
             **self.producer.snapshot(),
         }
+
+    def prepare_due_runtimes(self) -> bool:
+        """Recover durable start requests even when no candle has closed yet."""
+        grouped: dict[int, list[int]] = defaultdict(list)
+        for strategy_id in self.repository.unready_strategy_ids():
+            grouped[strategy_shard(strategy_id)].append(strategy_id)
+        events = [
+            StrategyRuntimePrepareV1.create(
+                strategy_shard=shard, strategy_ids=ids[start:start + self.batch_size],
+            )
+            for shard, ids in grouped.items()
+            for start in range(0, len(ids), self.batch_size)
+        ]
+        return not events or self.producer.publish_batch(events, timeout=10.0)
 
     def close(self) -> None:
         self.producer.close()

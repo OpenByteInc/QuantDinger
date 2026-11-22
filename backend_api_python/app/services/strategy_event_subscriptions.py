@@ -22,6 +22,28 @@ def strategy_shard(strategy_id: int, shard_count: int | None = None) -> int:
 
 
 class StrategyEventSubscriptionRepository:
+    def unready_strategy_ids(self) -> list[int]:
+        from app.services.strategy_command_repository import READY_RUNTIME_EXISTS_SQL
+
+        with get_db_connection() as db:
+            cur = db.cursor()
+            try:
+                cur.execute(
+                    f"""SELECT strategy.id FROM qd_strategies_trading AS strategy
+                       WHERE strategy.status = 'running'
+                         AND EXISTS (SELECT 1 FROM qd_strategy_event_subscriptions AS subscription
+                                     WHERE subscription.strategy_id = strategy.id)
+                         AND NOT {READY_RUNTIME_EXISTS_SQL}
+                         AND NOT EXISTS (
+                             SELECT 1 FROM qd_strategy_commands AS command
+                             WHERE command.strategy_id = strategy.id AND command.command_type = 'stop'
+                               AND command.status IN ('pending', 'processing'))
+                       ORDER BY strategy.id""",
+                )
+                return [int(row["id"]) for row in cur.fetchall()]
+            finally:
+                cur.close()
+
     def active_bar_routes(self) -> list[dict[str, str]]:
         """Return distinct bar routes still referenced by running strategies."""
         with get_db_connection() as db:
