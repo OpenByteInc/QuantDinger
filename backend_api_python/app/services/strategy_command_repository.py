@@ -12,6 +12,22 @@ from app.utils.db import get_db_connection
 
 TERMINAL_COMMAND_STATUSES = frozenset({"succeeded", "failed", "cancelled"})
 
+# The acknowledgement belongs to a run AND its current lease, not just a process.
+READY_RUNTIME_EXISTS_SQL = """
+    EXISTS (
+        SELECT 1 FROM strategy_runs AS run
+        JOIN strategy_runtime_state AS ready
+          ON ready.strategy_run_id = run.id AND ready.strategy_id = run.strategy_id
+         AND ready.state_key = 'runtime_ready'
+        JOIN qd_strategy_runtime_leases AS lease ON lease.strategy_id = run.strategy_id
+        WHERE run.strategy_id = strategy.id
+          AND run.runtime_epoch = strategy.desired_runtime_epoch
+          AND run.runtime_status = 'running'
+          AND lease.lease_expires_at > NOW()
+          AND ready.state_json->>'fencing_token' = lease.fencing_token::text
+    )
+"""
+
 
 @dataclass(frozen=True)
 class StrategyCommand:
@@ -25,6 +41,7 @@ class StrategyCommand:
     result: dict[str, Any] | None = None
     attempts: int = 0
     error_message: str = ""
+    elapsed_seconds: float = 0.0
 
     @classmethod
     def from_row(cls, row: dict[str, Any]) -> "StrategyCommand":
@@ -45,6 +62,7 @@ class StrategyCommand:
             result=dict(result),
             attempts=int(row.get("attempts") or 0),
             error_message=str(row.get("error_message") or ""),
+            elapsed_seconds=float(row.get("elapsed_seconds") or 0),
         )
 
 
@@ -108,12 +126,14 @@ class StrategyCommandRepository:
                     """
                     INSERT INTO qd_strategy_commands
                         (strategy_id, user_id, command_type, idempotency_key, payload_json)
-                    VALUES (%s, %s, %s, %s, %s::jsonb)
+                    SELECT %s, %s, %s, %s,
+                           %s::jsonb || jsonb_build_object('requested_runtime_epoch', desired_runtime_epoch)
+                    FROM qd_strategies_trading WHERE id = %s
                     ON CONFLICT (idempotency_key) DO UPDATE
                         SET idempotency_key = EXCLUDED.idempotency_key
                     RETURNING *
                     """,
-                    (int(strategy_id), int(user_id or 0), command_type, key, body),
+                    (int(strategy_id), int(user_id or 0), command_type, key, body, int(strategy_id)),
                 )
                 row = cur.fetchone()
                 db.commit()
@@ -130,27 +150,35 @@ class StrategyCommandRepository:
             try:
                 cur.execute(
                     """
-                    WITH candidate AS (
                         SELECT command.id
                         FROM qd_strategy_commands AS command
-                        LEFT JOIN qd_strategy_runtime_leases AS lease
-                          ON lease.strategy_id = command.strategy_id
+                        JOIN qd_strategies_trading AS strategy ON strategy.id = command.strategy_id
                         WHERE command.attempts < %s
                           AND (
                             (command.status = 'pending' AND command.available_at <= NOW())
                             OR
                             (command.status = 'processing' AND command.lease_expires_at < NOW())
                           )
-                          AND (
-                            command.command_type IN ('start', 'stop', 'reconcile')
-                            OR lease.strategy_id IS NULL
-                            OR lease.owner_id = %s
-                            OR lease.lease_expires_at < NOW()
+                          AND NOT EXISTS (
+                            SELECT 1 FROM qd_strategy_commands AS active
+                            WHERE active.strategy_id = command.strategy_id
+                              AND active.id <> command.id AND active.status = 'processing'
+                              AND active.lease_expires_at >= NOW()
                           )
                         ORDER BY command.id
-                        FOR UPDATE OF command SKIP LOCKED
+                        FOR UPDATE OF command, strategy SKIP LOCKED
                         LIMIT 1
-                    )
+                    """,
+                    (int(max_attempts),),
+                )
+                candidate = cur.fetchone()
+                if not candidate:
+                    db.commit()
+                    return None
+                # Recheck with a fresh statement snapshot after locking the strategy;
+                # another controller may have committed while candidates were scanned.
+                cur.execute(
+                    """
                     UPDATE qd_strategy_commands AS command
                     SET status = 'processing',
                         claimed_by = %s,
@@ -158,11 +186,16 @@ class StrategyCommandRepository:
                         lease_expires_at = NOW() + (%s * INTERVAL '1 second'),
                         attempts = command.attempts + 1,
                         updated_at = NOW()
-                    FROM candidate
-                    WHERE command.id = candidate.id
-                    RETURNING command.*
+                    WHERE command.id = %s AND NOT EXISTS (
+                        SELECT 1 FROM qd_strategy_commands AS active
+                        WHERE active.strategy_id = command.strategy_id
+                          AND active.id <> command.id AND active.status = 'processing'
+                          AND active.lease_expires_at >= NOW()
+                    )
+                    RETURNING command.*,
+                        EXTRACT(EPOCH FROM (NOW() - command.claimed_at)) AS elapsed_seconds
                     """,
-                    (int(max_attempts), owner_id, owner_id, int(lease_seconds)),
+                    (owner_id, int(lease_seconds), int(candidate["id"])),
                 )
                 row = cur.fetchone()
                 db.commit()
@@ -175,6 +208,110 @@ class StrategyCommandRepository:
 
     def complete(self, command_id: int, *, result: dict[str, Any] | None = None) -> None:
         self._finish(command_id, "succeeded", result=result)
+
+    def defer_start(self, command_id: int, *, owner_id: str, result: dict) -> None:
+        """Readiness polling is not a failed execution attempt."""
+        with get_db_connection() as db:
+            cur = db.cursor()
+            try:
+                cur.execute(
+                    """UPDATE qd_strategy_commands
+                       SET status = 'pending', result_json = %s::jsonb,
+                           attempts = GREATEST(0, attempts - 1),
+                           available_at = NOW() + INTERVAL '2 seconds',
+                           lease_expires_at = NULL, updated_at = NOW()
+                       WHERE id = %s AND claimed_by = %s AND status = 'processing'""",
+                    (json.dumps(result), int(command_id), owner_id),
+                )
+                db.commit()
+            finally:
+                cur.close()
+
+    def begin_restart(self, command: StrategyCommand) -> int:
+        """Advance the generation once, including after a command-worker crash."""
+        with get_db_connection() as db:
+            cur = db.cursor()
+            try:
+                cur.execute("SELECT payload_json FROM qd_strategy_commands WHERE id = %s FOR UPDATE", (command.id,))
+                payload = (cur.fetchone() or {}).get("payload_json") or {}
+                if payload.get("runtime_epoch"):
+                    return int(payload["runtime_epoch"])
+                cur.execute(
+                    """UPDATE qd_strategies_trading
+                       SET desired_runtime_epoch = GREATEST(1, desired_runtime_epoch) + 1,
+                           runtime_requested_at = NOW(), updated_at = NOW()
+                       WHERE id = %s AND status = 'running' AND (%s = 0 OR user_id = %s)
+                       RETURNING desired_runtime_epoch""", (command.strategy_id, command.user_id, command.user_id),
+                )
+                row = cur.fetchone()
+                if not row:
+                    raise RuntimeError("Strategy is not running or no longer exists.")
+                epoch = int(row["desired_runtime_epoch"])
+                cur.execute(
+                    """UPDATE qd_strategy_commands
+                       SET payload_json = payload_json || %s::jsonb WHERE id = %s""",
+                    (json.dumps({"runtime_epoch": epoch}), command.id),
+                )
+                cur.execute(
+                    """UPDATE qd_strategy_runtime_leases
+                       SET lease_expires_at = NOW() - INTERVAL '1 second',
+                           fencing_token = fencing_token + 1, owner_id = '', updated_at = NOW()
+                       WHERE strategy_id = %s""", (command.strategy_id,),
+                )
+                db.commit()
+                return epoch
+            except Exception:
+                db.rollback()
+                raise
+            finally:
+                cur.close()
+
+    def runtime_request(self, strategy_id: int) -> dict:
+        return self.runtime_requests([strategy_id]).get(int(strategy_id), {})
+
+    def runtime_requests(self, strategy_ids) -> dict[int, dict]:
+        ids = sorted({int(strategy_id) for strategy_id in strategy_ids})
+        if not ids:
+            return {}
+        with get_db_connection() as db:
+            cur = db.cursor()
+            try:
+                cur.execute(
+                    f"""SELECT strategy.id, strategy.status, strategy.desired_runtime_epoch,
+                              {READY_RUNTIME_EXISTS_SQL} AS ready
+                       FROM qd_strategies_trading AS strategy WHERE strategy.id = ANY(%s)""",
+                    (ids,),
+                )
+                return {int(row["id"]): dict(row) for row in cur.fetchall()}
+            finally:
+                cur.close()
+
+    def acknowledge_runtime_ready(self, *, strategy_id: int, run_id: int, epoch: int, token: int) -> bool:
+        with get_db_connection() as db:
+            cur = db.cursor()
+            try:
+                cur.execute(
+                    """INSERT INTO strategy_runtime_state
+                           (strategy_run_id, strategy_id, state_key, state_json)
+                       SELECT run.id, run.strategy_id, 'runtime_ready', %s::jsonb
+                       FROM strategy_runs AS run
+                       JOIN qd_strategies_trading AS strategy ON strategy.id = run.strategy_id
+                       JOIN qd_strategy_runtime_leases AS lease ON lease.strategy_id = run.strategy_id
+                       WHERE run.id = %s AND strategy.id = %s AND strategy.status = 'running'
+                         AND run.runtime_epoch = %s AND strategy.desired_runtime_epoch = %s
+                         AND run.runtime_status = 'running'
+                         AND lease.fencing_token = %s AND lease.lease_expires_at > NOW()
+                       ON CONFLICT (strategy_run_id, strategy_id, state_key)
+                       DO UPDATE SET state_json = EXCLUDED.state_json, updated_at = NOW()
+                       RETURNING id""",
+                    (json.dumps({"fencing_token": int(token)}), int(run_id), int(strategy_id),
+                     int(epoch), int(epoch), int(token)),
+                )
+                ready = cur.fetchone() is not None
+                db.commit()
+                return ready
+            finally:
+                cur.close()
 
     def fail(self, command_id: int, error: str, *, retry_delay_seconds: int | None = None) -> None:
         if retry_delay_seconds is not None:
@@ -275,6 +412,7 @@ class StrategyCommandRepository:
                     SET owner_id = EXCLUDED.owner_id,
                         fencing_token = CASE
                             WHEN qd_strategy_runtime_leases.owner_id = EXCLUDED.owner_id
+                              AND qd_strategy_runtime_leases.lease_expires_at >= NOW()
                                 THEN qd_strategy_runtime_leases.fencing_token
                             ELSE qd_strategy_runtime_leases.fencing_token + 1
                         END,

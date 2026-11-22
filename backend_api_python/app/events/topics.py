@@ -12,6 +12,7 @@ from app.events.protocol import (
     OrderIntentEventV1,
     StrategyCommandV1,
     StrategyEvaluationBatchV1,
+    StrategyRuntimePrepareV1,
 )
 
 
@@ -83,6 +84,7 @@ def event_topic_map() -> dict[str, str]:
         MarketBarClosedV1.event_type: specs[0].name,
         StrategyCommandV1.event_type: specs[1].name,
         StrategyEvaluationBatchV1.event_type: specs[2].name,
+        StrategyRuntimePrepareV1.event_type: specs[2].name,
         OrderIntentEventV1.event_type: specs[3].name,
         OrderFillEventV1.event_type: specs[4].name,
     }

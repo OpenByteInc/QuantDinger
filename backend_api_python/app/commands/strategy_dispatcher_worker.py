@@ -57,6 +57,7 @@ def main() -> None:
                 now = time.monotonic()
                 if now - last_recovery >= recovery_interval:
                     try:
+                        dispatcher.prepare_due_runtimes()
                         recovery.publish_due()
                     except Exception:
                         logger.exception("Strategy bar recovery cycle failed")

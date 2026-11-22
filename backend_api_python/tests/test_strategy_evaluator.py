@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from app.events.evaluator import StrategyEvaluationBatchHandler
-from app.events.protocol import StrategyEvaluationBatchV1
+from app.events.protocol import StrategyEvaluationBatchV1, StrategyRuntimePrepareV1
 from app.services.event_inbox import InboxClaim
 
 
@@ -31,7 +31,6 @@ class FakeShardLeases:
         self.acquisitions = []
         self.releases = []
         self.released = []
-
     def acquire(self, **kwargs):
         self.acquisitions.append(kwargs)
         return self.token
@@ -199,3 +198,26 @@ def test_active_evaluator_waits_for_runtime_completion(monkeypatch):
     assert handler.snapshot()["evaluation_rebalance_released_strategies"] == 2
     handler.close()
     assert runtime_host.closed is True
+
+
+def test_prepare_uses_same_partition_without_evaluating_a_candle():
+    from app.events.topics import topic_for_event
+
+    host, inbox = FakeRuntimeHost(), FakeInbox()
+    # Preparation has no candle token; it cannot be mistaken for a signal event.
+    event = StrategyRuntimePrepareV1.create(strategy_shard=1, strategy_ids=[1, 129])
+    host.preparations = []
+    host.prepare = lambda sid, event, **kwargs: host.preparations.append(sid) or True
+    handler = StrategyEvaluationBatchHandler(
+        owner_id="worker", consumer_group="test", inbox=inbox,
+        shard_leases=FakeShardLeases(), subscriptions=FakeSubscriptions([1, 129]),
+        mode="active", runtime_host=host,
+    )
+    try:
+        assert topic_for_event(event.event_type) == topic_for_event(_batch().event_type)
+        assert handler.handle(event)
+        assert sorted(host.preparations) == [1, 129]
+        assert host.evaluations == []
+        assert handler.release_partition_keys({"strategy-shard:1"}) == 2
+    finally:
+        handler.close()

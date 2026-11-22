@@ -184,6 +184,14 @@ class TradingExecutor:
         with self.lock:
             self._runtime_fencing_tokens.pop(int(strategy_id), None)
 
+    def request_runtime_handoff(self, strategy_id: int) -> None:
+        """Fence and wake an old runtime without blocking the lease heartbeat."""
+        with self.lock:
+            runtime = self.running_strategies.get(int(strategy_id))
+            if runtime is not None:
+                self._runtime_handoff_ids.add(int(strategy_id))
+                runtime.cancel()
+
     def trigger_bar_evaluation(
         self,
         strategy_id: int,
@@ -417,7 +425,7 @@ class TradingExecutor:
             if callable(is_ready) and is_ready():
                 return True, ""
             time.sleep(0.1)
-        return True, ""
+        return False, "strategyRuntime.startFailed"
 
     def runtime_capacity_snapshot(self) -> Dict[str, int]:
         scheduler = self._scheduler.snapshot()
@@ -748,6 +756,7 @@ class TradingExecutor:
         event_subscription_repository = None
         state_store: RuntimeStateStore | None = None
         session: StrategyV2LiveSession | None = None
+        strategy = None
         try:
             strategy = self._load_strategy(strategy_id)
             if not strategy:
@@ -915,6 +924,8 @@ class TradingExecutor:
                 ),
             )
             primary = candidates[0]
+            if stop_event.is_set() or (self.runtime_guard and not self.runtime_guard(strategy_id)):
+                return
             runtime_run = ensure_strategy_run(
                 strategy_id=strategy_id,
                 user_id=user_id,
@@ -933,6 +944,8 @@ class TradingExecutor:
                     int(strategy.get("desired_runtime_epoch") or 1),
                 ),
             )
+            if self.external_bar_triggers and runtime_run.runtime_epoch != int(strategy.get("desired_runtime_epoch") or 1):
+                return
             run_id = int(runtime_run.strategy_run_id or 0)
             last_prices: dict[str, float] = {}
             last_price_seen_at: dict[str, float] = {}
@@ -1078,7 +1091,8 @@ class TradingExecutor:
                 risk_tick * 3.0,
                 min(30.0, float(trading_config.get("price_stale_after_seconds") or 10.0)),
             )
-            next_signal_poll = 0.0
+            next_signal_poll = float("inf") if self.external_bar_triggers else 0.0
+            signal_evaluation_enabled = not self.external_bar_triggers
             next_position_mark_at = 0.0
             last_signal_bar_token = None
             last_processed_frame_timestamp: pd.Timestamp | None = None
@@ -1094,6 +1108,15 @@ class TradingExecutor:
             from app.services.strategy_live_guard import resolve_strategy_direction_mode
 
             direction_mode = resolve_strategy_direction_mode(strategy)
+            if self.external_bar_triggers:
+                from app.services.strategy_command_repository import StrategyCommandRepository
+
+                if stop_event.is_set() or not StrategyCommandRepository().acknowledge_runtime_ready(
+                    strategy_id=strategy_id, run_id=run_id,
+                    epoch=int(strategy.get("desired_runtime_epoch") or 1),
+                    token=self.runtime_fencing_token(strategy_id),
+                ):
+                    return
             append_strategy_log(
                 strategy_id,
                 "info",
@@ -1101,12 +1124,17 @@ class TradingExecutor:
                 f"timeframe={frequency}, "
                 f"mode={execution_mode}, trigger={'bar_close_event' if event_driven_bars else 'runtime_poll'}",
             )
+            # A preparation event must not execute the initial trading callback.
+            # Yield makes scheduler readiness observable before the first risk tick.
+            if self.external_bar_triggers:
+                yield 0.0
 
             while self._is_strategy_running(strategy_id, stop_event):
                 cycle_started = time.monotonic()
                 bar_event_triggered = bar_event_pending.is_set()
                 if bar_event_triggered:
                     bar_event_pending.clear()
+                    signal_evaluation_enabled = True
                 wait_seconds = risk_tick
                 try:
                     references = session.context.order_references()
@@ -1373,7 +1401,7 @@ class TradingExecutor:
                                         ),
                                     },
                                 })
-                    if not equity_stop_reason and _signal_cycle_due(
+                    if not equity_stop_reason and signal_evaluation_enabled and _signal_cycle_due(
                         cycle_started=cycle_started,
                         next_signal_poll=next_signal_poll,
                         bar_event_triggered=bar_event_triggered,
@@ -1541,6 +1569,8 @@ class TradingExecutor:
                                 last_signal_bar_token = current_bar_token
                                 last_processed_frame_timestamp = latest_frame_timestamp
                         next_signal_poll = cycle_started + signal_poll
+                    if stop_event.is_set() or (self.runtime_guard and not self.runtime_guard(strategy_id)):
+                        break
                     state_store.save(
                         session.session_snapshot(),
                         min_interval_seconds=state_write_interval,
@@ -1658,7 +1688,11 @@ class TradingExecutor:
                 append_strategy_log(strategy_id, "error", format_market_data_log(exc.failure))
             else:
                 append_strategy_log(strategy_id, "error", exit_reason)
-            self._mark_stopped(strategy_id)
+            if not self.runtime_guard or self.runtime_guard(strategy_id):
+                self._mark_stopped(
+                    strategy_id,
+                    expected_epoch=int(strategy.get("desired_runtime_epoch") or 1) if strategy else None,
+                )
         finally:
             clear_signal_state = getattr(
                 self.order_gateway,
@@ -1667,7 +1701,7 @@ class TradingExecutor:
             )
             if callable(clear_signal_state):
                 clear_signal_state(run_id)
-            if state_store is not None:
+            if state_store is not None and (not self.runtime_guard or self.runtime_guard(strategy_id)):
                 state_store.flush()
             if session is not None:
                 try:
@@ -1691,6 +1725,20 @@ class TradingExecutor:
                 market_price_feed.release()
             with self.lock:
                 preserve_run = strategy_id in self._runtime_handoff_ids
+            if self.external_bar_triggers and self.runtime_guard and not self.runtime_guard(strategy_id):
+                # A replacement may already have resumed this run under a new lease.
+                preserve_run = True
+                from app.services.strategy_command_repository import StrategyCommandRepository
+
+                try:
+                    request = StrategyCommandRepository().runtime_request(strategy_id)
+                    preserve_run = bool(
+                        request.get("status") == "running"
+                        and int(request.get("desired_runtime_epoch") or 1)
+                        == int((strategy or {}).get("desired_runtime_epoch") or 1)
+                    )
+                except Exception:
+                    logger.warning("Unable to check run handoff state: strategy=%s", strategy_id, exc_info=True)
             if run_id > 0 and not preserve_run:
                 finish_strategy_run(run_id, reason=exit_reason)
             with self.lock:
@@ -3005,13 +3053,14 @@ class TradingExecutor:
         return True
 
     @staticmethod
-    def _mark_stopped(strategy_id: int) -> None:
+    def _mark_stopped(strategy_id: int, *, expected_epoch: int | None = None) -> None:
         try:
             with get_db_connection() as db:
                 cur = db.cursor()
                 cur.execute(
-                    "UPDATE qd_strategies_trading SET status = 'stopped', updated_at = NOW() WHERE id = %s",
-                    (strategy_id,),
+                    "UPDATE qd_strategies_trading SET status = 'stopped', updated_at = NOW() "
+                    "WHERE id = %s AND (%s IS NULL OR desired_runtime_epoch = %s)",
+                    (strategy_id, expected_epoch, expected_epoch),
                 )
                 db.commit()
                 cur.close()

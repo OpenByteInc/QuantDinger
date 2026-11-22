@@ -7,7 +7,7 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from app.events.protocol import EventEnvelope, StrategyEvaluationBatchV1
+from app.events.protocol import EventEnvelope, StrategyEvaluationBatchV1, StrategyRuntimePrepareV1
 from app.services.event_inbox import (
     EventInboxRepository,
     StrategyShardLeaseRepository,
@@ -83,7 +83,9 @@ class StrategyEvaluationBatchHandler:
         self.rebalance_released_strategies = 0
 
     def handle(self, event: EventEnvelope) -> bool:
-        if event.event_type != StrategyEvaluationBatchV1.event_type:
+        if event.event_type not in {
+            StrategyEvaluationBatchV1.event_type, StrategyRuntimePrepareV1.event_type,
+        }:
             return True
         self.received_batches += 1
         claim = self.inbox.claim(
@@ -126,7 +128,9 @@ class StrategyEvaluationBatchHandler:
                 self._strategies_by_shard[shard].update(running_ids)
                 futures = [
                     self._pool.submit(
-                        self.runtime_host.evaluate,
+                        self.runtime_host.prepare
+                        if event.event_type == StrategyRuntimePrepareV1.event_type
+                        else self.runtime_host.evaluate,
                         strategy_id,
                         event,
                         timeout=float(

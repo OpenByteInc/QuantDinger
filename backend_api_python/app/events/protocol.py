@@ -236,6 +236,28 @@ class StrategyEvaluationBatchV1:
         )
 
 
+class StrategyRuntimePrepareV1:
+    """Wake a shard to prepare runtimes, without evaluating a market bar."""
+
+    event_type = "strategy.runtime.prepare.v1"
+    schema_version = 1
+
+    @classmethod
+    def create(cls, *, strategy_shard: int, strategy_ids: list[int]) -> EventEnvelope:
+        return EventEnvelope(
+            event_id=str(uuid4()),
+            event_type=cls.event_type,
+            schema_version=cls.schema_version,
+            occurred_at=_utc_iso(),
+            partition_key=f"strategy-shard:{int(strategy_shard)}",
+            producer="strategy-due-dispatcher",
+            payload={
+                "strategy_shard": int(strategy_shard),
+                "strategy_ids": sorted({int(value) for value in strategy_ids}),
+            },
+        )
+
+
 class OrderIntentEventV1:
     event_type = "order.intent.v1"
     schema_version = 1
@@ -301,4 +323,5 @@ __all__ = [
     "OrderIntentEventV1",
     "StrategyCommandV1",
     "StrategyEvaluationBatchV1",
+    "StrategyRuntimePrepareV1",
 ]

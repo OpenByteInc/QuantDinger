@@ -46,6 +46,7 @@ class TradingWorker:
         self._last_restore_check = 0.0
         self._lease_losses = []
         self._distributed_strategy_ids: set[int] = set()
+        self._distributed_runtime_epochs: dict[int, int] = {}
         self._remote_strategy_ids: set[int] = set()
         from app.services.grid.actor import GridActorMailbox
 
@@ -204,6 +205,13 @@ class TradingWorker:
     def _execute(self, command: StrategyCommand) -> None:
         self._lease_heartbeat.watch_command(command.id, self.command_lease_seconds)
         try:
+            expected_epoch = int(command.payload.get("runtime_epoch") or command.payload.get("requested_runtime_epoch") or 0)
+            if expected_epoch:
+                request = self.repository.runtime_request(command.strategy_id)
+                if int(request.get("desired_runtime_epoch") or 0) != expected_epoch:
+                    if self._lease_heartbeat.command_valid(command.id):
+                        self.repository.complete(command.id, result={"status": "skipped", "reason": "desired_state_changed"})
+                    return
             if command.command_type == "start":
                 result = self._start(command.strategy_id)
             elif command.command_type == "stop":
@@ -217,18 +225,22 @@ class TradingWorker:
                         close_positions=bool(command.payload.get("close_positions")),
                     )
             elif command.command_type == "restart":
-                from app.services.strategy import StrategyService
-
-                if not StrategyService().request_strategy_runtime_restart(
-                    command.strategy_id,
-                    user_id=command.user_id or None,
-                ):
-                    raise RuntimeError("Strategy is not running or no longer exists.")
-                self._stop_strategy(command.strategy_id, persist_status=False)
+                expected_epoch = self.repository.begin_restart(command)
+                if not command.payload.get("runtime_epoch") or command.strategy_id in self._local_strategy_ids():
+                    self._stop_strategy(command.strategy_id, persist_status=False)
                 result = self._start(command.strategy_id)
             else:
                 result = self._reconcile(command.strategy_id)
             if self._lease_heartbeat.command_valid(command.id):
+                if result.get("status") == "starting":
+                    from app.services.strategy_v2.sandbox import live_sandbox_timeout_seconds
+
+                    if command.elapsed_seconds >= live_sandbox_timeout_seconds() + 60.0:
+                        raise RuntimeError("strategyRuntime.startFailed")
+                    self.repository.defer_start(
+                        command.id, owner_id=self.worker_id, result=result,
+                    )
+                    return
                 self._lease_heartbeat.forget_command()
                 self.repository.complete(command.id, result=result)
         except Exception as exc:
@@ -250,9 +262,12 @@ class TradingWorker:
             else:
                 self.repository.fail(command.id, str(exc))
                 if command.command_type in {"start", "restart"}:
-                    from app.services.strategy import StrategyService
+                    from app.services.trading_executor import TradingExecutor
 
-                    StrategyService().update_strategy_status(command.strategy_id, "stopped")
+                    TradingExecutor._mark_stopped(
+                        command.strategy_id,
+                        expected_epoch=expected_epoch or int((command.result or {}).get("runtime_epoch") or 0) or None,
+                    )
         finally:
             self._lease_heartbeat.forget_command()
 
@@ -267,21 +282,28 @@ class TradingWorker:
                 StrategyEventSubscriptionPlanner,
             )
 
-            streams = StrategyEventSubscriptionPlanner().register(strategy_id)
-            if streams:
+            epoch = int(strategy.get("desired_runtime_epoch") or 1)
+            registered = self._distributed_runtime_epochs.get(strategy_id) == epoch
+            streams = set() if registered else StrategyEventSubscriptionPlanner().register(strategy_id)
+            if streams or registered:
                 if self._global_services_leader:
                     register_streams = getattr(self.executor, "register_market_streams", None)
-                    if callable(register_streams):
+                    if streams and callable(register_streams):
                         register_streams(strategy_id, streams)
                 self._distributed_strategy_ids.add(strategy_id)
+                self._distributed_runtime_epochs[strategy_id] = epoch
+                request = self.repository.runtime_request(strategy_id)
                 return {
                     "strategy_id": strategy_id,
                     "runtime_owner": "strategy-evaluator-group",
-                    "status": "running",
+                    "status": "running" if request.get("ready") else "starting",
+                    "runtime_epoch": int(strategy.get("desired_runtime_epoch") or 1),
                     "trigger": "distributed_bar",
                 }
         if strategy_id in self._local_strategy_ids():
-            return {"strategy_id": strategy_id, "runtime_owner": self.worker_id, "status": "running"}
+            ready, _hint = self.executor.wait_strategy_running(strategy_id, timeout=0.5)
+            return {"strategy_id": strategy_id, "runtime_owner": self.worker_id,
+                    "status": "running" if ready else "starting"}
         if not self._acquire_runtime(strategy_id):
             if self._has_active_strategy_lease(strategy_id):
                 return {
@@ -306,6 +328,8 @@ class TradingWorker:
             }
         alive, hint = self.executor.wait_strategy_running(strategy_id, timeout=3.0)
         if not alive:
+            if strategy_id in self._local_strategy_ids():
+                return {"strategy_id": strategy_id, "runtime_owner": self.worker_id, "status": "starting"}
             append_strategy_log(strategy_id, "error", "strategyRuntime.startFailed")
             stopped = self.executor.stop_strategy(strategy_id, persist_status=False)
             if stopped:
@@ -338,6 +362,7 @@ class TradingWorker:
             if callable(unregister_streams):
                 unregister_streams(strategy_id)
             self._distributed_strategy_ids.discard(strategy_id)
+            self._distributed_runtime_epochs.pop(strategy_id, None)
             self._remote_strategy_ids.discard(strategy_id)
         if close_positions:
             result = self.executor.stop_strategy_with_policy(
@@ -500,6 +525,7 @@ class TradingWorker:
                 self._lease_heartbeat.watch_global(self._global_lease_key)
                 self._global_services_leader = True
                 self._distributed_strategy_ids.clear()
+                self._distributed_runtime_epochs.clear()
                 self._remote_strategy_ids.clear()
                 self._last_restore_check = 0.0
             from app.startup import _start_trading_support_services
