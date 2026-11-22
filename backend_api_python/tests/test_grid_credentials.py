@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -123,37 +124,56 @@ def test_grid_startup_places_limits_when_client_ok():
             open_orders = []
             repo.list_open.side_effect = lambda *_args: open_orders
             repo.has_open_for_cell.return_value = False
-            repo.insert.side_effect = lambda order: open_orders.append(order) or len(open_orders)
-            cell_repo_cls.return_value.list_cells.return_value = []
-            runner = GridRestingRunner(
-                2,
-                "BTC/USDT",
-                {
-                    "leverage": 5,
-                    "market_type": "swap",
-                    "initial_capital": 1000,
-                    "bot_params": {
-                        "upperPrice": 100000,
-                        "lowerPrice": 90000,
-                        "gridCount": 5,
-                        "amountPerGrid": 50,
-                        "gridDirection": "long",
-                        "initialPositionPct": 0,
-                    },
-                },
-                {
-                    "exchange_id": "okx",
-                    "credential_id": 9,
-                    "api_key": "k",
-                    "secret_key": "s",
-                    "passphrase": "p",
-                },
-                user_id=1,
-                initial_capital=1000,
-                enqueue_market_fn=_enqueue,
-                create_client_fn=_create_client,
+            repo.reserve_pending.side_effect = (
+                lambda order, _expected: open_orders.append(order) or len(open_orders)
             )
-            ok, msg = runner.startup(95000.0)
+
+            def _acknowledge(order_id, exchange_order_id):
+                order = open_orders[order_id - 1]
+                order.exchange_order_id = exchange_order_id
+                order.status = "open"
+                return True
+
+            repo.acknowledge_submission.side_effect = _acknowledge
+            cells = cell_repo_cls.return_value
+            cells.list_cells.return_value = []
+            cells.update_state.return_value = True
+            with patch(
+                "app.services.execution_streams.repository.ExecutionEventRepository.register_binding"
+            ), patch(
+                "app.utils.db.get_db_transaction", return_value=nullcontext()
+            ), patch(
+                "app.services.live_trading.fill_accounting.lock_strategy_fills"
+            ):
+                runner = GridRestingRunner(
+                    2,
+                    "BTC/USDT",
+                    {
+                        "leverage": 5,
+                        "market_type": "swap",
+                        "initial_capital": 1000,
+                        "bot_params": {
+                            "upperPrice": 100000,
+                            "lowerPrice": 90000,
+                            "gridCount": 5,
+                            "amountPerGrid": 50,
+                            "gridDirection": "long",
+                            "initialPositionPct": 0,
+                        },
+                    },
+                    {
+                        "exchange_id": "okx",
+                        "credential_id": 9,
+                        "api_key": "k",
+                        "secret_key": "s",
+                        "passphrase": "p",
+                    },
+                    user_id=1,
+                    initial_capital=1000,
+                    enqueue_market_fn=_enqueue,
+                    create_client_fn=_create_client,
+                )
+                ok, msg = runner.startup(95000.0)
     assert ok is True
     assert msg == ""
     assert place.called

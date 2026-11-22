@@ -10,7 +10,6 @@ from app.workers.trading import TradingWorker
 from app.services.pending_order_worker import PendingOrderWorker
 from app.services.grid.exchange_orders import cancel_grid_order
 from app.services.live_trading.gate import GateSpotClient, GateUsdtFuturesClient
-from app.services.live_trading.base import LiveTradingError
 
 
 class LeaseDatabase:
@@ -184,12 +183,23 @@ def test_gate_grid_cancel_uses_native_signature(client_class, path):
     client._signed_request.assert_called_once_with('DELETE', path, **expected)
 
 
-def test_gate_cancel_without_confirmed_order_id_is_not_reported_successful():
-    client = GateSpotClient.__new__(GateSpotClient)
-    client._signed_request = Mock()
-    with pytest.raises(LiveTradingError):
-        cancel_grid_order(client, symbol='BTC/USDT', market_type='spot', client_order_id='grid-168-1')
-    client._signed_request.assert_not_called()
+@pytest.mark.parametrize('client_class,path', [
+    (GateSpotClient, '/api/v4/spot/orders/t-grid-168-1'),
+    (GateUsdtFuturesClient, '/api/v4/futures/usdt/orders/t-grid-168-1'),
+])
+def test_gate_cancel_recovers_with_exchange_custom_order_id(client_class, path):
+    client = client_class.__new__(client_class)
+    client._signed_request = Mock(return_value={'id': '28201'})
+
+    cancel_grid_order(
+        client,
+        symbol='BTC/USDT',
+        market_type='spot',
+        client_order_id='grid-168-1',
+    )
+
+    expected = {'params': {'currency_pair': 'BTC_USDT'}} if client_class is GateSpotClient else {}
+    client._signed_request.assert_called_once_with('DELETE', path, **expected)
 
 
 def test_heartbeat_uses_a_bounded_dedicated_connection(monkeypatch):
