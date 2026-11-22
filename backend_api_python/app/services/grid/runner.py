@@ -7,6 +7,7 @@ from typing import Any, Callable, Dict, Optional
 
 from app.services.grid.config import GridBotConfig
 from app.services.grid.engine import GridEngine
+from app.services.grid.resting_orders_repo import GridOrderLedgerUnavailable
 from app.services.grid.validator import validate_grid_config
 from app.services.bot_scripts.grid_runtime import prepare_bot_market_guards
 from app.utils.logger import get_logger
@@ -366,7 +367,11 @@ class GridRestingRunner:
             and now - self._last_operational_check_ts < 5.0
         ):
             return dict(self._last_operational_snapshot)
-        orders = list(self._engine._orders.list_open(self.strategy_id) or [])
+        try:
+            orders = list(self._engine._orders.list_open(self.strategy_id) or [])
+        except GridOrderLedgerUnavailable:
+            return {**self._last_operational_snapshot, "healthy": False,
+                    "error": "grid_order_ledger_unavailable"}
         entries = [order for order in orders if str(order.purpose or "") in {"long_entry", "short_entry"}]
         unverified = [order for order in orders if not str(order.exchange_order_id or "").strip()]
         expected = bool(
@@ -393,6 +398,24 @@ class GridRestingRunner:
         return dict(snapshot)
 
     def tick(
+        self,
+        current_price: float,
+        *,
+        high: Optional[float] = None,
+        low: Optional[float] = None,
+        bars_df: Any = None,
+        is_closed_bar: bool = False,
+    ) -> None:
+        try:
+            self._tick(current_price, high=high, low=low, bars_df=bars_df, is_closed_bar=is_closed_bar)
+            self._ledger_outage_logged = False
+        except GridOrderLedgerUnavailable:
+            self._last_operational_check_ts = 0.0
+            if not getattr(self, "_ledger_outage_logged", False):
+                logger.warning("Grid ledger unavailable sid=%s; retaining exchange orders", self.strategy_id)
+                self._ledger_outage_logged = True
+
+    def _tick(
         self,
         current_price: float,
         *,

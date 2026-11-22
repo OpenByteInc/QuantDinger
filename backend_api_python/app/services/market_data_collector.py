@@ -16,6 +16,7 @@
 
 import copy
 import os
+import re
 import tempfile
 import threading
 import time
@@ -32,6 +33,7 @@ from app.services.kline import KlineService
 from app.services.market.technical_indicators import calculate_indicators
 from app.utils.logger import get_logger
 from app.config import APIKeys, FinnhubConfig
+from app.research.fundamentals import normalize_fundamentals
 
 logger = get_logger(__name__)
 
@@ -211,6 +213,7 @@ class MarketDataCollector:
                                 (
                                     "hk_security_profile", "southbound_flow",
                                     "analyst_expectations", "hk_macro",
+                                    "hkex_announcements", "short_selling", "ccass", "ah_premium",
                                 )
                                 if key == "hk_research" else
                                 ("forex_drivers", "futures_curve", "futures_positioning")
@@ -225,6 +228,7 @@ class MarketDataCollector:
                                 "research_provider_status"
                             )
                             data["_meta"][status_key] = result.get("_provider_status") or {}
+                            data["_meta"]["research_provider_status"] = result.get("_provider_status") or {}
                         else:
                             data[key] = result
                         if key not in data["_meta"]["success_items"]:
@@ -308,16 +312,24 @@ class MarketDataCollector:
                 company_name = None
                 if data.get("company"):
                     company_name = data["company"].get("name")
+                company_name = company_name or ((data.get("fundamental") or {}).get("identity") or {}).get("company_name")
                 
                 news_result = self._get_news(market, symbol, company_name, timeout=8)
                 data["news"] = news_result.get("news", [])
                 data["sentiment"] = news_result.get("sentiment", {})
+                data["_meta"]["news_collection"] = news_result.get("collection") or {}
+                disclosure_key = {"CNStock": "exchange_disclosures", "HKStock": "hkex_announcements"}.get(market)
+                if disclosure_key and news_result.get("disclosures"):
+                    data[disclosure_key] = news_result["disclosures"]
                 
                 if data["news"]:
                     data["_meta"]["success_items"].append("news")
+                elif (news_result.get("collection") or {}).get("status") == "fetch_failed":
+                    data["_meta"]["failed_items"].append("news")
             except Exception as e:
                 logger.warning(f"News fetch failed: {e}")
                 data["_meta"]["failed_items"].append("news")
+                data["_meta"]["news_collection"] = {"status": "fetch_failed", "providers": {}}
         
         # The evidence snapshot's retrieval timestamp represents completion,
         # so provider observations collected during this run can never appear
@@ -526,7 +538,7 @@ class MarketDataCollector:
         with lock:
             cached = cache.get(cache_key)
             if cached and float(cached.get("expires_at") or 0) > now:
-                return copy.deepcopy(cached.get("value"))
+                return normalize_fundamentals(cached.get("value"))
 
         persisted_state: Optional[Dict[str, Any]] = None
         try:
@@ -578,6 +590,7 @@ class MarketDataCollector:
                     refresh_failed=True,
                 )
         if result:
+            result = normalize_fundamentals(result)
             try:
                 ttl_seconds = max(60, int(os.getenv("AI_FUNDAMENTAL_CACHE_TTL_SEC", "1800")))
             except (TypeError, ValueError):
@@ -689,7 +702,7 @@ class MarketDataCollector:
                             result[k] = v
 
             # Tier 3: Twelve Data financial statements (globally stable, priority for overseas)
-            _growth_keys = ("revenue_growth", "debt_to_equity", "current_ratio", "free_cash_flow")
+            _growth_keys = ("revenue_growth", "profit_margin", "debt_to_equity", "current_ratio", "free_cash_flow")
             needs_financials = any(result.get(k) is None for k in _growth_keys)
             has_statements = "financial_statements" in result
             if needs_financials or not has_statements:
@@ -724,8 +737,12 @@ class MarketDataCollector:
                 if fin_data:
                     result["source"] += "+akshare_financials"
                     for k, v in fin_data.items():
+                        if k == "field_metadata":
+                            continue
                         if v is not None and result.get(k) is None:
                             result[k] = v
+                            if k in (fin_data.get("field_metadata") or {}):
+                                result.setdefault("field_metadata", {})[k] = fin_data["field_metadata"][k]
                     filled = sum(1 for k in _growth_keys if result.get(k) is not None)
                     logger.info("CN/HK AkShare financial indicators for %s:%s: %d/%d growth keys filled",
                                 market, symbol, filled, len(_growth_keys))
@@ -870,6 +887,8 @@ class MarketDataCollector:
             ("pe_ratio", "trailingPE", "multiple", "ttm", None),
             ("pb_ratio", "priceToBook", "multiple", "current", None),
             ("roe", "returnOnEquity", "percent", "ttm", lambda value: float(value) * 100.0),
+            ("profit_margin", "profitMargins", "percent", "ttm", lambda value: float(value) * 100.0),
+            ("current_ratio", "currentRatio", "multiple", "latest_quarter", None),
             ("revenue_growth", "revenueGrowth", "percent", "ttm_yoy", lambda value: float(value) * 100.0),
             ("debt_to_equity", "debtToEquity", "multiple", "latest_quarter", lambda value: float(value) / 100.0),
             ("revenue", "totalRevenue", "currency", "ttm", None),
@@ -879,7 +898,7 @@ class MarketDataCollector:
             ("total_debt", "totalDebt", "currency", "latest_quarter", None),
             ("free_cash_flow", "freeCashflow", "currency", "ttm", None),
             ("shares_outstanding", "sharesOutstanding", "shares", "current", None),
-            ("dividend_yield", "dividendYield", "percent", "annualized", lambda value: float(value) * 100.0),
+            ("dividend_yield", "dividendYield", "percent", "annualized", None),
             ("eps", "trailingEps", "currency_per_share", "ttm", None),
         ):
             fill(key, info.get(info_key), unit=unit, period_type=period_type, transform=transform)
@@ -928,10 +947,16 @@ class MarketDataCollector:
             currency=info.get("financialCurrency") or info.get("currency") or ("HKD" if is_hk else "CNY"),
         )
         if statements:
-            yahoo_period = ((statements.get("latest_quarter") or {}).get("period_end"))
-            local_period = ((result.get("financial_statements") or {}).get("latest_quarter") or {}).get("period_end")
-            if yahoo_period or not local_period:
-                result["financial_statements"] = statements
+            local_statements = result.setdefault("financial_statements", {})
+            for period_key in ("latest_quarter", "ttm", "latest_report", "latest_annual"):
+                candidate = statements.get(period_key) or {}
+                existing = local_statements.get(period_key) or {}
+                if candidate and (not existing or str(candidate.get("period_end") or "") > str(existing.get("period_end") or "")):
+                    local_statements[period_key] = candidate
+            # Keep legacy sections for callers while preserving newer dated periods.
+            for section, value in statements.items():
+                local_statements.setdefault(section, value)
+            statements = local_statements
             latest_quarter = statements.get("latest_quarter") or {}
             latest_income = latest_quarter.get("income_statement") or statements.get("income_statement") or {}
             latest_balance = latest_quarter.get("balance_sheet") or statements.get("balance_sheet") or {}
@@ -1089,7 +1114,7 @@ class MarketDataCollector:
                 set_metric('pe_ratio', info.get('trailingPE') or info.get('forwardPE'), source="yfinance", unit="multiple", period_type="ttm")
                 set_metric('pb_ratio', info.get('priceToBook'), source="yfinance", unit="multiple", period_type="current")
                 set_metric('market_cap', info.get('marketCap'), source="yfinance", unit="currency", period_type="current")
-                set_metric('dividend_yield', info.get('dividendYield'), source="yfinance", unit="percent", period_type="annualized", transform=lambda v: float(v) * 100.0)
+                set_metric('dividend_yield', info.get('dividendYield'), source="yfinance", unit="percent", period_type="annualized")
                 set_metric('beta', info.get('beta'), source="yfinance", unit="multiple", period_type="current")
                 set_metric('52w_high', info.get('fiftyTwoWeekHigh'), source="yfinance", unit="currency_per_share", period_type="52_week")
                 set_metric('52w_low', info.get('fiftyTwoWeekLow'), source="yfinance", unit="currency_per_share", period_type="52_week")
@@ -1205,6 +1230,11 @@ class MarketDataCollector:
 
         def sum_latest(frame: pd.DataFrame, names: tuple, count: int = 4) -> Optional[float]:
             cols = columns(frame)[:count]
+            if len(cols) != count or not all(
+                60 <= (pd.Timestamp(left) - pd.Timestamp(right)).days <= 110
+                for left, right in zip(cols, cols[1:])
+            ):
+                return None
             values = [pick(frame, names, col) for col in cols]
             clean = [value for value in values if value is not None]
             return sum(clean) if len(clean) == count else None
@@ -1261,9 +1291,10 @@ class MarketDataCollector:
 
             q_inc_cols = columns(q_inc)
             derived: Dict[str, Any] = {}
-            if len(q_inc_cols) >= 5:
+            prior_year_col = next((col for col in q_inc_cols[1:] if 350 <= (pd.Timestamp(q_inc_cols[0]) - pd.Timestamp(col)).days <= 380), None)
+            if prior_year_col is not None:
                 latest_revenue = pick(q_inc, income_fields["total_revenue"], q_inc_cols[0])
-                prior_year_revenue = pick(q_inc, income_fields["total_revenue"], q_inc_cols[4])
+                prior_year_revenue = pick(q_inc, income_fields["total_revenue"], prior_year_col)
                 if latest_revenue is not None and prior_year_revenue not in (None, 0):
                     derived["revenue_growth"] = (latest_revenue / prior_year_revenue - 1.0) * 100.0
                     derived["revenue_growth_basis"] = "latest_quarter_yoy"
@@ -1296,18 +1327,22 @@ class MarketDataCollector:
             ttm_derived: Dict[str, Any] = {}
             if ttm_income.get("total_revenue") not in (None, 0) and ttm_income.get("net_income") is not None:
                 ttm_derived["profit_margin"] = ttm_income["net_income"] / ttm_income["total_revenue"] * 100.0
-            if equity not in (None, 0) and ttm_income.get("net_income") is not None:
+            if equity not in (None, 0) and ttm_income.get("net_income") is not None and latest_q_bs.get("period_end") == latest_q_inc.get("period_end"):
                 ttm_derived["roe"] = ttm_income["net_income"] / equity * 100.0
+            income_complete = any(value is not None for value in ttm_income.values())
+            cash_complete = any(value is not None for value in ttm_cash.values())
+            ttm_income["period_end"] = latest_q_inc.get("period_end")
+            ttm_cash["period_end"] = latest_q_cf.get("period_end")
             ttm = {
-                "period_end": latest_quarter.get("period_end"),
+                "period_end": latest_q_inc.get("period_end") or latest_q_cf.get("period_end"),
                 "period_type": "ttm",
                 "currency": currency,
                 "source": "yfinance_derived_from_quarters",
                 "income_statement": ttm_income,
                 "cash_flow": ttm_cash,
                 "derived": ttm_derived,
-                "complete_quarters": min(len(columns(q_inc)), len(columns(q_cf)), 4),
-            }
+                "complete_quarters": 4 if income_complete and cash_complete else 0,
+            } if income_complete or cash_complete else {}
 
             annual_bs = statement(a_bs, balance_fields, "annual")
             annual_inc = statement(a_inc, income_fields, "annual")
@@ -1326,16 +1361,24 @@ class MarketDataCollector:
             if not quarter_dates and not annual_dates:
                 return None
 
-            # Compatibility aliases now intentionally point to the latest reported quarter.
+            period_key = "latest_quarter"
+            if len(q_inc_cols) >= 2 and (pd.Timestamp(q_inc_cols[0]) - pd.Timestamp(q_inc_cols[1])).days > 120:
+                period_key = "latest_report"
+                latest_quarter["period_type"] = "reported_interim"
+                latest_q_inc["period_type"] = "reported_interim"
+                derived["revenue_growth_basis"] = "reported_period_yoy"
+            q_cf_cols = columns(q_cf)
+            if len(q_cf_cols) >= 2 and (pd.Timestamp(q_cf_cols[0]) - pd.Timestamp(q_cf_cols[1])).days > 120:
+                latest_q_cf["period_type"] = "reported_interim"
             return {
-                "latest_quarter": latest_quarter,
+                period_key: latest_quarter,
                 "ttm": ttm,
                 "latest_annual": latest_annual,
                 "balance_sheet": latest_q_bs or annual_bs,
                 "income_statement": latest_q_inc or annual_inc,
                 "cash_flow": latest_q_cf or annual_cf,
                 "_meta": {
-                    "preferred_basis": "latest_reported_quarter",
+                    "preferred_basis": "latest_reported_quarter" if period_key == "latest_quarter" else "latest_reported_period",
                     "periods_separated": True,
                     "source": "yfinance",
                     "currency": currency,
@@ -2517,7 +2560,7 @@ class MarketDataCollector:
                     raw_news = self._finnhub_client.company_news(symbol, _from=start_date, to=end_date)
                 elif market == 'Crypto':
                     raw_news = self._finnhub_client.general_news('crypto', min_id=0)
-                elif market != 'CNStock':
+                elif market not in {'CNStock', 'HKStock'}:
                     raw_news = self._finnhub_client.general_news('general', min_id=0)
                 
                 if raw_news:
@@ -2545,6 +2588,9 @@ class MarketDataCollector:
                             "source": item.get('source', 'Finnhub'),
                             "url": item.get('url', ''),
                             "sentiment": item.get('sentiment', 'neutral'),
+                            "asset_relevance": "direct" if market == "USStock" else self._news_relevance(
+                                market, symbol, company_name, f"{item.get('headline', '')} {item.get('summary', '')}"
+                            ),
                         })
                     logger.info(f"Finnhub 新闻获取成功: {len(news_list)} 条")
             except Exception as e:
@@ -2564,9 +2610,20 @@ class MarketDataCollector:
                 'message': 'Finnhub social sentiment is skipped in free-only mode.',
             }
         
-        if len(news_list) < 5:
-            search_news = self._get_news_from_search(market, symbol, company_name)
+        from app.data_providers.asset_events import collect_asset_events
+
+        events = collect_asset_events(market, symbol, company_name or "")
+        news_list.extend(events["news"])
+        collection = copy.deepcopy(events["collection"])
+        if not any(item.get("asset_relevance") in {"direct", "material"} for item in news_list):
+            search_status = {}
+            search_news = self._get_news_from_search(market, symbol, company_name, diagnostics=search_status)
             news_list.extend(search_news)
+            collection["providers"]["search"] = search_status
+        if any(item.get("asset_relevance") in {"direct", "material"} for item in news_list):
+            collection["status"] = "available"
+        elif any(provider.get("status") in {"available", "checked_empty"} for provider in collection["providers"].values()):
+            collection["status"] = "checked_empty"
         
         # Broad global headlines are disabled by default. They are useful as
         # background context, but injecting them into every asset report made
@@ -2587,15 +2644,21 @@ class MarketDataCollector:
                 seen_titles.add(title)
                 unique_news.append(item)
         
-        unique_news.sort(key=lambda x: x.get('datetime', ''), reverse=True)
+        unique_news.sort(key=lambda x: (x.get("asset_relevance") in {"direct", "material"},
+                                        x.get("event_kind") == "issuer_disclosure", x.get('datetime', '')), reverse=True)
+        direct_news = [item for item in unique_news[:15] if item.get("asset_relevance") in {"direct", "material"}]
+        if direct_news and all(not item.get("summary") for item in direct_news):
+            collection["status"] = "headline_only"
         
         return {
             "news": unique_news[:15],  # 最多15条
             "sentiment": sentiment,
+            "collection": collection,
+            "disclosures": events["disclosures"],
         }
     
     def _get_news_from_search(
-        self, market: str, symbol: str, company_name: str = None
+        self, market: str, symbol: str, company_name: str = None, *, diagnostics: dict | None = None
     ) -> List[Dict[str, Any]]:
         """
         从搜索引擎获取新闻
@@ -2603,12 +2666,15 @@ class MarketDataCollector:
         使用增强的搜索服务 (Tavily/Google/Bing/SerpAPI)
         """
         news_list = []
+        diagnostics = diagnostics if diagnostics is not None else {}
+        diagnostics["status"] = "fetch_failed"
         
         try:
             from app.services.search import get_search_service
             search_service = get_search_service()
             
             if not search_service.is_available:
+                diagnostics["status"] = "not_configured"
                 return news_list
             
             search_name = company_name or symbol
@@ -2621,30 +2687,47 @@ class MarketDataCollector:
             )
             
             if response.success and response.results:
+                diagnostics["status"] = "available"
                 for result in response.results:
                     item = {
-                        "datetime": result.published_date or datetime.now().strftime('%Y-%m-%d'),
+                        "datetime": result.published_date or "",
                         "headline": result.title,
                         "summary": result.snippet[:200] if result.snippet else '',
                         "source": f"搜索:{result.source}",
                         "url": result.url,
                         "sentiment": result.sentiment,
+                        "evidence_depth": "snippet",
+                        "event_kind": "news",
                     }
-                    if market == 'CNStock':
-                        # Search ranking alone does not establish issuer relevance.
-                        text = f"{result.title} {result.snippet}".casefold()
-                        code = ''.join(char for char in str(symbol) if char.isdigit())
-                        names = [str(company_name or '').strip(), code if len(code) == 6 else '']
-                        item["asset_relevance"] = (
-                            "direct" if any(name and name.casefold() in text for name in names)
-                            else "background"
-                        )
+                    item["asset_relevance"] = self._news_relevance(
+                        market, symbol, company_name, f"{result.title} {result.snippet}"
+                    )
                     news_list.append(item)
                 logger.info(f"搜索引擎新闻补充: {len(news_list)} 条 (来源: {response.provider})")
+            elif response.success:
+                diagnostics["status"] = "checked_empty"
         except Exception as e:
             logger.debug(f"搜索引擎新闻获取失败: {e}")
         
         return news_list
+
+    @staticmethod
+    def _news_relevance(market: str, symbol: str, company_name: str | None, text: str) -> str:
+        """Search ranking and general-market feeds do not establish issuer relevance."""
+        text = text.casefold()
+        name = str(company_name or "").strip().casefold()
+        if name and name in text:
+            return "direct"
+        if market in {"CNStock", "HKStock"}:
+            code = "".join(char for char in str(symbol).split(".")[0] if char.isdigit())
+            codes = {code, code.lstrip("0")} if market == "HKStock" else {code}
+            if any(code and re.search(rf"(?<!\d){re.escape(code)}(?!\d)", text) for code in codes):
+                return "direct"
+        else:
+            code = str(symbol).split("/")[0].split("@")[0].casefold()
+            if code and re.search(rf"(?<![a-z0-9]){re.escape(code)}(?![a-z0-9])", text):
+                return "direct"
+        return "background"
     
     def _get_global_major_events(self) -> List[Dict]:
         """
@@ -2690,7 +2773,7 @@ class MarketDataCollector:
                             
                             if any(keyword in text for keyword in major_event_keywords):
                                 news_list.append({
-                                    "datetime": result.published_date or datetime.now().strftime('%Y-%m-%d %H:%M'),
+                                    "datetime": result.published_date or '',
                                     "headline": result.title,
                                     "summary": result.snippet[:300] if result.snippet else '',
                                     "source": f"全球事件:{result.source}",

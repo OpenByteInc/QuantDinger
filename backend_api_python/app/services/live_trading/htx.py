@@ -22,6 +22,7 @@ from urllib.parse import urlencode, urlparse
 from app.services.live_trading.base import BaseRestClient, LiveOrderResult, LiveTradingError
 from app.services.live_trading import htx_v5
 from app.services.live_trading.symbols import to_htx_contract_code, to_htx_spot_symbol
+from app.services.pending_orders.error_classification import classify_exchange_order_error
 from app.utils.numeric_precision import floor_decimal_to_step
 
 logger = logging.getLogger(__name__)
@@ -752,6 +753,15 @@ class HtxClient(BaseRestClient):
                     return self._place_swap_order_v1(req)
                 except LiveTradingError as e:
                     last_err = e
+                    category = str(
+                        classify_exchange_order_error(e).get("category") or ""
+                    )
+                    if category in {
+                        "transport",
+                        "rate_limit",
+                        "market_unavailable",
+                    }:
+                        raise
                     if htx_v5.is_multi_asset_v1_unavailable(str(e)):
                         skip_v1 = True
                         logger.info(

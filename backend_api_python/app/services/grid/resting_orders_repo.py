@@ -6,12 +6,16 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from app.utils.db import get_db_connection
+from app.utils.db import get_db_connection, get_db_transaction
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
 OPEN_STATUSES = ("pending", "open", "partial")
+
+
+class GridOrderLedgerUnavailable(RuntimeError):
+    """The order ledger cannot be read; it must not be treated as empty."""
 
 
 def _ensure_table() -> None:
@@ -115,6 +119,53 @@ class GridRestingOrder:
 class GridRestingOrderRepository:
     def __init__(self) -> None:
         _ensure_table()
+
+    @staticmethod
+    def _reservation_snapshot(orders: List[GridRestingOrder]) -> list:
+        return sorted(
+            (int(row.id or 0), row.status, float(row.quantity), float(row.filled_quantity),
+             float(row.processed_fill_qty))
+            for row in orders
+        )
+
+    def reserve_pending(
+        self, order: GridRestingOrder, expected_orders: List[GridRestingOrder],
+    ) -> Optional[int]:
+        """Commit an intent before submitting; serialize against fills and other intents."""
+        from app.services.live_trading.fill_accounting import lock_strategy_fills
+
+        try:
+            with get_db_transaction():
+                lock_strategy_fills(order.strategy_id)
+                current = self.list_open(order.strategy_id)
+                if self._reservation_snapshot(current) != self._reservation_snapshot(expected_orders):
+                    return None
+                if any(row.status == "pending" for row in current):
+                    return None
+                order.status = "pending"
+                identifier = self.insert(order)
+                if not identifier:
+                    raise RuntimeError("Grid pending intent could not be persisted")
+            return identifier
+        except Exception as exc:
+            logger.warning("grid pending reservation failed sid=%s: %s", order.strategy_id, exc)
+            return None
+
+    def acknowledge_submission(self, order_id: int, exchange_order_id: str) -> bool:
+        """Never regress an order already reconciled by REST or a private stream."""
+        with get_db_connection() as db:
+            cur = db.cursor()
+            cur.execute(
+                """UPDATE qd_grid_resting_orders
+                   SET status = 'open', exchange_order_id = %s, updated_at = NOW()
+                   WHERE id = %s AND status IN ('pending', 'open')
+                     AND filled_quantity = 0 AND processed_fill_qty = 0""",
+                (str(exchange_order_id), int(order_id)),
+            )
+            updated = cur.rowcount == 1
+            db.commit()
+            cur.close()
+        return updated
 
     def insert(self, order: GridRestingOrder) -> Optional[int]:
         try:
@@ -259,7 +310,7 @@ class GridRestingOrderRepository:
                 cur.close()
         except Exception as e:
             logger.warning("grid resting list_open failed: %s", e)
-            return []
+            raise GridOrderLedgerUnavailable("Grid order ledger is unavailable") from e
         return [GridRestingOrder.from_row(dict(r)) for r in rows]
 
     def list_for_strategy(
@@ -328,8 +379,9 @@ class GridRestingOrderRepository:
                 row = cur.fetchone()
                 cur.close()
                 return bool(row)
-        except Exception:
-            return False
+        except Exception as exc:
+            logger.warning("grid resting has_open_for_cell unavailable: %s", exc)
+            return True
 
     def cancel_all(self, strategy_id: int, symbol: Optional[str] = None) -> int:
         try:

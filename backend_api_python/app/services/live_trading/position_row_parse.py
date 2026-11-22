@@ -24,6 +24,8 @@ def extract_signed_position_qty(item: Dict[str, Any]) -> float:
         "equity",
         "cashBal",
         "qty",
+        "quantity",
+        "position",
         "availBal",
         "free",
         "available",

@@ -94,7 +94,6 @@ def _available_capabilities(market: str, payload: Mapping[str, Any]) -> set[str]
         "southbound_flow": "southbound_holdings",
         "short_selling": "short_selling",
         "ccass": "ccass",
-        "crypto_factors": "spot_market",
         "futures_curve": "term_structure",
         "futures_positioning": "cftc_positioning",
         "forex_drivers": "pair_identity",
@@ -106,6 +105,15 @@ def _available_capabilities(market: str, payload: Mapping[str, Any]) -> set[str]
     for key, capability in mapping.items():
         if payload.get(key):
             available.add(capability)
+    if market == "Crypto":
+        factors = payload.get("crypto_factors") or {}
+        for key, capability in {
+            "volume_24h": "spot_market", "funding_rate": "funding",
+            "open_interest": "open_interest", "liquidations": "liquidations",
+            "basis": "basis", "exchange_netflow": "onchain_flows",
+        }.items():
+            if _number(factors.get(key)) is not None:
+                available.add(capability)
     if market == "Futures" and payload.get("symbol"):
         available.add("contract_identity")
     return available
@@ -210,6 +218,27 @@ def build_research_intelligence(
     available = _available_capabilities(market, payload)
     required = list(workflow["required_capabilities"])
     optional = list(workflow["optional_capabilities"])
+    capability_status = {}
+    not_applicable = []
+    if market in {"CNStock", "HKStock", "USStock"}:
+        from app.professional_report.features.equity import build_equity_features
+
+        features = build_equity_features(market, payload, [])
+        capability_status = features["capability_status"]
+        aliases = {"southbound_flow": "southbound_holdings", "hkex_announcements": "issuer_disclosures", "options": "options_surface"}
+        for key, status in capability_status.items():
+            capability = aliases.get(key, key)
+            if status == "not_applicable":
+                not_applicable.append(capability)
+        optional = [key for key in optional if key not in not_applicable]
+    elif market == "Crypto":
+        from app.professional_report.snapshot import _instrument
+
+        if _instrument(payload)["product_type"] == "perpetual":
+            required = [key for key in required if key != "spot_market"] + ["funding", "open_interest"]
+        else:
+            not_applicable = ["funding", "open_interest", "liquidations", "basis"]
+            optional = [key for key in optional if key not in not_applicable]
     missing_required = [item for item in required if item not in available]
     missing_optional = [item for item in optional if item not in available]
     performance, audit = _performance(payload)
@@ -222,13 +251,19 @@ def build_research_intelligence(
         posture = "decision_ready"
     return {
         **workflow,
+        "required_capabilities": required,
+        "optional_capabilities": optional,
         "readiness_posture": posture,
         "available_capabilities": sorted(available),
         "missing_required_capabilities": missing_required,
         "missing_optional_capabilities": missing_optional,
+        "not_applicable_capabilities": not_applicable,
+        "capability_status": capability_status,
         "performance": performance,
         "calculation_audit": audit,
-        "data_source_status": (payload.get("_meta") or {}).get("research_provider_status") or {},
+        "data_source_status": (payload.get("_meta") or {}).get("research_provider_status") or (payload.get("_meta") or {}).get(
+            {"USStock": "us_provider_status", "HKStock": "hk_provider_status", "CNStock": "cn_provider_status"}.get(market, "research_provider_status")
+        ) or {},
         "research_brief": _research_brief(
             summary=summary,
             claims=claims,

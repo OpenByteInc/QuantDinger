@@ -1,3 +1,4 @@
+from flask import Flask
 from app.routes import strategy_ledger_routes
 from app.services import virtual_trading
 
@@ -42,11 +43,8 @@ def test_virtual_ledger_allocates_open_and_close_fees_to_exit_row(monkeypatch):
         ],
     )
 
-    payload = strategy_ledger_routes._virtual_trades_payload(
-        7,
-        leverage=1,
-        market_type="swap",
-    )
+    with Flask(__name__).test_request_context('/strategies/trades?id=7'):
+        payload = strategy_ledger_routes._virtual_trades_payload(7, leverage=1, market_type="swap")
     rows = {row["id"]: row for row in payload["trades"]}
 
     assert rows[1]["profit"] is None
@@ -57,3 +55,9 @@ def test_virtual_ledger_allocates_open_and_close_fees_to_exit_row(monkeypatch):
     assert rows[2]["net_pnl"] == 8
     assert rows[2]["profit"] == 8
     assert payload["cost_summary"]["net_realized_pnl"] == 8
+    with Flask(__name__).test_request_context('/strategies/trades?id=7&page=1&page_size=1'):
+        paged = strategy_ledger_routes._virtual_trades_payload(7, leverage=1, market_type="swap")
+    assert paged['items'] == [rows[2]]
+    assert paged['total'] == 2
+    assert paged['cost_summary'] == payload['cost_summary']
+    assert 'trades' not in paged

@@ -98,6 +98,21 @@ def classify_exchange_order_error(error: Any) -> dict[str, Any]:
             "raw": raw,
         }
 
+    # These responses do not prove that the matching engine rejected the order.
+    # Check them before other text tokens, including incidental retry advice.
+    if (
+        http_status == 408 or http_status >= 500
+        or isinstance(error, (TimeoutError, ConnectionError))
+        or _has_error_code(lower, "-1006", "-1007", "10000", "10016")
+        or any(token in lower for token in (
+            "bad gateway", "gateway timeout", "service unavailable", "connection reset",
+            "connection timed out", "connect timed out", "read timed out", "readtimeout",
+            "timeout waiting for response", "connection aborted", "execution status unknown",
+            "remote end closed connection", "temporarily unavailable",
+        ))
+    ):
+        return result("transport", retryable=True)
+
     if (
         http_status == 401
         or _has_error_code(lower, "-1002", "-1022", "-2014", "-2015", "10003", "10004", "10005", "10007", "10010", "33004", "50103", "50104", "50105", "50106", "40002", "40003", "40005", "40009", "40018")
@@ -131,11 +146,6 @@ def classify_exchange_order_error(error: Any) -> dict[str, Any]:
         ))
     ):
         return result("invalid_symbol")
-    if http_status >= 500 or any(token in lower for token in (
-        "bad gateway", "gateway timeout", "service unavailable", "connection reset",
-        "connection timed out", "timeout waiting for response", "temporarily unavailable",
-    )):
-        return result("transport", retryable=True)
     if is_exchange_price_band_error(raw):
         return result("price_band", retryable=True)
     if (
@@ -178,7 +188,7 @@ def classify_exchange_order_error(error: Any) -> dict[str, Any]:
     ):
         return result("risk_limit")
     if (
-        _has_error_code(lower, "-1016", "10016", "10019", "110063", "110066", "25101", "25102", "25104")
+        _has_error_code(lower, "-1016", "10019", "110063", "110066", "25101", "25102", "25104")
         or any(token in lower for token in (
             "service is restarting", "settlement in progress", "temporarily closed for maintenance",
             "contract delisted", "trading is currently not allowed", "market is closed",

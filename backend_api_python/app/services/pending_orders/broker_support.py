@@ -3,9 +3,40 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, Tuple
+from typing import Any, Callable, Dict, Tuple
 
 from app.services.live_trading.base import LiveTradingError
+from app.services.pending_orders.order_retry import submit_with_safe_retry
+
+
+def submit_broker_order(
+    client: Any,
+    *,
+    order_type: str,
+    limit_price: float,
+    bracket: bool = False,
+    protection: Dict[str, Any] | None = None,
+    on_retry: Callable[[int, float, str], None] | None = None,
+    **order: Any,
+) -> Any:
+    """Keep broker order routing and stable-id rejection retries in one place."""
+    protection = dict(protection or {})
+
+    def submit():
+        if bracket:
+            return client.place_bracket_order(
+                **order, **protection,
+                limit_price=limit_price if order_type == "limit" else 0.0,
+            )
+        if order_type == "limit":
+            return client.place_limit_order(**order, **protection, price=limit_price)
+        return client.place_market_order(**order, **protection)
+
+    return submit_with_safe_retry(
+        submit,
+        result_error=lambda value: "" if value.success else value.message,
+        on_retry=on_retry,
+    )
 
 
 def broker_order_type(payload: Dict[str, Any], ref_price: float) -> Tuple[str, float]:

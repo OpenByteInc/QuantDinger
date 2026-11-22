@@ -753,7 +753,9 @@ def build_crypto_features(payload: Mapping[str, Any] | None) -> dict[str, Any]:
         "scope_ambiguity": has_scope_ambiguity,
         "derivative_metric_on_spot": "DERIVATIVE_METRIC_ON_SPOT" in warning_codes,
         "has_evidence": bool(evidence_refs),
-        "usable_for_directional_analysis": not (has_context_error or has_unit_ambiguity or has_scope_ambiguity),
+        "usable_for_directional_analysis": any(
+            feature is not None for feature in (funding, open_interest, oi_change, basis, liquidations, long_short, market_cap, volume, turnover)
+        ) and not (has_context_error or has_unit_ambiguity or has_scope_ambiguity),
     }
 
     return {

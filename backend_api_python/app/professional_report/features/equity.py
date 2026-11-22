@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+from app.research.fundamentals import finite_number, normalize_fundamentals
+
 
 _COMMON_METRICS = (
     "pe_ratio",
@@ -24,12 +26,7 @@ _COMMON_METRICS = (
 
 
 def _safe_float(value: Any) -> float | None:
-    try:
-        if value is None or value == "":
-            return None
-        return float(value)
-    except (TypeError, ValueError):
-        return None
+    return finite_number(value)
 
 
 def _evidence_map(evidence: list[Mapping[str, Any]]) -> dict[str, str]:
@@ -71,7 +68,7 @@ def build_equity_features(
     Missing professional capabilities are explicit.  They are not silently
     converted into neutral scores, which would overstate report completeness.
     """
-    fundamental = payload.get("fundamental") or {}
+    fundamental = normalize_fundamentals(payload.get("fundamental"))
     evidence_ids = _evidence_map(evidence)
     metrics = {
         key: feature
@@ -87,6 +84,8 @@ def build_equity_features(
     latest_quarter = statements.get("latest_quarter") or {}
     ttm = statements.get("ttm") or {}
     latest_annual = statements.get("latest_annual") or {}
+    latest_report = statements.get("latest_report") or {}
+    applicable: dict[str, bool] = {}
 
     if market == "USStock":
         market_specific = {
@@ -126,7 +125,7 @@ def build_equity_features(
                 or security_profile.get("southbound_eligible_sz")
                 or not security_profile
             ),
-            "short_selling": True,
+            "short_selling": security_profile.get("short_selling_eligible") is not False,
             "ccass": True,
             "ah_premium": ah_premium_applicable,
             "analyst_expectations": True,
@@ -156,11 +155,26 @@ def build_equity_features(
     else:
         raise ValueError(f"unsupported equity market: {market}")
 
-    if not latest_quarter and not latest_annual:
+    if not latest_quarter and not latest_annual and not latest_report and not ttm:
         warnings.append("financial_statements_unavailable")
     if missing:
         warnings.append("market_specific_data_incomplete")
 
+    provider_status = (payload.get("_meta") or {}).get("research_provider_status") or (payload.get("_meta") or {}).get(
+        {"USStock": "us_provider_status", "HKStock": "hk_provider_status", "CNStock": "cn_provider_status"}[market]
+    ) or {}
+    attempted = set(provider_status.get("attempted") or [])
+    errors = provider_status.get("errors") or {}
+    statuses = {}
+    for key, value in market_specific.items():
+        provider_key = "sec_filings" if key == "filings" else key
+        statuses[key] = (
+            "not_applicable" if not applicable.get(key, True) else
+            "available" if value else
+            "fetch_failed" if errors.get(provider_key) else
+            "unavailable" if provider_key in attempted or key in {"company_profile", "financial_statements", "company_news"} else
+            "not_integrated"
+        )
     return {
         "version": "equity_features_v1",
         "market": market,
@@ -170,6 +184,7 @@ def build_equity_features(
             "latest_quarter": latest_quarter,
             "ttm": ttm,
             "latest_annual": latest_annual,
+            "latest_report": latest_report,
         },
         "market_specific": market_specific,
         "supplementary": {
@@ -177,7 +192,8 @@ def build_equity_features(
             for key in ("short_volume", "ownership", "earnings_transcript")
             if payload.get(key)
         } if market == "USStock" else {},
-        "applicability": applicable if market == "HKStock" else {},
+        "applicability": applicable,
+        "capability_status": statuses,
         "missing_capabilities": missing,
         "warnings": warnings,
         "evidence_refs": sorted({ref for item in metrics.values() for ref in item["evidence_refs"]}),

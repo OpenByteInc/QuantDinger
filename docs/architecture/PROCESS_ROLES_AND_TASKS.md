@@ -57,6 +57,8 @@ Celery owns finite jobs that can be serialized, retried, and observed independen
 - factor research, factor benchmarks, and strategy evolution;
 - reflection and AI calibration;
 - market catalog synchronization;
+- bounded order-level venue P&L backfills (`quantdinger.tasks.reconcile_reported_pnl`,
+  `maintenance` queue; no order placement or strategy state mutations);
 - runtime metadata cleanup.
 
 Celery must not own long-lived strategy loops, exchange polling, broker sessions, or grid runtime state. Those remain in the trading process because they require renewable ownership, reconciliation, and controlled shutdown.

@@ -245,11 +245,17 @@ def _query(sql: str, params: tuple) -> list[Dict[str, Any]]:
 def _load_latest_runs(snapshots, placeholders, ids):
     rows = _query(
         f"""
-        SELECT strategy_id, id, user_id, exchange_id, credential_id, symbol, market_type,
-               runtime_status, runtime_epoch, started_at, stopped_at, stop_reason
-        FROM strategy_runs
-        WHERE strategy_id IN ({placeholders})
-        ORDER BY strategy_id, id DESC
+        SELECT latest.*
+        FROM qd_strategies_trading s
+        CROSS JOIN LATERAL (
+            SELECT strategy_id, id, user_id, exchange_id, credential_id, symbol, market_type,
+                   runtime_status, runtime_epoch, started_at, stopped_at, stop_reason
+            FROM strategy_runs
+            WHERE strategy_id = s.id
+            ORDER BY id DESC
+            LIMIT 1
+        ) latest
+        WHERE s.id IN ({placeholders})
         """,
         tuple(ids),
     )
@@ -299,10 +305,19 @@ def _load_runtime_leases(snapshots, placeholders, ids):
 def _load_health_state(snapshots, placeholders, ids):
     rows = _query(
         f"""
-        SELECT strategy_id, strategy_run_id, state_json, updated_at
-        FROM strategy_runtime_state
-        WHERE strategy_id IN ({placeholders}) AND state_key = 'health'
-        ORDER BY strategy_id, strategy_run_id DESC, updated_at DESC
+        SELECT latest.*
+        FROM qd_strategies_trading s
+        CROSS JOIN LATERAL (
+            SELECT strategy_id, strategy_run_id, state_json, updated_at
+            FROM strategy_runtime_state
+            WHERE strategy_id = s.id AND state_key = 'health'
+              AND strategy_run_id = COALESCE((
+                  SELECT id FROM strategy_runs WHERE strategy_id = s.id ORDER BY id DESC LIMIT 1
+              ), 0)
+            ORDER BY strategy_run_id DESC, updated_at DESC
+            LIMIT 1
+        ) latest
+        WHERE s.id IN ({placeholders})
         """,
         tuple(ids),
     )
@@ -342,10 +357,16 @@ def _load_health_state(snapshots, placeholders, ids):
 def _load_latest_events(snapshots, placeholders, ids):
     rows = _query(
         f"""
-        SELECT strategy_id, event_type, severity, message, created_at
-        FROM strategy_runtime_events
-        WHERE strategy_id IN ({placeholders})
-        ORDER BY strategy_id, created_at DESC, id DESC
+        SELECT latest.*
+        FROM qd_strategies_trading s
+        CROSS JOIN LATERAL (
+            SELECT strategy_id, event_type, severity, message, created_at
+            FROM strategy_runtime_events
+            WHERE strategy_id = s.id
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+        ) latest
+        WHERE s.id IN ({placeholders})
         """,
         tuple(ids),
     )
@@ -384,9 +405,16 @@ def _load_pending_orders(snapshots, placeholders, ids):
                MAX(signal_ts) AS last_signal_at
         FROM pending_orders
         WHERE strategy_id IN ({placeholders})
+          AND strategy_run_id IN (
+              SELECT COALESCE(latest.id, 0) FROM qd_strategies_trading s
+              LEFT JOIN LATERAL (
+                  SELECT id FROM strategy_runs WHERE strategy_id = s.id ORDER BY id DESC LIMIT 1
+              ) latest ON TRUE
+              WHERE s.id IN ({placeholders})
+          )
         GROUP BY strategy_id, strategy_run_id
         """,
-        (FAILED_ORDER_ATTENTION_WINDOW_SEC, *ids),
+        (FAILED_ORDER_ATTENTION_WINDOW_SEC, *ids, *ids),
     )
     for row in rows:
         strategy_id = int(row.get("strategy_id") or 0)
@@ -453,23 +481,25 @@ def _load_positions(snapshots, placeholders, ids):
 def _load_latest_fills(snapshots, placeholders, ids):
     rows = _query(
         f"""
-        SELECT strategy_id, MAX(last_fill_at) AS last_fill_at
-        FROM (
-            SELECT f.strategy_id, f.filled_at AS last_fill_at
+        SELECT s.id AS strategy_id, COALESCE(live.last_fill_at, virtual.last_fill_at) AS last_fill_at
+        FROM qd_strategies_trading s
+        LEFT JOIN LATERAL (
+            SELECT f.filled_at AS last_fill_at
             FROM strategy_order_fills f
-            JOIN qd_strategies_trading s ON s.id = f.strategy_id
-            WHERE f.strategy_id IN ({placeholders})
+            WHERE f.strategy_id = s.id
               AND LOWER(COALESCE(s.execution_mode, 'signal')) = 'live'
-            UNION ALL
-            SELECT v.strategy_id, v.created_at AS last_fill_at
+            ORDER BY f.filled_at DESC LIMIT 1
+        ) live ON TRUE
+        LEFT JOIN LATERAL (
+            SELECT v.created_at AS last_fill_at
             FROM qd_strategy_virtual_trades v
-            JOIN qd_strategies_trading s ON s.id = v.strategy_id
-            WHERE v.strategy_id IN ({placeholders})
+            WHERE v.strategy_id = s.id
               AND LOWER(COALESCE(s.execution_mode, 'signal')) = 'signal'
-        ) fills
-        GROUP BY strategy_id
+            ORDER BY v.created_at DESC LIMIT 1
+        ) virtual ON TRUE
+        WHERE s.id IN ({placeholders})
         """,
-        tuple(ids + ids),
+        tuple(ids),
     )
     for row in rows:
         strategy_id = int(row.get("strategy_id") or 0)

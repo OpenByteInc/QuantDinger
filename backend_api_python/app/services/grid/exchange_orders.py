@@ -17,6 +17,7 @@ from app.services.live_trading.gate import GateSpotClient, GateStockClient, Gate
 from app.services.live_trading.htx import HtxClient
 from app.services.live_trading.okx import OkxClient
 from app.services.live_trading.symbols import to_okx_spot_inst_id, to_okx_swap_inst_id
+from app.services.pending_orders.order_retry import submit_with_safe_retry
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -302,7 +303,7 @@ def make_grid_client_order_id(strategy_id: int, cell_index: int, purpose: str) -
     return f"g{int(strategy_id) % 10000:04d}c{int(cell_index):03d}{p}{nonce}"[:32]
 
 
-def place_grid_limit_order(
+def _place_grid_limit_order_once(
     client: BaseRestClient,
     *,
     symbol: str,
@@ -449,6 +450,43 @@ def place_grid_limit_order(
             client_order_id=coid or None,
         )
     raise LiveTradingError(f"Unsupported client for grid limit: {type(client)}")
+
+
+def place_grid_limit_order(
+    client: BaseRestClient,
+    *,
+    symbol: str,
+    side: str,
+    quantity: float,
+    price: float,
+    market_type: str,
+    exchange_config: Dict[str, Any],
+    pos_side: str = "",
+    reduce_only: bool = False,
+    client_order_id: Optional[str] = None,
+    leverage: float = 1.0,
+    margin_mode: str = "cross",
+    post_only: bool = True,
+) -> LiveOrderResult:
+    """Place a grid limit order with the shared explicit-rejection retry policy."""
+    return submit_with_safe_retry(
+        lambda: _place_grid_limit_order_once(
+            client,
+            symbol=symbol,
+            side=side,
+            quantity=quantity,
+            price=price,
+            market_type=market_type,
+            exchange_config=exchange_config,
+            pos_side=pos_side,
+            reduce_only=reduce_only,
+            client_order_id=client_order_id,
+            leverage=leverage,
+            margin_mode=margin_mode,
+            post_only=post_only,
+        ),
+        retry_exception_types=(LiveTradingError,),
+    )
 
 
 def wait_grid_market_fill(
@@ -611,14 +649,17 @@ def execute_grid_market_order(
                 )
             except Exception:
                 pass
-        res = place_order_from_signal(
-            client,
-            signal_type=sig,
-            symbol=str(symbol),
-            amount=qty,
-            market_type=str(market_type or "swap"),
-            exchange_config=exchange_config if isinstance(exchange_config, dict) else {},
-            client_order_id=coid,
+        res = submit_with_safe_retry(
+            lambda: place_order_from_signal(
+                client,
+                signal_type=sig,
+                symbol=str(symbol),
+                amount=qty,
+                market_type=str(market_type or "swap"),
+                exchange_config=exchange_config if isinstance(exchange_config, dict) else {},
+                client_order_id=coid,
+            ),
+            retry_exception_types=(LiveTradingError,),
         )
     except Exception as e:
         logger.warning("execute_grid_market_order place failed: %s", e)
@@ -684,12 +725,13 @@ def cancel_grid_order(
     mt = str(market_type or "swap").strip().lower()
     ex_cfg = exchange_config if isinstance(exchange_config, dict) else {}
     if isinstance(client, (GateSpotClient, GateUsdtFuturesClient)):
-        if not exchange_order_id:
-            raise LiveTradingError("Gate cancellation requires a confirmed exchange order ID")
+        lookup_id = str(exchange_order_id or "") or client._format_text(client_order_id)
+        if not lookup_id:
+            raise LiveTradingError("Gate cancellation requires an order identifier")
         if isinstance(client, GateSpotClient):
-            client.cancel_order(order_id=str(exchange_order_id), symbol=str(symbol))
+            client.cancel_order(order_id=lookup_id, symbol=str(symbol))
         else:
-            client.cancel_order(order_id=str(exchange_order_id))
+            client.cancel_order(order_id=lookup_id)
         return
     if isinstance(client, OkxClient):
         client.cancel_order(
@@ -757,7 +799,7 @@ def _extract_order_id_from_payload(data: Dict[str, Any], fallback: str = "") -> 
             continue
         row = src.get("data") if isinstance(src.get("data"), dict) else src
         if isinstance(row, dict):
-            oid = str(row.get("orderId") or row.get("order_id") or "").strip()
+            oid = str(row.get("orderId") or row.get("order_id") or row.get("ordId") or row.get("id") or "").strip()
             if oid:
                 return oid
     return str(fallback or "")
@@ -895,11 +937,12 @@ def _fetch_grid_client_order(
     if isinstance(client, BybitClient):
         return client.get_order(symbol=str(symbol), order_id=oid, client_order_id=coid)
     if isinstance(client, (GateSpotClient, GateUsdtFuturesClient)):
-        if not oid:
+        lookup_id = oid or client._format_text(coid)
+        if not lookup_id:
             return {}
         if isinstance(client, GateSpotClient):
-            return _unwrap_client_order_payload(client.get_order(order_id=oid, symbol=str(symbol)))
-        return _unwrap_client_order_payload(client.get_order(order_id=oid))
+            return _unwrap_client_order_payload(client.get_order(order_id=lookup_id, symbol=str(symbol)))
+        return _unwrap_client_order_payload(client.get_order(order_id=lookup_id))
     if isinstance(client, HtxClient):
         return client.get_order(symbol=str(symbol), order_id=oid, client_order_id=coid)
     if hasattr(client, "get_order"):
@@ -924,6 +967,7 @@ def query_grid_order_fill(
     exchange_order_id: str = "",
     client_order_id: str = "",
     exchange_config: Optional[Dict[str, Any]] = None,
+    details: Optional[Dict[str, Any]] = None,
 ) -> Tuple[float, float, str]:
     """
     Returns (filled_qty, avg_price, status).
@@ -940,6 +984,8 @@ def query_grid_order_fill(
             exchange_config=ex_cfg,
         )
         if isinstance(data, dict) and data:
+            if details is not None:
+                details["exchange_order_id"] = _extract_order_id_from_payload(data, str(exchange_order_id or ""))
             filled, avg, status = parse_grid_order_fill(
                 client,
                 symbol=str(symbol),

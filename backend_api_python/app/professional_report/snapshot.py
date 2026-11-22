@@ -8,6 +8,8 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping
 
+from app.research.fundamentals import METRIC_UNITS, finite_number, normalize_fundamentals
+
 
 _MARKET_DEFAULTS = {
     "USStock": {"currency": "USD", "timezone": "America/New_York", "asset_type": "equity"},
@@ -115,7 +117,9 @@ def _instrument(payload: Mapping[str, Any]) -> dict[str, Any]:
             market_type = "perpetual"
         crypto_meta = payload.get("crypto_instrument") or {}
         venue = crypto_meta.get("venue") or payload.get("exchange_id") or venue
-        market_type = crypto_meta.get("market_type") or market_type
+        market_type = crypto_meta.get("market_type") or (payload.get("price") or {}).get("market_type") or market_type
+        if market_type in {"swap", "perp", "futures"}:
+            market_type = "perpetual"
     base_currency = None
     if market == "Forex":
         normalized = symbol.upper().replace("/", "").replace("-", "").replace("=X", "")
@@ -277,7 +281,7 @@ def build_evidence_snapshot(payload: Mapping[str, Any]) -> dict[str, Any]:
         unit = "percent" if any(token in metric.lower() for token in ("pct", "rsi", "position", "width")) else None
         collector.add(metric, value, category="technical", source="quantdinger", unit=unit)
 
-    fundamental = payload.get("fundamental") or {}
+    fundamental = normalize_fundamentals(payload.get("fundamental"))
     company = payload.get("company") or {}
     if collector.market == "CNStock":
         collector.add(
@@ -313,7 +317,7 @@ def build_evidence_snapshot(payload: Mapping[str, Any]) -> dict[str, Any]:
         or collector.currency
     )
     statements = fundamental.get("financial_statements") or {}
-    for period_key in ("latest_quarter", "ttm", "latest_annual"):
+    for period_key in ("latest_quarter", "ttm", "latest_report", "latest_annual"):
         period = statements.get(period_key) or {}
         period_end = period.get("period_end") or period.get("as_of")
         for section in ("income_statement", "balance_sheet", "cash_flow", "derived"):
@@ -321,20 +325,23 @@ def build_evidence_snapshot(payload: Mapping[str, Any]) -> dict[str, Any]:
             if not isinstance(values, Mapping):
                 continue
             for key, value in values.items():
-                if isinstance(value, (Mapping, list, tuple)) or value in (None, ""):
+                if finite_number(value) is None:
                     continue
                 is_ratio = any(token in str(key).lower() for token in (
                     "margin", "growth", "roe", "roa", "ratio", "yield"
                 ))
+                unit = METRIC_UNITS.get(key) or ("percent" if is_ratio else "currency_per_share" if "eps" in key else "currency")
+                basis = values if section != "derived" else period.get("balance_sheet" if key in {"current_ratio", "debt_to_equity"} else "income_statement") or {}
+                field_period_end = basis.get("period_end") or basis.get("latest_date") or period_end
                 collector.add(
                     f"financial.{period_key}.{section}.{key}",
                     value,
                     category="fundamental",
-                    source=fundamental.get("source"),
-                    as_of=period_end,
-                    period_end=period_end,
-                    unit="percent" if is_ratio else "currency",
-                    currency=None if is_ratio else statement_currency,
+                    source=basis.get("source") or period.get("source") or fundamental.get("source"),
+                    as_of=field_period_end,
+                    period_end=field_period_end,
+                    unit=unit,
+                    currency=(basis.get("currency") or period.get("currency") or statement_currency) if unit.startswith("currency") else None,
                 )
 
     earnings = fundamental.get("earnings") or {}
@@ -372,6 +379,10 @@ def build_evidence_snapshot(payload: Mapping[str, Any]) -> dict[str, Any]:
         "hk_security_profile": ("security_profile.hk", "eastmoney_hk"),
         "ownership": ("ownership.snapshot", "ownership_provider"),
         "earnings_transcript": ("earnings.transcript", "transcript_provider"),
+        "exchange_disclosures": ("filings.cn", "filing_provider"),
+        "northbound_flow": ("northbound_flow.snapshot", "market_provider"),
+        "margin_financing": ("margin_financing.snapshot", "market_provider"),
+        "cn_macro": ("macro.cn", "macro_provider"),
         "forex_drivers": ("forex.drivers", "macro_provider"),
         "futures_curve": ("futures.curve", "market_provider"),
         "futures_positioning": ("futures.positioning", "cftc"),
@@ -386,7 +397,7 @@ def build_evidence_snapshot(payload: Mapping[str, Any]) -> dict[str, Any]:
         collector.add(
             metric,
             evidence_value,
-            category=("positioning" if payload_key == "futures_positioning" else "macro" if payload_key == "forex_drivers" else "market" if payload_key == "futures_curve" else "fundamental"),
+            category=("positioning" if payload_key == "futures_positioning" else "macro" if payload_key in {"forex_drivers", "cn_macro"} else "market" if payload_key == "futures_curve" else "fundamental"),
             source=metadata.get("source") or metadata.get("provider") or default_source,
             source_url=metadata.get("url") or metadata.get("source_url"),
             as_of=metadata.get("as_of") or metadata.get("published_at") or metadata.get("date"),
@@ -422,7 +433,7 @@ def build_evidence_snapshot(payload: Mapping[str, Any]) -> dict[str, Any]:
         source = metadata.get("provider") or (crypto_sources.get("derivatives") if key in {
             "funding_rate", "open_interest", "open_interest_change_24h", "long_short_ratio"
         } else crypto_sources.get("capital_flow") if "netflow" in key else crypto_sources.get("market_structure"))
-        unit = metadata.get("unit") or ("percent" if key.endswith("_24h") or key == "funding_rate" else "usd" if key in {
+        unit = metadata.get("unit") or ("percent" if key in {"open_interest_change_24h", "volume_change_24h", "funding_rate"} else "usd" if key in {
             "volume_24h", "open_interest", "exchange_netflow", "stablecoin_netflow"
         } else "ratio" if key == "long_short_ratio" else None)
         collector.add(
@@ -450,11 +461,16 @@ def build_evidence_snapshot(payload: Mapping[str, Any]) -> dict[str, Any]:
                 "summary": item.get("summary"),
                 "sentiment": item.get("sentiment"),
                 "publisher": item.get("source") or item.get("publisher"),
+                "asset_relevance": item.get("asset_relevance") or "unverified",
+                "event_kind": item.get("event_kind") or "news",
+                "evidence_depth": item.get("evidence_depth") or ("snippet" if item.get("summary") else "headline"),
+                "publication_time_known": bool(item.get("datetime") or item.get("published_at") or item.get("time")),
             },
             category="news",
             source=item.get("source") or item.get("publisher") or "news_provider",
             source_url=item.get("url") or item.get("link"),
             as_of=item.get("datetime") or item.get("published_at") or item.get("time"),
+            quality_flags=[] if (item.get("datetime") or item.get("published_at") or item.get("time")) else ["publication_time_unknown"],
         )
 
     meta = payload.get("_meta") or {}
@@ -475,7 +491,6 @@ def build_evidence_snapshot(payload: Mapping[str, Any]) -> dict[str, Any]:
         "Crypto": [
             "quote.price", "ohlcv.latest_bar", "indicator.rsi.value",
             "indicator.moving_averages.trend", "crypto.volume_24h",
-            "crypto.funding_rate", "crypto.open_interest",
         ],
         "Forex": [
             "quote.price", "ohlcv.latest_bar", "indicator.rsi.value",
@@ -486,9 +501,12 @@ def build_evidence_snapshot(payload: Mapping[str, Any]) -> dict[str, Any]:
             "indicator.moving_averages.trend",
         ],
     }
+    instrument = _instrument(payload)
+    if collector.market == "Crypto" and instrument["product_type"] == "perpetual":
+        required_by_market["Crypto"].extend(["crypto.funding_rate", "crypto.open_interest"])
     return {
         "version": "evidence_snapshot_v1",
-        "instrument": _instrument(payload),
+        "instrument": instrument,
         "as_of": collector.retrieved_at,
         "retrieved_at": collector.retrieved_at,
         "timeframe": str(payload.get("timeframe") or "1D"),
@@ -496,6 +514,7 @@ def build_evidence_snapshot(payload: Mapping[str, Any]) -> dict[str, Any]:
         "required_metrics": required_by_market.get(collector.market, ["quote.price", "ohlcv.latest_bar"]),
         "quality_flags": sorted(collector.quality_flags),
         "collection": {
+            "news": meta.get("news_collection") or {},
             "success_items": list(meta.get("success_items") or []),
             "failed_items": list(meta.get("failed_items") or []),
             "duration_ms": int(meta.get("duration_ms") or 0),

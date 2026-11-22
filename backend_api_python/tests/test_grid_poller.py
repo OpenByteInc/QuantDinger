@@ -12,6 +12,11 @@ from app.services.grid.resting_orders_repo import GridRestingOrder
 from app.services.grid.runtime_state import load_grid_resting_state
 
 
+@pytest.fixture(autouse=True)
+def isolated_order_schema(monkeypatch):
+    monkeypatch.setattr("app.services.grid.resting_orders_repo._ensure_table", lambda: None)
+
+
 def test_load_grid_resting_state_initial_flag():
     tc = {"script_runtime_state": {"grid_resting": {"initial_market_done": True}}}
     assert load_grid_resting_state(tc).get("initial_market_done") is True
@@ -76,6 +81,28 @@ def test_terminal_status_without_quantity_does_not_invent_fill(monkeypatch):
     monkeypatch.setattr('app.services.grid.poller.query_grid_order_fill', lambda *a, **k: (0, 0, 'filled'))
     worker._poll_order(runner, object(), order, 'swap')
     runner.engine.on_order_filled.assert_not_called()
+
+
+def test_pending_order_recovers_exchange_id_without_resubmit(monkeypatch):
+    from contextlib import nullcontext
+    from app.services.execution_streams.processor import ExecutionEventProcessor
+
+    worker = GridFillPoller()
+    runner = MagicMock()
+    runner.exchange_config = {"exchange_id": "gate"}
+    order = GridRestingOrder(id=1, strategy_id=1, symbol="BTC/USDT", client_order_id="original-id")
+    def snapshot(*args, **kwargs):
+        assert kwargs["client_order_id"] == "original-id"
+        kwargs["details"]["exchange_order_id"] = "venue-123"
+        return 0, 0, "open"
+    monkeypatch.setattr("app.services.grid.poller.query_grid_order_fill", snapshot)
+    monkeypatch.setattr("app.utils.db.get_db_transaction", nullcontext)
+    monkeypatch.setattr("app.services.live_trading.fill_accounting.lock_strategy_fills", lambda *a: None)
+    project = MagicMock()
+    monkeypatch.setattr(ExecutionEventProcessor, "_project_grid", project)
+    assert worker._poll_order(runner, object(), order, "swap") == "open"
+    assert project.call_args.args[0]["exchange_order_id"] == "venue-123"
+    assert project.call_args.args[0]["cumulative_quantity"] == 0
 
 
 def test_same_credential_never_reuses_spot_client_for_swap(monkeypatch):

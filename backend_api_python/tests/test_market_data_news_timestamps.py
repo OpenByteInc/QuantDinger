@@ -25,6 +25,9 @@ class _FakeFinnhubClient:
 
 @pytest.mark.skipif(not hasattr(time, "tzset"), reason="requires POSIX timezone control")
 def test_finnhub_unix_timestamp_is_utc_when_server_uses_asia_shanghai(monkeypatch):
+    monkeypatch.setattr("app.data_providers.asset_events.collect_asset_events", lambda *_: {
+        "news": [], "disclosures": [], "collection": {"status": "checked_empty", "providers": {}},
+    })
     expected = datetime(2026, 9, 8, 12, 0, tzinfo=timezone.utc)
     collector = MarketDataCollector.__new__(MarketDataCollector)
     collector._finnhub_client = _FakeFinnhubClient(int(expected.timestamp()))
