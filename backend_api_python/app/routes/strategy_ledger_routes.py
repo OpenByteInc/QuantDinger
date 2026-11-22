@@ -21,6 +21,24 @@ from app.utils.pnl import (
 logger = get_logger(__name__)
 
 
+def _trade_page(rows: list[dict]) -> tuple[list[dict], dict]:
+    if 'page' not in request.args and 'page_size' not in request.args:
+        return rows, {}
+    page = max(1, request.args.get('page', 1, type=int))
+    page_size = max(1, min(100, request.args.get('page_size', 10, type=int)))
+    start = (page - 1) * page_size
+    return rows[start:start + page_size], {'total': len(rows), 'page': page, 'page_size': page_size}
+
+
+def _trade_payload(rows: list[dict], *, leverage: float, market_type: str, **extra) -> dict:
+    page_rows, pagination = _trade_page(rows)
+    items = [_normalize_trade_row_for_api(row, leverage=leverage, market_type=market_type) for row in page_rows]
+    payload = {'items': items, **pagination, **extra}
+    if not pagination:
+        payload['trades'] = items
+    return payload
+
+
 def _normalize_trade_row_for_api(trade: dict, *, leverage: float = 1.0, market_type: str = "spot") -> dict:
     """Ensure numeric fields are JSON-friendly floats."""
     try:
@@ -157,16 +175,10 @@ def _virtual_trades_payload(strategy_id: int, *, leverage: float, market_type: s
         })
         ledger_rows.append(trade)
     enrich_trades_net_pnl(ledger_rows)
-    processed_rows = [
-        _normalize_trade_row_for_api(trade, leverage=leverage, market_type=market_type)
-        for trade in ledger_rows
-    ]
     trading_fees = opening_commission + closing_commission
-    return {
-        "trades": processed_rows,
-        "items": processed_rows,
-        "ledger_mode": "virtual",
-        "cost_summary": {
+    return _trade_payload(
+        ledger_rows, leverage=leverage, market_type=market_type, ledger_mode="virtual",
+        cost_summary={
             "gross_realized_pnl": round(gross_realized, 8),
             "opening_commission": round(opening_commission, 8),
             "closing_commission": round(closing_commission, 8),
@@ -184,7 +196,7 @@ def _virtual_trades_payload(strategy_id: int, *, leverage: float, market_type: s
             "pnl_pending_count": 0,
             "pnl_status": "complete",
         },
-    }
+    )
 
 
 @strategy_blp.route('/strategies/trades', methods=['GET'])
@@ -296,13 +308,16 @@ def get_trades():
         enrich_grid_order_pnl(processed_rows)
         from app.services.execution_streams.pnl_reconciliation import enrich_reported_order_pnl
         try:
-            enrich_reported_order_pnl(processed_rows, user_id=user_id, trading_config=trading_config)
+            from app.services.execution_streams.pnl_reconciliation import order_key
+            from app.tasks.reported_pnl import schedule_reported_pnl
+            page_rows, _ = _trade_page(processed_rows)
+            page_keys = {order_key(row) for row in page_rows}
+            # Include every fill of a visible order, even when a split fill is on another page.
+            report_rows = [row for row in processed_rows if order_key(row) in page_keys]
+            enrich_reported_order_pnl(report_rows, user_id=user_id, trading_config=trading_config, fetch_missing=False)
+            schedule_reported_pnl(report_rows, strategy_id=strategy_id, user_id=user_id)
         except Exception:
             logger.warning("Reported P&L unavailable for strategy=%s", strategy_id, exc_info=True)
-        processed_rows = [
-            _normalize_trade_row_for_api(trade, leverage=leverage, market_type=market_type)
-            for trade in processed_rows
-        ]
 
         from app.utils.trade_close_reason import is_exit_trade_type
         paired_grid = any(t.get("pnl_source") == "grid_exchange_order_pairs" for t in processed_rows)
@@ -352,9 +367,9 @@ def get_trades():
             "pnl_status": "pending" if pnl_pending else "complete",
         }
 
-        return jsonify({'code': 1, 'msg': 'success', 'data': {
-            'trades': processed_rows, 'items': processed_rows, 'cost_summary': cost_summary,
-        }})
+        return jsonify({'code': 1, 'msg': 'success', 'data': _trade_payload(
+            processed_rows, leverage=leverage, market_type=market_type, cost_summary=cost_summary,
+        )})
     except Exception as e:
         logger.error(f"get_trades failed: {str(e)}")
         logger.error(traceback.format_exc())

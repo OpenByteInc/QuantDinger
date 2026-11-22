@@ -30,6 +30,7 @@ def runtime_db(monkeypatch):
         "qd_strategies_trading", "qd_strategy_commands", "qd_strategy_runtime_leases",
         "qd_strategy_event_subscriptions", "strategy_runs", "strategy_runtime_state",
         "strategy_runtime_events",
+        "pending_orders", "strategy_order_fills", "qd_strategy_virtual_trades",
     )
     with admin.cursor() as cur:
         cur.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
@@ -71,6 +72,71 @@ def runtime_db(monkeypatch):
         with admin.cursor() as cur:
             cur.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema)))
         admin.close()
+
+
+def test_history_health_reads_only_latest_indexed_rows(runtime_db, monkeypatch):
+    from app.services.strategy_runtime import health
+    query, _, _ = runtime_db
+    query("INSERT INTO strategy_runs (id,strategy_id,runtime_epoch) VALUES (4361,1324,6)")
+    query("""INSERT INTO strategy_runtime_state (strategy_run_id,strategy_id,state_key,state_json)
+        VALUES (4360,1324,'health','{"last_heartbeat_at":999,"last_error":"old"}'),
+               (4361,1324,'health','{"last_heartbeat_at":1000}'),
+               (4361,1324,'params','{"last_heartbeat_at":2000}')""")
+    query("""INSERT INTO strategy_runtime_events (strategy_run_id,strategy_id,event_type,message,created_at)
+        SELECT 4361,1324,'test',n::text,TIMESTAMP '2026-11-22' FROM generate_series(1,10000) n""")
+    query("ANALYZE strategy_runtime_events")
+    statements = []
+
+    def read(sql, params):
+        statements.append((sql, params))
+        return query(sql, params)
+
+    monkeypatch.setattr(health, '_query', read)
+    snapshots = {1324: health._empty_snapshot()}
+    health._load_latest_runs(snapshots, '%s', [1324])
+    health._load_health_state(snapshots, '%s', [1324])
+    health._load_latest_events(snapshots, '%s', [1324])
+    assert snapshots[1324]['run_id'] == 4361
+    assert snapshots[1324]['last_heartbeat_at'] == 1000
+    assert snapshots[1324]['last_error'] == ''
+    assert snapshots[1324]['last_event_message'] == '10000'
+    sql, params = statements[-1]
+    plan = query('EXPLAIN (ANALYZE, FORMAT JSON) ' + sql, params)[0]['QUERY PLAN'][0]['Plan']
+
+    def nodes(plan):
+        yield plan
+        for child in plan.get('Plans', []):
+            yield from nodes(child)
+
+    scans = [node for node in nodes(plan) if node.get('Relation Name') == 'strategy_runtime_events']
+    assert len(scans) == 1
+    assert scans[0]['Node Type'] in {'Index Scan', 'Index Only Scan'}
+    assert scans[0]['Actual Rows'] == 1
+
+
+def test_health_pending_orders_and_latest_fills_keep_run_and_mode_isolation(runtime_db):
+    from app.services.strategy_runtime import health
+    query, _, _ = runtime_db
+    query("UPDATE qd_strategies_trading SET execution_mode='live' WHERE id=1324")
+    query("INSERT INTO strategy_runs (id,strategy_id,runtime_epoch) VALUES (4361,1324,6)")
+    query("""INSERT INTO pending_orders (strategy_id,strategy_run_id,user_id,symbol,signal_type,idempotency_key,status)
+        VALUES (1324,4360,1,'BTC/USDT','open_long','old','failed'),
+               (1324,4361,1,'BTC/USDT','open_long','new','pending')""")
+    query("""INSERT INTO strategy_order_fills (strategy_id,filled_at)
+        VALUES (1324,'2026-11-21'),(1324,'2026-11-22')""")
+    query("""INSERT INTO qd_strategy_virtual_trades
+        (user_id,strategy_id,virtual_order_id,pending_order_id,symbol,type,side,created_at)
+        VALUES (1,1324,1,1,'BTC/USDT','open_long','long','2026-11-23')""")
+    snapshots = {1324: health._empty_snapshot()}
+    health._load_latest_runs(snapshots, '%s', [1324])
+    health._load_pending_orders(snapshots, '%s', [1324])
+    health._load_latest_fills(snapshots, '%s', [1324])
+    assert snapshots[1324]['pending_orders'] == 1
+    assert snapshots[1324]['historical_failed_orders'] == 0
+    assert snapshots[1324]['last_fill_at'].isoformat().startswith('2026-11-22')
+    query("UPDATE qd_strategies_trading SET execution_mode='signal' WHERE id=1324")
+    health._load_latest_fills(snapshots, '%s', [1324])
+    assert snapshots[1324]['last_fill_at'].isoformat().startswith('2026-11-23')
 
 
 def test_old_healthy_daily_run_does_not_satisfy_new_start(runtime_db):

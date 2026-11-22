@@ -35,7 +35,8 @@ def get_strategy_logs():
     try:
         user_id = g.user_id
         strategy_id = request.args.get('id')
-        limit = int(request.args.get('limit', 200))
+        limit = max(1, min(request.args.get('limit', 200, type=int), 500))
+        after_id = max(0, request.args.get('after_id', 0, type=int))
         if not strategy_id:
             return jsonify({'code': 0, 'msg': 'Strategy ID required'})
 
@@ -49,11 +50,11 @@ def get_strategy_logs():
                 """
                 SELECT id, strategy_id, level, message, timestamp
                 FROM qd_strategy_logs
-                WHERE strategy_id = ?
+                WHERE strategy_id = ? AND id > ?
                 ORDER BY id DESC
                 LIMIT ?
                 """,
-                (int(strategy_id), limit)
+                (int(strategy_id), after_id, limit)
             )
             rows = cur.fetchall() or []
             cur.close()
@@ -86,7 +87,8 @@ def get_strategy_logs():
                 rr['timestamp'] = iso if iso is not None else str(ts)
             out.append(rr)
         # Already ORDER BY id DESC; newest first for the UI log panel.
-        return jsonify({'code': 1, 'msg': 'success', 'data': out})
+        return jsonify({'code': 1, 'msg': 'success', 'data': out,
+                        'last_id': max((int(row['id']) for row in rows), default=after_id)})
     except Exception as e:
         if PgUndefinedTable is not None and isinstance(e, PgUndefinedTable):
             return jsonify({'code': 1, 'msg': 'success', 'data': []})

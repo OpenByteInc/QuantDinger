@@ -52,6 +52,7 @@ celery_app.conf.update(
         "app.tasks.indicator_translation",
         "app.tasks.maintenance",
         "app.tasks.fundamental_sync",
+        "app.tasks.reported_pnl",
     ),
     task_routes={
         "quantdinger.tasks.fast_analysis": {"queue": "ai"},
@@ -64,6 +65,7 @@ celery_app.conf.update(
         "quantdinger.tasks.fundamental_sync_tick": {"queue": "maintenance"},
         "quantdinger.tasks.worker_heartbeat": {"queue": "maintenance"},
         "quantdinger.tasks.cleanup_runtime_metadata": {"queue": "maintenance"},
+        "quantdinger.tasks.reconcile_reported_pnl": {"queue": "maintenance"},
     },
     beat_schedule={
         "fundamental-sync": {

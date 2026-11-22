@@ -2650,6 +2650,7 @@ CREATE TABLE IF NOT EXISTS strategy_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_strategy_runs_strategy ON strategy_runs(strategy_id, runtime_status);
 CREATE INDEX IF NOT EXISTS idx_strategy_runs_started ON strategy_runs(started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_strategy_runs_strategy_latest ON strategy_runs(strategy_id, id DESC);
 
 CREATE TABLE IF NOT EXISTS strategy_runtime_state (
     id SERIAL PRIMARY KEY,
@@ -2662,6 +2663,8 @@ CREATE TABLE IF NOT EXISTS strategy_runtime_state (
     UNIQUE(strategy_run_id, strategy_id, state_key)
 );
 CREATE INDEX IF NOT EXISTS idx_strategy_runtime_state_strategy ON strategy_runtime_state(strategy_id);
+CREATE INDEX IF NOT EXISTS idx_strategy_runtime_state_health_latest
+ON strategy_runtime_state(strategy_id, strategy_run_id DESC, updated_at DESC) WHERE state_key = 'health';
 
 CREATE TABLE IF NOT EXISTS qd_strategy_event_subscriptions (
     strategy_id INTEGER NOT NULL REFERENCES qd_strategies_trading(id) ON DELETE CASCADE,
@@ -2948,6 +2951,8 @@ CREATE TABLE IF NOT EXISTS strategy_runtime_events (
     created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_strategy_runtime_events_run ON strategy_runtime_events(strategy_run_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_strategy_runtime_events_strategy_latest
+ON strategy_runtime_events(strategy_id, created_at DESC, id DESC);
 
 CREATE TABLE IF NOT EXISTS strategy_runtime_locks (
     lock_key VARCHAR(180) PRIMARY KEY,

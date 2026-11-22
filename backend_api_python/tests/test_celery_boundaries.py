@@ -9,6 +9,7 @@ def test_celery_queues_keep_trading_outside_task_system():
     routes = celery_app.conf.task_routes
     assert routes["quantdinger.tasks.agent_job"]["queue"] == "backtest"
     assert routes["quantdinger.tasks.fast_analysis"]["queue"] == "ai"
+    assert routes["quantdinger.tasks.reconcile_reported_pnl"]["queue"] == "maintenance"
     assert "strategy" not in " ".join(routes).lower()
 
 

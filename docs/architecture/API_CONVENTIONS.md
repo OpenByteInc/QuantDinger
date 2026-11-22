@@ -118,6 +118,26 @@ Common shape inside `data`:
 
 OpenAPI schema: `PaginationMeta` (fields may be inlined per route during migration).
 
+### Strategy history reads
+
+- `GET /api/strategies/trades?id=...&page=1&page_size=10` returns `items`,
+  `total`, `page`, `page_size`, and the strategy-wide `cost_summary`.
+  Page size is capped at 100. Omitting both pagination parameters preserves
+  the legacy `trades`/`items` response for older clients.
+- FIFO entry-fee allocation and grid order pairing still use complete ledger
+  context before slicing the response. The summary is not a page subtotal;
+  this change does not make accounting reads constant-time or truncate history.
+- Venue P&L reads use durable database evidence for visible orders, including
+  split fills outside the current page. Missing reports are queued for finite
+  maintenance backfills; HTTP requests never call venue REST. A confirmed report
+  is reused until its fill quantity changes. Queue unavailability leaves the
+  report pending, not the trade history request failed.
+- `GET /api/strategies/logs?id=...&after_id=...&limit=200` returns the newest
+  bounded log window and top-level `last_id`. Clients advance this cursor even
+  when tick-only rows are filtered. The live panel is a latest-200 window, not
+  a lossless audit export. Existing callers may omit `after_id`.
+- Both read paths verify strategy ownership before querying its history.
+
 ---
 
 ## 7. Contributing API changes
