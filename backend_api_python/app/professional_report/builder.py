@@ -437,7 +437,7 @@ def _cn_market_dimension_narrative(features: Mapping[str, Any], language: str) -
     if industry:
         facts.append(f"所属行业为{industry}" if zh else f"reported industry is {industry}")
     available_periods = [
-        key for key in ("latest_quarter", "ttm", "latest_annual")
+        key for key in ("latest_quarter", "ttm", "latest_report", "latest_annual")
         if statements.get(key)
     ]
     if available_periods:
@@ -558,6 +558,17 @@ def _build_scenarios(
     else:
         bull_target, bear_target = resistance, support
         base_target = current_price
+
+    # A broken support/resistance remains historical context, not a target
+    # on the opposite side of the current price.
+    bull_target = next((price for value in (bull_target, resistance)
+                        if (price := _finite_float(value)) is not None and price > current_price > 0), None)
+    bear_target = next((price for value in (bear_target, support)
+                        if (price := _finite_float(value)) is not None and 0 < price < current_price), None)
+    if decision == "BUY":
+        base_target = bull_target or current_price
+    elif decision == "SELL":
+        base_target = bear_target or current_price
     return [
         {
             "case": "bull",
@@ -640,6 +651,7 @@ def _typed_crypto_factors(
     for key in (
         "funding_rate",
         "open_interest",
+        "open_interest_change_24h",
         "basis",
         "liquidations",
         "long_short_ratio",
@@ -698,7 +710,7 @@ def build_professional_report(
             "crypto_factors": _typed_crypto_factors(legacy_crypto_factors, observations),
             "instrument": snapshot["instrument"],
         })
-        if not bool(
+        if legacy_crypto_factors and not bool(
             (prebuilt_market_features.get("quality_flags") or {}).get(
                 "usable_for_directional_analysis"
             )
@@ -754,9 +766,36 @@ def build_professional_report(
     dimensions = [
         _dimension("technical", scores.get("technical"), observations, ("technical", "market"), detailed.get("technical", "")),
         _dimension("fundamental", scores.get("fundamental"), observations, ("fundamental",), detailed.get("fundamental", "")),
-        _dimension("news_sentiment", scores.get("sentiment"), observations, ("news",), detailed.get("sentiment", "")),
+        _dimension("news_sentiment", scores.get("sentiment"), observations, ("news",), detailed.get("sentiment", ""), evidence_refs=[
+            item["evidence_id"] for item in observations
+            if item.get("category") == "news" and (item.get("value") or {}).get("asset_relevance") != "background"
+        ]),
         macro_dimension,
     ]
+
+    news_dimension = dimensions[2]
+    news_observations = [item for item in observations if item["evidence_id"] in news_dimension["evidence_refs"]]
+    sentiment_refs = _metric_refs(
+        observations, "expectations.analyst", "options.", "short_interest.",
+        "southbound_flow.", "crypto.funding_rate", "crypto.open_interest", "crypto.long_short_ratio",
+    )
+    collection_status = ((collector_payload.get("_meta") or {}).get("news_collection") or {}).get("status")
+    has_news_text = any((item.get("value") or {}).get("summary") for item in news_observations)
+    news_dimension["news_status"] = ("available" if has_news_text else "headline_only") if news_observations else collection_status or "not_checked"
+    news_dimension["sentiment_status"] = "available" if sentiment_refs else "not_checked"
+    news_dimension["evidence_refs"] = list(dict.fromkeys(news_dimension["evidence_refs"] + sentiment_refs))
+    news_dimension["score_kind"] = "evidence_coverage"
+    if news_dimension["evidence_refs"]:
+        news_dimension["status"] = "available" if has_news_text else "partial"
+    news_dimension["events"] = []
+    for item in news_observations[:5]:
+        value = item.get("value") or {}
+        news_dimension["events"].append({
+            "title": value.get("title"), "url": item.get("source_url"),
+            "published_at": item.get("as_of") if value.get("publication_time_known") else None,
+            "source": value.get("publisher") or item.get("source"),
+            "evidence_depth": value.get("evidence_depth"), "evidence_id": item["evidence_id"],
+        })
 
     if market in {"USStock", "HKStock", "CNStock"}:
         market_features = prebuilt_market_features or build_equity_features(
@@ -766,10 +805,11 @@ def build_professional_report(
         market_metric_prefixes = (
             (
                 "filings.hkex", "southbound_flow.snapshot", "short_selling.snapshot",
-                "ccass.snapshot", "ah_premium.snapshot", "expectations.analyst",
+                "ccass.snapshot", "ah_premium.snapshot", "expectations.analyst", "security_profile.hk",
             )
             if market == "HKStock" else (
-                "market_cap", "revenue_growth", "profit_margin", "financial.",
+                "company.name", "financial.", "filings.cn", "northbound_flow.snapshot",
+                "margin_financing.snapshot", "expectations.analyst", "macro.cn",
             )
             if market == "CNStock" else
             (
@@ -778,17 +818,21 @@ def build_professional_report(
                 "ownership.snapshot", "earnings.transcript",
             )
         )
+        statuses = market_features.get("capability_status") or {}
+        applicable_statuses = [value for value in statuses.values() if value != "not_applicable"]
+        coverage = sum(value == "available" for value in applicable_statuses) / max(1, len(applicable_statuses))
         market_dimension = _dimension(
             "market_specific",
-            0 if market_missing else 50,
+            100 * coverage,
             observations,
             (),
             _market_dimension_narrative(market, market_features, report_language),
             missing=market_missing,
             evidence_refs=_metric_refs(observations, *market_metric_prefixes),
         )
-        if market_missing:
-            market_dimension["status"] = "insufficient_data"
+        market_dimension["score_kind"] = "capability_coverage"
+        if market_missing and market_dimension["evidence_refs"]:
+            market_dimension["status"] = "partial"
         dimensions.append(market_dimension)
     elif market == "Crypto":
         market_features = prebuilt_market_features or {}

@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 from typing import Any, Dict
+from app.research.fundamentals import normalize_fundamentals
 
 
 def format_fundamental_metric(fundamental: Dict[str, Any], key: str) -> str:
     """Render a metric with its unit, period basis and source for the LLM."""
+    fundamental = normalize_fundamentals(fundamental)
     value = fundamental.get(key)
     if value is None:
         return "N/A"
     metadata = (fundamental.get("field_metadata") or {}).get(key) or {}
-    qualifiers = [metadata.get("unit"), metadata.get("period_type"), metadata.get("source")]
+    qualifiers = [metadata.get("unit"), metadata.get("currency"), metadata.get("period_type"), metadata.get("period_end"), metadata.get("source")]
     suffix = ", ".join(str(item) for item in qualifiers if item)
     return f"{value} [{suffix}]" if suffix else str(value)
 
@@ -70,10 +72,11 @@ def format_financial_statements(statements: Dict[str, Any]) -> str:
             return "N/A"
 
     latest_quarter = statements.get("latest_quarter") or {}
+    period_label = "LATEST REPORTED QUARTER" if latest_quarter else "LATEST REPORTED PERIOD (NOT NECESSARILY A QUARTER)"
     ttm = statements.get("ttm") or {}
     latest_annual = statements.get("latest_annual") or {}
     if not latest_quarter:
-        latest_quarter = {
+        latest_quarter = statements.get("latest_report") or {
             "period_end": (statements.get("income_statement") or {}).get("latest_date"),
             "period_type": "provider_latest",
             "currency": (statements.get("_meta") or {}).get("currency", ""),
@@ -87,9 +90,9 @@ def format_financial_statements(statements: Dict[str, Any]) -> str:
     q_balance = latest_quarter.get("balance_sheet") or {}
     q_cash = latest_quarter.get("cash_flow") or {}
     q_derived = latest_quarter.get("derived") or {}
-    currency = latest_quarter.get("currency") or (statements.get("_meta") or {}).get("currency") or "reporting currency"
+    currency = q_income.get("currency") or latest_quarter.get("currency") or (statements.get("_meta") or {}).get("currency") or "reporting currency"
     lines = [
-        f"LATEST REPORTED QUARTER | period_end={latest_quarter.get('period_end') or 'N/A'} "
+        f"{period_label} | period_end={latest_quarter.get('period_end') or q_income.get('latest_date') or 'N/A'} "
         f"| currency={currency} | source={latest_quarter.get('source') or (statements.get('_meta') or {}).get('source') or 'provider'}",
         "  Income: "
         f"revenue={amount(q_income.get('total_revenue'))}; operating_income={amount(q_income.get('operating_income'))}; "
@@ -102,8 +105,8 @@ def format_financial_statements(statements: Dict[str, Any]) -> str:
     ]
     if q_derived:
         lines.append(
-            "  Derived quarter metrics: "
-            f"revenue_growth_yoy_pct={q_derived.get('revenue_growth', 'N/A')}; net_margin_pct={q_derived.get('profit_margin', 'N/A')}; "
+            "  Derived period metrics: "
+            f"revenue_growth_pct={q_derived.get('revenue_growth', 'N/A')}; net_margin_pct={q_derived.get('profit_margin', 'N/A')}; "
             f"current_ratio={q_derived.get('current_ratio', 'N/A')}; debt_to_equity={q_derived.get('debt_to_equity', 'N/A')}"
         )
     if ttm:

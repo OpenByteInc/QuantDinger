@@ -153,15 +153,19 @@ def fetch_twelvedata_fundamental(tencent_code: str, is_hk: bool) -> Dict[str, An
     result["operating_margin"] = _float_clean(fin.get("operating_margin"))
     result["roe"] = _float_clean(fin.get("return_on_equity_ttm"))
     result["roa"] = _float_clean(fin.get("return_on_assets_ttm"))
+    # The provider returns these ratios as decimals; gross_margin is already percent.
+    for key in ("profit_margin", "operating_margin", "roe", "roa"):
+        if result[key] is not None:
+            result[key] *= 100.0
 
     # Nested income_statement / balance_sheet / cash_flow inside financials
     fin_is = fin.get("income_statement") or {}
     qrg = _float_clean(fin_is.get("quarterly_revenue_growth"))
     if qrg is not None:
-        result["revenue_growth"] = round(qrg * 100, 2) if abs(qrg) < 10 else qrg
+        result["revenue_growth"] = round(qrg * 100, 2)
     qeg = _float_clean(fin_is.get("quarterly_earnings_growth_yoy"))
     if qeg is not None:
-        result["earnings_growth"] = round(qeg * 100, 2) if abs(qeg) < 10 else qeg
+        result["earnings_growth"] = round(qeg * 100, 2)
     result["revenue_ttm"] = _float_clean(fin_is.get("revenue_ttm"))
     result["ebitda"] = _float_clean(fin_is.get("ebitda"))
     result["eps"] = _float_clean(fin_is.get("diluted_eps_ttm"))
@@ -189,7 +193,17 @@ def fetch_twelvedata_fundamental(tencent_code: str, is_hk: bool) -> Dict[str, An
 
     div = stats.get("dividends_and_splits") or {}
     result["dividend_yield"] = _float_clean(div.get("trailing_annual_dividend_yield"))
+    if result["dividend_yield"] is not None:
+        result["dividend_yield"] *= 100.0
     result["dividend_rate"] = _float_clean(div.get("trailing_annual_dividend_rate"))
+    result["field_metadata"] = {
+        key: {"source": "twelvedata", "unit": "percent", "period_type": basis,
+              "period_end": fin.get("most_recent_quarter")}
+        for key, basis in {
+            "profit_margin": "ttm", "operating_margin": "ttm", "roe": "ttm", "roa": "ttm",
+            "revenue_growth": "quarterly_yoy", "earnings_growth": "quarterly_yoy", "dividend_yield": "ttm",
+        }.items() if result.get(key) is not None
+    }
 
     non_null = sum(1 for v in result.values() if v is not None and v != "twelvedata")
     logger.debug("TwelveData /statistics %s/%s: %d non-null fields", symbol, exchange, non_null)
@@ -214,9 +228,13 @@ def fetch_twelvedata_statements(tencent_code: str, is_hk: bool) -> Dict[str, Any
         is_data = _td_request("/income_statement", symbol, exchange)
         items = (is_data or {}).get("income_statement") or []
         if items:
+            items = sorted(items, key=lambda item: str(item.get("fiscal_date") or ""), reverse=True)
             curr = items[0]
             statements["income_statement"] = {
                 "latest_date": curr.get("fiscal_date"),
+                "period_type": str((is_data.get("meta") or {}).get("period") or "reported").lower(),
+                "currency": (is_data.get("meta") or {}).get("currency"),
+                "source": "twelvedata",
                 "total_revenue": _float_clean(curr.get("sales")),
                 "cost_of_goods": _float_clean(curr.get("cost_of_goods")),
                 "gross_profit": _float_clean(curr.get("gross_profit")),
@@ -225,14 +243,17 @@ def fetch_twelvedata_statements(tencent_code: str, is_hk: bool) -> Dict[str, Any
                 "ebitda": _float_clean(curr.get("ebitda")),
                 "eps_diluted": _float_clean(curr.get("eps_diluted")),
             }
-            if len(items) >= 5:
-                prev_rev = _float_clean(items[4].get("sales"))
+            current_date = str(curr.get("fiscal_date") or "")[:10]
+            prior_date = str(int(current_date[:4]) - 1) + current_date[4:] if current_date[:4].isdigit() else None
+            previous = next((item for item in items[1:] if prior_date and item.get("fiscal_date") == prior_date), None)
+            if previous:
+                prev_rev = _float_clean(previous.get("sales"))
                 curr_rev = _float_clean(curr.get("sales"))
-                if prev_rev and curr_rev and prev_rev > 0:
+                if prev_rev and curr_rev is not None and prev_rev > 0:
                     result["revenue_growth"] = round((curr_rev - prev_rev) / abs(prev_rev) * 100, 2)
-                prev_ni = _float_clean(items[4].get("net_income"))
+                prev_ni = _float_clean(previous.get("net_income"))
                 curr_ni = _float_clean(curr.get("net_income"))
-                if prev_ni and curr_ni and prev_ni > 0:
+                if prev_ni and curr_ni is not None and prev_ni > 0:
                     result["earnings_growth"] = round((curr_ni - prev_ni) / abs(prev_ni) * 100, 2)
     except Exception as e:
         logger.debug("TwelveData /income_statement failed %s/%s: %s", symbol, exchange, e)
@@ -250,6 +271,9 @@ def fetch_twelvedata_statements(tencent_code: str, is_hk: bool) -> Dict[str, Any
             cl = liabilities.get("current_liabilities") or {}
             statements["balance_sheet"] = {
                 "latest_date": curr.get("fiscal_date"),
+                "period_type": "point_in_time",
+                "currency": (bs_data.get("meta") or {}).get("currency"),
+                "source": "twelvedata",
                 "total_assets": _float_clean(assets.get("total_assets")),
                 "total_liabilities": _float_clean(liabilities.get("total_liabilities")),
                 "stockholders_equity": _float_clean(equity.get("total_shareholders_equity")),
@@ -259,7 +283,7 @@ def fetch_twelvedata_statements(tencent_code: str, is_hk: bool) -> Dict[str, Any
             total_liab = _float_clean(liabilities.get("total_liabilities"))
             total_eq = _float_clean(equity.get("total_shareholders_equity"))
             if total_liab is not None and total_eq and total_eq > 0:
-                result.setdefault("debt_to_equity", round(total_liab / total_eq, 4))
+                result.setdefault("liabilities_to_equity", round(total_liab / total_eq, 4))
             t_ca = _float_clean(ca.get("total_current_assets"))
             t_cl = _float_clean(cl.get("total_current_liabilities"))
             if t_ca is not None and t_cl and t_cl > 0:
@@ -278,6 +302,9 @@ def fetch_twelvedata_statements(tencent_code: str, is_hk: bool) -> Dict[str, Any
             fin = curr.get("financing_activities") or {}
             statements["cash_flow"] = {
                 "latest_date": curr.get("fiscal_date"),
+                "period_type": str((cf_data.get("meta") or {}).get("period") or "reported").lower(),
+                "currency": (cf_data.get("meta") or {}).get("currency"),
+                "source": "twelvedata",
                 "operating_cash_flow": _float_clean(op.get("operating_cash_flow")),
                 "investing_cash_flow": _float_clean(inv.get("investing_cash_flow")),
                 "financing_cash_flow": _float_clean(fin.get("financing_cash_flow")),
@@ -474,6 +501,9 @@ def fetch_hk_fundamental_akshare(tencent_code: str) -> Dict[str, Any]:
     if result.get("book_value") is not None and result.get("shares_outstanding") is not None:
         result["shareholder_equity"] = result["book_value"] * result["shares_outstanding"]
     result["revenue_growth"] = _float_clean(r.get("营业总收入滚动环比增长(%)"))
+    result["field_metadata"] = {"revenue_growth": {
+        "source": "akshare_em", "unit": "percent", "period_type": "rolling_qoq",
+    }}
     return result
 
 
@@ -539,6 +569,45 @@ def _pct_change(curr: Optional[float], prev: Optional[float]) -> Optional[float]
     return round((curr - prev) / abs(prev) * 100, 2)
 
 
+def _cn_statement_frame(fetch, tencent_code: str):
+    """Adapt AkShare's exchange-prefixed symbols and Eastmoney raw columns."""
+    code = str(tencent_code).upper()
+    if not code.startswith(("SH", "SZ", "BJ")):
+        code = _eastmoney_a_em_symbol(code)
+    frame = fetch(symbol=code)
+    if frame is None or frame.empty:
+        return frame
+    aliases = {
+        "REPORT_DATE": "报告日期", "TOTAL_OPERATE_INCOME": "营业总收入",
+        "OPERATE_PROFIT": "营业利润", "NETPROFIT": "净利润",
+        "TOTAL_ASSETS": "资产总计", "TOTAL_LIABILITIES": "负债合计",
+        "TOTAL_EQUITY": "所有者权益合计", "TOTAL_PARENT_EQUITY": "股东权益合计",
+        "TOTAL_CURRENT_ASSETS": "流动资产合计", "TOTAL_CURRENT_LIAB": "流动负债合计",
+        "NETCASH_OPERATE": "经营活动产生的现金流量净额",
+        "CONSTRUCT_LONG_ASSET": "购建固定资产、无形资产和其他长期资产支付的现金",
+        "NETCASH_INVEST": "投资活动产生的现金流量净额",
+        "NETCASH_FINANCE": "筹资活动产生的现金流量净额",
+    }
+    frame = frame.rename(columns={key: value for key, value in aliases.items() if value not in frame.columns})
+    if "报告日期" in frame.columns:
+        frame = frame.sort_values("报告日期", ascending=False)
+    return frame.reset_index(drop=True)
+
+
+def _prior_year_row(frame, date_columns):
+    """Compare like-for-like fiscal periods, never Q3 YTD with half-year totals."""
+    date_column = next((key for key in date_columns if key in frame.columns), None)
+    if not date_column or frame.empty:
+        return None
+    current = str(frame.iloc[0][date_column])[:10]
+    try:
+        target = str(int(current[:4]) - 1) + current[4:]
+    except ValueError:
+        return None
+    matches = frame[frame[date_column].astype(str).str[:10] == target]
+    return matches.iloc[0] if not matches.empty else None
+
+
 def fetch_cn_financial_indicators(tencent_code: str) -> Dict[str, Any]:
     """
     Fetch revenue growth, debt/equity, current ratio, FCF, margins from
@@ -559,11 +628,17 @@ def fetch_cn_financial_indicators(tencent_code: str) -> Dict[str, Any]:
 
         with _bypass_proxy():
             try:
-                profit_df = ak.stock_profit_sheet_by_report_em(symbol=sym6)
+                profit_df = _cn_statement_frame(ak.stock_profit_sheet_by_report_em, tencent_code)
                 if profit_df is not None and not profit_df.empty:
                     rev_curr = _safe_iloc(profit_df, 0, "营业总收入")
-                    rev_prev = _safe_iloc(profit_df, 1, "营业总收入")
+                    previous = _prior_year_row(profit_df, ("报告日期",))
+                    rev_prev = _float_clean(previous.get("营业总收入")) if previous is not None else None
                     result["revenue_growth"] = _pct_change(rev_curr, rev_prev)
+                    report_date = str(profit_df.iloc[0].get("报告日期") or "")[:10]
+                    result["field_metadata"] = {
+                        key: {"source": "akshare_em", "unit": "percent", "period_type": basis, "period_end": report_date or None}
+                        for key, basis in (("revenue_growth", "reported_ytd_yoy"), ("profit_margin", "reported_ytd"))
+                    }
 
                     net_curr = _safe_iloc(profit_df, 0, "净利润")
                     if rev_curr and rev_curr > 0 and net_curr is not None:
@@ -574,18 +649,18 @@ def fetch_cn_financial_indicators(tencent_code: str) -> Dict[str, Any]:
                         result["operating_margin"] = round(gross_curr / rev_curr * 100, 2)
 
                     if net_curr is not None:
-                        net_prev = _safe_iloc(profit_df, 1, "净利润")
+                        net_prev = _float_clean(previous.get("净利润")) if previous is not None else None
                         result["earnings_growth"] = _pct_change(net_curr, net_prev)
             except Exception as e:
                 logger.debug("A-share profit sheet failed %s: %s", sym6, e)
 
             try:
-                balance_df = ak.stock_balance_sheet_by_report_em(symbol=sym6)
+                balance_df = _cn_statement_frame(ak.stock_balance_sheet_by_report_em, tencent_code)
                 if balance_df is not None and not balance_df.empty:
-                    total_debt = _safe_iloc(balance_df, 0, "负债合计") or _safe_iloc(balance_df, 0, "流动负债合计")
+                    total_debt = _safe_iloc(balance_df, 0, "负债合计")
                     total_equity = _safe_iloc(balance_df, 0, "股东权益合计") or _safe_iloc(balance_df, 0, "所有者权益合计")
                     if total_debt is not None and total_equity and total_equity > 0:
-                        result["debt_to_equity"] = round(total_debt / total_equity, 4)
+                        result["liabilities_to_equity"] = round(total_debt / total_equity, 4)
 
                     current_assets = _safe_iloc(balance_df, 0, "流动资产合计")
                     current_liab = _safe_iloc(balance_df, 0, "流动负债合计")
@@ -596,12 +671,12 @@ def fetch_cn_financial_indicators(tencent_code: str) -> Dict[str, Any]:
                     if total_assets is not None:
                         result["total_assets"] = total_assets
                     if total_debt is not None:
-                        result["total_debt"] = total_debt
+                        result["total_liabilities"] = total_debt
             except Exception as e:
                 logger.debug("A-share balance sheet failed %s: %s", sym6, e)
 
             try:
-                cashflow_df = ak.stock_cash_flow_sheet_by_report_em(symbol=sym6)
+                cashflow_df = _cn_statement_frame(ak.stock_cash_flow_sheet_by_report_em, tencent_code)
                 if cashflow_df is not None and not cashflow_df.empty:
                     op_cf = _safe_iloc(cashflow_df, 0, "经营活动产生的现金流量净额")
                     capex = _safe_iloc(cashflow_df, 0, "购建固定资产、无形资产和其他长期资产支付的现金")
@@ -638,11 +713,12 @@ def fetch_cn_financial_statements(tencent_code: str) -> Dict[str, Any]:
 
         with _bypass_proxy():
             try:
-                profit_df = ak.stock_profit_sheet_by_report_em(symbol=sym6)
+                profit_df = _cn_statement_frame(ak.stock_profit_sheet_by_report_em, tencent_code)
                 if profit_df is not None and not profit_df.empty:
                     r = profit_df.iloc[0]
                     date_col = next((c for c in ("报告日期", "REPORT_DATE_NAME", "REPORT_DATE") if c in profit_df.columns), None)
                     statements["income_statement"] = {
+                        "period_type": "reported_ytd",
                         "latest_date": str(r[date_col])[:10] if date_col and r.get(date_col) is not None else None,
                         "total_revenue": _float_clean(r.get("营业总收入")),
                         "operating_income": _float_clean(r.get("营业利润")),
@@ -652,11 +728,12 @@ def fetch_cn_financial_statements(tencent_code: str) -> Dict[str, Any]:
                 logger.debug("A-share income statement failed %s: %s", sym6, e)
 
             try:
-                balance_df = ak.stock_balance_sheet_by_report_em(symbol=sym6)
+                balance_df = _cn_statement_frame(ak.stock_balance_sheet_by_report_em, tencent_code)
                 if balance_df is not None and not balance_df.empty:
                     r = balance_df.iloc[0]
                     date_col = next((c for c in ("报告日期", "REPORT_DATE_NAME", "REPORT_DATE") if c in balance_df.columns), None)
                     statements["balance_sheet"] = {
+                        "period_type": "point_in_time",
                         "latest_date": str(r[date_col])[:10] if date_col and r.get(date_col) is not None else None,
                         "total_assets": _float_clean(r.get("资产总计")),
                         "total_liabilities": _float_clean(r.get("负债合计")),
@@ -668,13 +745,14 @@ def fetch_cn_financial_statements(tencent_code: str) -> Dict[str, Any]:
                 logger.debug("A-share balance sheet for statements failed %s: %s", sym6, e)
 
             try:
-                cashflow_df = ak.stock_cash_flow_sheet_by_report_em(symbol=sym6)
+                cashflow_df = _cn_statement_frame(ak.stock_cash_flow_sheet_by_report_em, tencent_code)
                 if cashflow_df is not None and not cashflow_df.empty:
                     r = cashflow_df.iloc[0]
                     date_col = next((c for c in ("报告日期", "REPORT_DATE_NAME", "REPORT_DATE") if c in cashflow_df.columns), None)
                     op_cf = _float_clean(r.get("经营活动产生的现金流量净额"))
                     capex = _float_clean(r.get("购建固定资产、无形资产和其他长期资产支付的现金"))
                     statements["cash_flow"] = {
+                        "period_type": "reported_ytd",
                         "latest_date": str(r[date_col])[:10] if date_col and r.get(date_col) is not None else None,
                         "operating_cash_flow": op_cf,
                         "investing_cash_flow": _float_clean(r.get("投资活动产生的现金流量净额")),
@@ -705,7 +783,7 @@ def fetch_hk_financial_indicators(tencent_code: str) -> Dict[str, Any]:
             return result
 
         curr = df.iloc[0]
-        prev = df.iloc[1] if len(df) > 1 else None
+        prev = _prior_year_row(df, ("报告期", "REPORT_DATE", "截止日期"))
 
         rev_curr = (
             _float_clean(curr.get("营业总收入(元)"))
@@ -716,6 +794,9 @@ def fetch_hk_financial_indicators(tencent_code: str) -> Dict[str, Any]:
         direct_growth = _float_clean(curr.get("营业总收入滚动环比增长(%)"))
         if direct_growth is not None:
             result["revenue_growth"] = direct_growth
+            result["field_metadata"] = {"revenue_growth": {
+                "source": "akshare_em", "unit": "percent", "period_type": "rolling_qoq",
+            }}
         direct_margin = _float_clean(curr.get("销售净利率(%)"))
         if direct_margin is not None:
             result["profit_margin"] = direct_margin
@@ -737,7 +818,7 @@ def fetch_hk_financial_indicators(tencent_code: str) -> Dict[str, Any]:
 
         de = _float_clean(curr.get("资产负债率(%)"))
         if de is not None:
-            result["debt_to_equity"] = round(de / (100 - de), 4) if de < 100 else None
+            result["liabilities_to_equity"] = round(de / (100 - de), 4) if de < 100 else None
 
         result["current_ratio"] = _float_clean(curr.get("流动比率"))
         result["quick_ratio"] = _float_clean(curr.get("速动比率"))

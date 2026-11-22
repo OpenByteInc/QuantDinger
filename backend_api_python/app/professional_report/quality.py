@@ -139,6 +139,19 @@ def assess_snapshot_quality(snapshot: EvidenceSnapshotV1) -> DataQualitySummary:
         strength = "high"
         directional_allowed = True
 
+    core_score = quality_score * 100
+    news_status = (snapshot.collection.get("news") or {}).get("status", "not_checked")
+    if news_status == "fetch_failed":
+        flags.add("news_collection_failed")
+        quality_score = min(quality_score, 0.80)
+        if strength == "high":
+            strength = "medium"
+    elif news_status == "headline_only":
+        flags.add("news_content_limited")
+        quality_score = min(quality_score, 0.90)
+        if strength == "high":
+            strength = "medium"
+
     return DataQualitySummary(
         evaluated_at=snapshot.retrieved_at,
         coverage_ratio=coverage_ratio,
@@ -156,6 +169,8 @@ def assess_snapshot_quality(snapshot: EvidenceSnapshotV1) -> DataQualitySummary:
         warnings=sorted(flags),
         max_conclusion_strength=strength,
         directional_conclusion_allowed=directional_allowed,
+        core_quality_score=core_score,
+        news_status=news_status,
     )
 
 

@@ -11,6 +11,7 @@ from app.services.fast_analysis_geo import (
     geopolitical_sentiment_penalty_delta,
 )
 from app.utils.logger import get_logger
+from app.research.fundamentals import normalize_fundamentals
 
 logger = get_logger(__name__)
 
@@ -30,8 +31,8 @@ class FastAnalysisScoringMixin:
 
         """
         indicators = data.get("indicators") or {}
-        fundamental = data.get("fundamental") or {}
-        news = data.get("news") or []
+        fundamental = normalize_fundamentals(data.get("fundamental"))
+        news = [item for item in data.get("news") or [] if item.get("asset_relevance") != "background"]
         macro = data.get("macro") or {}
         price_data = data.get("price") or {}
         crypto_factors = data.get("crypto_factors") or {}
@@ -81,7 +82,7 @@ class FastAnalysisScoringMixin:
         if market_type == "Crypto" and crypto_factors:
             fundamental_present = True
         sentiment_present = bool(news)
-        macro_present = bool(macro)
+        macro_present = bool(macro) and market_type not in {"CNStock", "HKStock"}
         technical_present = bool(indicators)
 
         weights = {
@@ -353,6 +354,8 @@ class FastAnalysisScoringMixin:
         """Calculate the fundamental score on a -100 to +100 scale."""
         if market not in ("USStock", "CNStock", "HKStock") or not fundamental:
             return 0.0
+
+        fundamental = normalize_fundamentals(fundamental)
 
         statements = fundamental.get("financial_statements") or {}
         latest_quarter = statements.get("latest_quarter") or {}
@@ -629,7 +632,8 @@ class FastAnalysisScoringMixin:
         Calculate the macro environment score from volatility, currency, and rates.
 
         """
-        if not macro:
+        # The legacy formula models US risk assets, not domestic equity transmission.
+        if not macro or market in {"CNStock", "HKStock"}:
             return 0.0
 
         score = 0.0

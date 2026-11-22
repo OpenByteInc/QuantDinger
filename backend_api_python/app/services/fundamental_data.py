@@ -249,6 +249,7 @@ class FundamentalDataService:
         source = str(payload.get("source") or row.get("source") or "local_snapshot")
         period_end = _date_value(row.get("period_end"))
         available_at = _date_value(row.get("available_at"))
+        ingested_at = _datetime_value(row.get("ingested_at"))
         is_history = str(row.get("source") or "") == "yfinance_quarterly"
         field_metadata = dict(payload.get("field_metadata") or {})
         for field in FUNDAMENTAL_FIELDS:
@@ -256,7 +257,8 @@ class FundamentalDataService:
             if value is None:
                 continue
             analysis_key = _ANALYSIS_FIELD_ALIASES.get(field, field)
-            if analysis_key not in payload or payload.get(analysis_key) is None:
+            from_provider_payload = payload.get(analysis_key) is not None
+            if not from_provider_payload:
                 if is_history and field in {"return_on_equity", "revenue_growth"}:
                     value *= 100.0
                 payload[analysis_key] = value
@@ -265,16 +267,17 @@ class FundamentalDataService:
                 {
                     "source": str(row.get("source") or "local_snapshot"),
                     "unit": _ANALYSIS_FIELD_UNITS.get(field),
-                    "period_type": str(row.get("frequency") or "snapshot"),
-                    "period_end": period_end.isoformat() if period_end else None,
-                    "as_of": available_at.isoformat() if available_at else None,
+                    "period_type": "provider_latest" if from_provider_payload else str(row.get("frequency") or "snapshot"),
+                    "period_end": period_end.isoformat() if period_end and not from_provider_payload else None,
+                    # A cache availability DATE is not a UTC observation instant.
+                    "as_of": (metadata.get("collectedAt") or (ingested_at.isoformat() if ingested_at else None))
+                    if has_provider_payload else (available_at.isoformat() if available_at else None),
                     "currency": str(row.get("currency") or "") or None,
                 },
             )
         payload["field_metadata"] = field_metadata
         payload["source"] = source
 
-        ingested_at = _datetime_value(row.get("ingested_at"))
         now = datetime.now(timezone.utc)
         cache_age_seconds = max(0.0, (now - ingested_at).total_seconds()) if ingested_at else None
         report_age_days = (cutoff - period_end).days if period_end else None

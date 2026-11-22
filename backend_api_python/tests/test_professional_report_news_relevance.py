@@ -1,7 +1,7 @@
 from app.services.fast_analysis import FastAnalysisService
 from app.services.market_data_collector import MarketDataCollector
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import ANY, Mock
 
 
 def _service():
@@ -32,6 +32,9 @@ def test_direct_material_event_remains_eligible_for_risk_scoring():
 
 
 def test_cn_company_search_is_not_suppressed_by_finnhub_general_headlines(monkeypatch):
+    monkeypatch.setattr("app.data_providers.asset_events.collect_asset_events", lambda *_: {
+        "news": [], "disclosures": [], "collection": {"status": "checked_empty", "providers": {}},
+    })
     collector = MarketDataCollector.__new__(MarketDataCollector)
     collector._finnhub_client = Mock()
     collector._finnhub_client.general_news.return_value = [{"headline": f"Global {i}"} for i in range(10)]
@@ -40,7 +43,7 @@ def test_cn_company_search_is_not_suppressed_by_finnhub_general_headlines(monkey
 
     result = collector._get_news("CNStock", "600519", "贵州茅台")
     collector._finnhub_client.general_news.assert_not_called()
-    collector._get_news_from_search.assert_called_once_with("CNStock", "600519", "贵州茅台")
+    collector._get_news_from_search.assert_called_once_with("CNStock", "600519", "贵州茅台", diagnostics=ANY)
     assert len(result["news"]) == 1
 
 
