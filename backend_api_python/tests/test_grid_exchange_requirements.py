@@ -197,6 +197,12 @@ def test_runner_startup_rejects_bitget_one_way(monkeypatch):
 
 
 def test_runner_startup_places_both_neutral_legs_in_hedge_mode(monkeypatch):
+    from contextlib import nullcontext
+
+    monkeypatch.setattr("app.utils.db.get_db_transaction", nullcontext)
+    monkeypatch.setattr("app.services.live_trading.fill_accounting.lock_strategy_fills", lambda *a: None)
+    monkeypatch.setattr("app.services.grid.engine.persist_grid_resting_state", lambda *a, **k: None)
+    monkeypatch.setattr("app.services.execution_streams.repository.ExecutionEventRepository.register_binding", lambda *a, **k: None)
     class FakeBitgetClient:
         def get_account_pos_mode(self, **kwargs):
             return "hedge_mode"
@@ -233,6 +239,12 @@ def test_runner_startup_places_both_neutral_legs_in_hedge_mode(monkeypatch):
             orders.list_open.side_effect = lambda *_args: open_orders
             orders.has_open_for_cell.return_value = False
             orders.insert.side_effect = lambda order: open_orders.append(order) or len(open_orders)
+            orders.reserve_pending.side_effect = lambda order, expected: orders.insert(order)
+            def acknowledge(identifier, exchange_order_id):
+                open_orders[identifier - 1].status = "open"
+                open_orders[identifier - 1].exchange_order_id = exchange_order_id
+                return True
+            orders.acknowledge_submission.side_effect = acknowledge
             with patch("app.services.grid.engine.GridCellRepository") as cells_cls:
                 cells = cells_cls.return_value
                 cells.list_cells.return_value = []

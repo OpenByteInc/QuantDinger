@@ -70,8 +70,10 @@ def test_market_order_executor_submits_normalized_intent():
 
 def test_market_order_transport_failure_is_left_for_reconciliation():
     adapter = FakeAdapter()
+    attempts = []
 
     def timeout(_intent):
+        attempts.append("submit")
         raise LiveTradingError("HTTP 504 gateway timeout")
 
     adapter.place_market_order = timeout
@@ -91,6 +93,68 @@ def test_market_order_transport_failure_is_left_for_reconciliation():
         "submit_outcome": "unknown",
         "client_order_id": "qd_7_11_mkt",
     }
+    assert attempts == ["submit"]
+
+
+@pytest.mark.parametrize(
+    ("executor", "place_method", "price"),
+    [
+        (MarketOrderExecutor, "place_market_order", 0),
+        (RestingLimitExecutor, "place_limit_order", 90000),
+        (LimitThenMarketExecutor, "place_limit_order", 90000),
+    ],
+)
+def test_explicit_rate_limit_retries_once_with_same_intent(
+    monkeypatch,
+    executor,
+    place_method,
+    price,
+):
+    monkeypatch.setenv("LIVE_TRADING_ORDER_SAFE_RETRIES", "1")
+    monkeypatch.setenv("LIVE_TRADING_ORDER_RETRY_BACKOFF_SEC", "0")
+    adapter = FakeAdapter()
+    original = getattr(adapter, place_method)
+    submitted = []
+
+    def rate_limited_once(intent):
+        submitted.append(intent)
+        if len(submitted) == 1:
+            raise LiveTradingError('Bybit error: {"retCode":10006,"retMsg":"Too many visits"}')
+        return original(intent)
+
+    setattr(adapter, place_method, rate_limited_once)
+    intent = OrderIntent(
+        symbol="BTC/USDT",
+        side="buy",
+        quantity=1,
+        price=price,
+        client_order_id="qd_safe_retry",
+    )
+
+    result = executor(adapter).execute(intent)
+
+    assert result.success is True
+    assert submitted == [intent, intent]
+
+
+def test_explicit_business_rejection_is_not_retried(monkeypatch):
+    monkeypatch.setenv("LIVE_TRADING_ORDER_SAFE_RETRIES", "3")
+    monkeypatch.setenv("LIVE_TRADING_ORDER_RETRY_BACKOFF_SEC", "0")
+    adapter = FakeAdapter()
+    attempts = []
+
+    def rejected(_intent):
+        attempts.append("submit")
+        raise LiveTradingError("insufficient balance")
+
+    adapter.place_market_order = rejected
+    result = MarketOrderExecutor(adapter).execute(
+        OrderIntent(symbol="BTC/USDT", side="buy", quantity=1)
+    )
+
+    assert result.success is False
+    assert result.status == "rejected"
+    assert attempts == ["submit"]
 
 
 @pytest.mark.parametrize(

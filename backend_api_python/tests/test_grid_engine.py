@@ -9,6 +9,12 @@ from app.services.grid.levels import generate_cells, generate_levels
 from app.services.grid.validator import validate_grid_config
 
 
+@pytest.fixture(autouse=True)
+def isolated_grid_schema(monkeypatch):
+    monkeypatch.setattr("app.services.grid.resting_orders_repo._ensure_table", lambda: None)
+    monkeypatch.setattr("app.services.live_trading.grid_cells._ensure_table", lambda: None)
+
+
 def test_generate_levels_arithmetic():
     levels = generate_levels(90000, 100000, 10, "arithmetic")
     assert len(levels) == 10
@@ -238,7 +244,73 @@ def test_grid_drift_cancels_same_side_entries_and_unsafe_exits(monkeypatch):
     assert cancelled == [("entry", "long"), ("exit", "long")]
 
 
-def test_grid_direct_resting_entry_cannot_bypass_ownership_guard(monkeypatch):
+@pytest.mark.parametrize("exchange_id", ["binance", "okx", "bybit", "bitget", "gate", "htx"])
+@pytest.mark.parametrize(
+    "reason",
+    ["position_ownership_snapshot_failed", "position_ownership_credential_missing"],
+)
+def test_grid_unknown_ownership_preserves_exit_orders_across_exchanges(
+    monkeypatch,
+    exchange_id,
+    reason,
+):
+    from app.services.grid.engine import GridEngine
+
+    engine = GridEngine(
+        42,
+        "BTC/USDT",
+        {
+            "market_type": "swap",
+            "bot_params": {
+                "upperPrice": 110,
+                "lowerPrice": 90,
+                "gridCount": 5,
+                "amountPerGrid": 10,
+                "gridDirection": "long",
+            },
+        },
+        {"exchange_id": exchange_id, "credential_id": 7},
+        create_client_fn=lambda: object(),
+        enqueue_market=lambda *a, **k: False,
+    )
+    engine._bootstrapped = True
+    cancelled = []
+    monkeypatch.setattr(
+        engine,
+        "_grid_entry_ownership_allowed",
+        lambda *_a, **_k: (False, {"reason": reason}),
+    )
+    monkeypatch.setattr(
+        engine,
+        "cancel_entry_orders_on_exchange",
+        lambda *, pos_side="": cancelled.append(("entry", pos_side)),
+    )
+    monkeypatch.setattr(
+        engine,
+        "cancel_exit_orders_on_exchange",
+        lambda *, pos_side="": cancelled.append(("exit", pos_side)),
+    )
+
+    assert engine.sync_grid_orders(100.0) == 0
+    assert cancelled == [("entry", "long")]
+
+
+@pytest.mark.parametrize(
+    ("reason", "expected"),
+    [
+        ("unallocated_account_position", [("entry", "long")]),
+        ("position_ownership_snapshot_failed", [("entry", "long")]),
+        (
+            "account_below_strategy_allocation",
+            [("entry", "long"), ("exit", "long")],
+        ),
+    ],
+)
+def test_grid_direct_resting_entry_cannot_bypass_ownership_guard(
+    monkeypatch,
+    reason,
+    expected,
+):
     from app.services.grid.engine import GridEngine
     from app.services.grid.levels import GridCellSpec
 
@@ -258,12 +330,17 @@ def test_grid_direct_resting_entry_cannot_bypass_ownership_guard(monkeypatch):
     monkeypatch.setattr(
         engine,
         "_grid_entry_ownership_allowed",
-        lambda *_a, **_k: (False, {"reason": "unallocated_account_position"}),
+        lambda *_a, **_k: (False, {"reason": reason}),
     )
     monkeypatch.setattr(
         engine,
         "cancel_entry_orders_on_exchange",
-        lambda *, pos_side="": cancelled.append(pos_side),
+        lambda *, pos_side="": cancelled.append(("entry", pos_side)),
+    )
+    monkeypatch.setattr(
+        engine,
+        "cancel_exit_orders_on_exchange",
+        lambda *, pos_side="": cancelled.append(("exit", pos_side)),
     )
     monkeypatch.setattr(
         "app.services.grid.engine.place_grid_limit_order",
@@ -281,7 +358,7 @@ def test_grid_direct_resting_entry_cannot_bypass_ownership_guard(monkeypatch):
     )
 
     assert placed is False
-    assert cancelled == ["long"]
+    assert cancelled == expected
 
 
 @pytest.mark.parametrize(
@@ -292,6 +369,7 @@ def test_grid_clamps_crossed_order_to_latest_market(
     monkeypatch, purpose, side, reduce_only
 ):
     from types import SimpleNamespace
+    from contextlib import nullcontext
 
     from app.services.grid.engine import GridEngine
     from app.services.grid.levels import GridCellSpec
@@ -320,6 +398,11 @@ def test_grid_clamps_crossed_order_to_latest_market(
     monkeypatch.setattr(engine, "_normalize_grid_base_qty", lambda qty, _price: qty)
     monkeypatch.setattr(engine, "_cell_record", lambda *_a: SimpleNamespace(extra={}))
     monkeypatch.setattr(engine._orders, "insert", lambda row: captured.setdefault("row", row) and 1)
+    monkeypatch.setattr(engine._orders, "list_open", lambda *a: [])
+    monkeypatch.setattr(engine._orders, "acknowledge_submission", lambda *a: True)
+    monkeypatch.setattr("app.services.grid.resting_orders_repo.get_db_transaction", nullcontext)
+    monkeypatch.setattr("app.utils.db.get_db_transaction", nullcontext)
+    monkeypatch.setattr("app.services.live_trading.fill_accounting.lock_strategy_fills", lambda *a: None)
     monkeypatch.setattr(engine._cells, "update_state", lambda *_a, **_k: True)
     monkeypatch.setattr(
         "app.services.execution_streams.repository.ExecutionEventRepository.register_binding",
@@ -401,6 +484,45 @@ def test_grid_entry_guard_uses_live_account_snapshot_and_shared_ownership_logic(
     assert observed["guard"]["account_qty"] == pytest.approx(1.25)
     assert observed["guard"]["credential_id"] == 7
     assert observed["guard"]["strategy_config"]["bot_type"] == "grid"
+
+
+def test_grid_transient_position_snapshot_failure_is_warning(monkeypatch):
+    from app.services.grid.engine import GridEngine
+    from app.services.live_trading.position_query import PositionSnapshotUnavailable
+
+    engine = GridEngine(
+        42,
+        "SOL/USDT",
+        {"market_type": "swap", "bot_params": {"gridCount": 5}},
+        {"exchange_id": "okx", "credential_id": 7},
+        user_id=3,
+        create_client_fn=lambda: object(),
+        enqueue_market=lambda *a, **k: False,
+    )
+    logs = []
+    monkeypatch.setattr(
+        "app.services.live_trading.position_query.query_exchange_position_size",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            PositionSnapshotUnavailable(
+                exchange_id="okx",
+                symbol="SOL/USDT",
+                side="long",
+                attempts=2,
+                cause=TimeoutError("temporary timeout"),
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        "app.services.grid.engine.append_strategy_log",
+        lambda *args, **_kwargs: logs.append(args),
+    )
+
+    allowed, metadata = engine._grid_entry_ownership_allowed(object(), "long", force=True)
+
+    assert allowed is False
+    assert metadata["reason"] == "position_ownership_snapshot_failed"
+    assert logs[0][1] == "warning"
+    assert "temporarily unavailable" in logs[0][2]
 
 
 def test_grid_exit_fails_closed_when_protected_inventory_lookup_fails(monkeypatch):
@@ -1771,6 +1893,9 @@ def test_on_order_filled_long_entry_marks_held_even_if_exit_hangs(monkeypatch):
     updates = []
 
     class FakeOrders:
+        def list_open(self, strategy_id):
+            return []
+
         def has_open_for_cell(self, strategy_id, cell_index, purpose):
             return False
 

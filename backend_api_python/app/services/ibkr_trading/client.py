@@ -615,7 +615,7 @@ class IBKRClient:
             logger.error(f"Get account summary failed: {e}")
             return {"success": False, "error": str(e)}
     
-    def get_positions(self) -> List[Dict[str, Any]]:
+    def get_positions(self, *, raise_on_error: bool = False) -> List[Dict[str, Any]]:
         """
         Get current positions.
         
@@ -647,6 +647,8 @@ class IBKRClient:
             
         except Exception as e:
             logger.error(f"Get positions failed: {e}")
+            if raise_on_error:
+                raise
             return []
 
     def get_executions(self, symbol: str = "") -> List[Dict[str, Any]]:

@@ -11,7 +11,7 @@ from app.services.grid.resting_orders_repo import GridRestingOrder
 def make_order(identifier=1, purpose="long_exit", quantity=0.04, processed=0.0):
     return GridRestingOrder(id=identifier, strategy_id=1, symbol="BTC/USDT", cell_index=1,
         purpose=purpose, side="sell" if purpose.endswith("exit") else "buy", pos_side="long",
-        price=100, quantity=quantity, exchange_order_id=str(identifier), processed_fill_qty=processed)
+        price=100, quantity=quantity, exchange_order_id=str(identifier), processed_fill_qty=processed, status="open")
 
 
 @pytest.fixture
@@ -31,6 +31,8 @@ def harness(monkeypatch):
     engine._orders = SimpleNamespace(list_open=lambda *a: state.orders, update_status=update)
     monkeypatch.setattr(engine, "_normalize_grid_base_qty", lambda qty, price: qty)
     monkeypatch.setattr(engine, "_place_limit", lambda *a, **k: state.placements.append((a, k)) or True)
+    monkeypatch.setattr(engine, "_cell_record", lambda *a: SimpleNamespace(leg_size=0.05))
+    monkeypatch.setattr("app.services.live_trading.position_query.query_exchange_position_size", lambda **k: 0.05)
     monkeypatch.setattr("app.services.grid.engine.append_strategy_log", lambda *a, **k: None)
     monkeypatch.setattr("app.services.grid.engine.cancel_grid_order", lambda *a, **k: state.cancelled.append(k))
     monkeypatch.setattr("app.services.grid.engine.query_grid_order_fill", lambda *a, **k: state.snapshot)
@@ -39,7 +41,7 @@ def harness(monkeypatch):
 
 def resize(engine):
     return engine._ensure_cell_exit_coverage(GridCellSpec(index=1, lower_price=99, upper_price=100),
-        purpose="long_exit", side="sell", price=100, pos_side="long", quantity=0.05)
+        purpose="long_exit", side="sell", price=100, pos_side="long", quantity=0.02)
 
 
 def fail(*args, **kwargs):
@@ -92,7 +94,7 @@ def test_confirmed_cancel_replaces_after_persisting(harness):
     assert state.updates == [((1,), {"status": "cancelled"})]
     assert len(state.placements) == 1
     assert state.placements[0][1]["reduce_only"] is True
-    assert state.placements[0][1]["quantity"] == 0.05
+    assert state.placements[0][1]["quantity"] == 0.02
 
 
 def test_processed_partial_fill_can_be_replaced(harness):
@@ -144,8 +146,8 @@ def test_retry_after_fill_posting_recomputes_coverage(harness):
     state.orders[0].processed_fill_qty = 0.01
     cell = GridCellSpec(index=1, lower_price=99, upper_price=100)
     assert engine._ensure_cell_exit_coverage(cell, purpose="long_exit", side="sell", price=100,
-        pos_side="long", quantity=0.04) is True
-    assert state.placements[0][1]["quantity"] == 0.04
+        pos_side="long", quantity=0.02) is True
+    assert state.placements[0][1]["quantity"] == 0.02
 
 
 @pytest.mark.parametrize("side", ["long", "short"])
@@ -160,13 +162,45 @@ def test_periodic_pass_retries_failed_exit_resize(monkeypatch, harness, side):
     engine._cells.list_cells = lambda *a: [SimpleNamespace(cell_index=1, leg_size=0.05,
         state=GridCellState.LONG_HELD if side == "long" else GridCellState.SHORT_HELD)]
     monkeypatch.setattr(engine, "_levels_and_cells", lambda: ([], [GridCellSpec(index=1, lower_price=99, upper_price=100)]))
-    monkeypatch.setattr(engine, "_create_client", fail)
+    place = engine._place_limit
+    monkeypatch.setattr(engine, "_place_limit", lambda *a, **k: False)
     engine.sync_held_cell_exits(100)
     assert not state.updates and not state.placements
-    monkeypatch.setattr(engine, "_create_client", lambda: object())
+    monkeypatch.setattr(engine, "_place_limit", place)
     engine.sync_held_cell_exits(100)
     assert len(state.placements) == 1
-    assert state.placements[0][1]["quantity"] == 0.05
+    assert state.placements[0][1]["quantity"] == pytest.approx(0.01)
+
+
+@pytest.mark.parametrize("exchange", ["binance", "okx", "bybit", "bitget", "gate", "htx"])
+def test_snapshot_outage_never_withdraws_exit_for_resize(monkeypatch, harness, exchange):
+    engine, state = harness
+    engine.exchange_config = {"exchange_id": exchange}
+    monkeypatch.setattr("app.services.live_trading.position_query.query_exchange_position_size", fail)
+    assert resize(engine) is False
+    assert not state.cancelled and not state.updates and not state.placements
+
+
+def test_partial_entry_topup_preserves_working_exit(harness):
+    engine, state = harness
+    assert engine._ensure_cell_exit_coverage(GridCellSpec(index=1, lower_price=99, upper_price=100),
+        purpose="long_exit", side="sell", price=100, pos_side="long", quantity=0.05)
+    assert not state.cancelled and not state.updates
+    assert state.placements[0][1]["quantity"] == pytest.approx(0.01)
+
+
+def test_legitimate_topups_are_not_deduped(harness):
+    engine, state = harness
+    state.orders = [make_order(1, quantity=0.04), make_order(2, quantity=0.01)]
+    engine._dedupe_open_exit_orders("long_exit")
+    assert not state.cancelled
+
+
+def test_pending_topup_is_not_submitted_again(harness):
+    engine, state = harness
+    state.orders[0].status = "pending"
+    assert resize(engine) is False
+    assert not state.cancelled and not state.placements
 
 
 def test_cell_release_excludes_open_orders_and_unprocessed_fills(monkeypatch):

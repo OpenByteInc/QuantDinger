@@ -88,6 +88,7 @@ from app.services.pending_orders.broker_support import (
     broker_order_type as _broker_order_type,
     broker_protection_prices as _broker_protection_prices, native_stock_protection_allowed as _stock_protection,
     redact_exchange_json as _redact_exchange_json,
+    submit_broker_order,
 )
 from app.services.pending_orders.submission_recovery import SubmissionRecoveryMixin
 from app.services.pending_orders.claims import claim_pending_order
@@ -2511,34 +2512,19 @@ class PendingOrderWorker(
             )
             if callable(prepare_submission):
                 prepare_submission()
-            if _stock_protection(payload, exchange_config, amount, stop_price, take_price):
-                result = client.place_bracket_order(
-                    symbol=symbol,
-                    side=action,
-                    quantity=amount,
-                    take_profit_price=take_price,
-                    stop_loss_price=stop_price,
-                    limit_price=limit_price if order_type == "limit" else 0.0,
-                    market_type=market_type,
-                    client_order_id=client_order_id,
-                )
-            elif order_type == "limit":
-                result = client.place_limit_order(
-                    symbol=symbol,
-                    side=action,
-                    quantity=amount,
-                    price=limit_price,
-                    market_type=market_type,
-                    client_order_id=client_order_id,
-                )
-            else:
-                result = client.place_market_order(
-                    symbol=symbol,
-                    side=action,
-                    quantity=amount,
-                    market_type=market_type,
-                    client_order_id=client_order_id,
-                )
+
+            bracket = _stock_protection(payload, exchange_config, amount, stop_price, take_price)
+            result = submit_broker_order(
+                client, symbol=symbol, side=action, quantity=amount,
+                market_type=market_type, client_order_id=client_order_id,
+                order_type=order_type, limit_price=limit_price, bracket=bracket,
+                protection={"take_profit_price": take_price, "stop_loss_price": stop_price} if bracket else None,
+                on_retry=lambda attempt, delay, category: append_strategy_log(
+                    strategy_id,
+                    "warning",
+                    f"IBKR order retry {attempt}: {category}; waiting {delay:.2f}s",
+                ),
+            )
 
             if not result.success:
                 if self._is_ambiguous_submit_error(result.message):
@@ -2715,25 +2701,16 @@ class PendingOrderWorker(
                     "stop_loss_price": stop_price,
                     "take_profit_price": take_price,
                 }
-            if order_type == "limit":
-                result = client.place_limit_order(
-                    symbol=symbol,
-                    side=action,
-                    quantity=amount,
-                    price=limit_price,
-                    market_type=market_type_for_client,
-                    client_order_id=client_order_id,
-                    **protection_kwargs,
-                )
-            else:
-                result = client.place_market_order(
-                    symbol=symbol,
-                    side=action,
-                    quantity=amount,
-                    market_type=market_type_for_client,
-                    client_order_id=client_order_id,
-                    **protection_kwargs,
-                )
+            result = submit_broker_order(
+                client, symbol=symbol, side=action, quantity=amount,
+                market_type=market_type_for_client, client_order_id=client_order_id,
+                order_type=order_type, limit_price=limit_price, protection=protection_kwargs,
+                on_retry=lambda attempt, delay, category: append_strategy_log(
+                    strategy_id,
+                    "warning",
+                    f"{broker_name} order retry {attempt}: {category}; waiting {delay:.2f}s",
+                ),
+            )
 
             if not result.success:
                 if self._is_ambiguous_submit_error(result.message):

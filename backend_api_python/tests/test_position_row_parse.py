@@ -48,3 +48,12 @@ def test_gate_signed_contracts():
     row = {"contract": "BNB_USDT", "size": -15}
     assert infer_position_side_from_row(row) == "short"
     assert position_base_qty_for_side(row, "short", contracts_to_base=0.01) == 0.15
+
+
+def test_broker_quantity_field_supports_long_and_short_positions():
+    assert position_base_qty_for_side({"symbol": "AAPL", "quantity": 12}, "long") == 12
+    assert position_base_qty_for_side({"symbol": "AAPL", "quantity": -7}, "short") == 7
+
+
+def test_broker_position_field_is_supported():
+    assert position_base_qty_for_side({"symbol": "AAPL", "position": 3}, "long") == 3

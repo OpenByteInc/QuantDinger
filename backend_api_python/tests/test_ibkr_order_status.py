@@ -1,6 +1,8 @@
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
+import pytest
+
 from app.services.ibkr_trading.client import IBKRClient
 
 
@@ -24,6 +26,21 @@ def test_ibkr_get_order_status_queries_completed_orders_after_restart():
     assert result.filled == 4
     assert result.avg_price == 205.25
     assert result.raw["permId"] == 987
+
+
+def test_ibkr_strict_position_snapshot_propagates_transport_failure():
+    def fail_positions(_account):
+        raise TimeoutError("temporary timeout")
+
+    client = object.__new__(IBKRClient)
+    client._ib = SimpleNamespace(positions=fail_positions)
+    client._account = "DU123"
+    client._ensure_connected = lambda: None
+
+    with pytest.raises(TimeoutError, match="temporary timeout"):
+        client.get_positions(raise_on_error=True)
+
+    assert client.get_positions() == []
 
 
 def test_ibkr_get_order_status_uses_account_wide_open_orders_and_commission():

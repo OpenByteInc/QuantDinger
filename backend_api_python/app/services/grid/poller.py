@@ -194,6 +194,7 @@ class GridFillPoller:
         from app.utils.db import get_db_transaction
         from app.utils.db_postgres import run_after_commit
 
+        order_details = {}
         filled, avg, status = query_grid_order_fill(
             client,
             symbol=order.symbol,
@@ -201,11 +202,13 @@ class GridFillPoller:
             exchange_order_id=order.exchange_order_id,
             client_order_id=order.client_order_id,
             exchange_config=runner.exchange_config,
+            details=order_details,
         )
         if status == "unknown" or not order.id:
             return "unknown"
         if status == "filled" and (filled <= 0 or avg <= 0):
             return status
+        order.exchange_order_id = str(order_details.get("exchange_order_id") or order.exchange_order_id or "")
         details = {}
         fee_qty, fee_avg = filled, avg
         if filled > 0:

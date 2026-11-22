@@ -33,6 +33,19 @@ from app.services.live_trading.htx import HtxClient
 from app.services.live_trading.okx import OkxClient
 
 
+@pytest.mark.parametrize("client_class,market", [(GateSpotClient, "spot"), (GateUsdtFuturesClient, "swap")])
+def test_gate_unconfirmed_submit_queries_original_text(client_class, market):
+    client = client_class.__new__(client_class)
+    client.get_order = MagicMock(return_value={"id": "12345", "status": "open", "size": 1, "left": 1})
+    client.get_contract = MagicMock(return_value={"quanto_multiplier": "0.001"})
+    details = {}
+    _, _, status = query_grid_order_fill(client, symbol="BTC/USDT", market_type=market,
+        client_order_id="g0001c001e123456789012", details=details)
+    assert status == "open"
+    assert client.get_order.call_args.kwargs["order_id"] == "t-g0001c001e123456789012"
+    assert details["exchange_order_id"] == "12345"
+
+
 @dataclass(frozen=True)
 class FillContractCase:
     case_id: str

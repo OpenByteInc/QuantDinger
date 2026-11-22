@@ -683,13 +683,17 @@ class ExecutionEventProcessor:
                         WHEN %s = 'filled' THEN 'filled'
                         WHEN %s = 'cancelled' THEN 'cancelled'
                         WHEN %s > 0 THEN 'partial'
+                        WHEN %s = 'open' THEN 'open'
                         ELSE status
                     END,
+                    exchange_order_id = COALESCE(NULLIF(%s, ''), exchange_order_id),
                     updated_at = NOW()
                 WHERE id = %s
                 """,
-                (total, avg, status, status, total, order_id),
+                (total, avg, status, status, total, status,
+                 str(event.get("exchange_order_id") or ""), order_id),
             )
+            row["exchange_order_id"] = str(event.get("exchange_order_id") or row.get("exchange_order_id") or "")
             db.commit()
             cur.close()
         strategy_id = int(binding.get("strategy_id") or row.get("strategy_id") or 0)
