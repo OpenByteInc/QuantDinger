@@ -175,6 +175,7 @@ def get_grid_resting_orders():
             'unverified_orders': max(0, len(out) - verified),
             'exchange_active_orders': audited_active if sync else None,
             'exchange_not_open_orders': sum(item['exchange_status'] == 'not_open' for item in out) if sync else None,
+            'exchange_terminal_orders': int(exchange_audit.get('terminal') or 0) if sync else None,
             'exchange_unknown_orders': int(exchange_audit.get('unknown') or 0) if sync else None,
             'exchange_audit_completed': bool(exchange_audit.get('completed')) if sync else False,
             'status_counts': status_counts,
