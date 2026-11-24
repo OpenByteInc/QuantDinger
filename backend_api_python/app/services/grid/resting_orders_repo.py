@@ -248,6 +248,32 @@ class GridRestingOrderRepository:
             logger.warning("grid resting update failed id=%s: %s", order_id, e)
             return False
 
+    def mark_cancelled_if_unfilled(self, order_id: int, exchange_order_id: str) -> bool:
+        """Apply an exchange-confirmed cancel to an open order that never filled.
+
+        The guards make this a no-op if a fill poller or private stream touched
+        the row first, so no fill can be dropped from the strategy ledger.
+        """
+        if not str(exchange_order_id or "").strip():
+            return False
+        try:
+            with get_db_connection() as db:
+                cur = db.cursor()
+                cur.execute(
+                    """UPDATE qd_grid_resting_orders
+                       SET status = 'cancelled', updated_at = NOW()
+                       WHERE id = %s AND status = 'open' AND exchange_order_id = %s
+                         AND filled_quantity = 0 AND processed_fill_qty = 0""",
+                    (int(order_id), str(exchange_order_id)),
+                )
+                updated = cur.rowcount == 1
+                db.commit()
+                cur.close()
+            return updated
+        except Exception as e:
+            logger.warning("grid resting cancel reconcile failed id=%s: %s", order_id, e)
+            return False
+
     def list_unprocessed(self, strategy_id: int) -> List[GridRestingOrder]:
         """Orders with exchange fills not yet written to the strategy trade ledger."""
         try:
