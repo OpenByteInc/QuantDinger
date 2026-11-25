@@ -1657,6 +1657,36 @@ def handle_data(context, data):
     assert restored.program.state.counter == 0
 
 
+def test_portfolio_restart_retains_bar_cursor_without_persisting_user_state():
+    code = '''
+def initialize(context):
+    context.set_universe(["Crypto:BTC/USDT@spot"])
+    context.subscribe(frequency="1d")
+    g.counter = 0
+
+def on_rebalance(context, panel):
+    g.counter += 1
+    order_target_percent("Crypto:BTC/USDT@spot", 0.5)
+'''
+    frame = _frame([100, 101, 102])
+    frames = {"Crypto:BTC/USDT@spot": frame.iloc[:2]}
+    first = StrategyV2LiveSession(code=code, frames=frames, initial_capital=100)
+    intents, _, _ = first.process(frames)
+    assert intents
+    snapshot = first.session_snapshot()
+    assert snapshot["lastProcessed"] == frame.index[1].isoformat()
+    assert "strategyState" not in snapshot
+    restarted = StrategyV2LiveSession(code=code, frames=frames, initial_capital=100)
+    restarted.restore_session_snapshot(snapshot)
+    assert restarted.program.state.counter == 0
+    duplicate, _, _ = restarted.process(frames)
+    assert duplicate == []
+    assert restarted.program.state.counter == 0
+    fresh, _, _ = restarted.process({"Crypto:BTC/USDT@spot": frame})
+    assert fresh
+    assert restarted.program.state.counter == 1
+
+
 def test_crypto_integer_lot_size_no_dust_on_close():
     """
     Test that when using real exchange lot_size (fractional for BTC, integer for low-priced perps),

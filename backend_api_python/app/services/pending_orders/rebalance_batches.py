@@ -12,20 +12,61 @@ logger = get_logger(__name__)
 
 
 @contextmanager
-def rebalance_batch(*, strategy_id, run_id, timestamp, enabled):
-    group_id = hashlib.sha256(f"{strategy_id}:{run_id}:{timestamp}".encode()).hexdigest() if enabled else ""
+def rebalance_batch(*, strategy_id, run_id, timestamp, enabled,
+                    user_id, execution_mode, runtime_fencing_token=0):
+    """Claim once before queueing; None denotes an already recorded evaluation."""
+    if not enabled:
+        yield ""
+        return
+    group_id = hashlib.sha256(f"{strategy_id}:{run_id}:{timestamp}".encode()).hexdigest()
+    with get_db_connection() as db:
+        cur = db.cursor()
+        try:
+            if runtime_fencing_token > 0:
+                cur.execute(
+                    """SELECT 1 FROM qd_strategy_runtime_leases
+                       WHERE strategy_id = %s AND fencing_token = %s AND lease_expires_at >= NOW()
+                       FOR SHARE""", (strategy_id, runtime_fencing_token),
+                )
+                if not cur.fetchone():
+                    raise RuntimeError("strategyRuntime.staleFencingToken")
+            cur.execute(
+                """INSERT INTO qd_strategy_order_batches
+                   (user_id, strategy_id, strategy_run_id, group_id, execution_mode, runtime_fencing_token)
+                   VALUES (%s, %s, %s, %s, %s, %s)
+                   ON CONFLICT (strategy_run_id, strategy_id, group_id) DO NOTHING RETURNING id""",
+                (user_id, strategy_id, run_id, group_id, execution_mode, runtime_fencing_token),
+            )
+            claimed = cur.fetchone()
+            if not claimed:
+                cur.execute(
+                    """SELECT id FROM qd_strategy_order_batches
+                       WHERE strategy_id = %s AND strategy_run_id = %s AND group_id = %s
+                         AND user_id = %s AND execution_mode = %s""",
+                    (strategy_id, run_id, group_id, user_id, execution_mode),
+                )
+                if not cur.fetchone():
+                    raise RuntimeError("strategyV2.rebalanceBatchClosed")
+            db.commit()
+        finally:
+            cur.close()
+    if not claimed:
+        # Existing orders keep their owner and reconciliation path, even after a crash.
+        yield None
+        return
     try:
         yield group_id
     finally:
-        if group_id:
-            with get_db_connection() as db:
-                cur = db.cursor()
+        with get_db_connection() as db:
+            cur = db.cursor()
+            try:
                 cur.execute(
                     """UPDATE qd_strategy_order_batches SET sealed_at = COALESCE(sealed_at, NOW())
-                       WHERE strategy_id = %s AND strategy_run_id = %s AND group_id = %s""",
-                    (strategy_id, run_id, group_id),
+                       WHERE id = %s AND runtime_fencing_token = %s""",
+                    (claimed["id"], runtime_fencing_token),
                 )
                 db.commit()
+            finally:
                 cur.close()
 
 

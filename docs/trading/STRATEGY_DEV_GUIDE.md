@@ -386,7 +386,7 @@ Backtests expose only point-in-time-visible data:
 
 This implements “confirm on close, fill at next open” without future leakage. Never use negative shifts or future rows to move execution earlier.
 
-Live sessions process each closed bar once and preserve <code>g</code> state while the session remains alive. Receiving the same bar twice should not duplicate strategy work. Cross-restart state is opt-in as described in Section 9.
+Live sessions process each closed bar once and preserve <code>g</code> state while the session remains alive. Receiving the same bar twice should not duplicate strategy work. Portfolio bar cursors, like schedule cursors, are checkpointed independently of user state so a restored session does not rebalance the same bar again. User <code>g</code> state remains opt-in as described in Section 9. If the checkpoint predates queueing, the durable batch guard still blocks repeat submission; interrupted, unqueued legs require review rather than historical replay.
 
 ### Closed bars versus real-time prices
 

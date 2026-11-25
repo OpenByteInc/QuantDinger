@@ -2961,7 +2961,8 @@ class StrategyV2LiveSession:
         }
         if self.context._cancelled_order_ids:
             snapshot["cancelRequests"] = sorted(self.context._cancelled_order_ids)
-        if self.persist_strategy_state or self.program.manifest.schedules:
+        if (self.persist_strategy_state or self.program.manifest.schedules
+                or self.program.manifest.strategy_type == "portfolio"):
             snapshot.update({
                 "lastProcessed": (
                     pd.Timestamp(self.last_processed).isoformat()
@@ -2997,7 +2998,8 @@ class StrategyV2LiveSession:
         elif "states" in raw or "specs" in raw:
             # Backward compatibility with the old protection-only snapshot.
             self.restore_protection_snapshot(raw)
-        if self.persist_strategy_state or self.program.manifest.schedules:
+        if (self.persist_strategy_state or self.program.manifest.schedules
+                or self.program.manifest.strategy_type == "portfolio"):
             try:
                 if raw.get("lastProcessed"):
                     self.last_processed = pd.Timestamp(raw["lastProcessed"])

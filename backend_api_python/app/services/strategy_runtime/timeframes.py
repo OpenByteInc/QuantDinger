@@ -118,6 +118,23 @@ def equity_daily_frames_ready(frames, candidates, signal_session: datetime, mark
     return True
 
 
+class LiveFrameWarningState:
+    """Deduplicate a runtime's partial-data warnings, independently of fetch order."""
+
+    def __init__(self):
+        self.last_failures = ()
+
+    def changed(self, skipped) -> bool:
+        failures = tuple(sorted(
+            (str(item.get("symbol") or "?"), str(item.get("frequency") or "?"),
+             str(item.get("reason") or "unavailable"))
+            for item in skipped
+        ))
+        changed = failures != self.last_failures
+        self.last_failures = failures
+        return changed
+
+
 def load_live_frequency_frames(
     *,
     service: StrategyV2BacktestService,
@@ -125,6 +142,7 @@ def load_live_frequency_frames(
     manifest: StrategyManifest,
     end_date: datetime,
     warn: Callable[[str], None] | None = None,
+    warning_state: LiveFrameWarningState | None = None,
 ) -> dict[str, dict[str, pd.DataFrame]]:
     """Load a complete live frame bundle for all declared strategy timeframes."""
     start_dates = {
@@ -170,11 +188,15 @@ def load_live_frequency_frames(
             )
         )
 
-    if skipped and warn:
+    changed = warning_state.changed(skipped) if warning_state is not None else True
+    if skipped and warn and changed:
+        ordered = sorted(skipped, key=lambda item: (
+            str(item.get("symbol") or ""), str(item.get("frequency") or ""), str(item.get("reason") or ""),
+        ))
         details = ", ".join(
             f"{item.get('symbol') or '?'}@{item.get('frequency') or '?'}:"
             f"{item.get('reason') or 'unavailable'}"
-            for item in skipped[:5]
+            for item in ordered[:5]
         )
         suffix = f" ({details})" if details else ""
         warn(

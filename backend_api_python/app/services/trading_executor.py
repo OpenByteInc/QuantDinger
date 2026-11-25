@@ -41,6 +41,7 @@ from app.services.pending_orders.rebalance_batches import rebalance_batch
 from app.services.strategy_runtime.live_portfolio import refresh_members, positions_by_symbol, available_strategy_cash, pricing_members
 from app.services.strategy_runtime.cancellations import persist_cancellations
 from app.services.strategy_runtime.timeframes import (
+    LiveFrameWarningState,
     completed_bar_token,
     daily_equity_execution_policy,
     equity_daily_frames_ready,
@@ -809,6 +810,7 @@ class TradingExecutor:
 
             frequency = program.manifest.driving_frequency
             ready_universe_symbols: set[str] = set()
+            frame_warning_state = LiveFrameWarningState()
 
             def fetch_runtime_frames() -> dict[str, dict[str, pd.DataFrame]]:
                 refresh_members(
@@ -833,6 +835,7 @@ class TradingExecutor:
                     candidates=candidates,
                     manifest=program.manifest,
                     end_date=frame_end,
+                    warning_state=frame_warning_state,
                     warn=lambda message: append_strategy_log(
                         strategy_id,
                         "warning",
@@ -1576,7 +1579,6 @@ class TradingExecutor:
                                         intent.position_side,
                                     ) not in protected
                                 ]
-                                pending_count += len(intents)
                                 for message in messages:
                                     append_strategy_log(strategy_id, "info", message)
                                 with ExitStack() as batch_contexts:
@@ -1591,7 +1593,17 @@ class TradingExecutor:
                                             batch_ids[batch_timestamp] = batch_contexts.enter_context(rebalance_batch(
                                                 strategy_id=strategy_id, run_id=run_id, timestamp=batch_timestamp,
                                                 enabled=program.manifest.strategy_type == "portfolio",
+                                                user_id=user_id, execution_mode=execution_mode,
+                                                runtime_fencing_token=self.runtime_fencing_token(strategy_id),
                                             ))
+                                            if batch_ids[batch_timestamp] is None:
+                                                append_strategy_log(
+                                                    strategy_id, "warning",
+                                                    f"strategyV2.rebalanceReplaySkipped:{batch_timestamp}",
+                                                )
+                                        if batch_ids[batch_timestamp] is None:
+                                            continue
+                                        pending_count += 1
                                         submitted = self._execute_strategy_v2_intent(
                                             strategy_id=strategy_id,
                                             strategy_name=strategy_name,
