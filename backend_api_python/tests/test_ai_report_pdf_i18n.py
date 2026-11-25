@@ -238,6 +238,43 @@ def test_professional_pdf_includes_latest_chart_research_and_risk_contract():
     assert len(pdf) > 5_000
 
 
+def test_professional_pdf_splits_evidence_rows_taller_than_a_page():
+    observations = [
+        {
+            "metric": f"research.metric_{index}",
+            "value": ("Long evidence detail with audit context. " * 180) if index == 0 else index,
+            "source": "provider",
+            "as_of": "2026-11-23T00:00:00Z",
+            "evidence_id": f"evidence-{index}",
+        }
+        for index in range(35)
+    ]
+
+    pdf = build_ai_report_pdf(
+        {
+            "schema_version": "professional_report_v1",
+            "report_id": "long-evidence-row",
+            "instrument": {
+                "market": "USStock",
+                "symbol": "MSFT",
+                "canonical_symbol": "MSFT",
+                "name": "Microsoft",
+            },
+            "decision_profile": {"decision": "HOLD", "confidence": 50},
+            "executive_summary": "Evidence requires a multi-page appendix.",
+            "data_quality": {"overall_score": 80},
+            "dimensions": [],
+            "scenarios": [],
+            "claims": [],
+            "evidence_snapshot": {"observations": observations},
+        },
+        language="en-US",
+    )
+
+    assert pdf.startswith(b"%PDF")
+    assert len(pdf) > 10_000
+
+
 @pytest.mark.parametrize(
     ("language", "expected"),
     (

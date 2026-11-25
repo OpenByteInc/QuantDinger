@@ -1518,7 +1518,12 @@ def _build_professional_report_pdf(report: dict, target: dict | None, language: 
                 para(short_timestamp(item.get("as_of")), table_body),
                 para(evidence_label, muted),
             ])
-        evidence_table = LongTable(evidence_rows, colWidths=[content_width * x for x in (0.25, 0.22, 0.16, 0.19, 0.18)], repeatRows=1)
+        evidence_table = LongTable(
+            evidence_rows,
+            colWidths=[content_width * x for x in (0.25, 0.22, 0.16, 0.19, 0.18)],
+            repeatRows=1,
+            splitInRow=1,
+        )
         evidence_table.setStyle(TableStyle([
             ("BACKGROUND", (0, 0), (-1, 0), palette["navy2"]), ("TEXTCOLOR", (0, 0), (-1, 0), palette["white"]),
             ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, palette["soft"]]),
