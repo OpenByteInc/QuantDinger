@@ -297,6 +297,44 @@ def get_author_summary():
 
 
 @community_blp.route("/author/published", methods=["GET"])
+@community_blp.doc(
+    description=(
+        "Returns paginated marketplace listings owned by the current author, "
+        "including timestamps, review state, sales, revenue, and rating."
+    ),
+    parameters=[
+        {"in": "query", "name": "page", "schema": {"type": "integer", "minimum": 1, "default": 1}},
+        {
+            "in": "query", "name": "page_size",
+            "schema": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20},
+        },
+        {
+            "in": "query", "name": "keyword",
+            "description": "Case-insensitive name, description, or listing ID search.",
+            "schema": {"type": "string"},
+        },
+        {
+            "in": "query", "name": "asset_type",
+            "schema": {"type": "string", "enum": ["indicator", "script_template"]},
+        },
+        {
+            "in": "query", "name": "review_status",
+            "schema": {"type": "string", "enum": ["approved", "pending", "rejected"]},
+        },
+        {
+            "in": "query", "name": "sort_by",
+            "schema": {
+                "type": "string",
+                "enum": ["updated_at", "created_at", "name", "sales", "revenue", "rating", "price"],
+                "default": "updated_at",
+            },
+        },
+        {
+            "in": "query", "name": "sort_order",
+            "schema": {"type": "string", "enum": ["asc", "desc"], "default": "desc"},
+        },
+    ],
+)
 @login_required
 def get_author_published():
     """Search, filter, and sort the author's published marketplace listings."""

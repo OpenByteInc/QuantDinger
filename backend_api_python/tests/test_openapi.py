@@ -1,5 +1,6 @@
 """OpenAPI infrastructure tests."""
 import os
+from pathlib import Path
 
 import pytest
 import yaml
@@ -51,6 +52,21 @@ def test_openapi_shared_schemas(openapi_spec):
         assert name in schemas, f"missing shared schema {name}"
 
 
+def test_author_published_query_contract_is_generated(openapi_spec):
+    operation = openapi_spec["paths"]["/api/community/author/published"]["get"]
+    parameters = {item["name"]: item for item in operation["parameters"]}
+    assert set(parameters) == {
+        "page", "page_size", "keyword", "asset_type", "review_status", "sort_by", "sort_order",
+    }
+    assert all(item["in"] == "query" for item in parameters.values())
+    assert parameters["page_size"]["schema"]["maximum"] == 50
+    assert parameters["asset_type"]["schema"]["enum"] == ["indicator", "script_template"]
+    assert parameters["review_status"]["schema"]["enum"] == ["approved", "pending", "rejected"]
+    assert parameters["sort_by"]["schema"]["default"] == "updated_at"
+    assert parameters["sort_order"]["schema"]["default"] == "desc"
+    assert "current author" in operation["description"]
+
+
 def test_export_script_writes_yaml(tmp_path):
     """Regression: export_openapi.py produces parseable YAML."""
     import subprocess
@@ -72,3 +88,7 @@ def test_export_script_writes_yaml(tmp_path):
     assert loaded["openapi"].startswith("3.")
     assert "x-api-app-version" not in loaded.get("info", {})
     assert "/health" in loaded["paths"]
+    committed = Path(__file__).resolve().parents[2] / "docs" / "api" / "openapi.yaml"
+    assert out.read_text(encoding="utf-8") == committed.read_text(encoding="utf-8"), (
+        "Committed OpenAPI spec is stale; run python scripts/export_openapi.py"
+    )
