@@ -1,8 +1,12 @@
 """Audit persisted grid orders without depending on an execution worker's memory."""
 
 from datetime import datetime, timezone
+import time
 
 from app.services.exchange_execution import coalesce_exchange_config_from_payload, resolve_exchange_config
+from app.services.grid.exchange_orders import query_grid_order_fill
+from app.services.grid.audit_state import audit_identity, audit_is_fresh, cached_order_audit, stamp_audit
+from app.services.grid.resting_orders_repo import GridRestingOrderRepository
 from app.services.live_trading.factory import create_client
 from app.services.live_trading.open_orders import fetch_exchange_open_orders
 from app.services.live_trading.records import normalize_strategy_symbol
@@ -12,45 +16,127 @@ from app.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
-def audit_grid_orders(strategy: dict, rows: list, *, user_id: int) -> dict:
-    audit = {"completed": False, "active": 0, "unknown": len(rows), "error": "",
+def _reconcile_missing_order(client, row, *, symbol: str, market_type: str, exchange_config: dict, ledger) -> dict:
+    """Look up an order that the open-orders snapshot no longer lists.
+
+    Exchanges drop cancelled, expired and filled orders from their open-orders
+    endpoint, so absence alone says nothing about the terminal state. A
+    per-order query (for example Binance GET /fapi/v1/order) does. Only a
+    confirmed cancel without any fill is applied to the local ledger here;
+    orders with fills are left to the fill poller, which posts them to the
+    strategy trade ledger.
+    """
+    details = {}
+    filled, avg, status = query_grid_order_fill(
+        client,
+        symbol=symbol,
+        market_type=market_type,
+        exchange_order_id=str(row.exchange_order_id or ""),
+        client_order_id=str(row.client_order_id or ""),
+        exchange_config=exchange_config,
+        include_fill_fallback=False,
+        details=details,
+    )
+    if not details.get('status_reported') or status not in {"open", "partial", "filled", "cancelled"}:
+        return {"status": "not_open", "price": None, "quantity": None, "filled": None}
+    entry = {"status": status, "price": avg or None, "quantity": None, "filled": filled}
+    unfilled = (
+        float(filled or 0.0) <= 0
+        and float(row.filled_quantity or 0.0) <= 0
+        and float(row.processed_fill_qty or 0.0) <= 0
+    )
+    if status == "cancelled" and unfilled and str(row.status or "") == "open":
+        if ledger.mark_cancelled_if_unfilled(int(row.id), str(row.exchange_order_id)):
+            row.status = "cancelled"
+            entry["local_status"] = "cancelled"
+    entry['reconciliation_pending'] = (
+        (status in {'cancelled', 'filled'} and row.status != status)
+        or float(row.processed_fill_qty or 0) + 1e-12 < float(filled or 0)
+    )
+    return entry
+
+
+def audit_grid_orders(strategy: dict, rows: list, *, user_id: int,
+                      allow_request=None,
+                      max_lookups: int = 10, max_seconds: float = 8.0) -> dict:
+    audit = {"completed": False, "active": 0, "terminal": 0, "unknown": len(rows), "error": "",
              "checked_at": None, "orders": {}}
     tc = strategy.get("trading_config") or {}
     mt = str(tc.get("market_type") or strategy.get("market_type") or "swap").lower()
+    ledger = None
+    identity = audit_identity(strategy)
+    deadline = time.monotonic() + max_seconds
+    lookups = 0
     try:
         config = resolve_exchange_config(coalesce_exchange_config_from_payload(strategy), user_id=user_id)
         ex = str(config.get("exchange_id") or "").lower()
-        symbols = sorted({str(row.symbol) for row in rows})
+        symbols = list(dict.fromkeys(str(row.symbol) for row in rows))
         for symbol in symbols:
+            if time.monotonic() >= deadline:
+                break
             bound = bind_instrument_product_contract(config, tc, symbol=symbol, exchange_id=ex, market_type=mt)
             client = create_client(bound, market_type=mt)
-            remote = fetch_exchange_open_orders(client, exchange_id=ex, market_type=mt, symbol=symbol)
+            client.timeout_sec = min(float(getattr(client, 'timeout_sec', 3.0) or 3.0), 3.0)
+            def request_allowed():
+                return time.monotonic() < deadline and (not allow_request or allow_request(bound))
+
+            snapshot_failed = False
+            try:
+                remote = fetch_exchange_open_orders(client, exchange_id=ex, market_type=mt, symbol=symbol,
+                                                    request_allowed=request_allowed)
+            except Exception:
+                # A missing snapshot adapter (e.g. HTX) must not block an exact order lookup.
+                remote = []
+                snapshot_failed = True
             by_id = {str(item["exchange_order_id"]): item for item in remote
                      if normalize_strategy_symbol(item["symbol"]) == normalize_strategy_symbol(symbol)}
             for row in rows:
                 if row.symbol != symbol:
                     continue
                 item = by_id.get(str(row.exchange_order_id or ""))
-                if item is None:
-                    state = "not_open" if row.exchange_order_id else "unverified"
+                if item is None and (row.exchange_order_id or row.client_order_id):
+                    cached = cached_order_audit(row, identity)
+                    if audit_is_fresh(cached):
+                        audit['orders'][row.id] = cached
+                        continue
+                    if (lookups >= max_lookups or time.monotonic() >= deadline
+                            or (allow_request and not allow_request(bound))):
+                        continue
+                    lookups += 1
+                    if ledger is None:
+                        ledger = GridRestingOrderRepository()
+                    entry = _reconcile_missing_order(
+                        client, row, symbol=symbol, market_type=mt, exchange_config=bound, ledger=ledger,
+                    )
+                    state = entry["status"]
+                    if snapshot_failed and state == 'not_open':
+                        entry['status'] = 'unverified'
+                    audit["orders"][row.id] = stamp_audit(entry, row, identity)
                 else:
-                    raw_status = str(item.get("status") or "").lower()
-                    if raw_status in {"new", "open", "live", "created", "untriggered"}:
-                        state = "open"
-                    elif raw_status in {"partial", "partiallyfilled", "partially_filled"}:
-                        state = "partial"
-                    else:
+                    if item is None:
                         state = "unverified"
-                audit["orders"][row.id] = {"status": state, "price": item.get("price") if item else None,
-                                           "quantity": item.get("amount") if item else None,
-                                           "filled": item.get("filled") if item else None}
-                if state in {"open", "partial"}:
-                    audit["active"] += 1
-        audit["unknown"] = len(rows) - audit["active"]
-        audit["completed"] = True
+                    else:
+                        raw_status = str(item.get("status") or "").lower()
+                        if raw_status in {"new", "open", "live", "created", "untriggered"}:
+                            state = "open"
+                        elif raw_status in {"partial", "partiallyfilled", "partially_filled"}:
+                            state = "partial"
+                        else:
+                            state = "unverified"
+                    audit["orders"][row.id] = stamp_audit({"status": state, "price": item.get("price") if item else None,
+                                               "quantity": item.get("amount") if item else None,
+                                               "filled": item.get("filled") if item else None,
+                                               "reconciliation_pending": bool(item) and float(item.get('filled') or 0)
+                                               > float(row.processed_fill_qty or 0) + 1e-12}, row, identity)
+        audit['active'] = sum(entry.get('status') in {'open', 'partial'} for entry in audit['orders'].values())
+        audit['terminal'] = sum(entry.get('status') in {'filled', 'cancelled'} for entry in audit['orders'].values())
+        audit["unknown"] = len(rows) - audit["active"] - audit["terminal"]
+        audit["completed"] = len(audit['orders']) == len(rows)
         audit["checked_at"] = datetime.now(timezone.utc).isoformat()
         if audit["unknown"]:
             audit["error"] = "grid_exchange_orders_unverified"
+        if any(entry.get('reconciliation_pending') for entry in audit['orders'].values()):
+            audit['error'] = 'grid_exchange_reconciliation_pending'
     except Exception:
         logger.warning("Grid order audit failed sid=%s", strategy.get("id"), exc_info=True)
         audit["error"] = "grid_exchange_snapshot_failed"

@@ -125,13 +125,12 @@ base_low = base["low"].to_numpy(dtype=float)
 base_close = base["close"].to_numpy(dtype=float)
 n = len(base)
 true_range, atr14 = _atr(base)
-runtime_ctx = globals().get("ctx")
-chart_timeframe = _timeframe_key(getattr(runtime_ctx, "timeframe", None) or "1H")
+runtime_ctx = ctx
+chart_timeframe = _timeframe_key(runtime_ctx.timeframe or "1H")
 chart_seconds = timeframe_seconds.get(chart_timeframe, 3600)
 resolved_higher = _auto_higher(chart_timeframe) if higher_timeframe == "Auto" else _timeframe_key(higher_timeframe)
 higher_valid = enable_higher_timeframe and timeframe_seconds.get(resolved_higher, 0) > chart_seconds
-raw_series = getattr(runtime_ctx, "raw_series", None)
-higher_raw = raw_series(resolved_higher) if higher_valid and callable(raw_series) else None
+higher_raw = runtime_ctx.raw_series(resolved_higher) if higher_valid else None
 higher_available = higher_raw is not None and len(higher_raw) > 0
 higher = _normalize(higher_raw) if higher_available else pd.DataFrame()
 higher_time = higher["time"].to_numpy(dtype=float) if higher_available else np.asarray([], dtype=float)

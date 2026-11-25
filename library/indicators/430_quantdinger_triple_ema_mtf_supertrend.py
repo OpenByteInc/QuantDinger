@@ -59,7 +59,7 @@ for state in states:
     up=np.zeros(n,bool); down=np.zeros(n,bool)
     if n>1: up[1:]=(state[1:]==1)&(state[:-1]!=1); down[1:]=(state[1:]==-1)&(state[:-1]!=-1)
     flips.append((up,down))
-source=None; context=globals().get("ctx",None)
+source=None; context=ctx
 if context is not None and hasattr(context,"raw_series"):
     for key in (htf,htf.replace("m","")):
         try:

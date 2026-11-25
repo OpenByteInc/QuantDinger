@@ -229,6 +229,11 @@ class TradingWorker:
                 if not command.payload.get("runtime_epoch") or command.strategy_id in self._local_strategy_ids():
                     self._stop_strategy(command.strategy_id, persist_status=False)
                 result = self._start(command.strategy_id)
+            elif command.payload.get('grid_order_audit'):
+                from app.services.grid.audit_worker import run_grid_order_audit
+
+                result = run_grid_order_audit(command.strategy_id, user_id=command.user_id,
+                    command_valid=lambda: self._lease_heartbeat.command_valid(command.id))
             else:
                 result = self._reconcile(command.strategy_id)
             if self._lease_heartbeat.command_valid(command.id):

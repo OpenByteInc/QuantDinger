@@ -29,11 +29,11 @@ Return Python source only. Do not use markdown fences or explanatory prose.
 - The run panel owns only initial capital, the backtest date range, and an optional leverage value when the source explicitly permits leverage.
 
 ## Universe and market ownership
-- Use canonical instruments such as `USStock:SPY`, `HKStock:00700.HK`, `CNStock:600519.SH`, `Crypto:BTC/USDT@binance:spot`, `Crypto:AAPL/USD@gate:spot`, `Crypto:00700/HKD@gate:spot`, and a catalog-confirmed exchange equity perpetual such as `Crypto:HK0700/USDT@binance:swap`.
-- Broker-listed `USStock`, `HKStock`, `CNStock`, `Forex`, `Futures`, and `MOEX` identities are exactly `Market:Symbol`. Never append a broker, listing venue, `@spot`, or other execution metadata to them. Only exchange-routed `Crypto` identities carry an `@venue:market_type` suffix.
+- Use canonical instruments such as `USStock:SPY`, `HKStock:00700.HK`, `CNStock:600519.SH`, ordinary Crypto products `Crypto:BTC/USDT@spot` and `Crypto:SOL/USDT@swap`, exchange-routed equities `Crypto:AAPL/USD@gate:spot` and `Crypto:00700/HKD@gate:spot`, and a catalog-confirmed exchange equity perpetual such as `Crypto:HK0700/USDT@binance:swap`.
+- Broker-listed `USStock`, `HKStock`, `CNStock`, `Forex`, `Futures`, and `MOEX` identities are exactly `Market:Symbol`. Never append a broker, listing venue, `@spot`, or other execution metadata to them. Ordinary Crypto instruments use the product-only suffix `@spot` or `@swap`; the selected live credential supplies the execution exchange. Only an intentionally venue-pinned Crypto route or a venue-specific catalog product carries an `@venue:market_type` suffix.
 - Exchange-listed equities keep the `Crypto` market prefix because execution uses the selected exchange credential. Preserve the exact venue, market type, currency, symbol, product type, and API family returned by product search; never rewrite the execution identity as a broker-listed `USStock` or `HKStock` instrument.
 - An explicit venue is part of the instrument identity: `Crypto:SOL/USDT@binance:swap` is also a perpetual contract. Preserve the exchange and market-type suffix exactly.
-- An explicit venue is also a hard market-data route. Never silently replace it with another exchange when history is unavailable. An unqualified `@spot` or `@swap` identifier may use the platform's public research route, but generated live-ready source should preserve the exact catalog-selected venue.
+- An explicit venue is also a hard market-data route. Never silently replace it with another exchange when history is unavailable. Never invent or append an exchange suffix for an ordinary Crypto instrument merely because research data, the current page, or an execution account has a venue. Generated live-ready ordinary Crypto source should keep `@spot` or `@swap`; live deployment binds the selected execution credential and resolves the matching venue product. Preserve `@venue:market_type` only when the user explicitly pins a venue or product discovery returns a venue-specific catalog identity.
 - For a fixed universe call `context.set_universe([...])`.
 - For a platform universe pool call `context.set_universe(pool='sp500')` and obtain its point-in-time members with `get_universe_stocks()`.
 - For an index universe call `context.set_universe(index='INDEX:NASDAQ100')` and obtain members with `get_index_stocks(...)` when needed.
@@ -198,7 +198,7 @@ SCRIPT_STRATEGY_REPAIR_REQUIREMENTS = """# Strategy API V2 repair requirements
 - Canonicalize supported literals to `1m`, `3m`, `5m`, `15m`, `30m`, `1h`, `4h`, `1d`, or `1w`; weekly is `1w` and monthly is unsupported.
 - Repair undeclared literal reads by adding the matching subscription instead of rewriting every read to the driving timeframe. Do not collapse, resample, or otherwise erase requested higher-timeframe confirmation logic.
 - Keep symbol, market, frequency, schedule, and universe in source code.
-- Preserve an explicit exchange suffix as a hard data route and execution identity. Never repair an unavailable venue by silently substituting another exchange.
+- Preserve an explicit exchange suffix as a hard data route and execution identity. Never repair an unavailable venue by silently substituting another exchange, and never add or infer an exchange suffix for an ordinary Crypto `@spot` or `@swap` instrument.
 - Keep deployment `execution_mode` out of strategy source. Never make strategy logic depend on converting an already queued signal intent into a live order.
 - Permit user-adjustable leverage only for Crypto `@swap` instruments and only after `context.allow_leverage(max_leverage=N)`.
 - Reject leverage for Crypto spot and every non-Crypto market.

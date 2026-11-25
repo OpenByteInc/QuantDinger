@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 import requests
 
 from app.data_sources.rate_limiter import get_request_headers, retry_with_backoff, get_tencent_limiter
+from app.data_sources.quote_time import quote_timestamp
 from app.utils.logger import get_logger
 from app.utils.resource_guard import assert_fd_available
 
@@ -132,11 +133,16 @@ def parse_quote_to_ticker(parts: List[str]) -> Dict[str, Any]:
     # Indices are not fully consistent across markets; keep conservative.
     high = _f(33, last_) if len(parts) > 33 else last_
     low = _f(34, last_) if len(parts) > 34 else last_
+    try:
+        observed = datetime.strptime(parts[30], "%Y%m%d%H%M%S")
+    except (IndexError, TypeError, ValueError):
+        observed = None
 
     return {
         "symbol": symbol,
         "name": name,
         "last": last_,
+        "quote_time": quote_timestamp(observed, timezone="Asia/Shanghai"),
         "change": change,
         "changePercent": change_pct,
         "high": high,

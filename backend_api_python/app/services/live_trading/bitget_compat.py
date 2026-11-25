@@ -86,6 +86,7 @@ class _BitgetAutoRouter:
         return str(object.__getattribute__(self, "_resolved_account_mode") or "auto")
 
     def _sync_request_session(self, client: Any) -> None:
+        client.timeout_sec = self.timeout_sec
         session = getattr(self, "_request_session", None)
         if session is not None:
             client._request_session = session

@@ -122,8 +122,8 @@ low = base_frame["low"].to_numpy(dtype=float)
 close = base_frame["close"].to_numpy(dtype=float)
 volume = base_frame["volume"].fillna(0.0).to_numpy(dtype=float)
 
-runtime_context = globals().get("ctx")
-chart_timeframe = str(getattr(runtime_context, "timeframe", "") or "")
+runtime_context = ctx
+chart_timeframe = str(runtime_context.timeframe or "")
 if chart_timeframe in timeframe_seconds:
     chart_seconds = timeframe_seconds[chart_timeframe]
 elif n > 1:
@@ -240,7 +240,7 @@ for pivot_index in range(swing_left, last_candidate + 1):
 pivot_events.sort(key=lambda event: (event["available_time"], 0 if event["side"] == "high" else 1))
 
 lower_seconds = timeframe_seconds.get(volume_delta_timeframe, 60)
-lower_request = globals().get("request_lower_tf")
+lower_request = request_lower_tf
 can_request_lower = (
     chart_timeframe in timeframe_seconds
     and lower_seconds < chart_seconds

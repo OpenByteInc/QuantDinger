@@ -95,8 +95,8 @@ df = df.copy()
 base_frame = _normalize(df)
 base_time = base_frame["time"].to_numpy(dtype=float)
 n = len(base_frame)
-runtime_ctx = globals().get("ctx")
-chart_timeframe = _timeframe(str(getattr(runtime_ctx, "timeframe", "") or "1H"))
+runtime_ctx = ctx
+chart_timeframe = _timeframe(str(runtime_ctx.timeframe or "1H"))
 chart_seconds = timeframe_seconds.get(chart_timeframe, 3600)
 
 

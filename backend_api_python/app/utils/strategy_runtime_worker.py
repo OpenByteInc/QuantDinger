@@ -182,6 +182,8 @@ def _handle_live_request(session, resolver: _UniverseResolver, request: dict[str
         value = None
     elif op == "pending_protection_exit_symbols":
         value = sorted(session.pending_protection_exit_symbols())
+    elif op == "has_due_schedule":
+        value = session.has_due_schedule(request.get("schedule_time"))
     elif op == "release_protection_exit":
         session.release_protection_exit(
             request.get("symbol"),

@@ -120,6 +120,41 @@ class GridRestingOrderRepository:
     def __init__(self) -> None:
         _ensure_table()
 
+    def list_for_audit(self, strategy_id: int) -> List[GridRestingOrder]:
+        """Rotate unresolved orders first, including terminal fills awaiting posting."""
+        with get_db_connection() as db:
+            cur = db.cursor()
+            cur.execute("""SELECT * FROM qd_grid_resting_orders
+                WHERE strategy_id = %s AND (status = ANY(%s)
+                    OR processed_fill_qty + 1e-12 < filled_quantity)
+                ORDER BY COALESCE(extra->'exchange_audit'->>'checked_at', ''), id
+                LIMIT 500""", (int(strategy_id), list(OPEN_STATUSES)))
+            rows = cur.fetchall() or []
+            cur.close()
+        return [GridRestingOrder.from_row(dict(row)) for row in rows]
+
+    def save_audit(self, order: GridRestingOrder, audit: dict) -> None:
+        """Replace only audit metadata, never concurrent fill or cell state."""
+        with get_db_connection() as db:
+            cur = db.cursor()
+            cur.execute("""UPDATE qd_grid_resting_orders
+                SET extra = COALESCE(extra, '{}'::jsonb) || %s::jsonb
+                WHERE id = %s AND strategy_id = %s
+                  AND COALESCE(exchange_order_id, '') = %s""",
+                (json.dumps({'exchange_audit': audit}), int(order.id),
+                 int(order.strategy_id), str(order.exchange_order_id or '')))
+            db.commit()
+            cur.close()
+
+    def execution_bindings(self, order_ids: list) -> dict:
+        with get_db_connection() as db:
+            cur = db.cursor()
+            cur.execute("""SELECT * FROM qd_live_order_bindings
+                WHERE owner_type = 'grid' AND owner_id = ANY(%s)""", (list(order_ids),))
+            rows = cur.fetchall() or []
+            cur.close()
+        return {int(row['owner_id']): dict(row) for row in rows}
+
     @staticmethod
     def _reservation_snapshot(orders: List[GridRestingOrder]) -> list:
         return sorted(
@@ -246,6 +281,32 @@ class GridRestingOrderRepository:
                 return updated
         except Exception as e:
             logger.warning("grid resting update failed id=%s: %s", order_id, e)
+            return False
+
+    def mark_cancelled_if_unfilled(self, order_id: int, exchange_order_id: str) -> bool:
+        """Apply an exchange-confirmed cancel to an open order that never filled.
+
+        The guards make this a no-op if a fill poller or private stream touched
+        the row first, so no fill can be dropped from the strategy ledger.
+        """
+        if not str(exchange_order_id or "").strip():
+            return False
+        try:
+            with get_db_connection() as db:
+                cur = db.cursor()
+                cur.execute(
+                    """UPDATE qd_grid_resting_orders
+                       SET status = 'cancelled', updated_at = NOW()
+                       WHERE id = %s AND status = 'open' AND exchange_order_id = %s
+                         AND filled_quantity = 0 AND processed_fill_qty = 0""",
+                    (int(order_id), str(exchange_order_id)),
+                )
+                updated = cur.rowcount == 1
+                db.commit()
+                cur.close()
+            return updated
+        except Exception as e:
+            logger.warning("grid resting cancel reconcile failed id=%s: %s", order_id, e)
             return False
 
     def list_unprocessed(self, strategy_id: int) -> List[GridRestingOrder]:

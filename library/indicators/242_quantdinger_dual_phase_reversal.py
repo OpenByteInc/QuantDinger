@@ -334,8 +334,8 @@ for index in range(n):
     sell_terminal_target[index] = active_sell_terminal_target
 
 
-runtime_context = globals().get("ctx")
-chart_value = str(getattr(runtime_context, "timeframe", "1H") or "1H").strip().upper()
+runtime_context = ctx
+chart_value = str(runtime_context.timeframe or "1H").strip().upper()
 auto_pivot_map = {
     "1M": "1H", "3M": "1H", "5M": "4H", "15M": "4H", "30M": "1D",
     "45M": "1D", "1H": "1D", "2H": "1W", "3H": "1W", "4H": "1W",

@@ -234,6 +234,41 @@ def _contract_index_values(contract: Optional[Dict[str, Any]]) -> Dict[str, Any]
     }
 
 
+def _interleave_recommended_ids(
+    mature_ids: List[int],
+    new_ids: List[int],
+    mature_per_new: int = 2,
+) -> List[int]:
+    """Mix stable mature ranking with one recent listing after each pair."""
+    mature = [int(value) for value in mature_ids]
+    recent = [int(value) for value in new_ids]
+    result: List[int] = []
+    seen = set()
+    mature_index = 0
+    recent_index = 0
+
+    def append_next(values: List[int], index: int) -> int:
+        while index < len(values):
+            value = values[index]
+            index += 1
+            if value in seen:
+                continue
+            seen.add(value)
+            result.append(value)
+            break
+        return index
+
+    while mature_index < len(mature) or recent_index < len(recent):
+        before = len(result)
+        for _ in range(max(1, int(mature_per_new or 0))):
+            mature_index = append_next(mature, mature_index)
+        recent_index = append_next(recent, recent_index)
+        if len(result) == before:
+            break
+
+    return result
+
+
 class CommunityService:
     """Marketplace service for indicators, script templates, purchases, and reviews."""
     
@@ -391,7 +426,108 @@ class CommunityService:
                     'max_drawdown': 'max_drawdown',
                     'sharpe': 'sharpe',
                 }
-                if sort_by in kpi_sort_fields:
+                if sort_by == 'recommended':
+                    cur.execute(
+                        f"""
+                        SELECT
+                            i.id,
+                            COALESCE(i.asset_type, 'indicator') as asset_type,
+                            i.source_script_source_id,
+                            i.source_strategy_id,
+                            i.marketplace_contract_hash as source_code_hash,
+                            i.marketplace_kpis,
+                            COALESCE(i.purchase_count, 0) as purchase_count,
+                            COALESCE(i.view_count, 0) as view_count
+                        FROM qd_indicator_codes i
+                        WHERE {where_sql}
+                        """,
+                        tuple(params)
+                    )
+                    all_assets = [dict(r) for r in (cur.fetchall() or [])]
+                    assets_by_id = {int(row['id']): row for row in all_assets}
+                    all_ids = list(assets_by_id)
+                    strategy_catalog = str(asset_type or '').strip() == 'script_template'
+                    if strategy_catalog:
+                        kpi_by_id = fetch_market_asset_kpis(cur, all_assets, persist_missing=True)
+                        all_ids.sort(
+                            key=lambda iid: (
+                                -float(kpi_by_id.get(iid, {}).get('score') or 0),
+                                -int(assets_by_id[iid].get('purchase_count') or 0),
+                                -int(assets_by_id[iid].get('view_count') or 0),
+                                -iid,
+                            )
+                        )
+                    else:
+                        kpi_by_id = {}
+                        all_ids.sort(
+                            key=lambda iid: (
+                                -int(assets_by_id[iid].get('purchase_count') or 0),
+                                -int(assets_by_id[iid].get('view_count') or 0),
+                                -iid,
+                            )
+                        )
+
+                    cur.execute(
+                        f"""
+                        SELECT i.id
+                        FROM qd_indicator_codes i
+                        WHERE {where_sql}
+                          AND i.created_at >= CURRENT_TIMESTAMP - INTERVAL '14 days'
+                        ORDER BY i.created_at DESC, i.id DESC
+                        """,
+                        tuple(params)
+                    )
+                    recent_ids = [int(row['id']) for row in (cur.fetchall() or [])]
+                    recent_id_set = set(recent_ids)
+                    mature_ids = [iid for iid in all_ids if iid not in recent_id_set]
+                    recommended_ids = _interleave_recommended_ids(mature_ids, recent_ids)
+                    page_ids = recommended_ids[offset:offset + page_size]
+                    if not page_ids:
+                        cur.close()
+                        return {
+                            'items': [], 'total': total, 'page': page,
+                            'page_size': page_size, 'total_pages': 0,
+                            'asset_type_counts': asset_type_counts,
+                            'new_asset_type_counts': new_asset_type_counts,
+                        }
+                    id_placeholders = ','.join(['?'] * len(page_ids))
+                    cur.execute(f"""
+                        SELECT
+                            i.id, i.name, i.description, i.pricing_type, i.price, COALESCE(i.vip_free, FALSE) as vip_free,
+                            COALESCE(i.is_encrypted, 0) as code_hidden,
+                            COALESCE(i.asset_type, 'indicator') as asset_type,
+                            i.source_script_source_id, i.source_strategy_id,
+                            i.marketplace_contract_hash as source_code_hash,
+                            i.preview_image, i.purchase_count, i.avg_rating, i.rating_count,
+                            i.view_count, i.created_at, i.updated_at,
+                            i.source_language, i.name_i18n, i.description_i18n,
+                            i.marketplace_kpis,
+                            i.marketplace_contract, i.marketplace_binding_mode, i.marketplace_strategy_type,
+                            i.marketplace_direction_mode, i.marketplace_execution_mode,
+                            i.marketplace_execution_frequency, i.marketplace_confirmation_frequencies,
+                            ss.description as source_description,
+                            u.id as author_id, u.username as author_username,
+                            u.nickname as author_nickname, u.avatar as author_avatar
+                        FROM qd_indicator_codes i
+                        LEFT JOIN qd_users u ON i.user_id = u.id
+                        LEFT JOIN qd_script_sources ss ON ss.id = i.source_script_source_id
+                        WHERE i.id IN ({id_placeholders})
+                    """, tuple(page_ids))
+                    rows_unordered = cur.fetchall() or []
+                    by_id = {r['id']: r for r in rows_unordered}
+                    rows = [by_id[iid] for iid in page_ids if iid in by_id]
+                    if strategy_catalog:
+                        page_kpis = {
+                            iid: kpi_by_id.get(iid, summarise_backtest_runs([]))
+                            for iid in page_ids
+                        }
+                    else:
+                        page_kpis = fetch_market_asset_kpis(
+                            cur,
+                            [dict(r) for r in rows],
+                            persist_missing=True,
+                        )
+                elif sort_by in kpi_sort_fields:
                     # Score sort path: fetch ALL matching ids, score them,
                     # sort in Python, then refetch full rows for the page.
                     cur.execute(
@@ -1928,6 +2064,11 @@ class CommunityService:
         user_id: int,
         page: int = 1,
         page_size: int = 20,
+        keyword: Optional[str] = None,
+        asset_type: Optional[str] = None,
+        review_status: Optional[str] = None,
+        sort_by: str = 'updated_at',
+        sort_order: str = 'desc',
     ) -> Dict[str, Any]:
         """获取作者「我发布的指标」列表。
 
@@ -1939,19 +2080,58 @@ class CommunityService:
             with get_db_connection() as db:
                 cur = db.cursor()
 
+                where_clauses = [
+                    "i.user_id = ?",
+                    "i.publish_to_community = 1",
+                    "(i.is_buy IS NULL OR i.is_buy = 0)",
+                ]
+                params: List[Any] = [user_id]
+
+                normalized_keyword = str(keyword or '').strip()
+                if normalized_keyword:
+                    where_clauses.append(
+                        "(i.name ILIKE ? OR i.description ILIKE ? OR CAST(i.id AS TEXT) ILIKE ?)"
+                    )
+                    search_term = f"%{normalized_keyword}%"
+                    params.extend([search_term, search_term, search_term])
+
+                normalized_asset_type = str(asset_type or '').strip().lower()
+                if normalized_asset_type in {'indicator', 'script_template'}:
+                    where_clauses.append("COALESCE(i.asset_type, 'indicator') = ?")
+                    params.append(normalized_asset_type)
+
+                normalized_review_status = str(review_status or '').strip().lower()
+                if normalized_review_status == 'approved':
+                    where_clauses.append("(i.review_status = 'approved' OR i.review_status IS NULL)")
+                elif normalized_review_status in {'pending', 'rejected'}:
+                    where_clauses.append("i.review_status = ?")
+                    params.append(normalized_review_status)
+
+                direction = 'ASC' if str(sort_order or '').strip().lower() == 'asc' else 'DESC'
+                order_map = {
+                    'updated_at': f'COALESCE(i.updated_at, i.created_at) {direction}, i.created_at {direction}, i.id {direction}',
+                    'created_at': f'i.created_at {direction}, i.id {direction}',
+                    'name': f'LOWER(i.name) {direction}, i.id DESC',
+                    'sales': f'COALESCE(i.purchase_count, 0) {direction}, i.id DESC',
+                    'revenue': f'revenue {direction}, i.id DESC',
+                    'rating': f'COALESCE(i.avg_rating, 0) {direction}, COALESCE(i.rating_count, 0) DESC, i.id DESC',
+                    'price': f'COALESCE(i.price, 0) {direction}, i.id DESC',
+                }
+                order_sql = order_map.get(str(sort_by or '').strip().lower(), order_map['updated_at'])
+                where_sql = " AND ".join(where_clauses)
+
                 cur.execute(
-                    """
+                    f"""
                     SELECT COUNT(*) AS count
-                    FROM qd_indicator_codes
-                    WHERE user_id = ? AND publish_to_community = 1
-                      AND (is_buy IS NULL OR is_buy = 0)
+                    FROM qd_indicator_codes i
+                    WHERE {where_sql}
                     """,
-                    (user_id,),
+                    tuple(params),
                 )
                 total = int((cur.fetchone() or {}).get('count') or 0)
 
                 cur.execute(
-                    """
+                    f"""
                     SELECT
                         i.id, i.name, i.description, i.preview_image,
                         i.pricing_type, i.price, i.vip_free,
@@ -1967,12 +2147,11 @@ class CommunityService:
                         ), 0) AS revenue
                     FROM qd_indicator_codes i
                     LEFT JOIN qd_script_sources ss ON ss.id = i.source_script_source_id
-                    WHERE i.user_id = ? AND i.publish_to_community = 1
-                      AND (i.is_buy IS NULL OR i.is_buy = 0)
-                    ORDER BY i.purchase_count DESC, i.id DESC
+                    WHERE {where_sql}
+                    ORDER BY {order_sql}
                     LIMIT ? OFFSET ?
                     """,
-                    (user_id, page_size, offset),
+                    tuple(params + [page_size, offset]),
                 )
                 rows = cur.fetchall() or []
                 cur.close()

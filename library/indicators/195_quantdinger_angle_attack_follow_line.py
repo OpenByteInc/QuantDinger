@@ -347,8 +347,8 @@ current_trail, current_trend = follow_line(
     base_close, base_high, base_low, base_basis, bb_deviation, base_atr, use_atr_filter
 )
 
-runtime_context = globals().get("ctx")
-chart_timeframe = str(getattr(runtime_context, "timeframe", "") or "1H")
+runtime_context = ctx
+chart_timeframe = str(runtime_context.timeframe or "1H")
 chart_seconds = timeframe_seconds.get(chart_timeframe, 3600)
 if higher_timeframe == chart_timeframe:
     higher_frame = base_frame.copy()

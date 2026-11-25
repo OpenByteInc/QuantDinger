@@ -13,6 +13,7 @@ from typing import Any, Dict, Optional
 
 from app.services.live_trading.okx import OkxClient
 from app.services.live_trading.exchange_close_history import resolve_exchange_external_close
+from app.services.live_trading.fill_accounting import lock_strategy_fills
 from app.services.live_trading.records import (
     _fetch_position,
     apply_fill_to_local_position,
@@ -20,7 +21,7 @@ from app.services.live_trading.records import (
     record_trade,
 )
 from app.services.live_trading.symbols import to_okx_swap_inst_id
-from app.utils.db import get_db_connection
+from app.utils.db import get_db_connection, get_db_transaction
 from app.utils.logger import get_logger
 from app.utils.strategy_runtime_logs import append_strategy_log
 from app.utils.trade_close_reason import (
@@ -189,6 +190,51 @@ def _leg_owner_count(
         cur.close()
     count = int(row.get("owner_count") or 0)
     return max(1, count) if int(strategy_id or 0) > 0 else count
+
+
+def _pending_close_orders(
+    *, credential_id: int, market_type: str, symbol: str, side: str,
+) -> list[Dict[str, Any]]:
+    """Read account-scoped close identities, including already completed orders."""
+    market = str(market_type or "swap").strip().lower()
+    markets = ["crypto", "spot"] if market in {"crypto", "spot"} else [market]
+    close_types = ["close_long", "reduce_long"] if side == "long" else ["close_short", "reduce_short"]
+    with get_db_connection() as db:
+        cur = db.cursor()
+        cur.execute(
+            """
+            SELECT status, exchange_order_id, client_order_id FROM pending_orders
+            WHERE credential_id = %s
+              AND LOWER(market_type) = ANY(%s)
+              AND regexp_replace(UPPER(symbol), '[-/_]', '', 'g') = %s
+              AND signal_type = ANY(%s)
+              AND execution_mode = 'live'
+            """,
+            (int(credential_id), markets, normalize_strategy_symbol(symbol).replace("/", ""), close_types),
+        )
+        rows = cur.fetchall() or []
+        cur.close()
+    return rows
+
+
+def _has_managed_close(orders: list[Dict[str, Any]], components: list[Dict[str, Any]]) -> bool:
+    """Never use account history to race the pending-order fill writer."""
+    for order in orders:
+        if order.get("status") in {"processing", "sent", "syncing"}:
+            return True
+        order_id = str(order.get("exchange_order_id") or "")
+        client_id = str(order.get("client_order_id") or "")
+        for component in components:
+            if order_id and order_id == component.get("exchange_order_id"):
+                return True
+            # A client ID is evidence only when the venue ID does not contradict
+            # it. Never reconstruct ownership by parsing a numeric local ID.
+            if (
+                client_id and client_id == component.get("client_order_id")
+                and (not order_id or order_id == component.get("exchange_order_id"))
+            ):
+                return True
+    return False
 
 
 def _as_float(value: Any, default: float = 0.0) -> float:
@@ -381,6 +427,7 @@ def record_external_flat_close(
     close_reason: str = EXCHANGE_NATIVE_CLOSE,
     fill_source: str = "position_sync",
     exchange_fill_id: str = "",
+    exchange_order_id: str = "",
     credential_id: int = 0,
     inst_id: str = "",
     market_type: str = "swap",
@@ -419,6 +466,7 @@ def record_external_flat_close(
         matched_entry_price=entry if entry > 0 else None,
         fill_source=str(fill_source or "position_sync"),
         exchange_fill_id=str(exchange_fill_id or ""),
+        exchange_order_id=str(exchange_order_id or ""),
         credential_id=int(credential_id or 0),
         inst_id=str(inst_id or ""),
         market_type=str(market_type or "swap"),
@@ -523,6 +571,13 @@ def reconcile_external_flat_closes(
         )
         return 0
 
+    if cred <= 0:
+        return 0
+    order_scope = dict(credential_id=cred, market_type=mt, symbol=sym, side=side_l)
+    managed_orders = _pending_close_orders(**order_scope)
+    if _has_managed_close(managed_orders, []):
+        return 0
+
     snapshot = resolve_exchange_external_close(
         client,
         symbol=sym,
@@ -531,6 +586,7 @@ def reconcile_external_flat_closes(
         opened_after=opened_after if isinstance(opened_after, datetime) else None,
         market_type=mt,
         is_recorded=lambda fill_id: _already_recorded_fill(sid, fill_id),
+        is_managed_order=lambda component: _has_managed_close(managed_orders, [component]),
     ) or {}
     components = snapshot.get("components") if isinstance(snapshot, dict) else None
     if not isinstance(components, list) or not components:
@@ -543,35 +599,42 @@ def reconcile_external_flat_closes(
         )
         return 0
 
-    last_trade_id = 0
-    for component in components:
-        if not isinstance(component, dict):
-            continue
-        trade_id = record_external_flat_close(
-            strategy_id=sid,
-            symbol=sym,
-            side=side_l,
-            amount=_as_float(component.get("amount")),
-            entry_price=entry,
-            close_price=_as_float(component.get("price")),
-            commission=_as_float(component.get("fee")),
-            commission_ccy=str(component.get("fee_ccy") or "USDT"),
-            close_reason=str(component.get("close_reason") or EXCHANGE_NATIVE_CLOSE),
-            fill_source="position_sync",
-            exchange_fill_id=str(component.get("exchange_fill_id") or ""),
-            credential_id=cred,
-            inst_id=iid,
-            market_type=mt,
-            strategy_run_id=run_id,
-            created_at=(
-                component.get("closed_at")
-                if isinstance(component.get("closed_at"), datetime)
-                else None
-            ),
-            clear_local_position=clear_local_position,
-        )
-        if trade_id:
-            last_trade_id = int(trade_id)
+    # Fetch venue history before taking the same transaction lock as REST/WS
+    # writers. Validate the whole batch before posting any component.
+    with get_db_transaction():
+        lock_strategy_fills(sid)
+        if _has_managed_close(_pending_close_orders(**order_scope), components):
+            return 0
+        if any(_already_recorded_fill(sid, str(row.get("exchange_fill_id") or "")) for row in components):
+            return 0
+        last_trade_id = 0
+        for component in components:
+            trade_id = record_external_flat_close(
+                strategy_id=sid,
+                symbol=sym,
+                side=side_l,
+                amount=_as_float(component.get("amount")),
+                entry_price=entry,
+                close_price=_as_float(component.get("price")),
+                commission=_as_float(component.get("fee")),
+                commission_ccy=str(component.get("fee_ccy") or "USDT"),
+                close_reason=str(component.get("close_reason") or EXCHANGE_NATIVE_CLOSE),
+                fill_source="position_sync",
+                exchange_fill_id=str(component.get("exchange_fill_id") or ""),
+                exchange_order_id=str(component.get("exchange_order_id") or ""),
+                credential_id=cred,
+                inst_id=iid,
+                market_type=mt,
+                strategy_run_id=run_id,
+                created_at=(
+                    component.get("closed_at")
+                    if isinstance(component.get("closed_at"), datetime)
+                    else None
+                ),
+                clear_local_position=clear_local_position,
+            )
+            if trade_id:
+                last_trade_id = int(trade_id)
     return last_trade_id
 
 

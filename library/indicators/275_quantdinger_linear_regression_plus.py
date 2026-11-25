@@ -95,8 +95,8 @@ low = base["low"].to_numpy(dtype=float)
 close = base["close"].to_numpy(dtype=float)
 source = _source_values(base, source_name)
 n = len(base)
-runtime_ctx = globals().get("ctx")
-chart_key = str(getattr(runtime_ctx, "timeframe", "1H") or "1H").upper()
+runtime_ctx = ctx
+chart_key = str(runtime_ctx.timeframe or "1H").upper()
 chart_seconds = timeframe_seconds.get(chart_key, 3600)
 requested_key = chart_key if selected_timeframe.lower() in ("", "current") else selected_timeframe.upper()
 if requested_key not in timeframe_seconds:

@@ -172,8 +172,8 @@ current_raw = _volume_rsi(close, volume, rsi_length, averaging, volume_weighted)
 current_rsi = _ma(current_raw, smoothing_length, smoothing_type) if smoothing_length > 1 else current_raw.copy()
 signal_rsi = _ma(current_rsi, signal_length, signal_type) if signal_length > 1 else current_rsi.copy()
 
-runtime_ctx = globals().get("ctx")
-chart_seconds = _timeframe_seconds(getattr(runtime_ctx, "timeframe", None) or "1H")
+runtime_ctx = ctx
+chart_seconds = _timeframe_seconds(runtime_ctx.timeframe or "1H")
 context_seconds = chart_seconds * context_multiplier
 context_live = np.full(n, np.nan, dtype=float)
 context_closed = np.full(n, np.nan, dtype=float)

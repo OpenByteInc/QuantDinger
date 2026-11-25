@@ -4,13 +4,13 @@
 # ============================================================
 
 my_indicator_name = "QuantDinger Position Risk Planner"
-my_indicator_description = "Calculates entry, target, stop, risk/reward, position size, and rolling open P&L for long or short positions."
+my_indicator_description = "Calculates entry, target, stop, risk/reward, position size, and rolling open P&L for long or short positions. A zero manual entry uses the latest close."
 
 # @param position_type str Long Position direction values=Long,Short
 # @param account_size float 1000 Account size range=0:1000000000:1
 # @param risk_amount float 2 Risk amount range=0:1000000000:0.1
 # @param risk_type str % Risk unit values=%,USD
-# @param entry_price float 0 Manual entry price; zero leaves the plan unconfigured range=0:1000000000:0.01
+# @param entry_price float 0 Manual entry price; zero uses the latest close range=0:1000000000:0.01
 # @param entry_from_cross bool false Derive entry from a delayed price/source cross
 # @param cross_source str Open Cross source values=Open,High,Low,HL2,HLC3
 # @param take_profit float 5 Take-profit value range=0:100000:0.1
@@ -106,8 +106,11 @@ else:
 cross = np.zeros(n, dtype=bool)
 for index in range(1, n):
     cross[index] = (close[index] > cross_source[index] and close[index - 1] <= cross_source[index - 1]) or (close[index] < cross_source[index] and close[index - 1] >= cross_source[index - 1])
-plan_configured = entry_from_cross or entry_price > 0.0
-entry = np.full(n, entry_price if plan_configured else np.nan, dtype=float)
+latest_close = float(close[-1]) if n and np.isfinite(close[-1]) else np.nan
+manual_entry = entry_price > 0.0
+resolved_entry = entry_price if manual_entry else latest_close
+plan_configured = entry_from_cross or np.isfinite(resolved_entry)
+entry = np.full(n, resolved_entry if plan_configured else np.nan, dtype=float)
 if entry_from_cross:
     entry[:] = np.nan
     latest_entry = np.nan
@@ -146,36 +149,38 @@ for index in range(n):
         stop[index] = entry[index] - sl_range[index] * direction
 
 open_pl = (close - entry) * direction
-open_pl_percent = np.divide(open_pl, entry, out=np.full(n, np.nan, dtype=float), where=np.isfinite(entry) & (entry != 0.0))
+open_pl_percent = np.divide(open_pl * 100.0, entry, out=np.full(n, np.nan, dtype=float), where=np.isfinite(entry) & (entry != 0.0))
 stop_distance = (entry - stop) * direction
 reward_distance = (target - entry) * direction
 risk_reward = np.divide(np.abs(reward_distance), np.abs(stop_distance), out=np.full(n, np.nan, dtype=float), where=np.isfinite(stop_distance) & (stop_distance != 0.0))
 risk_capital = risk_amount / 100.0 * account_size if risk_type == "%" else risk_amount
-position_size = np.divide(risk_capital, stop_distance, out=np.full(n, np.nan, dtype=float), where=np.isfinite(stop_distance) & (stop_distance != 0.0))
+position_size = np.divide(risk_capital, np.abs(stop_distance), out=np.full(n, np.nan, dtype=float), where=np.isfinite(stop_distance) & (stop_distance != 0.0))
 
 profit_zone = [
-    {"upper": float(max(target[index], entry[index])), "lower": float(min(target[index], entry[index])), "color": profit_color, "opacity": 0.20}
+    {"upper": float(max(target[index], entry[index])), "lower": float(min(target[index], entry[index])), "color": profit_color, "opacity": 0.06}
     if plan_configured and np.all(np.isfinite([target[index], entry[index]])) else None for index in range(n)
 ]
 loss_zone = [
-    {"upper": float(max(entry[index], stop[index])), "lower": float(min(entry[index], stop[index])), "color": loss_color, "opacity": 0.20}
+    {"upper": float(max(entry[index], stop[index])), "lower": float(min(entry[index], stop[index])), "color": loss_color, "opacity": 0.06}
     if plan_configured and np.all(np.isfinite([entry[index], stop[index]])) else None for index in range(n)
 ]
 pl_zone = [
-    {"upper": float(max(close[index], entry[index])), "lower": float(min(close[index], entry[index])), "color": profit_color if open_pl[index] > 0.0 else loss_color, "opacity": 0.12}
+    {"upper": float(max(close[index], entry[index])), "lower": float(min(close[index], entry[index])), "color": profit_color if open_pl[index] > 0.0 else loss_color, "opacity": 0.04}
     if plan_configured and np.all(np.isfinite([close[index], entry[index]])) else None for index in range(n)
 ]
 last_index = n - 1
 summary = []
 if n:
     summary = [{"text": "Metric"}, {"text": "Value"}], [
-        {"text": "Configuration"}, {"text": "Ready" if plan_configured else "Set entry price"}
+        {"text": "Entry Mode"}, {"text": "Delayed Cross" if entry_from_cross else "Manual" if manual_entry else "Latest Close"}
     ], [
         {"text": "Risk / Reward"}, {"text": "N/A" if not np.isfinite(risk_reward[last_index]) else f"{float(risk_reward[last_index]):.4f}"}
     ], [
         {"text": "Position Size"}, {"text": "N/A" if not np.isfinite(position_size[last_index]) else f"{float(position_size[last_index]):.4f}"}
     ], [
         {"text": "Open P&L"}, {"text": "N/A" if not np.isfinite(open_pl[last_index]) else f"{float(open_pl[last_index]):.4f}"}
+    ], [
+        {"text": "Open P&L %"}, {"text": "N/A" if not np.isfinite(open_pl_percent[last_index]) else f"{float(open_pl_percent[last_index]):.2f}%"}
     ]
 
 output = {

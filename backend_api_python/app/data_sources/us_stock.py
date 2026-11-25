@@ -13,6 +13,7 @@ import pandas as pd
 import requests
 
 from app.data_sources.base import BaseDataSource
+from app.data_sources.quote_time import quote_timestamp
 from app.utils.logger import get_logger
 from app.config import APIKeys
 
@@ -298,6 +299,8 @@ class USStockDataSource(BaseDataSource):
             change = last - previous_close if previous_close else 0.0
             output[source_symbol] = {
                 "last": last,
+                "quote_time": quote_timestamp(latest_closes.index[-1]),
+                "quote_source": "yahoo:minute",
                 "change": change,
                 "changePercent": (
                     change / previous_close * 100.0
@@ -390,6 +393,8 @@ class USStockDataSource(BaseDataSource):
         if quote:
             return {
                 'last': quote.get('c', 0),
+                'quote_time': quote_timestamp(quote.get('t')),
+                'quote_source': 'finnhub:quote',
                 'change': quote.get('d', 0),
                 'changePercent': quote.get('dp', 0),
                 'high': quote.get('h', 0),
@@ -419,6 +424,8 @@ class USStockDataSource(BaseDataSource):
                     change_pct = (change / prev_close * 100) if prev_close else 0
                     return {
                         'last': float(last_price),
+                        'quote_time': 0.0,
+                        'quote_source': 'yahoo:fast_info',
                         'change': round(change, 4),
                         'changePercent': round(change_pct, 2),
                         'high': float(fast_info.get('dayHigh') or fast_info.get('day_high') or last_price),
@@ -439,6 +446,8 @@ class USStockDataSource(BaseDataSource):
                     change_pct = (change / prev_close * 100) if prev_close else 0
                     return {
                         'last': float(last_price),
+                        'quote_time': quote_timestamp(info.get('regularMarketTime')) if info.get('regularMarketPrice') else 0.0,
+                        'quote_source': 'yahoo:info',
                         'change': round(change, 4),
                         'changePercent': round(change_pct, 2),
                         'high': float(info.get('regularMarketDayHigh') or info.get('dayHigh') or last_price),
@@ -459,6 +468,8 @@ class USStockDataSource(BaseDataSource):
                     
                     return {
                         'last': last_price,
+                        'quote_time': quote_timestamp(hist.index[-1]),
+                        'quote_source': 'yahoo:history_minute',
                         'change': round(last_price - open_price, 4),
                         'changePercent': round((last_price - open_price) / open_price * 100, 2) if open_price else 0,
                         'high': float(hist['High'].max()),
@@ -595,6 +606,11 @@ class USStockDataSource(BaseDataSource):
             change_pct = self._parse_nasdaq_number(primary.get("percentageChange"))
             return {
                 "last": last_price,
+                "quote_time": quote_timestamp(
+                    str(primary.get("lastTradeTimestamp") or "").removesuffix(" ET"),
+                    timezone="America/New_York",
+                ),
+                "quote_source": "nasdaq:quote",
                 "change": round(change, 4),
                 "changePercent": round(change_pct, 2),
                 "high": last_price,
@@ -729,6 +745,11 @@ class USStockDataSource(BaseDataSource):
             lows = [float(v) for v in (quote.get("low") or []) if v is not None]
 
             last_price = meta.get("regularMarketPrice") or (closes[-1] if closes else None)
+            observed = meta.get("regularMarketTime") if meta.get("regularMarketPrice") else next(
+                (stamp for stamp, close in reversed(list(zip(
+                    result.get("timestamp") or [], quote.get("close") or [],
+                ))) if close is not None), None,
+            )
             prev_close = meta.get("chartPreviousClose") or meta.get("previousClose") or (opens[0] if opens else None)
             if not last_price:
                 return None
@@ -739,6 +760,8 @@ class USStockDataSource(BaseDataSource):
             change_pct = (change / prev_close_f * 100) if prev_close_f else 0.0
             return {
                 "last": last_price,
+                "quote_time": quote_timestamp(observed),
+                "quote_source": "yahoo:chart",
                 "change": round(change, 4),
                 "changePercent": round(change_pct, 2),
                 "high": max(highs) if highs else float(meta.get("regularMarketDayHigh") or last_price),

@@ -153,6 +153,15 @@ def test_repeated_cursor_fails_instead_of_claiming_complete_snapshot():
         fetch_exchange_open_orders(client, exchange_id="bybit", market_type="spot")
 
 
+def test_budget_is_checked_before_each_snapshot_page():
+    client = MagicMock()
+    client._signed_request.return_value = payload('bybit', [native_row('bybit', 1)], 'next')
+    budget = MagicMock(side_effect=[True, False])
+    with pytest.raises(LiveTradingError, match='request_budget_exhausted'):
+        fetch_exchange_open_orders(client, exchange_id='bybit', market_type='spot', request_allowed=budget)
+    assert client._signed_request.call_count == 1
+
+
 @pytest.mark.parametrize("exchange", ["bybit", "bitget"])
 def test_account_snapshot_actually_queries_both_order_markets(monkeypatch, exchange):
     from app.services.live_trading import account_snapshot as snapshots

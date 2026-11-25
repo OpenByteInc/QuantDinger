@@ -138,6 +138,23 @@ def test_issue_248_quantity_and_net_profit(ledger):
     assert float(trades[-1]["net_pnl"]) == pytest.approx(0.53823708)
 
 
+@pytest.mark.parametrize('filled,processed,expected', [(0, 0, True), (.026, 0, False), (.026, .026, False)])
+def test_cancel_verification_never_drops_fills_or_creates_trades(ledger, filled, processed, expected):
+    from app.services.grid.resting_orders_repo import GridRestingOrderRepository
+    ledger.query("UPDATE qd_grid_resting_orders SET status='open', filled_quantity=%s, processed_fill_qty=%s WHERE id=1",
+                 (filled, processed))
+    repo = GridRestingOrderRepository()
+    assert not repo.mark_cancelled_if_unfilled(1, 'another-order')
+    assert repo.mark_cancelled_if_unfilled(1, 'open-1') == expected
+    assert not repo.mark_cancelled_if_unfilled(1, 'open-1')
+    saved = ledger.query('SELECT status, filled_quantity, processed_fill_qty FROM qd_grid_resting_orders WHERE id=1')[0]
+    assert saved['status'] == ('cancelled' if expected else 'open')
+    assert float(saved['filled_quantity']) == pytest.approx(filled)
+    assert float(saved['processed_fill_qty']) == pytest.approx(processed)
+    assert ledger.query('SELECT id FROM qd_strategy_trades') == []
+    assert ledger.query('SELECT id FROM qd_strategy_positions') == []
+
+
 def test_partial_fill_cumulative_prices_and_fees(ledger):
     ledger.processor._process_grid(*ledger.event(total=".26", last=".26", average="100", fee=".1"))
     ledger.processor._process_grid(

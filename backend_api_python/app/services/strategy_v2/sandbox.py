@@ -341,6 +341,9 @@ class IsolatedStrategyV2LiveSession:
             pd.Timestamp(value.get("timestamp")),
         )
 
+    def has_due_schedule(self, schedule_time: Any = None) -> bool:
+        return bool(self._request("has_due_schedule", schedule_time=schedule_time))
+
     def synchronize_positions(
         self,
         positions: Mapping[str, Mapping[str, Any]],

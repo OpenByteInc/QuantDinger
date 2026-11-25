@@ -28,7 +28,7 @@ def _classify(high,low):
     for i in range(1,len(high)):
         out[i]=1 if high[i]<=high[i-1] and low[i]>=low[i-1] else 3 if high[i]>high[i-1] and low[i]<low[i-1] else 2 if high[i]>high[i-1] else -2 if low[i]<low[i-1] else 0
     return out
-runtime_ctx=globals().get("ctx")
+runtime_ctx=ctx
 def _aligned_state(time,timeframe):
     raw=None
     if hasattr(runtime_ctx,"raw_series"):

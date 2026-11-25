@@ -95,7 +95,7 @@ df=df.dropna(subset=["time","open","high","low","close"]).reset_index(drop=True)
 times=df["time"].to_numpy(float)
 if len(times) and np.nanmax(np.abs(times))>10_000_000_000: times=times/1000.0
 opened,high,low,close,volume=(df[key].to_numpy(float) for key in ("open","high","low","close","volume"));volume=np.where(np.isfinite(volume),volume,0.0);n=len(df)
-runtime_ctx=globals().get("ctx");chart_timeframe=str(getattr(runtime_ctx,"timeframe",None) or "1H");selected_timeframe=_auto_htf(chart_timeframe);keys=_period_key(times,selected_timeframe);session_change=np.zeros(n,bool)
+runtime_ctx=ctx;chart_timeframe=str(runtime_ctx.timeframe or "1H");selected_timeframe=_auto_htf(chart_timeframe);keys=_period_key(times,selected_timeframe);session_change=np.zeros(n,bool)
 if n>1: session_change[1:]=keys[1:]!=keys[:-1]
 previous_close=np.r_[np.nan,close[:-1]];true_range=np.maximum(high-low,np.maximum(abs(high-previous_close),abs(low-previous_close)))
 if n:true_range[0]=high[0]-low[0]

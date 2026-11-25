@@ -39,6 +39,16 @@ Before opening an initial market position, the runner checks every funded grid c
 
 A grid with no confirmed working orders must not report successful startup, unless it is deliberately paused outside its price bounds. Recovery can retain verified exit orders without opening new exposure. These checks do not reserve margin or guarantee venue acceptance. If later order placement fails after a new initial position has filled, the existing rollback path remains responsible for closing only that startup's new exposure; a failed rollback is reported separately.
 
+## Grid order verification
+
+The exchange-order panel reads persisted verification evidence. A refresh queues a deduplicated `reconcile` command for the trading worker; the HTTP process does not query the venue or start a grid runner. Verification uses the open-order snapshot when available, then at most 10 individual order lookups per pass. A failed or unsupported snapshot (including HTX) does not prevent an exact order lookup through the existing venue/account-mode adapter. Snapshot pagination checks the worker request budget on each page; individual lookups stop starting after eight seconds, and the REST request timeout is capped at three seconds, including routed Bitget clients. Adapter-internal metadata requests can take additional time. Large sets rotate through older evidence first. These are per-worker request budgets, not a global exchange quota.
+
+Active results are refreshed after 30 seconds without hiding the last timestamped result while queued; orders absent from both current and historical venue responses are retried no sooner than five minutes. Confirmed terminal evidence does not expire, but account/order identity changes or newer local fill quantities invalidate it. Evidence replaces the previous audit metadata on each order rather than accumulating full snapshots in command history. A confirmed terminal status counts as verified, but pending local fill accounting is shown separately and clears when the normal accounting path catches up. Absence, an API error, and expired venue history never prove cancellation.
+
+Confirmed zero-fill cancellations use a guarded local update; concurrent local fills prevent that update. Verification never posts trades, changes positions/cells, starts a runner or submits/cancels exchange orders. Running grids retain their existing poller/actor accounting owner. A partial/full fill not yet posted locally remains visibly pending; for a stopped grid it requires operator review, not automatic repair from this panel. No orders or holdings are deleted by verification. Contract tests cover ordinary spot and USDT swaps for Binance, OKX, Bitget (Classic/UTA), Bybit, Gate and HTX; this is not a live-account certification or support for every product family.
+
+Deploy the updated backend and trading workers together, followed by the desktop frontend for queued/pending/terminal labels. No database migration is required. This path repairs recoverable evidence; it cannot reconstruct records already removed by the exchange's history-retention policy.
+
 ## While running
 
 - Monitor runtime state, order status, fills, positions, available balance, and notifications.
@@ -107,6 +117,8 @@ Derivative closes retain the venue's reduce-only/full-close path; opening-order 
 
 An exchange-native stop loss, take profit, liquidation, ADL event, or manual close can flatten the venue position before the normal pending-order path records the close. Position sync treats this as an account shortfall and blocks new entries or additions on that leg while keeping reconciliation and reduce-only risk controls available.
 
+System close orders remain owned by the pending-order fill writer. Position sync defers while a close is being submitted or reconciled on the same account leg, and excludes matching completed orders from external-close history. Matching uses the credential, market, symbol, side and stored broker/client identifiers, never a parsed local numeric ID. True external fills retain their broker order IDs. Their trade and position updates commit together under the same strategy fill lock used by REST and private streams; a failed batch rolls back. This does not reconstruct missing migration history or rewrite previously duplicated trades.
+
 QuantDinger clears the stale strategy leg only when all of these conditions hold:
 
 - the exchange position snapshot is fresh rather than cached;
@@ -120,6 +132,16 @@ If any condition is ambiguous, the ledger remains intact and the ownership block
 ## Optional JEV System One entry filter
 
 JEV is a System One model: it evaluates prepared state and typed questions into structured decisions instead of generating free-form text. Regular live strategies can use it before submitting entry orders. Quick Trade uses deterministic validation and explicit user confirmation without the AI decision filter. Strategy filter results are reduced to an auditable `PASS` or `REJECT`; exits, stop loss, take profit, and emergency risk reduction bypass the filter. If JEV is unavailable, QuantDinger falls back to the configured LLM. If neither provider is available, the order proceeds and the unavailable provider is recorded so AI failure does not disable trading.
+
+## Equity regular-session execution
+
+Live equity strategies evaluate trading callbacks, position protection, and portfolio risk exits only during the exchange's regular session. Existing exchange calendars handle DST, holidays, early closes, and lunch breaks; crypto spot and derivatives retain their continuous-market behavior. Heartbeats, position marking, and accepted-order reconciliation continue outside the session.
+
+The queue boundary and each broker submission attempt check the session again. An unsubmitted instruction created outside the current continuous trading segment expires locally; it is not deferred for automatic execution at the next open. Reopening triggers a fresh evaluation of current prices and positions. A closed-session guard is not a consecutive exchange failure and does not send repeated failure notifications. Calendar lookup failure blocks new equity submissions rather than assuming the market is open.
+
+Orders already accepted by a broker, including native brackets, remain broker-managed. Ambiguous submissions retain their client IDs and reconciliation path; this guard neither cancels them nor marks them unsubmitted. Existing broker orders from before deployment must be checked at the broker before assuming they cannot execute at the next open.
+
+Broker-equity runtime prices retain the provider's observation timestamp through quote caching. Automatic protection and portfolio risk use prices only when that timestamp is known, no later than the evaluation time, at most 90 seconds old, and within the current regular-session segment. The 90-second bound accommodates quotes derived from one-minute bars, whose timestamps identify the minute's beginning. Repeated requests or cache hits never renew observation time; unchanged prices with genuinely current timestamps remain usable. An untimed or delayed provider response may remain visible in market-data screens but cannot trigger these live exits. Missing data does not cancel broker-accepted orders or stop reconciliation. Crypto and signal-mode price policies are unchanged.
 
 ## Incident response
 

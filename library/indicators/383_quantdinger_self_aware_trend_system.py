@@ -249,8 +249,8 @@ sources = {"close": close, "open": opened, "high": high, "low": low, "hl2": (hig
 source_name = source_name if source_name in sources else "close"
 source = sources[source_name]
 
-runtime_ctx = globals().get("ctx")
-timeframe_text = str(getattr(runtime_ctx, "timeframe", None) or "1H")
+runtime_ctx = ctx
+timeframe_text = str(runtime_ctx.timeframe or "1H")
 timeframe_minutes = {"1m": 1.0, "3m": 3.0, "5m": 5.0, "15m": 15.0, "30m": 30.0, "1H": 60.0, "2H": 120.0, "4H": 240.0, "1D": 1440.0, "1W": 10080.0}.get(timeframe_text, 60.0)
 resolved_preset = preset
 if preset == "Auto":

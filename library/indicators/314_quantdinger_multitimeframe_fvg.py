@@ -61,8 +61,8 @@ base_high = base_frame["high"].to_numpy(dtype=float)
 base_low = base_frame["low"].to_numpy(dtype=float)
 base_close = base_frame["close"].to_numpy(dtype=float)
 n = len(base_frame)
-runtime_ctx = globals().get("ctx")
-chart_timeframe = _tf_key(str(getattr(runtime_ctx, "timeframe", "") or "1H"))
+runtime_ctx = ctx
+chart_timeframe = _tf_key(str(runtime_ctx.timeframe or "1H"))
 if chart_timeframe == "Chart":
     chart_timeframe = "1H"
 chart_seconds = timeframe_seconds.get(chart_timeframe, 3600)

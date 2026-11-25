@@ -139,8 +139,8 @@ anchor = _source(anchor_source, opened, high, low, close)
 true_range = _true_range(high, low, close)
 local_atr = _rma(true_range, atr_length)
 
-runtime_ctx = globals().get("ctx")
-chart_timeframe = _timeframe_key(getattr(runtime_ctx, "timeframe", None) or "1H")
+runtime_ctx = ctx
+chart_timeframe = _timeframe_key(runtime_ctx.timeframe or "1H")
 selected_timeframe = _timeframe_key(atr_timeframe)
 chart_seconds = timeframe_seconds.get(chart_timeframe, 3600)
 selected_seconds = timeframe_seconds.get(selected_timeframe, 14400)
@@ -148,8 +148,7 @@ higher_invalid = use_higher_atr and selected_seconds < chart_seconds
 higher_available = not use_higher_atr
 higher_atr_aligned = np.full(n, np.nan, dtype=float)
 if use_higher_atr and not higher_invalid:
-    raw_series = getattr(runtime_ctx, "raw_series", None)
-    raw_higher = raw_series(selected_timeframe) if callable(raw_series) else None
+    raw_higher = runtime_ctx.raw_series(selected_timeframe)
     higher_available = raw_higher is not None and len(raw_higher) > 0
     if higher_available:
         higher = _normalize(raw_higher)

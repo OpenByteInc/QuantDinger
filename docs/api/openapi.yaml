@@ -2164,6 +2164,26 @@ paths:
       - Indicator
       operationId: getApiIndicatorKline
       x-visibility: public
+  /api/indicator/multi-kline:
+    post:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      summary: Return bounded same-symbol timeframe data for an indicator runtime.
+      tags:
+      - Indicator
+      operationId: postApiIndicatorMultiKline
+      x-visibility: public
   /api/backtest/jobs:
     post:
       responses:
@@ -7879,13 +7899,15 @@ paths:
         \ size (default 12)\nkeyword: Search keyword\npricing_type: 'free' / 'paid'\
         \ / empty (all)\nvip_free: 1/true to show VIP-free paid assets only\ncode_visibility:\
         \ 'visible' / 'hidden' / empty (all)\nmin_price, max_price: Numeric price\
-        \ bounds\nsort_by: 'score' (default) / 'newest' / 'hot' / 'price_asc' /\n\
-        \         'price_desc' / 'rating' / 'views' / 'installs' /\n         'annual_return'\
-        \ / 'max_drawdown' / 'sharpe' / 'users'.\nsort_order: 'asc' / 'desc' for sortable\
-        \ catalog columns.\n         'score' sorts by the composite Strategy API V2\
-        \ backtest score\n         (see services/community_kpis.py) and is now the\n\
-        \         default — putting genuinely well-performing indicators\n       \
-        \  at the top of the marketplace, not just the newest ones."
+        \ bounds\nsort_by: 'score' (default) / 'recommended' / 'newest' / 'hot' /\
+        \ 'price_asc' /\n         'price_desc' / 'rating' / 'views' / 'installs' /\n\
+        \         'annual_return' / 'max_drawdown' / 'sharpe' / 'users'.\nsort_order:\
+        \ 'asc' / 'desc' for sortable catalog columns.\n         'score' sorts by\
+        \ the composite Strategy API V2 backtest score\n         (see services/community_kpis.py)\
+        \ and is now the\n         default — putting genuinely well-performing indicators\n\
+        \         at the top of the marketplace, not just the newest ones.\n     \
+        \    'recommended' mixes two established listings with one listing\n     \
+        \    published during the previous 14 days."
       tags:
       - Community
       operationId: getApiCommunityIndicators
@@ -8125,12 +8147,67 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HumanSuccessEnvelope'
-      summary: Get Api Community Author Published
+      summary: Search, filter, and sort the author's published marketplace listings.
       tags:
       - Community
+      description: Returns paginated marketplace listings owned by the current author,
+        including timestamps, review state, sales, revenue, and rating.
+      parameters:
+      - in: query
+        name: page
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+      - in: query
+        name: page_size
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 20
+      - in: query
+        name: keyword
+        description: Case-insensitive name, description, or listing ID search.
+        schema:
+          type: string
+      - in: query
+        name: asset_type
+        schema:
+          type: string
+          enum:
+          - indicator
+          - script_template
+      - in: query
+        name: review_status
+        schema:
+          type: string
+          enum:
+          - approved
+          - pending
+          - rejected
+      - in: query
+        name: sort_by
+        schema:
+          type: string
+          enum:
+          - updated_at
+          - created_at
+          - name
+          - sales
+          - revenue
+          - rating
+          - price
+          default: updated_at
+      - in: query
+        name: sort_order
+        schema:
+          type: string
+          enum:
+          - asc
+          - desc
+          default: desc
       operationId: getApiCommunityAuthorPublished
-      description: List indicators published by the author with per-item sales, revenue,
-        and rating.
       x-visibility: public
   /api/community/author/sales:
     get:

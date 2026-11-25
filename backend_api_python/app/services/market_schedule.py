@@ -20,6 +20,44 @@ class MarketScheduleError(RuntimeError):
     pass
 
 
+class EquityOrderSessionError(MarketScheduleError):
+    """A never-submitted equity instruction is outside its execution session."""
+
+
+def equity_order_session_error(market: str, *, now=None, queued_at=None) -> str:
+    """Validate regular-hours execution, using queue time rather than bar time.
+
+    Never carry an unsent instruction across a close or lunch break. Accepted
+    and ambiguous submissions must instead stay on the reconciliation path.
+    """
+    market = str(market or "").strip()
+    if market not in CALENDAR_BY_MARKET:
+        return ""
+    current = _utc(now)
+    try:
+        if not is_equity_market_open(market, current):
+            return "equity_market_closed"
+        if queued_at is not None:
+            calendar = _calendar(market)
+            session = pd.Timestamp(pd.Timestamp(current).tz_convert(calendar.tz).date())
+            segment_open = _python_utc(calendar.session_open(session))
+            break_end = calendar.session_break_end(session)
+            if pd.notna(break_end) and current >= _python_utc(break_end):
+                segment_open = _python_utc(break_end)
+            created = _python_utc(queued_at)
+            if pd.isna(created) or not segment_open <= created <= current:
+                return "equity_order_session_expired"
+    except Exception:
+        return "equity_calendar_unavailable"
+    return ""
+
+
+def require_equity_order_session(market: str, *, now=None, queued_at=None) -> None:
+    error = equity_order_session_error(market, now=now, queued_at=queued_at)
+    if error:
+        raise EquityOrderSessionError(error)
+
+
 def equity_data_market(market: str, product=None, api_family: str = "") -> str:
     """Only the stock API uses underlying exchange data; tokens use venue candles."""
     if market == "Crypto" and str(api_family or (product or {}).get("api_family") or "").lower() == "stock":

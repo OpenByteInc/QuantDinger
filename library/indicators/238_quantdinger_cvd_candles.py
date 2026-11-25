@@ -204,9 +204,9 @@ timeframe_seconds = {
     "1H": 3600, "2H": 7200, "4H": 14400, "6H": 21600,
     "8H": 28800, "12H": 43200, "1D": 86400, "1W": 604800,
 }
-runtime_context = globals().get("ctx")
-chart_timeframe = str(getattr(runtime_context, "timeframe", "") or "")
-lower_request = globals().get("request_lower_tf")
+runtime_context = ctx
+chart_timeframe = str(runtime_context.timeframe or "")
+lower_request = request_lower_tf
 can_request_lower = (
     chart_timeframe in timeframe_seconds
     and lower_timeframe in timeframe_seconds

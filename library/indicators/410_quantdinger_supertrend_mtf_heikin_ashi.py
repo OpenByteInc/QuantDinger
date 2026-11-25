@@ -52,9 +52,9 @@ frame=df.copy().reset_index(drop=True)
 for column in ("time","open","high","low","close","volume"):
     if column not in frame.columns: frame[column]=0.0
     frame[column]=pd.to_numeric(frame[column],errors="coerce")
-n=len(frame); chart_key=_canonical(getattr(globals().get("ctx",None),"timeframe","1H")); auto_map={"1m":"5m","3m":"15m","5m":"15m","15m":"1H","30m":"2H","45m":"2H","1H":"4H","2H":"4H","3H":"4H","4H":"1D","1D":"1W","1W":"5W"}; htf=auto_map.get(chart_key,"1D") if method=="Auto" else _canonical(requested)
+n=len(frame); chart_key=_canonical(ctx.timeframe or "1H"); auto_map={"1m":"5m","3m":"15m","5m":"15m","15m":"1H","30m":"2H","45m":"2H","1H":"4H","2H":"4H","3H":"4H","4H":"1D","1D":"1W","1W":"5W"}; htf=auto_map.get(chart_key,"1D") if method=="Auto" else _canonical(requested)
 ha_open,ha_high,ha_low,ha_close=_heikin(frame); atr=_ha_atr(ha_high,ha_low,ha_close,period); current_line,current_trend,current_up,current_down=_trend_line(ha_high,ha_low,ha_close,atr)
-source=None; context=globals().get("ctx",None)
+source=None; context=ctx
 if context is not None and hasattr(context,"raw_series"):
     for key in (htf,str(htf).replace("m","")):
         try:

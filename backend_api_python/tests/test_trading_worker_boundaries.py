@@ -307,6 +307,55 @@ def test_distributed_bar_start_registers_routes_without_local_runtime(monkeypatc
     assert executor.running_strategies == {}
 
 
+def test_scheduled_strategy_is_not_registered_for_bar_only_distributed_execution(
+    monkeypatch,
+):
+    from app.services.strategy import StrategyService
+    from app.services.strategy_event_subscriptions import (
+        StrategyEventSubscriptionPlanner,
+    )
+    from app.services.strategy_v2.service import StrategyV2BacktestService
+    from app.services.trading_executor import TradingExecutor
+
+    source = '''
+def initialize(context):
+    context.set_universe(["Crypto:BTC/USDT@spot"])
+    context.subscribe(frequency="1m")
+    run_daily(rebalance, time="09:35")
+
+def rebalance(context, data):
+    pass
+'''
+    monkeypatch.setattr(
+        StrategyService,
+        "get_strategy",
+        lambda _self, strategy_id: {
+            "id": strategy_id,
+            "status": "running",
+            "user_id": 7,
+            "execution_mode": "signal",
+        },
+    )
+    monkeypatch.setattr(
+        TradingExecutor,
+        "_load_source",
+        staticmethod(lambda _strategy: (1, source)),
+    )
+    monkeypatch.setattr(
+        StrategyV2BacktestService,
+        "resolve_candidates",
+        lambda _self, **_kwargs: ([{
+            "key": "Crypto:BTC/USDT@spot",
+            "market": "Crypto",
+            "symbol": "BTC/USDT",
+            "market_type": "spot",
+            "exchange_id": "binance",
+        }], None),
+    )
+
+    assert StrategyEventSubscriptionPlanner.plan(55) == set()
+
+
 def test_distributed_stop_and_close_runs_full_stop_policy(monkeypatch):
     from app.services.strategy_event_subscriptions import (
         StrategyEventSubscriptionRepository,

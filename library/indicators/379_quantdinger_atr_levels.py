@@ -125,7 +125,7 @@ base_time = base_frame["time"].to_numpy(dtype=float)
 close = base_frame["close"].to_numpy(dtype=float)
 n = len(base_frame)
 period_timeframe = {"Day": "1D", "Multiday": "1W", "Swing": "1M", "Position": "3M", "Long-term": "12M"}[trading_type]
-runtime_ctx = globals().get("ctx")
+runtime_ctx = ctx
 
 raw_period = None
 if runtime_ctx is not None and hasattr(runtime_ctx, "raw_series"):

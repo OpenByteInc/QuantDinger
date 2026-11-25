@@ -41,3 +41,17 @@ def app():
 def client(app):
     """A test client for the app."""
     return app.test_client()
+
+
+@pytest.fixture
+def equity_market_clock(monkeypatch):
+    """Keep broker submission tests independent of the machine's wall clock."""
+    from datetime import datetime, timezone
+    from app.services import market_schedule
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 11, 25, 15, tzinfo=timezone.utc).astimezone(tz or timezone.utc)
+
+    monkeypatch.setattr(market_schedule, "datetime", Clock)

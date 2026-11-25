@@ -137,8 +137,8 @@ base_frame = _normalize_frame(df)
 base_times = base_frame["time"].to_numpy(dtype=float)
 open_price = base_frame["open"].to_numpy(dtype=float); high = base_frame["high"].to_numpy(dtype=float); low = base_frame["low"].to_numpy(dtype=float); close = base_frame["close"].to_numpy(dtype=float); volume = base_frame["volume"].to_numpy(dtype=float)
 n = len(base_frame)
-runtime_ctx = globals().get("ctx")
-chart_key = str(getattr(runtime_ctx, "timeframe", "1H") or "1H").upper()
+runtime_ctx = ctx
+chart_key = str(runtime_ctx.timeframe or "1H").upper()
 chart_seconds = timeframe_seconds.get(chart_key, 3600)
 requested_key = chart_key if resolution.lower() in ("", "current") else resolution.upper()
 calculation_frame = base_frame

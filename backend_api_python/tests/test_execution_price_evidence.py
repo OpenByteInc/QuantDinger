@@ -90,7 +90,7 @@ def test_grid_limit_reference_is_explicit_and_legacy_reference_stays_unknown():
 
 
 @pytest.mark.parametrize("actual", [0, 99])
-def test_alpaca_worker_keeps_reference_separate_from_execution(actual):
+def test_alpaca_worker_keeps_reference_separate_from_execution(actual, equity_market_clock):
     from unittest.mock import MagicMock
     from app.services import pending_order_worker as module
     worker = object.__new__(module.PendingOrderWorker)

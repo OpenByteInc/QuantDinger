@@ -949,6 +949,259 @@ def rebalance(context, data):
     assert timestamp == frames["USStock:AAPL"].index[-1]
 
 
+def test_live_schedule_retry_uses_the_same_occurrence_and_client_order_id():
+    code = """
+def initialize(context):
+    context.set_universe(["USStock:AAPL"])
+    context.subscribe(frequency="1d")
+    run_daily(rebalance, time="09:35")
+
+def rebalance(context, data):
+    order("AAPL", 1)
+"""
+    frames = {"USStock:AAPL": _frame([100, 101])}
+    first = StrategyV2LiveSession(
+        code=code,
+        frames=frames,
+        initial_capital=10000,
+        schedule_timezone="Asia/Shanghai",
+    )
+    first.process(frames, schedule_time="2026-07-19 09:34:59+08:00")
+    before_due = first.session_snapshot()
+
+    first_orders, _, _ = first.process(
+        frames,
+        schedule_time="2026-07-19 09:35:02+08:00",
+    )
+    restarted = StrategyV2LiveSession(
+        code=code,
+        frames=frames,
+        initial_capital=10000,
+        schedule_timezone="Asia/Shanghai",
+    )
+    restarted.restore_session_snapshot(before_due)
+    assert restarted.has_due_schedule("2026-07-19 09:35:02+08:00") is True
+    retried_orders, _, _ = restarted.process(
+        frames,
+        schedule_time="2026-07-19 09:35:02+08:00",
+    )
+
+    assert len(first_orders) == 1
+    assert len(retried_orders) == 1
+    assert first_orders[0].signal_time == pd.Timestamp("2026-07-19 09:35:00+08:00")
+    assert retried_orders[0].signal_time == first_orders[0].signal_time
+    assert retried_orders[0].client_order_id == first_orders[0].client_order_id
+    assert restarted.has_due_schedule("2026-07-19 09:35:03+08:00") is False
+
+
+def test_scheduled_live_session_persists_runtime_cursor_without_opt_in_state():
+    code = """
+def initialize(context):
+    context.set_universe(["USStock:AAPL"])
+    context.subscribe(frequency="1d")
+    run_daily(rebalance, time="09:35")
+
+def rebalance(context, data):
+    pass
+"""
+    frames = {"USStock:AAPL": _frame([100, 101])}
+    session = StrategyV2LiveSession(
+        code=code,
+        frames=frames,
+        initial_capital=10000,
+        schedule_timezone="Asia/Shanghai",
+    )
+    session.process(frames, schedule_time="2026-07-19 09:34:59+08:00")
+
+    snapshot = session.session_snapshot()
+
+    assert snapshot["lastProcessed"] == frames["USStock:AAPL"].index[-1].isoformat()
+    assert snapshot["lastScheduleCheck"] == "2026-07-19T09:34:59+08:00"
+    assert snapshot["orderSequence"] == 0
+
+
+def test_live_schedule_does_not_submit_a_stale_occurrence_after_grace_window():
+    code = """
+def initialize(context):
+    context.set_universe(["USStock:AAPL"])
+    context.subscribe(frequency="1d")
+    run_daily(rebalance, time="09:35")
+
+def rebalance(context, data):
+    order("AAPL", 1)
+"""
+    frames = {"USStock:AAPL": _frame([100, 101])}
+    session = StrategyV2LiveSession(
+        code=code,
+        frames=frames,
+        initial_capital=10000,
+        schedule_timezone="Asia/Shanghai",
+    )
+    session.process(frames, schedule_time="2026-07-19 09:34:59+08:00")
+
+    assert session.has_due_schedule("2026-07-19 09:41:00+08:00") is False
+    orders, _, _ = session.process(
+        frames,
+        schedule_time="2026-07-19 09:41:00+08:00",
+    )
+
+    assert orders == []
+
+
+@pytest.mark.parametrize("registration, previous, current, occurrence", [
+    ('run_daily(rebalance, time="23:59")', "2026-07-19 23:58:59", "2026-07-20 00:00:02", "2026-07-19 23:59:00"),
+    ('run_weekly(rebalance, weekday=7, time="23:59")', "2026-07-19 23:58:59", "2026-07-20 00:00:02", "2026-07-19 23:59:00"),
+    ('run_monthly(rebalance, monthday=31, time="23:59")', "2026-02-28 23:58:59", "2026-03-01 00:00:02", "2026-02-28 23:59:00"),
+])
+def test_live_schedule_crosses_calendar_boundary(registration, previous, current, occurrence):
+    code = f'''
+def initialize(context):
+    context.set_universe(["USStock:AAPL"])
+    context.subscribe(frequency="1d")
+    {registration}
+
+def rebalance(context, data):
+    order("AAPL", 1)
+'''
+    frames = {"USStock:AAPL": _frame([100])}
+    session = StrategyV2LiveSession(
+        code=code, frames=frames, initial_capital=10000, schedule_timezone="Asia/Shanghai",
+    )
+    session.process(frames, schedule_time=previous)
+    assert session.has_due_schedule(current)
+    orders, _, _ = session.process(frames, schedule_time=current)
+    assert len(orders) == 1
+    assert orders[0].signal_time == pd.Timestamp(occurrence, tz="Asia/Shanghai")
+    assert not session.has_due_schedule(current)
+
+
+def test_schedule_retry_ids_do_not_depend_on_intervening_bar_orders():
+    code = '''
+def initialize(context):
+    context.set_universe(["USStock:AAPL"])
+    context.subscribe(frequency="1d")
+    run_daily(rebalance, time="09:35")
+    run_daily(second_rebalance, time="09:35")
+
+def rebalance(context, data):
+    order("AAPL", 1, reason="scheduled")
+    order("AAPL", 1, client_order_id="explicit-id", reason="explicit")
+
+def second_rebalance(context, data):
+    order("AAPL", 2, reason="second")
+
+def handle_data(context, data):
+    order("AAPL", 3, reason="bar")
+'''
+    frames = {"USStock:AAPL": _frame([100])}
+    first = StrategyV2LiveSession(code=code, frames=frames, initial_capital=10000)
+    first.process(frames, schedule_time="2026-07-19 09:34:00Z")
+    checkpoint = first.session_snapshot()
+    # These bar orders were emitted after the checkpoint, before the schedule.
+    newer_frames = {"USStock:AAPL": _frame([100, 101])}
+    first.process(newer_frames, schedule_time="2026-07-19 09:34:30Z")
+    orders, _, _ = first.process(newer_frames, schedule_time="2026-07-19 09:35:02Z")
+
+    restarted = StrategyV2LiveSession(code=code, frames=newer_frames, initial_capital=10000)
+    restarted.restore_session_snapshot(checkpoint)
+    replayed, _, _ = restarted.process(newer_frames, schedule_time="2026-07-19 09:35:04Z")
+    expected_ids = {item.reason: item.client_order_id for item in orders}
+    assert len(set(expected_ids.values())) == 3
+    assert expected_ids["explicit"] == "explicit-id"
+    assert {item.reason: item.client_order_id for item in replayed if item.reason != "bar"} == expected_ids
+    assert next(item.client_order_id for item in replayed if item.reason == "bar") not in expected_ids.values()
+
+
+def test_failed_schedule_does_not_leak_orders_or_advance_cursor():
+    code = '''
+def initialize(context):
+    g.failed_once = False
+    context.set_universe(["USStock:AAPL"])
+    context.subscribe(frequency="1d")
+    run_daily(rebalance, time="09:35")
+
+def rebalance(context, data):
+    order("AAPL", 1, reason="schedule")
+    if not g.failed_once:
+        g.failed_once = True
+        raise ValueError("test failure")
+
+def on_price_tick(context, prices):
+    order("AAPL", 2, reason="tick")
+'''
+    frames = {"USStock:AAPL": _frame([100])}
+    session = StrategyV2LiveSession(code=code, frames=frames, initial_capital=10000)
+    session.process(frames, schedule_time="2026-07-19 09:34:00Z")
+    with pytest.raises(StrategyV2ContractError, match="test failure"):
+        session.process(frames, schedule_time="2026-07-19 09:35:02Z")
+    assert session.last_schedule_check == pd.Timestamp("2026-07-19 09:34:00Z")
+    assert not session.context.order_references()
+    tick_orders, _ = session.evaluate_price_tick({"AAPL": 101}, timestamp="2026-07-19 09:35:03Z")
+    assert [item.reason for item in tick_orders] == ["tick"]
+    assert tick_orders[0].client_order_id.startswith("strategy-v2:")
+    retry, _, _ = session.process(frames, schedule_time="2026-07-19 09:35:04Z")
+    assert [item.reason for item in retry] == ["schedule"]
+    # A backwards wall-clock correction must not re-arm a completed occurrence.
+    session.process(frames, schedule_time="2026-07-19 09:34:30Z")
+    assert not session.has_due_schedule("2026-07-19 09:35:05Z")
+
+
+def test_schedule_retry_keeps_member_ids_when_a_prior_member_has_filled():
+    code = '''
+def initialize(context):
+    context.set_universe(["USStock:AAPL", "USStock:MSFT"])
+    context.subscribe(frequency="1d")
+    run_daily(rebalance, time="09:35")
+
+def rebalance(context, data):
+    if get_position("AAPL").amount == 0:
+        order("AAPL", 1)
+    order("MSFT", 1)
+    order("MSFT", 2)
+'''
+    frames = {"USStock:AAPL": _frame([100]), "USStock:MSFT": _frame([200])}
+    session = StrategyV2LiveSession(code=code, frames=frames, initial_capital=10000)
+    session.process(frames, schedule_time="2026-07-19 09:34:59Z")
+    checkpoint = session.session_snapshot()
+    orders, _, _ = session.process(frames, schedule_time="2026-07-19 09:35:02Z")
+
+    restarted = StrategyV2LiveSession(code=code, frames=frames, initial_capital=10000)
+    restarted.restore_session_snapshot(checkpoint)
+    restarted.synchronize_positions({"USStock:AAPL": {"amount": 1, "avg_cost": 100}})
+    retried, _, _ = restarted.process(frames, schedule_time="2026-07-19 09:35:04Z")
+    assert len(orders) == 3
+    assert len(retried) == 2
+    assert len({item.client_order_id for item in orders}) == 3
+    assert [item.client_order_id for item in retried] == [item.client_order_id for item in orders[1:]]
+    assert all(len(item.client_order_id) <= 100 for item in retried)
+
+
+@pytest.mark.parametrize("previous, current, expected", [
+    ("2026-03-08 01:59:59-05:00", "2026-03-08 03:00:02-04:00", "2026-03-08 03:00:00-04:00"),
+    ("2026-11-01 01:29:59-05:00", "2026-11-01 01:30:02-05:00", "2026-11-01 01:30:00-05:00"),
+])
+def test_live_schedule_dst_occurrence_is_deterministic(previous, current, expected):
+    schedule_time = "02:30" if "03-08" in current else "01:30"
+    code = f'''
+def initialize(context):
+    context.set_universe(["USStock:AAPL"])
+    context.subscribe(frequency="1d")
+    run_daily(rebalance, time="{schedule_time}")
+
+def rebalance(context, data):
+    order("AAPL", 1)
+'''
+    frames = {"USStock:AAPL": _frame([100])}
+    session = StrategyV2LiveSession(
+        code=code, frames=frames, initial_capital=10000, schedule_timezone="America/New_York",
+    )
+    session.process(frames, schedule_time=previous)
+    orders, _, _ = session.process(frames, schedule_time=current)
+    assert len(orders) == 1
+    assert orders[0].signal_time == pd.Timestamp(expected)
+    assert not session.has_due_schedule(current)
+
+
 def test_get_fundamentals_resolves_public_api_field_aliases():
     frame = _frame([100, 101])
     frame["pe_ratio"] = [20.0, 21.0]
@@ -1037,6 +1290,11 @@ def test_scheduler_catches_up_target_day_missed_at_period_boundary():
         pd.Timestamp("2026-03-06 16:00", tz="America/New_York"),
         "1m",
     )
+    assert StrategyV2BacktestRunner._schedule_occurrence(
+        ScheduleSpec("daily", "rebalance", time="09:35"),
+        pd.Timestamp("2026-03-08 12:00", tz="America/New_York"),
+        "1m",
+    ) == pd.Timestamp("2026-03-08 09:35", tz="America/New_York")
 
 
 def test_rejected_and_deferred_orders_are_visible_in_audit_ledger():

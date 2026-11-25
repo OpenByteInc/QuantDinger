@@ -40,6 +40,8 @@ class CNStockDataSource(BaseDataSource):
         t = parse_quote_to_ticker(parts)
         return {
             "last": t.get("last", 0),
+            "quote_time": t.get("quote_time", 0),
+            "quote_source": "tencent:quote",
             "change": t.get("change", 0),
             "changePercent": t.get("changePercent", 0),
             "high": t.get("high", 0),

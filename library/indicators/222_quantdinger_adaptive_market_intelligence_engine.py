@@ -183,8 +183,8 @@ def normalize_context(raw):
 
 
 timeframe_seconds = {"1M": 60, "5M": 300, "15M": 900, "30M": 1800, "1H": 3600, "4H": 14400, "1D": 86400, "1W": 604800}
-runtime_context = globals().get("ctx")
-chart_timeframe = str(getattr(runtime_context, "timeframe", "") or "").upper()
+runtime_context = ctx
+chart_timeframe = str(runtime_context.timeframe or "").upper()
 chart_seconds = timeframe_seconds.get(chart_timeframe, 0)
 resolved_htf = requested_htf if requested_htf in timeframe_seconds else "4H"
 if use_htf and timeframe_seconds.get(resolved_htf, 0) <= chart_seconds:

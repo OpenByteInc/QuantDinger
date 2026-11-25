@@ -214,10 +214,10 @@ chart_seconds_map = {
     "8H": 28800, "12H": 43200, "1D": 86400, "1W": 604800,
 }
 lower_seconds = chart_seconds_map[lower_timeframe]
-runtime_context = globals().get("ctx")
-chart_timeframe = str(getattr(runtime_context, "timeframe", "") or "")
+runtime_context = ctx
+chart_timeframe = str(runtime_context.timeframe or "")
 can_request_lower = (
-    callable(globals().get("request_lower_tf"))
+    callable(request_lower_tf)
     and chart_timeframe in chart_seconds_map
     and lower_seconds < chart_seconds_map[chart_timeframe]
 )

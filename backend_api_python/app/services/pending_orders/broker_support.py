@@ -6,6 +6,7 @@ import json
 from typing import Any, Callable, Dict, Tuple
 
 from app.services.live_trading.base import LiveTradingError
+from app.services.market_schedule import require_equity_order_session
 from app.services.pending_orders.order_retry import submit_with_safe_retry
 
 
@@ -17,12 +18,15 @@ def submit_broker_order(
     bracket: bool = False,
     protection: Dict[str, Any] | None = None,
     on_retry: Callable[[int, float, str], None] | None = None,
+    session_market: str,
+    queued_at: Any = None,
     **order: Any,
 ) -> Any:
     """Keep broker order routing and stable-id rejection retries in one place."""
     protection = dict(protection or {})
 
     def submit():
+        require_equity_order_session(session_market, queued_at=queued_at)
         if bracket:
             return client.place_bracket_order(
                 **order, **protection,

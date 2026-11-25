@@ -110,6 +110,50 @@ def test_live_callbacks_execute_through_isolated_process():
 
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="kernel sandbox requires Linux")
+def test_scheduled_live_callback_wakes_without_a_new_bar():
+    source = '''
+def initialize(context):
+    context.set_universe(["Crypto:BTC/USDT@spot"])
+    context.subscribe(frequency="1d")
+    run_daily(rebalance, time="09:35")
+
+def rebalance(context, data):
+    order("Crypto:BTC/USDT@spot", 1, reason="scheduled_entry")
+'''
+    symbol = "Crypto:BTC/USDT@spot"
+    frame = _frame().iloc[:2]
+    session = IsolatedStrategyV2LiveSession(
+        code=source,
+        frames={symbol: frame},
+        initial_capital=10_000.0,
+        universe_members=[symbol],
+        schedule_timezone="Asia/Shanghai",
+    )
+    try:
+        first_orders, _, _ = session.process(
+            {symbol: frame},
+            schedule_time="2026-07-19 09:34:59+08:00",
+            universe_members=[symbol],
+        )
+        assert first_orders == []
+        assert session.has_due_schedule("2026-07-19 09:35:02+08:00") is True
+
+        due_orders, _, timestamp = session.process(
+            {symbol: frame},
+            schedule_time="2026-07-19 09:35:02+08:00",
+            universe_members=[symbol],
+        )
+
+        assert len(due_orders) == 1
+        assert due_orders[0].reason == "scheduled_entry"
+        assert due_orders[0].signal_time == pd.Timestamp("2026-07-19 09:35:00+08:00")
+        assert timestamp == frame.index[-1]
+        assert session.has_due_schedule("2026-07-19 09:35:03+08:00") is False
+    finally:
+        session.close()
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="kernel sandbox requires Linux")
 def test_backtest_callbacks_execute_through_isolated_process():
     frame = _frame()
     symbol = "Crypto:BTC/USDT@spot"

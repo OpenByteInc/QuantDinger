@@ -113,6 +113,11 @@ def classify_exchange_order_error(error: Any) -> dict[str, Any]:
     ):
         return result("transport", retryable=True)
 
+    if any(code in lower for code in (
+        "equity_market_closed", "equity_order_session_expired", "equity_calendar_unavailable",
+    )):
+        return result("market_unavailable")
+
     if (
         http_status == 401
         or _has_error_code(lower, "-1002", "-1022", "-2014", "-2015", "10003", "10004", "10005", "10007", "10010", "33004", "50103", "50104", "50105", "50106", "40002", "40003", "40005", "40009", "40018")
