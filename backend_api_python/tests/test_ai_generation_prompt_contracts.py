@@ -100,10 +100,14 @@ def test_strategy_generation_prompt_preserves_native_multi_timeframes():
 def test_strategy_generation_prompt_matches_market_and_execution_boundaries():
     assert "hard market-data route" in SCRIPT_STRATEGY_SYSTEM_PROMPT
     assert "Never silently replace it with another exchange" in SCRIPT_STRATEGY_SYSTEM_PROMPT
+    assert "Ordinary Crypto instruments use the product-only suffix `@spot` or `@swap`" in SCRIPT_STRATEGY_SYSTEM_PROMPT
+    assert "Never invent or append an exchange suffix for an ordinary Crypto instrument" in SCRIPT_STRATEGY_SYSTEM_PROMPT
+    assert "live deployment binds the selected execution credential" in SCRIPT_STRATEGY_SYSTEM_PROMPT
     assert "already filtered to completed bars" in SCRIPT_STRATEGY_SYSTEM_PROMPT
     assert "queued `signal` intent can never become a live order" in SCRIPT_STRATEGY_SYSTEM_PROMPT
     assert "Risk-reducing exits may still complete" in SCRIPT_STRATEGY_SYSTEM_PROMPT
     assert "hard data route and execution identity" in SCRIPT_STRATEGY_REPAIR_REQUIREMENTS
+    assert "never add or infer an exchange suffix for an ordinary Crypto `@spot` or `@swap` instrument" in SCRIPT_STRATEGY_REPAIR_REQUIREMENTS
     assert "Keep deployment `execution_mode` out of strategy source" in SCRIPT_STRATEGY_REPAIR_REQUIREMENTS
 
 

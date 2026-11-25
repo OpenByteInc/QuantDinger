@@ -160,7 +160,7 @@ Content-Type: application/json
 
 系统也会规范化部分别名，例如 <code>600519.XSHG</code> → <code>CNStock:600519.SH</code>、<code>BTCUSDT</code> → <code>BTC/USDT</code>。
 
-券商交易的证券统一使用 <code>Market:Symbol</code> 作为策略层规范身份。<code>USStock</code>、<code>HKStock</code>、<code>CNStock</code>、<code>Forex</code>、<code>Futures</code> 和 <code>MOEX</code> 标的后面不要添加 <code>@NASDAQ</code>、<code>@NYSE</code>、<code>@HKEX</code> 或 <code>@spot</code>。运行时会把券商、上市地点等执行元数据单独保存。只有通过交易所路由的 <code>Crypto</code> 身份才携带 <code>@venue:market_type</code> 后缀。
+券商交易的证券统一使用 <code>Market:Symbol</code> 作为策略层规范身份。<code>USStock</code>、<code>HKStock</code>、<code>CNStock</code>、<code>Forex</code>、<code>Futures</code> 和 <code>MOEX</code> 标的后面不要添加 <code>@NASDAQ</code>、<code>@NYSE</code>、<code>@HKEX</code> 或 <code>@spot</code>。运行时会把券商、上市地点等执行元数据单独保存。普通 Crypto 策略源码只使用产品类型后缀 <code>@spot</code> 或 <code>@swap</code>；创建实盘部署时由所选账户凭证提供执行交易所，平台再解析该交易所上的对应产品。只有主动锁定交易所路由，或保留产品目录返回的交易所专属产品时，才使用 <code>@venue:market_type</code>。一旦源码显式指定交易所，该交易所就是数据和执行身份的一部分，系统不能静默替换。
 
 为避免歧义，生产策略应写完整市场前缀。Crypto 未写市场类型时默认为 spot。只有 swap 可以启用合约杠杆。能够解析市场名称并不代表一定有数据或支持实盘，实盘支持范围见第 18 节。
 
@@ -365,12 +365,14 @@ def initialize(context):
 
 - <code>weekday</code> 使用 1–7，1 为星期一。
 - 月度日期超出当月天数时会落在当月最后一天。
-- 日线及更低频率下，具体 <code>time</code> 不用于制造不存在的盘中 bar。
+- 回测中，日线及更低频率下的具体 <code>time</code> 不用于制造不存在的盘中 bar。实盘定时任务使用独立时钟，无新 bar 时也可使用最新已确认数据执行。
 - 回调推荐签名为 <code>callback(context, data)</code>；运行时也会适配只接收 context 的函数。
 - portfolio 策略如果没有定时任务，会调用 <code>on_rebalance</code>。
 - 回测会在每个事件时间戳调用 <code>before_trading_start</code> 和 <code>after_trading_end</code>。实盘只会在新处理的 bar 进入新日历日期时调用 <code>before_trading_start</code>；当前实盘运行时不会调用 <code>after_trading_end</code>。实盘关键收盘逻辑应放在 <code>handle_data</code> 或定时任务中。
 
 实盘定时任务按用户配置的时区解释。如果用户没有设置时区，则依次回退到服务器 <code>TZ</code> 和 UTC。应明确设置用户时区，并按交易所交易时段验证调度。回测时间来自行情数据时钟，依赖精确盘中时间前必须确认回测与实盘时区一致。
+
+实盘定时任务使用独立时钟，即使没有新 K 线也能使用最新已确认的数据执行；回测不会为日线等低频数据虚构盘中 K 线。全新会话不会补执行此前的计划；恢复已有会话时，只在计划时间后的五分钟内补执行，包含跨午夜的情况，过期计划跳过。即使未开启 <code>PERSIST_RUNTIME_STATE</code>，也会保存定时执行游标。自动生成的订单编号按计划发生时间和回调区分，组合调仓批次按计划发生时间区分，不再共用日 K 线时间；用户自定义客户端订单编号保持原有语义。夏令时切换中，不存在的本地时间顺延至首个有效时间，重复时间使用第二次出现。回调失败时丢弃本次求值中未提交的订单，不推进定时游标；用户状态的修改不会自动回滚。
 
 ---
 
@@ -777,6 +779,10 @@ def handle_data(context, data):
 
 实盘使用独立价格时钟检查同样的保护语义，不必等待下一根策略 bar。保护状态会保存并可在会话重启后恢复。
 
+券商股票实盘的价格保护和交易回调只在交易所常规交易时段求值，包含节假日、夏令时、提前收盘和午休规则。盘外报价不会锁定运行时止盈止损；开盘后按最新价格与持仓重新判断。尚未提交的订单不能跨收盘或午休补发，会在本地失效。券商已经接受的订单、原生保护单和提交结果未知的订单仍继续对账。本规则不改变加密货币交易。
+
+股票实盘报价还必须携带行情源的原始时间，属于当前连续交易时段，且不晚于当前时间、距当前不超过 90 秒。命中缓存不会刷新这个时间；价格数值未变化但时间有效的报价仍可使用。缺少时间、过期或上一交易时段的报价可以展示，但不参与自动止盈止损和日线调仓，待有效报价恢复后重新判断。正常休市不因此标记为行情异常；回测和仅通知模式不受此校验影响。
+
 ---
 
 ## 14. 杠杆和做空
@@ -785,7 +791,7 @@ def handle_data(context, data):
 
 ~~~python
 def initialize(context):
-    g.symbol = "Crypto:BTC/USDT@okx:swap"
+    g.symbol = "Crypto:BTC/USDT@swap"
     context.set_universe([g.symbol])
     context.subscribe(frequency="1h")
     context.allow_leverage(max_leverage=5)
@@ -823,7 +829,7 @@ Maintains independent long and short swap legs in exchange hedge mode.
 
 
 def initialize(context):
-    g.symbol = "Crypto:BTC/USDT@okx:swap"
+    g.symbol = "Crypto:BTC/USDT@swap"
     context.set_universe([g.symbol])
     context.subscribe(frequency="1h")
     context.set_warmup(60)

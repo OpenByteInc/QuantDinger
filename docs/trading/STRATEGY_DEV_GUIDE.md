@@ -158,7 +158,7 @@ A valid response contains <code>valid: true</code> and the manifest. Verify the 
 
 The parser also normalizes selected aliases, such as <code>600519.XSHG</code> to <code>CNStock:600519.SH</code> and <code>BTCUSDT</code> to <code>BTC/USDT</code>.
 
-Broker-listed securities use <code>Market:Symbol</code> as their canonical strategy identity. Do not append a broker or listing venue such as <code>@NASDAQ</code>, <code>@NYSE</code>, <code>@HKEX</code>, or <code>@spot</code> to <code>USStock</code>, <code>HKStock</code>, <code>CNStock</code>, <code>Forex</code>, <code>Futures</code>, or <code>MOEX</code> identifiers. The runtime keeps broker and listing metadata separately for execution. Only exchange-routed <code>Crypto</code> identities carry an <code>@venue:market_type</code> suffix.
+Broker-listed securities use <code>Market:Symbol</code> as their canonical strategy identity. Do not append a broker or listing venue such as <code>@NASDAQ</code>, <code>@NYSE</code>, <code>@HKEX</code>, or <code>@spot</code> to <code>USStock</code>, <code>HKStock</code>, <code>CNStock</code>, <code>Forex</code>, <code>Futures</code>, or <code>MOEX</code> identifiers. The runtime keeps broker and listing metadata separately for execution. Ordinary Crypto strategy source uses the product-only suffix <code>@spot</code> or <code>@swap</code>; a live deployment obtains the execution venue from the selected account credential and resolves the matching product there. Use <code>@venue:market_type</code> only when intentionally pinning a venue route or preserving a venue-specific product returned by the catalog. Once present, that explicit venue is part of the data and execution identity and must not be silently changed.
 
 Production strategies should use the full market prefix. Crypto defaults to spot when no market type is present. Only swap instruments can permit contract leverage. Parsing a market name does not by itself guarantee data coverage or live-trading support; see the live venue matrix in Section 18.
 
@@ -363,12 +363,14 @@ Rules:
 
 - <code>weekday</code> is 1–7, with Monday as 1.
 - A monthday past the end of a month resolves to that month's last day.
-- On daily or lower-frequency bars, a specific intraday time does not create a nonexistent bar.
+- In backtests, a specific intraday time does not create a nonexistent daily or lower-frequency bar. Live schedules use a separate wall clock and can run without a new bar, using the latest confirmed data.
 - Prefer <code>callback(context, data)</code>; the runtime also adapts callbacks that accept only context.
 - A portfolio strategy with no registered schedules invokes <code>on_rebalance</code>.
 - Backtests invoke <code>before_trading_start</code> and <code>after_trading_end</code> on every event timestamp. Live sessions invoke <code>before_trading_start</code> only when a newly processed bar enters a new calendar date; the current live runtime does not invoke <code>after_trading_end</code>. Put live-critical close logic in <code>handle_data</code> or a schedule.
 
 Schedule time is interpreted in the live user's configured timezone. If no user timezone is available, the server <code>TZ</code> setting is used, then UTC. Set the user's timezone explicitly and test schedules against exchange sessions. Backtest timestamps follow the supplied market-data clock, so verify timezone alignment before relying on an exact intraday time.
+
+A fresh live session does not catch up earlier schedules. A restored session can process a missed occurrence within five minutes of its scheduled time, including across midnight; older occurrences are skipped. Schedule cursors are persisted even without <code>PERSIST_RUNTIME_STATE</code>. Generated order IDs are scoped to the scheduled occurrence and callback, and portfolio batches use the occurrence time rather than the bar time. User-provided client order IDs retain their existing semantics. During daylight-saving transitions, nonexistent local times move to the first valid time and ambiguous times use the second occurrence. A failed callback discards its evaluation's unsubmitted orders without advancing the schedule cursor; user-state mutations are not rolled back.
 
 ---
 
@@ -775,6 +777,10 @@ Backtest behavior:
 
 Live execution checks the same protection semantics on an independent price clock instead of waiting for the next strategy bar. Protection state can be persisted and restored after a session restart.
 
+For live broker equities, this price clock and trading callbacks only evaluate during regular exchange sessions, including holidays, DST, early closes, and lunch breaks. Off-hours quotes do not latch runtime stop-loss/take-profit exits. At reopening, current prices and positions are evaluated again. Never-submitted orders cannot carry across a close or break; they expire locally instead of being replayed at the next open. Broker-accepted orders, native protection, and unknown submission outcomes continue reconciliation. Crypto execution is unchanged.
+
+Equity protection prices must carry the provider's observation time from the current regular-session segment, no more than 90 seconds old and not in the future. This allows minute-bar quote timestamps without treating repeated cache reads as fresh market observations. Missing, expired, or untimed prices cannot trigger automatic exits; the runtime resumes evaluation when usable quotes return. An unchanged price is valid if its observation time is current. Daily equity rebalance price checks use the same rule; historical bars and signal mode are unchanged.
+
 ---
 
 ## 14. Leverage and shorting
@@ -783,7 +789,7 @@ Only a static universe consisting entirely of Crypto swap instruments may declar
 
 ~~~python
 def initialize(context):
-    g.symbol = "Crypto:BTC/USDT@okx:swap"
+    g.symbol = "Crypto:BTC/USDT@swap"
     context.set_universe([g.symbol])
     context.subscribe(frequency="1h")
     context.allow_leverage(max_leverage=5)
@@ -821,7 +827,7 @@ Maintains independent long and short swap legs in exchange hedge mode.
 
 
 def initialize(context):
-    g.symbol = "Crypto:BTC/USDT@okx:swap"
+    g.symbol = "Crypto:BTC/USDT@swap"
     context.set_universe([g.symbol])
     context.subscribe(frequency="1h")
     context.set_warmup(60)

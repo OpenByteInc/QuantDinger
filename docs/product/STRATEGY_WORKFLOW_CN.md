@@ -8,9 +8,9 @@ QuantDinger 的策略生命周期包括假设、编码、校验、回测、保�
 
 ## 2. 在策略编辑器中实现
 
-优先从 Strategy API V2 模板开始。保持 `initialize`、订阅、universe 与 `handle_data` 的职责清晰。使用完整市场标识，不根据显示名称猜交易所或产品。
+优先从 Strategy API V2 模板开始。保持 `initialize`、订阅、universe 与 `handle_data` 的职责清晰。使用规范市场标识，不根据显示名称猜交易所或产品。
 
-显式交易所是数据和执行契约的一部分。例如 `Crypto:XAUT/USDT@okx:swap` 只能读取 OKX 对应产品；该行情不可用时系统会报告失败，不会静默切换到另一家交易所。仅用于研究且不绑定交易所时可以使用 `Crypto:XAUT/USDT@swap`，但准备实盘前必须选择目录中真实存在的交易所产品。
+普通 Crypto 策略源码使用不含交易所名称的 `Crypto:基础币/计价币@spot` 或 `Crypto:基础币/计价币@swap`。创建实盘部署时选择执行账户，平台再按该账户的交易所解析对应产品。只有用户主动锁定数据与执行路由，或选择交易所专属目录产品时，源码才保留显式交易所。例如 `Crypto:XAUT/USDT@okx:swap` 只能读取 OKX 对应产品；该行情不可用时系统会报告失败，不会静默切换到另一家交易所。不能仅因为当前研究页面或行情提供方带有交易所信息，就把交易所写入策略源码。
 
 完整接口、manifest 和安全沙箱规则见 [Strategy API V2 开发指南](../trading/STRATEGY_DEV_GUIDE_CN.md)。
 
