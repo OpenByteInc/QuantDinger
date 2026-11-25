@@ -382,8 +382,8 @@ if show_backtest:
         ],
     })
 
-runtime_ctx = globals().get("ctx")
-chart_seconds = _timeframe_seconds(getattr(runtime_ctx, "timeframe", ""))
+runtime_ctx = ctx
+chart_seconds = _timeframe_seconds(runtime_ctx.timeframe)
 if chart_seconds is None and n >= 2:
     differences = np.diff(time_seconds)
     positive = differences[differences > 0]

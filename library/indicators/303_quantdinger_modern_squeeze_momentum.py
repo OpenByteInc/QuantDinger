@@ -306,8 +306,8 @@ low = base_frame["low"].to_numpy(dtype=float)
 close = base_frame["close"].to_numpy(dtype=float)
 n = len(base_frame)
 base = _state(base_frame)
-runtime_ctx = globals().get("ctx")
-chart_timeframe = str(getattr(runtime_ctx, "timeframe", "1H") or "1H")
+runtime_ctx = ctx
+chart_timeframe = str(runtime_ctx.timeframe or "1H")
 chart_seconds = _tf_seconds(chart_timeframe)
 selected_htf = _tf_name(chart_seconds * 4) if htf_timeframe in ("", "Auto") else htf_timeframe
 selected_htf_seconds = _tf_seconds(selected_htf)

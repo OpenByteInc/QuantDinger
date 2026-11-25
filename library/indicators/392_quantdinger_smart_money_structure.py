@@ -58,7 +58,7 @@ def _cross_over(a,b,index): return index>0 and np.isfinite(a[index]) and np.isfi
 def _cross_under(a,b,index): return index>0 and np.isfinite(a[index]) and np.isfinite(b[index]) and np.isfinite(a[index-1]) and np.isfinite(b[index-1]) and a[index]<b[index] and a[index-1]>=b[index-1]
 def _trend(frame):
     c=frame["close"].to_numpy(float); v=frame["volume"].to_numpy(float); ema=_ema(c,20); typical=(frame["high"].to_numpy(float)+frame["low"].to_numpy(float)+c)/3; cum=np.cumsum(np.nan_to_num(v)); vwap=np.divide(np.cumsum(np.nan_to_num(typical*v)),cum,out=np.full(len(c),np.nan),where=cum>0); state=np.where((c>ema)&(c>vwap),1,np.where((c<ema)&(c<vwap),-1,0)); return state,ema,vwap
-runtime_ctx=globals().get("ctx")
+runtime_ctx=ctx
 def _align_remote(timeframe):
     raw=None
     if hasattr(runtime_ctx,"raw_series"):

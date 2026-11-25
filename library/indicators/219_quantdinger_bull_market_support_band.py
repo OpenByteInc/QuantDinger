@@ -52,8 +52,8 @@ def normalize_weekly(frame):
     return result.sort_values("time").drop_duplicates("time", keep="last").reset_index(drop=True)
 
 
-runtime_context = globals().get("ctx")
-chart_timeframe = str(getattr(runtime_context, "timeframe", "") or "")
+runtime_context = ctx
+chart_timeframe = str(runtime_context.timeframe or "")
 if chart_timeframe == "1W":
     weekly = normalize_weekly(base)
 else:

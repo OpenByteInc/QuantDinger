@@ -121,7 +121,7 @@ x_price = ema(base_source, smoothing)
 
 fixed_source_index = np.full(n, -1, dtype=int)
 if use_fixed_timeframe:
-    runtime_context = globals().get("ctx")
+    runtime_context = ctx
     raw_fixed_source = (
         runtime_context.raw_series(fixed_timeframe)
         if runtime_context is not None and hasattr(runtime_context, "raw_series")

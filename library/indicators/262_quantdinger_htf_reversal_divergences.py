@@ -95,8 +95,8 @@ timeframe_seconds = {
     "1D": 86400, "1W": 604800,
 }
 requested_htf = htf
-runtime_context = globals().get("ctx")
-chart_timeframe = str(getattr(runtime_context, "timeframe", "1H") or "1H")
+runtime_context = ctx
+chart_timeframe = str(runtime_context.timeframe or "1H")
 if chart_timeframe in timeframe_seconds and timeframe_seconds[htf] < timeframe_seconds[chart_timeframe]:
     htf = chart_timeframe
 htf_seconds = timeframe_seconds[htf]

@@ -148,8 +148,8 @@ base_low = base_frame["low"].to_numpy(dtype=float)
 base_close = base_frame["close"].to_numpy(dtype=float)
 base_volume = base_frame["volume"].to_numpy(dtype=float)
 
-runtime_context = globals().get("ctx")
-chart_timeframe = str(getattr(runtime_context, "timeframe", "") or "")
+runtime_context = ctx
+chart_timeframe = str(runtime_context.timeframe or "")
 if chart_timeframe in timeframe_seconds:
     chart_seconds = timeframe_seconds[chart_timeframe]
 elif len(base_time) > 1:

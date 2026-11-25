@@ -77,8 +77,8 @@ enabled = [
 ]
 
 timeframe_seconds = {"1M": 60, "5M": 300, "15M": 900, "30M": 1800, "1H": 3600, "4H": 14400, "1D": 86400, "1W": 604800}
-runtime_context = globals().get("ctx")
-chart_timeframe = str(getattr(runtime_context, "timeframe", "1H") or "1H").upper()
+runtime_context = ctx
+chart_timeframe = str(runtime_context.timeframe or "1H").upper()
 chart_seconds = int(timeframe_seconds.get(chart_timeframe, 3600))
 requested_seconds = int(timeframe_seconds.get(selected_timeframe, 86400))
 timeframe_clamped = requested_seconds < chart_seconds

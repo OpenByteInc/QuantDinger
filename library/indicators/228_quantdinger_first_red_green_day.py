@@ -95,8 +95,8 @@ if n and np.nanmax(np.abs(base_time_seconds)) > 10000000000:
     base_time_seconds = base_time_seconds / 1000.0
 
 timeframe_seconds = {"1M": 60, "5M": 300, "15M": 900, "30M": 1800, "1H": 3600, "4H": 14400, "1D": 86400, "1W": 604800}
-runtime_context = globals().get("ctx")
-chart_timeframe = str(getattr(runtime_context, "timeframe", "1H") or "1H").upper()
+runtime_context = ctx
+chart_timeframe = str(runtime_context.timeframe or "1H").upper()
 chart_seconds = timeframe_seconds.get(chart_timeframe, 3600)
 signal_seconds_requested = timeframe_seconds.get(requested_signal_timeframe, 86400)
 same_signal_timeframe = chart_seconds >= signal_seconds_requested

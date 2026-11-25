@@ -110,8 +110,8 @@ volume = df["volume"].astype(float).to_numpy(dtype=float)
 raw_time = df["time"].astype(float).to_numpy(dtype=float) if "time" in df.columns else np.arange(len(df), dtype=float)
 base_time = raw_time / 1000.0 if len(raw_time) and np.nanmax(np.abs(raw_time)) > 10_000_000_000 else raw_time
 n = len(df)
-runtime_context = globals().get("ctx")
-chart_timeframe = str(getattr(runtime_context, "timeframe", "") or "1H")
+runtime_context = ctx
+chart_timeframe = str(runtime_context.timeframe or "1H")
 if chart_timeframe not in timeframe_seconds:
     chart_timeframe = "1H"
 chart_seconds = timeframe_seconds[chart_timeframe]

@@ -57,7 +57,7 @@ dashboard_timeframes = [timeframe if timeframe in allowed_timeframes else allowe
 
 df = df.copy()
 n = len(df)
-runtime_context = globals().get("ctx")
+runtime_context = ctx
 
 
 def rgba(color, alpha):

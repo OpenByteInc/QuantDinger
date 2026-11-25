@@ -255,8 +255,8 @@ low = frame["low"].to_numpy(dtype=float)
 close = frame["close"].to_numpy(dtype=float)
 volume = frame["volume"].fillna(0.0).to_numpy(dtype=float)
 n = len(frame)
-runtime_ctx = globals().get("ctx")
-chart_timeframe = _timeframe_key(getattr(runtime_ctx, "timeframe", None) or "1H")
+runtime_ctx = ctx
+chart_timeframe = _timeframe_key(runtime_ctx.timeframe or "1H")
 chart_seconds = timeframe_seconds.get(chart_timeframe, 3600)
 if start_time > 10_000_000_000:
     start_time /= 1000.0
@@ -349,8 +349,7 @@ if htf_enabled:
     requested_key = _timeframe_key(higher_timeframe)
     if timeframe_seconds.get(requested_key, 0) <= chart_seconds:
         raise ValueError("Enabled higher timeframe must be strictly above the chart timeframe")
-    raw_series = getattr(runtime_ctx, "raw_series", None)
-    raw_htf = raw_series(requested_key) if callable(raw_series) else None
+    raw_htf = runtime_ctx.raw_series(requested_key)
     htf_available = raw_htf is not None and len(raw_htf) > 0
     if htf_available:
         htf_frame = _normalize(raw_htf)

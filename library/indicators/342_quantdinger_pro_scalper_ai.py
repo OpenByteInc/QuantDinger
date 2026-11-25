@@ -238,8 +238,8 @@ volume = frame["volume"].fillna(0.0).to_numpy(dtype=float)
 n = len(frame)
 timeframe_seconds = {"1m": 60, "5m": 300, "15m": 900, "30m": 1800, "1H": 3600, "4H": 14400, "1D": 86400, "1W": 604800}
 timeframe_aliases = {"1": "1m", "5": "5m", "15": "15m", "30": "30m", "60": "1H", "240": "4H", "D": "1D", "W": "1W", "1h": "1H", "4h": "4H", "1d": "1D", "1w": "1W"}
-runtime_ctx = globals().get("ctx")
-runtime_timeframe = str(getattr(runtime_ctx, "timeframe", None) or "1H")
+runtime_ctx = ctx
+runtime_timeframe = str(runtime_ctx.timeframe or "1H")
 chart_timeframe = timeframe_aliases.get(runtime_timeframe, runtime_timeframe)
 requested_timeframe = timeframe_aliases.get(higher_timeframe, higher_timeframe)
 chart_seconds = timeframe_seconds.get(chart_timeframe, 3600)
@@ -331,8 +331,7 @@ htf_hma = np.full(n, np.nan, dtype=float)
 htf_trend = np.zeros(n, dtype=float)
 htf_available = not use_higher_timeframe
 if use_higher_timeframe:
-    raw_series = getattr(runtime_ctx, "raw_series", None)
-    raw_htf = raw_series(requested_timeframe) if callable(raw_series) else None
+    raw_htf = runtime_ctx.raw_series(requested_timeframe)
     htf_available = raw_htf is not None and len(raw_htf) > 0
     if htf_available:
         htf_frame = _normalize(raw_htf)

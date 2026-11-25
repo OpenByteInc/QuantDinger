@@ -323,8 +323,8 @@ volume_pass = np.logical_or(not use_volume_filter, np.isfinite(volume_average) &
 noise_band = pd.Series(coppock, dtype=float).rolling(noise_length, min_periods=noise_length).std(ddof=0).to_numpy(dtype=float) * noise_multiple
 
 timeframe_seconds = {"1M": 60, "5M": 300, "15M": 900, "30M": 1800, "1H": 3600, "4H": 14400, "1D": 86400, "1W": 604800}
-runtime_context = globals().get("ctx")
-chart_timeframe = str(getattr(runtime_context, "timeframe", "1H") or "1H").upper()
+runtime_context = ctx
+chart_timeframe = str(runtime_context.timeframe or "1H").upper()
 chart_seconds = timeframe_seconds.get(chart_timeframe, 3600)
 base_time = pd.to_numeric(frame["time"], errors="coerce").to_numpy(dtype=float)
 if len(base_time) and np.nanmax(np.abs(base_time)) > 10000000000:

@@ -4,7 +4,7 @@
 # ============================================================
 
 my_indicator_name = "QuantDinger Market Sessions"
-my_indicator_description = "Draws four configurable fixed-offset market sessions with ranges, regression, means, VWAP, statistics and day dividers."
+my_indicator_description = "Draws four configurable fixed-offset market sessions with ranges, regression, means, VWAP, statistics and day dividers on intraday charts below 4H."
 
 # @param session_a_enabled bool true Enable session A
 # @param session_a_name str New_York Session A name
@@ -117,7 +117,8 @@ close = df["close"].to_numpy(dtype=float)
 volume = df["volume"].to_numpy(dtype=float)
 n = len(df)
 bar_seconds = float(np.median(np.diff(times))) if n > 1 else 3600.0
-show_session_labels = show_labels and bar_seconds < 14400.0
+intraday_supported = bar_seconds < 14400.0
+show_session_labels = show_labels and intraday_supported
 local_seconds = times + active_offset * 3600.0
 local_minutes = (np.floor(local_seconds / 60.0).astype(np.int64) % 1440).astype(int) if n else np.asarray([], dtype=int)
 local_days = np.floor(local_seconds / 86400.0).astype(np.int64) if n else np.asarray([], dtype=np.int64)
@@ -180,11 +181,11 @@ def _calculate_session(config):
     return {"active": active, "started": started, "ended": ended, "high": session_high, "low": session_low, "completedHigh": completed_high, "completedLow": completed_low, "average": average, "vwap": vwap, "regFirst": reg_first, "regLast": reg_last, "deviation": deviation, "correlation": correlation, "records": clean_records}
 
 
-results = [_calculate_session(config) for config in configs]
+results = [_calculate_session(config) for config in configs] if intraday_supported else []
 plots = [{"name": "Price Guide", "title": False, "data": _finite(close), "color": "rgba(0,0,0,0)", "type": "line", "overlay": True}]
 layers = []
 signals = []
-opacity = (100.0 - range_transparency) / 100.0
+opacity = min(0.06, (100.0 - range_transparency) / 100.0)
 for config, result in zip(configs, results):
     letter, color = config["letter"], config["color"]
     plots.extend([
@@ -193,22 +194,22 @@ for config, result in zip(configs, results):
         {"name": f"Session {letter} Mean", "title": bool(config["mean"]), "data": _finite(result["average"]) if config["mean"] else [None] * n, "color": color, "type": "line", "lineWidth": 1, "overlay": True},
         {"name": f"Session {letter} VWAP", "title": bool(config["vwap"]), "data": _finite(result["vwap"]) if config["vwap"] else [None] * n, "color": color, "type": "line", "lineWidth": 1, "overlay": True},
     ])
-    for record in result["records"]:
+    for record_index, record in enumerate(result["records"]):
         if config["range"]:
             layers.append({"type": "zone", "role": f"Session {letter} Range", "startIndex": record["startIndex"], "endIndex": record["endIndex"], "top": record["high"], "bottom": record["low"], "fillColor": color, "opacity": opacity, "borderColor": color if show_outline else "rgba(0,0,0,0)", "borderSize": 1 if show_outline else 0})
-            if show_session_labels:
+            if show_session_labels and record_index == len(result["records"]) - 1:
                 layers.append({"type": "label", "role": f"Session {letter} Label", "index": int((record["startIndex"] + record["endIndex"]) / 2), "price": record["high"], "text": config["name"], "color": "rgba(0,0,0,0)", "textColor": color, "size": "tiny"})
         if config["trendline"]:
             layers.append({"type": "line", "role": f"Session {letter} Regression", "startIndex": record["startIndex"], "endIndex": record["endIndex"], "y1": record["first"], "y2": record["last"], "color": color, "lineWidth": 1})
-    divider_mask = result["active"] if show_session_divider else np.zeros(n, dtype=bool)
-    boundary_mask = (result["started"] | result["ended"]) if show_session_divider else np.zeros(n, dtype=bool)
-    signals.append({"type": "buy", "name": f"Session {letter} Active", "text": ".", "data": [{"active": True, "price": float(low[index]), "text": ".", "color": color} if divider_mask[index] else None for index in range(n)], "color": color, "renderMode": "events", "overlay": True})
-    signals.append({"type": "buy", "name": f"Session {letter} Boundary", "text": "|", "data": [{"active": True, "price": float(low[index]), "text": "|", "color": color} if boundary_mask[index] else None for index in range(n)], "color": color, "renderMode": "events", "overlay": True})
+    start_mask = result["started"] if show_session_divider else np.zeros(n, dtype=bool)
+    end_mask = result["ended"] if show_session_divider else np.zeros(n, dtype=bool)
+    signals.append({"type": "buy", "name": f"Session {letter} Start", "text": "Open", "data": [{"active": True, "price": float(low[index]), "text": "Open", "color": color} if start_mask[index] else None for index in range(n)], "color": color, "renderMode": "events", "overlay": True})
+    signals.append({"type": "sell", "name": f"Session {letter} End", "text": "Close", "data": [{"active": True, "price": float(high[index]), "text": "Close", "color": color} if end_mask[index] else None for index in range(n)], "color": color, "renderMode": "events", "overlay": True})
 
 new_day = np.zeros(n, dtype=bool)
 if n > 1:
     new_day[1:] = local_days[1:] != local_days[:-1]
-if show_day_divider and n:
+if show_day_divider and intraday_supported and n:
     chart_low, chart_high = float(np.min(low)), float(np.max(high))
     day_names = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
     day_indexes = np.flatnonzero(new_day)
@@ -219,6 +220,8 @@ if show_day_divider and n:
         layers.append({"type": "label", "role": "Day Label", "index": int(index), "price": chart_high, "text": day_names[int((local_days[index] + 3) % 7)], "color": "rgba(0,0,0,0)", "textColor": "#808080", "size": "tiny"})
 
 tables = []
+if not intraday_supported:
+    tables.append({"title": "Market Sessions", "position": dashboard_position, "compact": True, "rows": [[{"text": "Timeframe"}, {"text": "Use an intraday chart below 4H", "color": "#FFB300"}]]})
 if show_dashboard and n:
     rows = []
     for config, result in zip(configs, results):

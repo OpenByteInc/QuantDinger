@@ -355,8 +355,8 @@ if show_hits:
         {"type": "sell", "name": "Stop Hit", "text": "SL", "data": [float(low[index] if direction[index - 1] == 1 else high[index]) if index >= 1 and visual_event_map.get(index) == "stop" else None for index in range(n)], "color": stop_color, "renderMode": "events"},
     ])
 
-runtime_ctx = globals().get("ctx")
-chart_timeframe = str(getattr(runtime_ctx, "timeframe", "") or "")
+runtime_ctx = ctx
+chart_timeframe = str(runtime_ctx.timeframe or "")
 tables = []
 if chart_timeframe not in ("15", "15m", "15M"):
     tables = [{"title": "Timeframe", "position": "top-right", "compact": True, "rows": [[{"text": "Designed for 15m", "color": "#FFFFFF"}, {"text": f"Current: {chart_timeframe}", "color": "#FFA500"}]]}]

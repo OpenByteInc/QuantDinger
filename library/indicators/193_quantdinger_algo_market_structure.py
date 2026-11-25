@@ -128,8 +128,8 @@ base_high = base_frame["high"].to_numpy(dtype=float)
 base_low = base_frame["low"].to_numpy(dtype=float)
 base_close = base_frame["close"].to_numpy(dtype=float)
 
-runtime_context = globals().get("ctx")
-chart_timeframe = str(getattr(runtime_context, "timeframe", "") or "1H")
+runtime_context = ctx
+chart_timeframe = str(runtime_context.timeframe or "1H")
 if chart_timeframe not in timeframe_seconds:
     chart_timeframe = "1H"
 chart_seconds = timeframe_seconds[chart_timeframe]

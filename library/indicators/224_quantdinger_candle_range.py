@@ -96,8 +96,8 @@ timeframe_seconds = {
     "1W": 604800,
 }
 ordered_timeframes = ("1M", "5M", "15M", "30M", "1H", "4H", "1D", "1W")
-runtime_context = globals().get("ctx")
-chart_timeframe = str(getattr(runtime_context, "timeframe", "1H") or "1H").upper()
+runtime_context = ctx
+chart_timeframe = str(runtime_context.timeframe or "1H").upper()
 chart_seconds = timeframe_seconds.get(chart_timeframe, 3600)
 
 resolved_execution = chart_timeframe if requested_execution == "CHART" else requested_execution
