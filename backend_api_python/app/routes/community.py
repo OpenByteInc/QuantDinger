@@ -47,7 +47,7 @@ def get_market_indicators():
         vip_free: 1/true to show VIP-free paid assets only
         code_visibility: 'visible' / 'hidden' / empty (all)
         min_price, max_price: Numeric price bounds
-        sort_by: 'score' (default) / 'newest' / 'hot' / 'price_asc' /
+        sort_by: 'score' (default) / 'recommended' / 'newest' / 'hot' / 'price_asc' /
                  'price_desc' / 'rating' / 'views' / 'installs' /
                  'annual_return' / 'max_drawdown' / 'sharpe' / 'users'.
         sort_order: 'asc' / 'desc' for sortable catalog columns.
@@ -55,6 +55,8 @@ def get_market_indicators():
                  (see services/community_kpis.py) and is now the
                  default — putting genuinely well-performing indicators
                  at the top of the marketplace, not just the newest ones.
+                 'recommended' mixes two established listings with one listing
+                 published during the previous 14 days.
     """
     try:
         page = int(request.args.get('page', 1))
@@ -297,9 +299,9 @@ def get_author_summary():
 @community_blp.route("/author/published", methods=["GET"])
 @login_required
 def get_author_published():
-    """List indicators published by the author with per-item sales, revenue, and rating."""
+    """Search, filter, and sort the author's published marketplace listings."""
     try:
-        page = int(request.args.get('page', 1))
+        page = max(int(request.args.get('page', 1)), 1)
         page_size = int(request.args.get('page_size', 20))
         page_size = min(max(page_size, 1), 50)
 
@@ -308,6 +310,11 @@ def get_author_published():
             user_id=g.user_id,
             page=page,
             page_size=page_size,
+            keyword=request.args.get('keyword'),
+            asset_type=request.args.get('asset_type'),
+            review_status=request.args.get('review_status'),
+            sort_by=request.args.get('sort_by', 'updated_at'),
+            sort_order=request.args.get('sort_order', 'desc'),
         )
         return jsonify({'code': 1, 'msg': 'success', 'data': result})
     except Exception as e:
