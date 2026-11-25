@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import hashlib
 import math
 import calendar
 from dataclasses import dataclass, field, replace
@@ -46,6 +47,8 @@ _PROTECTION_EXIT_REASONS = frozenset({
     "trailing_stop",
     "time_limit",
 })
+
+_LIVE_SCHEDULE_GRACE = pd.Timedelta(minutes=5)
 
 _ORDER_OPTION_NAMES = frozenset({
     "client_order_id",
@@ -274,6 +277,7 @@ class StrategyRuntimeContext:
         self._indicator_cache: dict[tuple[Any, ...], pd.Series | pd.DataFrame] = {}
         self._handler_shapes: dict[str, tuple[Any, int | None]] = {}
         self._order_sequence = 0
+        self._order_scope: tuple[str, dict[tuple[str, str, str], int]] | None = None
         self._order_statuses: dict[str, dict[str, Any]] = {}
         self._cancelled_order_ids: set[str] = set()
         self.live_order_cancellation = False
@@ -704,7 +708,15 @@ class StrategyRuntimeContext:
                 if self.current_dt is not None
                 else "discovery"
             )
-            client_order_id = f"strategy-v2:{timestamp}:{self._order_sequence}"
+            if self._order_scope is not None:
+                prefix, sequences = self._order_scope
+                order_key = (key, kind, _normalize_position_side(kwargs.get("position_side")))
+                sequence = sequences.get(order_key, 0) + 1
+                sequences[order_key] = sequence
+                digest = hashlib.sha256(repr((prefix, order_key, sequence)).encode()).hexdigest()
+                client_order_id = f"schedule-v2:{digest}"
+            else:
+                client_order_id = f"strategy-v2:{timestamp}:{self._order_sequence}"
         client_order_id = client_order_id[:100]
         self._order_statuses.setdefault(client_order_id, {
             "client_order_id": client_order_id,
@@ -2094,25 +2106,8 @@ class StrategyV2BacktestRunner:
         if schedule.frequency not in {"daily", "weekly", "monthly"}:
             return False
 
-        def occurrence(anchor: pd.Timestamp) -> pd.Timestamp:
-            scheduled_date = anchor.normalize()
-            if schedule.frequency == "weekly":
-                target_weekday = max(1, min(7, int(schedule.weekday or 1))) - 1
-                scheduled_date += pd.Timedelta(days=target_weekday - anchor.weekday())
-            elif schedule.frequency == "monthly":
-                target_day = max(1, int(schedule.monthday or 1))
-                last_day = calendar.monthrange(anchor.year, anchor.month)[1]
-                scheduled_date = pd.Timestamp(
-                    year=anchor.year,
-                    month=anchor.month,
-                    day=min(target_day, last_day),
-                    tz=anchor.tz,
-                )
-            if _is_intraday_frequency(bar_frequency) and schedule.time:
-                scheduled_date += _parse_schedule_time(schedule.time)
-            return scheduled_date
-
-        scheduled_at = occurrence(current)
+        occurrence = StrategyV2BacktestRunner._schedule_occurrence
+        scheduled_at = occurrence(schedule, current, bar_frequency)
         if current < scheduled_at:
             if previous is None or schedule.frequency == "daily":
                 return False
@@ -2120,15 +2115,50 @@ class StrategyV2BacktestRunner:
             # (weekend, holiday).  Catch it up on the first bar after it, as
             # already happens when the gap stays inside one period.
             if schedule.frequency == "weekly":
-                scheduled_at = occurrence(current - pd.DateOffset(days=7))
+                scheduled_at = occurrence(schedule, current - pd.DateOffset(days=7), bar_frequency)
             else:
-                scheduled_at = occurrence(current.replace(day=1) - pd.DateOffset(days=1))
+                scheduled_at = occurrence(
+                    schedule,
+                    current.replace(day=1) - pd.DateOffset(days=1),
+                    bar_frequency,
+                )
             return previous < scheduled_at <= current
         if previous is None:
             return True
         if schedule.frequency == "daily" and not _is_intraday_frequency(bar_frequency):
             return current.date() != previous.date()
         return previous < scheduled_at <= current
+
+    @staticmethod
+    def _schedule_occurrence(
+        schedule,
+        anchor: pd.Timestamp,
+        bar_frequency: str = "1d",
+    ) -> pd.Timestamp:
+        anchor = pd.Timestamp(anchor)
+        timezone = anchor.tz
+        local_anchor = anchor.tz_localize(None) if timezone is not None else anchor
+        scheduled_date = local_anchor.normalize()
+        if schedule.frequency == "weekly":
+            target_weekday = max(1, min(7, int(schedule.weekday or 1))) - 1
+            scheduled_date += pd.Timedelta(days=target_weekday - local_anchor.weekday())
+        elif schedule.frequency == "monthly":
+            target_day = max(1, int(schedule.monthday or 1))
+            last_day = calendar.monthrange(local_anchor.year, local_anchor.month)[1]
+            scheduled_date = pd.Timestamp(
+                year=local_anchor.year,
+                month=local_anchor.month,
+                day=min(target_day, last_day),
+            )
+        if _is_intraday_frequency(bar_frequency) and schedule.time:
+            scheduled_date += _parse_schedule_time(schedule.time)
+        if timezone is not None:
+            scheduled_date = scheduled_date.tz_localize(
+                timezone,
+                ambiguous=False,
+                nonexistent="shift_forward",
+            )
+        return scheduled_date
 
     def _result(self) -> dict[str, Any]:
         initial = float(self.broker.portfolio.starting_cash)
@@ -2547,19 +2577,16 @@ class StrategyV2LiveSession:
             self.context.current_dt = timestamp
             self._invoke("before_trading_start", self.context, self.context.data)
 
-        previous_schedule_check = self.last_schedule_check
-        if previous_schedule_check is not None and schedule_clock > previous_schedule_check:
-            self.context.current_dt = schedule_clock
-            for schedule in self.program.manifest.schedules:
-                if StrategyV2BacktestRunner._schedule_due(
-                    schedule,
-                    schedule_clock,
-                    previous_schedule_check,
-                    "1m",
-                ):
-                    self._invoke(schedule.callback, self.context, self.context.data)
-        self.last_schedule_check = schedule_clock
-
+        due_schedules = self._due_live_schedules(schedule_clock)
+        for schedule_index, schedule, scheduled_at in due_schedules:
+            # Schedule IDs must not depend on intervening bar/risk orders.
+            self.context.current_dt = scheduled_at
+            previous_scope = self.context._order_scope
+            self.context._order_scope = (f"{scheduled_at.isoformat()}:{schedule_index}", {})
+            try:
+                self._invoke(schedule.callback, self.context, self.context.data)
+            finally:
+                self.context._order_scope = previous_scope
         if bar_advanced:
             self.context.current_dt = timestamp
             if self.program.manifest.strategy_type == "portfolio" and not self.program.manifest.schedules:
@@ -2568,9 +2595,41 @@ class StrategyV2LiveSession:
         orders = self.context.flush_orders()
         self._capture_protection_intents(orders)
         logs = self.context.flush_logs()
+        self.last_schedule_check = max(self.last_schedule_check or schedule_clock, schedule_clock)
         if bar_advanced:
             self.last_processed = timestamp
         return orders, logs, timestamp
+
+    def has_due_schedule(self, schedule_time: Any = None) -> bool:
+        if not self.program.manifest.schedules:
+            return False
+        return bool(self._due_live_schedules(self._schedule_clock(schedule_time)))
+
+    def _due_live_schedules(self, schedule_clock: pd.Timestamp):
+        previous = self.last_schedule_check
+        if previous is None or schedule_clock <= previous:
+            return []
+        due = []
+        for schedule_index, schedule in enumerate(self.program.manifest.schedules):
+            scheduled_at = StrategyV2BacktestRunner._schedule_occurrence(
+                schedule,
+                schedule_clock,
+                "1m",
+            )
+            if scheduled_at > schedule_clock:
+                if schedule.frequency == "monthly":
+                    previous_period = schedule_clock.replace(day=1) - pd.DateOffset(days=1)
+                else:
+                    previous_period = schedule_clock - pd.DateOffset(
+                        days=7 if schedule.frequency == "weekly" else 1,
+                    )
+                scheduled_at = StrategyV2BacktestRunner._schedule_occurrence(schedule, previous_period, "1m")
+            if (
+                previous < scheduled_at <= schedule_clock
+                and schedule_clock - scheduled_at <= _LIVE_SCHEDULE_GRACE
+            ):
+                due.append((schedule_index, schedule, scheduled_at))
+        return due
 
     def _schedule_clock(self, value: Any = None) -> pd.Timestamp:
         if value is None:
@@ -2902,11 +2961,8 @@ class StrategyV2LiveSession:
         }
         if self.context._cancelled_order_ids:
             snapshot["cancelRequests"] = sorted(self.context._cancelled_order_ids)
-        if self.persist_strategy_state:
+        if self.persist_strategy_state or self.program.manifest.schedules:
             snapshot.update({
-                "strategyState": _snapshot_state_value(
-                    dict(vars(self.program.state))
-                ),
                 "lastProcessed": (
                     pd.Timestamp(self.last_processed).isoformat()
                     if self.last_processed is not None
@@ -2916,6 +2972,14 @@ class StrategyV2LiveSession:
                     pd.Timestamp(self.last_schedule_check).isoformat()
                     if self.last_schedule_check is not None
                     else None
+                ),
+            })
+        if self.program.manifest.schedules:
+            snapshot["orderSequence"] = int(self.context._order_sequence)
+        if self.persist_strategy_state:
+            snapshot.update({
+                "strategyState": _snapshot_state_value(
+                    dict(vars(self.program.state))
                 ),
                 "orderStatuses": self.context.order_status_snapshot(),
                 "exitReasons": self.context.exit_reason_snapshot(),
@@ -2933,6 +2997,23 @@ class StrategyV2LiveSession:
         elif "states" in raw or "specs" in raw:
             # Backward compatibility with the old protection-only snapshot.
             self.restore_protection_snapshot(raw)
+        if self.persist_strategy_state or self.program.manifest.schedules:
+            try:
+                if raw.get("lastProcessed"):
+                    self.last_processed = pd.Timestamp(raw["lastProcessed"])
+                if raw.get("lastScheduleCheck"):
+                    self.last_schedule_check = pd.Timestamp(raw["lastScheduleCheck"])
+            except (TypeError, ValueError):
+                self.last_processed = None
+                self.last_schedule_check = None
+        if self.program.manifest.schedules:
+            try:
+                self.context._order_sequence = max(
+                    0,
+                    int(raw.get("orderSequence") or 0),
+                )
+            except (TypeError, ValueError):
+                self.context._order_sequence = 0
         if self.persist_strategy_state:
             strategy_state = raw.get("strategyState")
             if isinstance(strategy_state, Mapping):
@@ -2948,14 +3029,6 @@ class StrategyV2LiveSession:
                 if isinstance(raw.get("exitReasons"), Mapping)
                 else {}
             )
-            try:
-                if raw.get("lastProcessed"):
-                    self.last_processed = pd.Timestamp(raw["lastProcessed"])
-                if raw.get("lastScheduleCheck"):
-                    self.last_schedule_check = pd.Timestamp(raw["lastScheduleCheck"])
-            except Exception:
-                self.last_processed = None
-                self.last_schedule_check = None
 
     def protection_snapshot(self) -> dict[str, Any]:
         return {
@@ -3066,9 +3139,14 @@ class StrategyV2LiveSession:
             return None
         try:
             return self.context.invoke_handler(handler_name, handler, args)
-        except StrategyV2ContractError:
-            raise
         except Exception as exc:
+            # Failed evaluations must not leak queued orders into risk/tick calls.
+            for intent in self.context.flush_orders():
+                status = self.context._order_statuses.get(intent.client_order_id, {})
+                if status.get("status") == "queued":
+                    self.context._order_statuses.pop(intent.client_order_id, None)
+            if isinstance(exc, StrategyV2ContractError):
+                raise
             raise StrategyV2ContractError(f"strategyV2.runtimeFailed:{handler_name}:{exc}") from exc
 
 

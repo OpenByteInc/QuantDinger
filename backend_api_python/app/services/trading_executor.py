@@ -6,6 +6,7 @@ import json
 import os
 import threading
 import time
+from contextlib import ExitStack
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
@@ -29,7 +30,9 @@ from app.services.market_context import (
     normalize_exchange_id,
     normalize_market_type,
 )
+from app.services.market_schedule import equity_order_session_error
 from app.services.strategy_runtime.health import record_runtime_heartbeat
+from app.services.strategy_runtime.price_freshness import filter_execution_prices
 from app.services.strategy_runtime.identity import ensure_strategy_run, finish_strategy_run
 from app.services.strategy_runtime.order_intents import OrderIntentService
 from app.services.strategy_runtime.scheduler import CooperativeRuntimeScheduler
@@ -882,6 +885,7 @@ class TradingExecutor:
             frequency_frames = fetch_runtime_frames()
             frames = frequency_frames[frequency]
             runtime_price_client: Dict[str, Any] = {}
+            equity_quotes: dict[str, dict[str, Any]] = {}
 
             positions = {}
             def runtime_prices() -> dict[str, float]:
@@ -892,6 +896,7 @@ class TradingExecutor:
                     priced,
                     exchange_config,
                     runtime_price_client,
+                    equity_quotes=equity_quotes,
                 )
 
             initial_capital = float(
@@ -909,6 +914,7 @@ class TradingExecutor:
                 program.manifest.universe.reference,
                 _latest_frame_timestamp(frames) or pd.Timestamp.now(tz="UTC"),
             )
+            schedule_timezone = self._load_schedule_timezone(user_id)
             session = StrategyV2LiveSession(
                 code=code,
                 frames=frames,
@@ -917,7 +923,7 @@ class TradingExecutor:
                 params=runtime_params,
                 deployment_risk=trading_config.get("deployment_risk"),
                 universe_members=initial_universe_members,
-                schedule_timezone=self._load_schedule_timezone(user_id),
+                schedule_timezone=schedule_timezone,
                 program=program,
                 max_memory_mb=int(
                     os.getenv("STRATEGY_RUNTIME_SANDBOX_MEMORY_MB", "2048") or 2048
@@ -1037,6 +1043,7 @@ class TradingExecutor:
             event_driven_bars = bool(
                 _env_enabled("BAR_CLOSE_EVENT_SCHEDULER_ENABLED", default=True)
                 and daily_policy is None
+                and not program.manifest.schedules
                 and bot_type not in {"grid", "martingale", "layered_martingale"}
                 and not program.has_handler("on_price_tick")
                 and supports_bar_close_events(frequency, candidates)
@@ -1102,6 +1109,7 @@ class TradingExecutor:
             last_market_data_failure_key = ""
             last_market_data_log_at = 0.0
             signal_data_error = ""
+            last_execution_session_error = ""
             strategy_name = str(strategy.get("strategy_name") or f"strategy_{strategy_id}")
             notification_config = _json_object(strategy.get("notification_config"))
             leverage = max(1.0, float(trading_config.get("leverage") or strategy.get("leverage") or 1))
@@ -1117,12 +1125,19 @@ class TradingExecutor:
                     token=self.runtime_fencing_token(strategy_id),
                 ):
                     return
+            runtime_trigger = (
+                "bar_close_event"
+                if event_driven_bars
+                else "wall_clock_schedule"
+                if program.manifest.schedules
+                else "runtime_poll"
+            )
             append_strategy_log(
                 strategy_id,
                 "info",
                 f"Strategy runtime ready: instruments={len(ready_universe_symbols)}, "
                 f"timeframe={frequency}, "
-                f"mode={execution_mode}, trigger={'bar_close_event' if event_driven_bars else 'runtime_poll'}",
+                f"mode={execution_mode}, trigger={runtime_trigger}",
             )
             # A preparation event must not execute the initial trading callback.
             # Yield makes scheduler readiness observable before the first risk tick.
@@ -1160,7 +1175,29 @@ class TradingExecutor:
                         if price_clock - last_price_seen_at.get(symbol_key, 0.0)
                         <= price_stale_after
                     }
-                    if not active_prices:
+                    risk_timestamp = pd.Timestamp.now(tz="UTC")
+                    execution_session_error = ""
+                    if execution_mode == "live":
+                        execution_session_error = next((
+                            error for market in sorted({str(member.get("market") or "") for member in candidates})
+                            if (error := equity_order_session_error(market, now=risk_timestamp))
+                        ), "")
+                    if execution_session_error != last_execution_session_error:
+                        if execution_session_error:
+                            append_strategy_log(
+                                strategy_id, "info",
+                                f"Equity strategy execution paused ({execution_session_error}); "
+                                "protection and signals will be re-evaluated during regular trading hours. "
+                                "Accepted orders continue reconciliation.",
+                            )
+                        last_execution_session_error = execution_session_error
+                    execution_session_open = not execution_session_error
+                    active_prices = filter_execution_prices(
+                        active_prices, equity_quotes,
+                        now=risk_timestamp, execution_mode=execution_mode,
+                    )
+                    price_feed_ready = bool(active_prices) or execution_session_error == "equity_market_closed"
+                    if not price_feed_ready:
                         if not stale_price_logged:
                             append_strategy_log(
                                 strategy_id,
@@ -1168,7 +1205,7 @@ class TradingExecutor:
                                 "Live price is stale; new entries and runtime exits are paused until recovery",
                             )
                             stale_price_logged = True
-                    elif stale_price_logged:
+                    elif active_prices and stale_price_logged:
                         append_strategy_log(strategy_id, "info", "Live price feed recovered")
                         stale_price_logged = False
                     if (
@@ -1235,10 +1272,9 @@ class TradingExecutor:
                         total_value=current_equity,
                         available_cash=available_strategy_cash(current_equity, positions, candidates, leverage, active_prices),
                     )
-                    risk_timestamp = pd.Timestamp.now(tz="UTC")
                     equity_intents, equity_messages, equity_stop_reason = (
                         session.evaluate_equity_risk(timestamp=risk_timestamp)
-                        if active_prices and positions_prices_fresh
+                        if execution_session_open and active_prices and positions_prices_fresh
                         else ([], [], "")
                     )
                     if equity_stop_reason:
@@ -1302,7 +1338,7 @@ class TradingExecutor:
                             f"Equity risk exit submission failed and will retry: {equity_stop_reason}",
                         )
 
-                    protection_intents = [] if equity_stop_reason else session.evaluate_protections(
+                    protection_intents = [] if equity_stop_reason or not execution_session_open else session.evaluate_protections(
                         active_prices,
                         timestamp=risk_timestamp,
                     )
@@ -1353,6 +1389,7 @@ class TradingExecutor:
                     # async order cannot be emitted again on the next tick.
                     if (
                         execution_mode == "live"
+                        and execution_session_open
                         and not equity_stop_reason
                         and active_prices
                         and bot_type in {"martingale", "layered_martingale"}
@@ -1401,7 +1438,7 @@ class TradingExecutor:
                                         ),
                                     },
                                 })
-                    if not equity_stop_reason and signal_evaluation_enabled and _signal_cycle_due(
+                    if execution_session_open and not equity_stop_reason and signal_evaluation_enabled and _signal_cycle_due(
                         cycle_started=cycle_started,
                         next_signal_poll=next_signal_poll,
                         bar_event_triggered=bar_event_triggered,
@@ -1417,17 +1454,29 @@ class TradingExecutor:
                             if str(member.get("key") or "") in ready_universe_symbols
                         ]
                         current_bar_token = signal_bar_targets(signal_members, frequency, frames)
+                        try:
+                            schedule_clock = pd.Timestamp.now(tz=schedule_timezone)
+                        except Exception:
+                            schedule_clock = pd.Timestamp.now(tz="UTC")
+                        schedule_due = bool(
+                            program.manifest.schedules
+                            and session.has_due_schedule(schedule_clock)
+                        )
                         if signal_session is not None:
                             current_bar_token = int(signal_session.timestamp())
                         has_new_closed_bar = (
                             initial_frames_pending
                             or current_bar_token != last_signal_bar_token
                         ) and (not daily_policy or signal_session is not None) and not candles_settling(signal_members, frequency, frames)
-                        if has_new_closed_bar:
+                        if has_new_closed_bar or schedule_due:
                             # Startup already warmed the complete frame bundle.
                             # Every later trigger extends the shared cache only
                             # for the newly completed candle window.
-                            if not initial_frames_pending or daily_policy or not runtime_frames_ready(frequency_frames, signal_members):
+                            if has_new_closed_bar and (
+                                not initial_frames_pending
+                                or daily_policy
+                                or not runtime_frames_ready(frequency_frames, signal_members)
+                            ):
                                 frequency_frames = fetch_runtime_frames()
                                 frames = frequency_frames[frequency]
                                 signal_members = [
@@ -1457,6 +1506,7 @@ class TradingExecutor:
                                     ),
                                     exchange_config,
                                     runtime_price_client,
+                                    equity_quotes=equity_quotes,
                                 )
                                 daily_price_clock = time.monotonic()
                                 for symbol_key, value in daily_prices.items():
@@ -1470,6 +1520,10 @@ class TradingExecutor:
                                     - last_price_seen_at.get(symbol_key, 0.0)
                                     <= price_stale_after
                                 }
+                                active_prices = filter_execution_prices(
+                                    active_prices, equity_quotes,
+                                    now=pd.Timestamp.now(tz="UTC"), execution_mode=execution_mode,
+                                )
                             latest_frame_timestamp = _latest_frame_timestamp(frames)
                             frame_advanced = bool(
                                 initial_frames_pending
@@ -1497,7 +1551,7 @@ class TradingExecutor:
                                         for member in daily_members
                                     )
                                 )
-                            if frame_advanced:
+                            if frame_advanced or schedule_due:
                                 begin_signal_cycle = getattr(
                                     self.order_gateway,
                                     "begin_signal_cycle",
@@ -1508,6 +1562,7 @@ class TradingExecutor:
                                 intents, messages, timestamp = session.process(
                                     frames,
                                     frequency_frames=frequency_frames,
+                                    schedule_time=schedule_clock,
                                     universe_members=resolve_universe(
                                         program.manifest.universe.reference,
                                         latest_frame_timestamp or pd.Timestamp.now(tz="UTC"),
@@ -1524,11 +1579,19 @@ class TradingExecutor:
                                 pending_count += len(intents)
                                 for message in messages:
                                     append_strategy_log(strategy_id, "info", message)
-                                with rebalance_batch(
-                                    strategy_id=strategy_id, run_id=run_id, timestamp=timestamp,
-                                    enabled=program.manifest.strategy_type == "portfolio",
-                                ) as group_id:
+                                with ExitStack() as batch_contexts:
+                                    batch_ids = {}
                                     for intent in intents:
+                                        batch_timestamp = (
+                                            intent.signal_time
+                                            if program.manifest.schedules and intent.signal_time is not None
+                                            else timestamp
+                                        )
+                                        if batch_timestamp not in batch_ids:
+                                            batch_ids[batch_timestamp] = batch_contexts.enter_context(rebalance_batch(
+                                                strategy_id=strategy_id, run_id=run_id, timestamp=batch_timestamp,
+                                                enabled=program.manifest.strategy_type == "portfolio",
+                                            ))
                                         submitted = self._execute_strategy_v2_intent(
                                             strategy_id=strategy_id,
                                             strategy_name=strategy_name,
@@ -1547,7 +1610,7 @@ class TradingExecutor:
                                             current_price_override=active_prices.get(str(intent.symbol)) if daily_policy else None,
                                             strategy_run_id=run_id,
                                             direction_mode=direction_mode,
-                                            rebalance_group_id=group_id,
+                                            rebalance_group_id=batch_ids[batch_timestamp],
                                         )
                                         if intent.client_order_id:
                                             session.context.update_order_statuses({
@@ -1565,9 +1628,10 @@ class TradingExecutor:
                                 )
                                 if callable(finish_signal_cycle):
                                     finish_signal_cycle(run_id)
-                                initial_frames_pending = False
-                                last_signal_bar_token = current_bar_token
-                                last_processed_frame_timestamp = latest_frame_timestamp
+                                if frame_advanced:
+                                    initial_frames_pending = False
+                                    last_signal_bar_token = current_bar_token
+                                    last_processed_frame_timestamp = latest_frame_timestamp
                         next_signal_poll = cycle_started + signal_poll
                     if stop_event.is_set() or (self.runtime_guard and not self.runtime_guard(strategy_id)):
                         break
@@ -1582,13 +1646,15 @@ class TradingExecutor:
                         last_prices,
                         pending_count,
                         loop_latency_ms=int((time.monotonic() - cycle_started) * 1000),
-                        status="healthy" if active_prices and not signal_data_error else "degraded",
-                        last_error=signal_data_error or ("" if active_prices else "live_price_stale"),
+                        status="healthy" if price_feed_ready and not signal_data_error else "degraded",
+                        last_error=signal_data_error or ("" if price_feed_ready else execution_session_error or "live_price_stale"),
                         price_source=str(price_feed_meta.get("source") or "exchange_rest"),
                         price_age_ms=int(price_feed_meta.get("age_ms") or 0),
                         trigger_mode=(
                             "realtime_price"
                             if bot_type in {"martingale", "layered_martingale"}
+                            else "wall_clock_schedule"
+                            if program.manifest.schedules
                             else "closed_bar_event"
                             if event_driven_bars
                             else "closed_bar"
@@ -1607,6 +1673,8 @@ class TradingExecutor:
                         market_ready=bool(active_prices),
                         event_driven=event_driven_bars,
                     )
+                    if program.manifest.schedules:
+                        wait_seconds = min(wait_seconds, signal_poll)
                     if equity_stop_reason and not equity_submission_failed:
                         exit_reason = f"equity risk stopped: {equity_stop_reason}"
                         self._last_exit_reason[strategy_id] = exit_reason
@@ -1916,6 +1984,10 @@ class TradingExecutor:
         ):
             return False
         if requested_execution_mode == "live":
+            if equity_order_session_error(
+                str(values.get("market_category") or strategy.get("market_category") or "")
+            ):
+                return False
             from app.services.strategy_live_guard import (
                 StrategyDirectionModeViolation,
                 validate_strategy_signal_direction,
@@ -3101,7 +3173,7 @@ class TradingExecutor:
         return positions_by_symbol(self, strategy_id, candidates, strategy or self._load_strategy(strategy_id))
 
     @staticmethod
-    def _live_prices(candidates: list[dict[str, Any]]) -> dict[str, float]:
+    def _live_prices(candidates: list[dict[str, Any]], *, equity_quotes=None) -> dict[str, float]:
         prices: dict[str, float] = {}
         groups: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
         for member in candidates:
@@ -3123,6 +3195,8 @@ class TradingExecutor:
                 for member in members:
                     symbol = str(member.get("symbol") or "")
                     ticker = quotes.get(symbol) or quotes.get(symbol.upper()) or {}
+                    if equity_quotes is not None and market in {"USStock", "HKStock", "CNStock", "AStock"}:
+                        equity_quotes[str(member.get("key") or "")] = dict(ticker)
                     price = float(ticker.get("last") or ticker.get("close") or 0)
                     if price > 0:
                         prices[str(member.get("key") or "")] = price
@@ -3142,6 +3216,8 @@ class TradingExecutor:
         candidates: list[dict[str, Any]],
         exchange_config: dict[str, Any],
         client_holder: dict[str, Any],
+        *,
+        equity_quotes=None,
     ) -> dict[str, float]:
         standard_candidates = [
             member
@@ -3150,7 +3226,8 @@ class TradingExecutor:
                 member.get("api_family") or member.get("market_type") or "spot"
             ).strip().lower() in {"spot", "swap"}
         ]
-        prices = cls._live_prices(standard_candidates) if standard_candidates else {}
+        quote_options = {"equity_quotes": equity_quotes} if equity_quotes is not None else {}
+        prices = cls._live_prices(standard_candidates, **quote_options) if standard_candidates else {}
         from app.services.live_trading.factory import create_client
         from app.services.live_trading.symbols import to_okx_spot_inst_id, to_okx_swap_inst_id
 

@@ -40,6 +40,7 @@ from app.services.live_trading.position_query import resolve_reduce_only_quantit
 from app.services.live_trading.position_ownership import supports_position_coexistence
 from app.utils.numeric_precision import format_decimal
 from app.services.live_trading.base import LiveTradingError
+from app.services.market_schedule import EquityOrderSessionError, equity_order_session_error
 from app.services.pending_orders.fill_records import (
     persist_strategy_fill, proportional_spot_position_fill_quantity,
     trade_close_reason_from_payload,
@@ -540,7 +541,7 @@ class PendingOrderWorker(
         delta = cumulative_filled - previous_filled
         if cumulative_filled > ALPACA_FILL_DELTA_EPSILON and cumulative_avg > 0:
             delta_avg = cumulative_avg
-            if previous_filled > 0 and previous_avg > 0:
+            if delta > ALPACA_FILL_DELTA_EPSILON and previous_filled > 0 and previous_avg > 0:
                 delta_notional = cumulative_filled * cumulative_avg - previous_filled * previous_avg
                 if delta_notional > 0:
                     delta_avg = delta_notional / delta
@@ -1643,6 +1644,25 @@ class PendingOrderWorker(
             _console_print=console,
         )
 
+    def _reject_equity_session_order(self, order_id: int, strategy_id: int, error: str) -> None:
+        self._mark_failed(order_id=order_id, error=error)
+        append_strategy_log(
+            strategy_id, "info",
+            f"Unsubmitted equity instruction expired ({error}); no automatic replay at next open. "
+            f"The strategy will evaluate fresh conditions during trading hours. pending_id={order_id}",
+        )
+
+    def _live_order_notifier(self, order_id: int, order_row: dict, payload: dict, ctx) -> LiveOrderNotifier:
+        return LiveOrderNotifier(
+            order_id=order_id, strategy_id=ctx.strategy_id,
+            order_row=order_row, payload=payload,
+            notifier=self._notifier,
+            load_notification_config=self._load_notification_config,
+            load_strategy_name=self._load_strategy_name,
+            resolved_exchange_id=ctx.exchange_id,
+            resolved_credential_id=int(credential_id_from_exchange_config(ctx.exchange_config) or 0),
+        )
+
     def _execute_live_order(self, *, order_id: int, order_row: Dict[str, Any], payload: Dict[str, Any]) -> None:
         """
         Execute a pending order using direct exchange REST clients.
@@ -1688,17 +1708,12 @@ class PendingOrderWorker(
         market_category = ctx.market_category
         market_type = ctx.market_type
 
-        live_notifier = LiveOrderNotifier(
-            order_id=order_id,
-            strategy_id=strategy_id,
-            order_row=order_row,
-            payload=payload,
-            notifier=self._notifier,
-            load_notification_config=self._load_notification_config,
-            load_strategy_name=self._load_strategy_name,
-            resolved_exchange_id=exchange_id,
-            resolved_credential_id=int(credential_id_from_exchange_config(exchange_config) or 0),
-        )
+        session_error = equity_order_session_error(market_category, queued_at=order_row.get("created_at"))
+        if session_error:
+            self._reject_equity_session_order(order_id, strategy_id, session_error)
+            return
+
+        live_notifier = self._live_order_notifier(order_id, order_row, payload, ctx)
         _notify_live_best_effort = live_notifier.notify
 
         client = None
@@ -1735,6 +1750,7 @@ class PendingOrderWorker(
                 strategy_id=strategy_id,
                 exchange_config=exchange_config,
                 client_order_id=broker_client_oid,
+                market_category=market_category,
                 prepare_submission=self._broker_submission_preparer(
                     order_id=order_id, exchange_id="ibkr", market_type=market_type,
                     client_order_id=broker_client_oid,
@@ -2467,6 +2483,7 @@ class PendingOrderWorker(
         exchange_config: Dict[str, Any],
         client_order_id: str = "",
         prepare_submission=None,
+        market_category: str = "USStock",
         _notify_live_best_effort,
         _console_print,
     ) -> None:
@@ -2518,6 +2535,7 @@ class PendingOrderWorker(
                 client, symbol=symbol, side=action, quantity=amount,
                 market_type=market_type, client_order_id=client_order_id,
                 order_type=order_type, limit_price=limit_price, bracket=bracket,
+                session_market=market_category, queued_at=order_row.get("created_at"),
                 protection={"take_profit_price": take_price, "stop_loss_price": stop_price} if bracket else None,
                 on_retry=lambda attempt, delay, category: append_strategy_log(
                     strategy_id,
@@ -2622,6 +2640,8 @@ class PendingOrderWorker(
                 amount_hint=filled,
             )
 
+        except EquityOrderSessionError as e:
+            self._reject_equity_session_order(order_id, strategy_id, str(e))
         except Exception as e:
             logger.error(f"IBKR order execution failed: pending_id={order_id}, strategy_id={strategy_id}, err={e}")
             if submission_accepted or self._is_ambiguous_submit_error(e):
@@ -2705,6 +2725,7 @@ class PendingOrderWorker(
                 client, symbol=symbol, side=action, quantity=amount,
                 market_type=market_type_for_client, client_order_id=client_order_id,
                 order_type=order_type, limit_price=limit_price, protection=protection_kwargs,
+                session_market=mc, queued_at=order_row.get("created_at"),
                 on_retry=lambda attempt, delay, category: append_strategy_log(
                     strategy_id,
                     "warning",
@@ -2809,6 +2830,8 @@ class PendingOrderWorker(
                 amount_hint=filled,
             )
 
+        except EquityOrderSessionError as e:
+            self._reject_equity_session_order(order_id, strategy_id, str(e))
         except Exception as e:
             logger.error(f"Alpaca order execution failed: pending_id={order_id}, strategy_id={strategy_id}, err={e}")
             if submission_accepted or self._is_ambiguous_submit_error(e):

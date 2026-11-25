@@ -26,6 +26,7 @@ def _reconcile_missing_order(client, row, *, symbol: str, market_type: str, exch
     orders with fills are left to the fill poller, which posts them to the
     strategy trade ledger.
     """
+    details = {}
     filled, avg, status = query_grid_order_fill(
         client,
         symbol=symbol,
@@ -33,8 +34,10 @@ def _reconcile_missing_order(client, row, *, symbol: str, market_type: str, exch
         exchange_order_id=str(row.exchange_order_id or ""),
         client_order_id=str(row.client_order_id or ""),
         exchange_config=exchange_config,
+        include_fill_fallback=False,
+        details=details,
     )
-    if status not in {"open", "partial", "filled", "cancelled"}:
+    if not details.get('status_reported') or status not in {"open", "partial", "filled", "cancelled"}:
         return {"status": "not_open", "price": None, "quantity": None, "filled": None}
     entry = {"status": status, "price": avg or None, "quantity": None, "filled": filled}
     unfilled = (
@@ -54,7 +57,7 @@ def _reconcile_missing_order(client, row, *, symbol: str, market_type: str, exch
 
 
 def audit_grid_orders(strategy: dict, rows: list, *, user_id: int,
-                      reconcile_order=None, allow_request=None,
+                      allow_request=None,
                       max_lookups: int = 10, max_seconds: float = 8.0) -> dict:
     audit = {"completed": False, "active": 0, "terminal": 0, "unknown": len(rows), "error": "",
              "checked_at": None, "orders": {}}
@@ -67,14 +70,24 @@ def audit_grid_orders(strategy: dict, rows: list, *, user_id: int,
     try:
         config = resolve_exchange_config(coalesce_exchange_config_from_payload(strategy), user_id=user_id)
         ex = str(config.get("exchange_id") or "").lower()
-        symbols = sorted({str(row.symbol) for row in rows})
+        symbols = list(dict.fromkeys(str(row.symbol) for row in rows))
         for symbol in symbols:
-            if time.monotonic() >= deadline or (allow_request and not allow_request(config)):
+            if time.monotonic() >= deadline:
                 break
             bound = bind_instrument_product_contract(config, tc, symbol=symbol, exchange_id=ex, market_type=mt)
             client = create_client(bound, market_type=mt)
             client.timeout_sec = min(float(getattr(client, 'timeout_sec', 3.0) or 3.0), 3.0)
-            remote = fetch_exchange_open_orders(client, exchange_id=ex, market_type=mt, symbol=symbol)
+            def request_allowed():
+                return time.monotonic() < deadline and (not allow_request or allow_request(bound))
+
+            snapshot_failed = False
+            try:
+                remote = fetch_exchange_open_orders(client, exchange_id=ex, market_type=mt, symbol=symbol,
+                                                    request_allowed=request_allowed)
+            except Exception:
+                # A missing snapshot adapter (e.g. HTX) must not block an exact order lookup.
+                remote = []
+                snapshot_failed = True
             by_id = {str(item["exchange_order_id"]): item for item in remote
                      if normalize_strategy_symbol(item["symbol"]) == normalize_strategy_symbol(symbol)}
             for row in rows:
@@ -96,10 +109,8 @@ def audit_grid_orders(strategy: dict, rows: list, *, user_id: int,
                         client, row, symbol=symbol, market_type=mt, exchange_config=bound, ledger=ledger,
                     )
                     state = entry["status"]
-                    if (entry.get('reconciliation_pending') and reconcile_order
-                            and time.monotonic() < deadline
-                            and (not allow_request or allow_request(bound))):
-                        entry['reconciliation_pending'] = not reconcile_order(client, row, bound, mt, entry)
+                    if snapshot_failed and state == 'not_open':
+                        entry['status'] = 'unverified'
                     audit["orders"][row.id] = stamp_audit(entry, row, identity)
                 else:
                     if item is None:
@@ -114,7 +125,9 @@ def audit_grid_orders(strategy: dict, rows: list, *, user_id: int,
                             state = "unverified"
                     audit["orders"][row.id] = stamp_audit({"status": state, "price": item.get("price") if item else None,
                                                "quantity": item.get("amount") if item else None,
-                                               "filled": item.get("filled") if item else None}, row, identity)
+                                               "filled": item.get("filled") if item else None,
+                                               "reconciliation_pending": bool(item) and float(item.get('filled') or 0)
+                                               > float(row.processed_fill_qty or 0) + 1e-12}, row, identity)
         audit['active'] = sum(entry.get('status') in {'open', 'partial'} for entry in audit['orders'].values())
         audit['terminal'] = sum(entry.get('status') in {'filled', 'cancelled'} for entry in audit['orders'].values())
         audit["unknown"] = len(rows) - audit["active"] - audit["terminal"]

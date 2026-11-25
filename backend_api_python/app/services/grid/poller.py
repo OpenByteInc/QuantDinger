@@ -187,8 +187,7 @@ class GridFillPoller:
             self._last_poll_by_order[oid] = time.time()
             self._poll_order(runner, client, order, cfg.market_type)
 
-    def _poll_order(self, runner, client, order, market_type: str, *,
-                    accounting_only: bool = False, before_project=None) -> str:
+    def _poll_order(self, runner, client, order, market_type: str) -> str:
         from app.services.execution_streams.processor import ExecutionEventProcessor
         from app.services.pending_orders.fee_reconciliation import fee_breakdown_snapshot
         from app.services.live_trading.fill_accounting import lock_strategy_fills
@@ -244,7 +243,6 @@ class GridFillPoller:
             _snapshot_fees=fees,
             _runner=runner,
             _client=client,
-            _accounting_only=accounting_only,
             fee_status=details.get("fee_status") or ("actual" if fees else "pending"),
             exchange_order_id=order.exchange_order_id,
             fee_source="rest",
@@ -252,14 +250,11 @@ class GridFillPoller:
         try:
             with get_db_transaction():
                 lock_strategy_fills(order.strategy_id)
-                if before_project and not before_project():
-                    return 'unknown'
                 ExecutionEventProcessor()._project_grid(event, {"owner_id": order.id, "strategy_id": order.strategy_id})
-                if status == "cancelled" and filled > 0 and not accounting_only:
+                if status == "cancelled" and filled > 0:
                     run_after_commit(runner.engine.sync_held_cell_exits, avg)
         except Exception:
             logger.exception("Grid REST posting failed sid=%s oid=%s; retry required", order.strategy_id, order.id)
-            return 'unknown'
         return status
 
     def last_strategy_audit(self, strategy_id: int) -> Dict[str, object]:

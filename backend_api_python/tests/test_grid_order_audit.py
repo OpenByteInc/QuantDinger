@@ -46,10 +46,10 @@ def test_failed_exchange_read_is_not_zero_confirmed_success(monkeypatch, audit_s
     strategy, _, _ = audit_setup
     monkeypatch.setattr(order_audit, "fetch_exchange_open_orders", MagicMock(side_effect=TimeoutError()))
     result = order_audit.audit_grid_orders(strategy, [GridRestingOrder(id=1, symbol="ETH/USDT", exchange_order_id="1")], user_id=7)
-    assert not result["completed"]
-    assert result["error"] == "grid_exchange_snapshot_failed"
-    assert result["orders"] == {}
-    assert result["checked_at"] is None
+    assert result["active"] == result["terminal"] == 0
+    assert result["unknown"] == 1
+    assert result["orders"][1]["status"] == "unverified"
+    assert result["error"] == "grid_exchange_orders_unverified"
 
 
 @pytest.mark.parametrize("status", ["NEW", "live", "open", "PartiallyFilled", "partially_filled"])
@@ -309,3 +309,129 @@ def test_repository_cancel_only_touches_an_unfilled_open_row(monkeypatch):
         assert guard in sql
     assert args == (5, "8389766332")
     assert repo.mark_cancelled_if_unfilled(5, "") is False
+
+
+@pytest.mark.parametrize('exchange,market', [
+    (exchange, market) for exchange in ('binance', 'okx', 'bitget', 'bybit', 'gate', 'htx')
+    for market in ('spot', 'swap')
+])
+@pytest.mark.parametrize('partial', [False, True])
+def test_terminal_lookup_across_six_exchanges_without_open_snapshot(monkeypatch, ledger, exchange, market, partial):
+    from app.services.live_trading.binance import BinanceFuturesClient
+    from app.services.live_trading.binance_spot import BinanceSpotClient
+    from app.services.live_trading.bitget import BitgetMixClient
+    from app.services.live_trading.bitget_spot import BitgetSpotClient
+    from app.services.live_trading.bybit import BybitClient
+    from app.services.live_trading.gate import GateSpotClient, GateUsdtFuturesClient
+    from app.services.live_trading.htx import HtxClient
+    from app.services.live_trading.okx import OkxClient
+
+    classes = {'binance': (BinanceSpotClient, BinanceFuturesClient), 'okx': (OkxClient, OkxClient),
+               'bitget': (BitgetSpotClient, BitgetMixClient), 'bybit': (BybitClient, BybitClient),
+               'gate': (GateSpotClient, GateUsdtFuturesClient), 'htx': (HtxClient, HtxClient)}
+    qty, contracts = ('.2', '2') if partial else ('0', '0')
+    response = {
+        'binance': {'status': 'CANCELED', 'executedQty': qty, 'avgPrice': '100'},
+        'okx': {'state': 'canceled', 'accFillSz': qty if market == 'spot' else contracts, 'avgPx': '100'},
+        'bitget': {'status': 'cancelled', 'filled': qty, 'baseVolume': qty, 'priceAvg': '100'},
+        'bybit': {'orderStatus': 'PartiallyFilledCanceled' if partial and market == 'spot' else 'Cancelled',
+                  'cumExecQty': qty, 'avgPrice': '100'},
+        'gate': ({'status': 'cancelled', 'filled_amount': qty, 'avg_deal_price': '100'} if market == 'spot'
+                 else {'status': 'finished', 'finish_as': 'cancelled', 'size': '10',
+                       'left': '8' if partial else '10', 'fill_price': '100'}),
+        'htx': ({'state': 'partial-canceled' if partial else 'canceled', 'field-amount': qty,
+                 'field-cash-amount': '20' if partial else '0'} if market == 'spot'
+                else {'status': 5 if partial else 7, 'trade_volume': contracts, 'trade_avg_price': '100'}),
+    }[exchange]
+    client = MagicMock(spec=classes[exchange][market == 'swap'])
+    client.get_order.return_value = response
+    if exchange == 'okx':
+        client.get_instrument.return_value = {'ctVal': '.1'}
+    elif exchange == 'gate' and market == 'swap':
+        client.get_contract.return_value = {'quanto_multiplier': '.1'}
+    elif exchange == 'htx':
+        client.get_contract_info.return_value = {'contract_size': '.1'}
+    config = {'exchange_id': exchange, 'credential_id': 9}
+    strategy = {'id': 3, 'market_type': market, 'exchange_config': config}
+    monkeypatch.setattr(order_audit, 'resolve_exchange_config', lambda cfg, **kw: cfg)
+    monkeypatch.setattr(order_audit, 'bind_instrument_product_contract', lambda cfg, *a, **kw: cfg)
+    monkeypatch.setattr(order_audit, 'create_client', lambda *a, **kw: client)
+    monkeypatch.setattr(order_audit, 'fetch_exchange_open_orders', MagicMock(side_effect=RuntimeError('no snapshot')))
+    row = GridRestingOrder(id=5, strategy_id=3, symbol='BTC/USDT', status='open',
+                           exchange_order_id='12345678901234567890')
+    result = order_audit.audit_grid_orders(strategy, [row], user_id=7)
+    entry = result['orders'][5]
+    assert entry['status'] == 'cancelled' and result['terminal'] == 1
+    assert entry['filled'] == pytest.approx(float(qty))
+    assert entry['reconciliation_pending'] == partial
+    assert row.status == ('open' if partial else 'cancelled')
+    assert ledger.mark_cancelled_if_unfilled.call_count == int(not partial)
+    assert '12345678901234567890' in client.get_order.call_args.kwargs.values()
+
+
+@pytest.mark.parametrize('mode', ['classic', 'uta'])
+@pytest.mark.parametrize('market', ['spot', 'swap'])
+def test_audit_uses_bitget_account_router_without_fill_history(monkeypatch, ledger, mode, market):
+    from app.services.live_trading.bitget_compat import BitgetCompatibleMixClient, BitgetCompatibleSpotClient
+    cls = BitgetCompatibleSpotClient if market == 'spot' else BitgetCompatibleMixClient
+    client = cls(api_key='test', secret_key='test', passphrase='test', account_mode=mode)
+    target = client._classic_client if mode == 'classic' else client._uta_client
+    request = MagicMock(return_value={'code': '00000', 'data': {
+        'orderId': '123', 'orderStatus': 'cancelled', 'status': 'cancelled', 'state': 'cancelled',
+        'cumExecQty': '0', 'baseVolume': '0', 'avgPrice': '0'}})
+    monkeypatch.setattr(target, '_signed_request', request)
+    monkeypatch.setattr(order_audit, 'fetch_exchange_open_orders', MagicMock(side_effect=RuntimeError('snapshot failed')))
+    monkeypatch.setattr(order_audit, 'resolve_exchange_config', lambda cfg, **kw: cfg)
+    monkeypatch.setattr(order_audit, 'bind_instrument_product_contract', lambda cfg, *a, **kw: cfg)
+    monkeypatch.setattr(order_audit, 'create_client', lambda *a, **kw: client)
+    row = GridRestingOrder(id=5, strategy_id=3, symbol='BTC/USDT', exchange_order_id='123', status='open')
+    result = order_audit.audit_grid_orders({'id': 3, 'market_type': market,
+        'exchange_config': {'exchange_id': 'bitget', 'credential_id': 9}}, [row], user_id=7)
+    assert result['orders'][5]['status'] == 'cancelled'
+    assert request.call_count == 1
+    assert request.call_args.args[1].startswith('/api/v2/' if mode == 'classic' else '/api/v3/')
+    assert target.timeout_sec == 3
+
+
+def test_snapshot_partial_fill_is_visible_as_pending_accounting(monkeypatch, audit_setup):
+    strategy, _, _ = audit_setup
+    monkeypatch.setattr(order_audit, 'fetch_exchange_open_orders', lambda *a, **kw: [
+        {'exchange_order_id': '1', 'symbol': 'ETH/USDT', 'status': 'partially_filled', 'filled': .5}])
+    result = order_audit.audit_grid_orders(strategy, [GridRestingOrder(id=1, symbol='ETH/USDT',
+        exchange_order_id='1', status='open')], user_id=7)
+    assert result['orders'][1]['reconciliation_pending']
+
+
+def test_expired_budget_does_not_fall_back_to_more_order_requests(monkeypatch, audit_setup):
+    strategy, _, client = audit_setup
+    def exhausted(*a, **kw):
+        assert not kw['request_allowed']()
+        raise RuntimeError('budget exhausted')
+    monkeypatch.setattr(order_audit, 'fetch_exchange_open_orders', exhausted)
+    result = order_audit.audit_grid_orders(strategy, [GridRestingOrder(id=1, symbol='ETH/USDT',
+        exchange_order_id='1')], user_id=7, allow_request=lambda _: False)
+    assert not result['completed']
+    client.get_order.assert_not_called()
+
+
+def test_audit_keeps_oldest_symbol_first_instead_of_alphabetical_starvation(monkeypatch, audit_setup, ledger):
+    strategy, _, _ = audit_setup
+    monkeypatch.setattr(order_audit, 'fetch_exchange_open_orders', lambda *a, **kw: [])
+    query = MagicMock(return_value=(0, 0, 'unknown'))
+    monkeypatch.setattr(order_audit, 'query_grid_order_fill', query)
+    rows = [GridRestingOrder(id=1, symbol='ZEC/USDT', exchange_order_id='1'),
+            GridRestingOrder(id=2, symbol='BTC/USDT', exchange_order_id='2')]
+    result = order_audit.audit_grid_orders(strategy, rows, user_id=7, max_lookups=1)
+    assert list(result['orders']) == [1]
+    assert query.call_args.kwargs['symbol'] == 'ZEC/USDT'
+
+
+def test_empty_normalized_order_is_not_confirmation_of_an_open_order(monkeypatch, binance, ledger):
+    strategy, client = binance
+    client.get_order.return_value = {'executedQty': 0, 'avgPrice': 0, 'status': ''}
+    monkeypatch.setattr(order_audit, 'fetch_exchange_open_orders', lambda *a, **kw: [])
+    row = GridRestingOrder(id=5, strategy_id=3, symbol='ETH/USDT', exchange_order_id='123', status='open')
+    result = order_audit.audit_grid_orders(strategy, [row], user_id=7)
+    assert result['active'] == result['terminal'] == 0
+    assert result['orders'][5]['status'] == 'not_open'
+    ledger.mark_cancelled_if_unfilled.assert_not_called()

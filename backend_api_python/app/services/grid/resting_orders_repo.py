@@ -146,9 +146,6 @@ class GridRestingOrderRepository:
             db.commit()
             cur.close()
 
-    def execution_binding(self, order_id: int) -> dict:
-        return self.execution_bindings([order_id]).get(int(order_id), {})
-
     def execution_bindings(self, order_ids: list) -> dict:
         with get_db_connection() as db:
             cur = db.cursor()

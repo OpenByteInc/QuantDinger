@@ -7,6 +7,9 @@ from app.services import pending_order_worker as worker_module
 from app.services.live_trading.base import LiveTradingError
 
 
+pytestmark = pytest.mark.usefixtures("equity_market_clock")
+
+
 def _worker():
     worker = object.__new__(worker_module.PendingOrderWorker)
     worker.sent = []

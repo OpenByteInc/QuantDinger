@@ -732,7 +732,6 @@ class ExecutionEventProcessor:
         from app.services.grid.resting_orders_repo import GridRestingOrder
 
         order = GridRestingOrder.from_row(row)
-        fill_options = {'place_followup_orders': False} if event.get('_accounting_only') else {}
         runner.engine.on_order_filled(
             order,
             delta,
@@ -745,7 +744,6 @@ class ExecutionEventProcessor:
             fees_by_ccy=fees,
             exchange_fill_id=str(event.get("exchange_fill_id") or ""),
             execution_event_id=int(event.get("id") or 0),
-            **fill_options,
         )
         with get_db_connection() as db:
             cur = db.cursor()

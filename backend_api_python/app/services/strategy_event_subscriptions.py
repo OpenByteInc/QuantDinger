@@ -242,6 +242,7 @@ class StrategyEventSubscriptionPlanner:
         )
         eligible = bool(
             daily_policy is None
+            and not program.manifest.schedules
             and bot_type not in {"grid", "martingale", "layered_martingale"}
             and not program.has_handler("on_price_tick")
             and supports_bar_close_events(frequency, candidates)

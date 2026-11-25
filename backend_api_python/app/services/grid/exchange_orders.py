@@ -968,6 +968,7 @@ def query_grid_order_fill(
     client_order_id: str = "",
     exchange_config: Optional[Dict[str, Any]] = None,
     details: Optional[Dict[str, Any]] = None,
+    include_fill_fallback: bool = True,
 ) -> Tuple[float, float, str]:
     """
     Returns (filled_qty, avg_price, status).
@@ -986,6 +987,8 @@ def query_grid_order_fill(
         if isinstance(data, dict) and data:
             if details is not None:
                 details["exchange_order_id"] = _extract_order_id_from_payload(data, str(exchange_order_id or ""))
+                details["status_reported"] = any(data.get(key) not in (None, '') for key in
+                    ('status_desc', 'state', 'status', 'orderStatus', 'order_status'))
             filled, avg, status = parse_grid_order_fill(
                 client,
                 symbol=str(symbol),
@@ -993,7 +996,7 @@ def query_grid_order_fill(
                 exchange_config=ex_cfg,
                 data=data,
             )
-            if isinstance(client, (BitgetMixClient, BitgetSpotClient)) and filled <= 0 and status in ("open", "unknown"):
+            if include_fill_fallback and isinstance(client, (BitgetMixClient, BitgetSpotClient)) and filled <= 0 and status in ("open", "unknown"):
                 fill_oid = _extract_order_id_from_payload(data, str(exchange_order_id or ""))
                 try:
                     raw_fills = _fetch_bitget_grid_fills(

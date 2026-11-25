@@ -1,6 +1,5 @@
 """Audit reads must be bounded, durable, tenant-scoped, and execution-free."""
 
-from contextlib import nullcontext
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -8,9 +7,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from app.services.grid import audit_state, audit_worker, order_audit
-from app.services.grid.engine import GridEngine
 from app.services.grid.resting_orders_repo import GridRestingOrder
-from app.services.live_trading.grid_cells import GridCell, GridCellState
 
 
 @pytest.fixture
@@ -91,77 +88,70 @@ def test_missing_order_lookups_are_bounded_and_rotate(monkeypatch, strategy, row
     ledger.mark_cancelled_if_unfilled.assert_not_called()
 
 
-@pytest.mark.parametrize('purpose,initial_state,quantity', [
-    ('long_entry', GridCellState.IDLE, 0), ('short_entry', GridCellState.IDLE, 0),
-    ('long_exit', GridCellState.LONG_HELD, 1), ('short_exit', GridCellState.SHORT_HELD, 1),
-])
-def test_accounting_only_fill_updates_cell_without_new_orders(monkeypatch, row, purpose, initial_state, quantity):
-    monkeypatch.setattr('app.services.grid.fill_handler.apply_grid_fill_to_local_state', MagicMock())
-    monkeypatch.setattr('app.services.grid.engine.append_strategy_log', lambda *a: None)
-    engine = GridEngine.__new__(GridEngine)
-    engine.strategy_id, engine.symbol = 3, 'ETH/USDT'
-    engine.trading_config = {'market_type': 'swap'}
-    engine._observe_market_price = MagicMock()
-    engine._cells = MagicMock()
-    engine._cell_record = lambda i: GridCell(3, 'ETH/USDT', i, 90, 110,
-        state=initial_state, leg_size=quantity, leg_entry_price=95)
-    engine._levels_and_cells = MagicMock(side_effect=AssertionError('must use persisted cells'))
-    engine._ensure_cell_exit_coverage = MagicMock(side_effect=AssertionError('must not place exits'))
-    engine._place_limit = MagicMock(side_effect=AssertionError('must not place entries'))
-    engine.on_order_filled(replace(row, purpose=purpose), 1, 100, place_followup_orders=False)
-    assert engine._cells.update_state.call_count == 1
-    assert engine._cells.update_state.call_args.kwargs['leg_size'] == (1 if purpose.endswith('entry') else 0)
-    engine._ensure_cell_exit_coverage.assert_not_called()
-    engine._place_limit.assert_not_called()
-
-
-@pytest.mark.parametrize('status,epoch,lease,expected', [
-    ('stopped', 5, False, True), ('running', 5, False, False),
-    ('stopped', 6, False, False), ('stopped', 5, True, False),
-])
-def test_stopped_recovery_fences_restart_and_active_owner(monkeypatch, strategy, status, epoch, lease, expected):
-    db = MagicMock()
-    db.cursor.return_value.fetchone.return_value = {**strategy, 'status': status, 'desired_runtime_epoch': epoch}
-    monkeypatch.setattr(audit_worker, 'get_db_connection', lambda: nullcontext(db))
-    commands = MagicMock()
-    commands.has_active_strategy_lease.return_value = lease
-    monkeypatch.setattr(audit_worker, 'StrategyCommandRepository', lambda: commands)
-    assert audit_worker._stopped_context_unchanged(strategy, lambda: True) is expected
-    assert 'FOR UPDATE' in db.cursor.return_value.execute.call_args.args[0]
-
-
 @pytest.mark.parametrize('stopped', [True, False])
-def test_worker_posts_stopped_fills_only_with_accounting_flag(monkeypatch, strategy, row, stopped):
+def test_worker_verifies_without_fill_posting_or_runner(monkeypatch, strategy, row, stopped):
     strategy['status'] = 'stopped' if stopped else 'running'
     service = MagicMock()
     service.get_strategy.return_value = strategy
     repo, poller = MagicMock(), MagicMock()
     repo.list_for_audit.return_value = [row]
-    binding = dict(owner_id=row.id, strategy_id=3, user_id=7, credential_id=9, exchange_id='binance',
-                   market_type='swap', exchange_order_id=row.exchange_order_id, symbol=row.symbol)
-    repo.execution_bindings.return_value = {row.id: binding}
-    repo.execution_binding.return_value = binding
+    repo.execution_bindings.return_value = {}
     monkeypatch.setattr(audit_worker, 'StrategyService', lambda: service)
     monkeypatch.setattr(audit_worker, 'GridRestingOrderRepository', lambda: repo)
     monkeypatch.setattr(audit_worker, 'get_grid_fill_poller', lambda: poller)
     monkeypatch.setattr(audit_worker, 'resolve_exchange_config', lambda cfg, **kw: cfg)
-    monkeypatch.setattr(audit_worker, '_reconciled', lambda *a: True)
-    engine = MagicMock()
-    monkeypatch.setattr(audit_worker, 'GridEngine', engine)
-    def audit(st, rows, **kwargs):
-        done = kwargs['reconcile_order'](object(), row, strategy['exchange_config'], 'swap', {'status': 'filled', 'filled': 1})
-        assert done == stopped
-        return {'orders': {row.id: {'status': 'filled', 'reconciliation_pending': not done}}}
+    engine = MagicMock(side_effect=AssertionError('verification must not create an engine'))
+    monkeypatch.setattr('app.services.grid.engine.GridEngine', engine)
+    audit = MagicMock(return_value={'orders': {row.id: {'status': 'cancelled', 'filled': .5,
+                                                      'reconciliation_pending': True}}})
     monkeypatch.setattr(audit_worker, 'audit_grid_orders', audit)
     audit_worker.run_grid_order_audit(3, user_id=7, command_valid=lambda: True)
     service.get_strategy.assert_called_once_with(3, user_id=7)
-    if stopped:
-        assert poller._poll_order.call_args.kwargs['accounting_only'] is True
-        with pytest.raises(RuntimeError, match='must not submit'):
-            engine.call_args.kwargs['enqueue_market']()
-    else:
-        engine.assert_not_called()
-        poller._poll_order.assert_not_called()
+    assert 'reconcile_order' not in audit.call_args.kwargs
+    assert repo.save_audit.call_args.args[1]['reconciliation_pending']
+    engine.assert_not_called()
+    poller._poll_order.assert_not_called()
+
+
+def test_terminal_evidence_survives_ttl_and_ledger_progress_clears_pending(monkeypatch, strategy, row):
+    row.extra['exchange_audit'] = audit_state.stamp_audit(
+        {'status': 'cancelled', 'filled': .5, 'reconciliation_pending': True},
+        row, audit_state.audit_identity(strategy))
+    row.extra['exchange_audit']['checked_at'] = '2020-01-01T00:00:00+00:00'
+    commands = MagicMock()
+    monkeypatch.setattr(audit_state, 'StrategyCommandRepository', lambda: commands)
+    pending = audit_state.read_grid_order_audit(strategy, [row], user_id=7, sync=True)
+    assert pending['terminal'] == 1 and pending['reconciliation_pending'] == 1
+    posted = replace(row, status='cancelled', filled_quantity=.5, processed_fill_qty=.5)
+    result = audit_state.read_grid_order_audit(strategy, [posted], user_id=7, sync=True)
+    assert result['terminal'] == 1 and result['reconciliation_pending'] == 0
+    commands.enqueue.assert_not_called()
+
+
+def test_new_fill_invalidates_an_older_terminal_snapshot(strategy, row):
+    identity = audit_state.audit_identity(strategy)
+    row.extra['exchange_audit'] = audit_state.stamp_audit({'status': 'cancelled', 'filled': 0}, row, identity)
+    assert audit_state.cached_order_audit(replace(row, filled_quantity=.1), identity) == {}
+
+
+def test_failed_zero_fill_cancel_update_can_be_retried(strategy, row):
+    entry = audit_state.stamp_audit({'status': 'cancelled', 'filled': 0, 'reconciliation_pending': True},
+                                   row, audit_state.audit_identity(strategy))
+    checked = audit_state.datetime.fromisoformat(entry['checked_at']).timestamp()
+    assert not audit_state.audit_is_fresh(entry, now=checked + 31)
+
+
+def test_refresh_preserves_last_known_result_while_queueing(monkeypatch, strategy, row):
+    row.extra['exchange_audit'] = audit_state.stamp_audit({'status': 'open', 'filled': 0},
+                                                        row, audit_state.audit_identity(strategy))
+    row.extra['exchange_audit']['checked_at'] = '2020-01-01T00:00:00+00:00'
+    commands = MagicMock()
+    commands.enqueue.return_value.status = 'pending'
+    monkeypatch.setattr(audit_state, 'StrategyCommandRepository', lambda: commands)
+    result = audit_state.read_grid_order_audit(strategy, [row], user_id=7, sync=True)
+    assert result['active'] == 1 and result['pending']
+    assert not result['completed']
+    assert result['checked_at'] == '2020-01-01T00:00:00+00:00'
 
 
 def test_mismatched_credentials_cannot_be_accounted(strategy, row):

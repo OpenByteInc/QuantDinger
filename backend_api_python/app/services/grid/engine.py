@@ -2148,7 +2148,6 @@ class GridEngine:
         exchange_fill_id: str = "",
         execution_event_id: int = 0,
         fees_by_ccy: Dict[str, float] | None = None,
-        place_followup_orders: bool = True,
     ) -> None:
         from app.services.grid.fill_handler import apply_grid_fill_to_local_state
         from app.utils.db_postgres import run_after_commit
@@ -2170,15 +2169,9 @@ class GridEngine:
             fees_by_ccy=fees_by_ccy,
             strategy_run_id=int(getattr(self, "strategy_run_id", 0) or 0),
         )
-        if place_followup_orders:
-            _, cells = self._levels_and_cells()
-            cell_map = {c.index: c for c in cells}
-            cell = cell_map.get(int(order.cell_index))
-        else:
-            saved = self._cell_record(int(order.cell_index))
-            if not saved:
-                raise RuntimeError('strategyRuntime.fillSnapshotNotReady')
-            cell = GridCellSpec(int(order.cell_index), saved.lower_price, saved.upper_price)
+        _, cells = self._levels_and_cells()
+        cell_map = {c.index: c for c in cells}
+        cell = cell_map.get(int(order.cell_index))
         if not cell:
             return
         purpose = str(order.purpose or "")
@@ -2236,8 +2229,6 @@ class GridEngine:
                 leg_entry_price=held_entry,
                 extra=saved_extra,
             )
-            if not place_followup_orders:
-                return
             exit_ok = run_after_commit(self._ensure_cell_exit_coverage,
                 cell,
                 purpose="long_exit",
@@ -2263,7 +2254,7 @@ class GridEngine:
                 leg_size=remaining,
                 extra={**saved_extra, "entry_grid_order_ids": entry_ids if remaining > 1e-10 else []},
             )
-            if place_followup_orders and remaining <= 1e-10 and not self._paused_entries:
+            if remaining <= 1e-10 and not self._paused_entries:
                 if self._cell_allows_entry(cell.index, "long_entry", self._cell_state_by_index()):
                     run_after_commit(self._place_limit,
                         cell, "long_entry", "buy", cell.lower_price, reduce_only=False, pos_side="long", quantity=fq
@@ -2285,8 +2276,6 @@ class GridEngine:
                 leg_entry_price=held_entry,
                 extra=saved_extra,
             )
-            if not place_followup_orders:
-                return
             exit_ok = run_after_commit(self._ensure_cell_exit_coverage,
                 cell,
                 purpose="short_exit",
@@ -2312,7 +2301,7 @@ class GridEngine:
                 leg_size=remaining,
                 extra={**saved_extra, "entry_grid_order_ids": entry_ids if remaining > 1e-10 else []},
             )
-            if place_followup_orders and remaining <= 1e-10 and not self._paused_entries:
+            if remaining <= 1e-10 and not self._paused_entries:
                 if self._cell_allows_entry(cell.index, "short_entry", self._cell_state_by_index()):
                     run_after_commit(self._place_limit,
                         cell, "short_entry", "sell", cell.upper_price, reduce_only=False, pos_side="short", quantity=fq

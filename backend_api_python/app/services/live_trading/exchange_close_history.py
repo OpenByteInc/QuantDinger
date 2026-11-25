@@ -531,6 +531,7 @@ def _select_exact_close(
     target_qty: float,
     opened_after: Optional[datetime],
     is_recorded: Callable[[str], bool],
+    is_managed_order: Optional[Callable[[Dict[str, Any]], bool]] = None,
 ) -> Optional[Dict[str, Any]]:
     opened = opened_after if isinstance(opened_after, datetime) else None
     if opened and opened.tzinfo is None:
@@ -545,6 +546,7 @@ def _select_exact_close(
             or (opened and closed < opened)
             or is_recorded(fill_id)
             or (order_id and is_recorded(order_id))
+            or (is_managed_order is not None and is_managed_order(row))
         ):
             continue
         candidates.append(dict(row))
@@ -583,6 +585,7 @@ def resolve_exchange_external_close(
     opened_after: Optional[datetime],
     market_type: str,
     is_recorded: Callable[[str], bool],
+    is_managed_order: Optional[Callable[[Dict[str, Any]], bool]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Return an exact, idempotent set of close fills for one flat account leg."""
     mt = "spot" if str(market_type or "").lower() == "spot" else "swap"
@@ -619,4 +622,5 @@ def resolve_exchange_external_close(
         target_qty=float(target_qty or 0.0),
         opened_after=opened_after,
         is_recorded=is_recorded,
+        is_managed_order=is_managed_order,
     )

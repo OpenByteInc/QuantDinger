@@ -10,7 +10,6 @@ from app.services.strategy_command_repository import StrategyCommandRepository
 
 AUDIT_INTERVAL_SECONDS = 30
 UNKNOWN_RECHECK_SECONDS = 300
-VERIFIED_STATUSES = frozenset({'open', 'partial', 'filled', 'cancelled'})
 
 
 def audit_identity(strategy: dict) -> str:
@@ -25,14 +24,22 @@ def cached_order_audit(row, identity: str) -> dict:
     saved = (row.extra or {}).get('exchange_audit') or {}
     if (saved.get('identity') != identity
             or saved.get('exchange_order_id') != str(row.exchange_order_id or '')
-            or saved.get('symbol') != row.symbol):
+            or saved.get('symbol') != row.symbol
+            or float(row.filled_quantity or 0) > float(saved.get('filled') or 0) + 1e-12):
         return {}
-    return dict(saved)
+    result = dict(saved)
+    if row.status == result.get('status') and float(row.processed_fill_qty or 0) + 1e-12 >= float(result.get('filled') or 0):
+        result['reconciliation_pending'] = False
+    return result
 
 
 def audit_is_fresh(entry: dict, *, now: float | None = None) -> bool:
     if not entry:
         return False
+    retry_cancel_update = (entry.get('status') == 'cancelled' and not entry.get('filled')
+                           and entry.get('reconciliation_pending'))
+    if entry.get('status') in {'filled', 'cancelled'} and not retry_cancel_update:
+        return True
     try:
         age = (time.time() if now is None else now) - datetime.fromisoformat(entry['checked_at']).timestamp()
     except (KeyError, ValueError, TypeError):
@@ -50,7 +57,7 @@ def read_grid_order_audit(strategy: dict, rows: list, *, user_id: int, sync: boo
         entry = cached_order_audit(row, identity)
         fresh = audit_is_fresh(entry)
         needs_refresh = needs_refresh or not fresh
-        if fresh:
+        if entry:
             orders[row.id] = entry
     active = sum(entry.get('status') in {'open', 'partial'} for entry in orders.values())
     terminal = sum(entry.get('status') in {'filled', 'cancelled'} for entry in orders.values())

@@ -36,7 +36,8 @@ def _compact_orders(rows: list[dict], exchange: str, market_type: str) -> list[d
     return result
 
 
-def fetch_exchange_open_orders(client, *, exchange_id: str, market_type: str, symbol: str = "") -> list[dict]:
+def fetch_exchange_open_orders(client, *, exchange_id: str, market_type: str, symbol: str = "",
+                               request_allowed=None) -> list[dict]:
     """Return a complete snapshot or raise; truncated/error responses are never empty success."""
     from app.services.live_trading.account_snapshot import (
         _parse_binance_orders, _parse_okx_orders, _parse_gate_spot_orders,
@@ -88,6 +89,8 @@ def fetch_exchange_open_orders(client, *, exchange_id: str, market_type: str, sy
     orders = {}
     cursors = set()
     for page in range(50):
+        if request_allowed is not None and not request_allowed():
+            raise LiveTradingError("open_orders_request_budget_exhausted")
         raw = client._signed_request("GET", path, params=dict(params))
         cursor = ""
         if ex == "bybit":

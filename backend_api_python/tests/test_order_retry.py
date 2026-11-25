@@ -114,7 +114,7 @@ def test_common_request_failures_remain_ambiguous_transport(error):
 @pytest.mark.parametrize("order_type,bracket", [
     ("market", False), ("limit", False), ("market", True), ("limit", True),
 ])
-def test_broker_routing_preserves_client_id_and_protection_on_safe_retry(monkeypatch, order_type, bracket):
+def test_broker_routing_preserves_client_id_and_protection_on_safe_retry(monkeypatch, order_type, bracket, equity_market_clock):
     from unittest.mock import Mock
     from app.services.pending_orders.broker_support import submit_broker_order
 
@@ -131,6 +131,7 @@ def test_broker_routing_preserves_client_id_and_protection_on_safe_retry(monkeyp
         client, order_type=order_type, limit_price=100, bracket=bracket,
         protection=protection, symbol="AAPL", quantity=2, side="buy",
         client_order_id="stable-id", market_type="USStock",
+        session_market="USStock",
     ) is result
     assert method.call_count == 2
     assert method.call_args_list[0] == method.call_args_list[1]

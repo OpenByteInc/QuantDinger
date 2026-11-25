@@ -1,9 +1,22 @@
 """Tests for exchange-native flat close trade backfill."""
 
 from datetime import datetime, timezone
+from contextlib import nullcontext
+
+import pytest
 
 from app.services.live_trading import external_flat_close as mod
 from app.utils.trade_close_reason import EXCHANGE_NATIVE_CLOSE
+
+
+@pytest.fixture(autouse=True)
+def isolated_accounting(monkeypatch):
+    monkeypatch.setattr(mod, "get_db_transaction", nullcontext)
+    monkeypatch.setattr(mod, "lock_strategy_fills", lambda *_: None)
+    monkeypatch.setattr(mod, "_pending_close_orders", lambda **_: [])
+    monkeypatch.setattr(mod, "_already_recorded_fill", lambda *_: False)
+    monkeypatch.setattr(mod, "_fetch_position", lambda *_: {})
+    monkeypatch.setattr(mod, "_active_strategy_run_id", lambda *_: 0)
 
 
 class _FakeOkx:
@@ -98,6 +111,7 @@ def test_record_external_flat_close_writes_trade_and_clears_local(monkeypatch):
         commission=0.00773486,
         close_reason=EXCHANGE_NATIVE_CLOSE,
         exchange_fill_id="2900408350",
+        exchange_order_id="close-order",
         clear_local_position=True,
     )
     assert trade_id == 71
@@ -105,6 +119,7 @@ def test_record_external_flat_close_writes_trade_and_clears_local(monkeypatch):
     assert recorded["trade_type"] == "close_short"
     assert abs(float(recorded["profit"]) - ((77240.0 - 77348.6) * 0.0002)) < 1e-9
     assert recorded["close_reason"] == EXCHANGE_NATIVE_CLOSE
+    assert recorded["exchange_order_id"] == "close-order"
 
 
 def test_reconcile_defers_without_exchange_snapshot(monkeypatch):
@@ -234,3 +249,52 @@ def test_reconcile_defers_multi_owner_account_leg(monkeypatch):
         side="long",
         client=object(),
     ) == 0
+
+
+@pytest.mark.parametrize("status", ["sent", "syncing", "processing", "filled", "cancelled", "failed"])
+def test_system_close_identity_stays_owned_by_pending_writer(status):
+    orders = [{"status": status, "exchange_order_id": "broker-order", "client_order_id": "qd_1100_196924"}]
+    assert mod._has_managed_close(orders, [{"exchange_order_id": "broker-order"}])
+
+
+def test_unacknowledged_submission_blocks_external_backfill():
+    assert mod._has_managed_close([{"status": "processing", "exchange_order_id": ""}], [])
+
+
+def test_client_id_only_matches_without_conflicting_broker_identity():
+    component = {"exchange_order_id": "old-broker-order", "client_order_id": "qd_1100_232107"}
+    assert mod._has_managed_close([{"status": "filled", "client_order_id": component["client_order_id"]}], [component])
+    assert not mod._has_managed_close([
+        {"status": "filled", "client_order_id": component["client_order_id"], "exchange_order_id": "new-broker-order"}
+    ], [component])
+    assert not mod._has_managed_close([{"status": "filled", "id": 232107}], [component])
+
+
+def test_completed_managed_fill_does_not_hide_remaining_external_close():
+    from app.services.live_trading.exchange_close_history import _select_exact_close
+
+    closed = datetime(2026, 11, 4, 14, 30, tzinfo=timezone.utc)
+    managed = {"exchange_order_id": "system-order", "status": "filled"}
+    rows = [
+        {"amount": 0.6, "price": 160, "closed_at": closed, "exchange_fill_id": "activity-1", "exchange_order_id": "system-order"},
+        {"amount": 0.4, "price": 161, "closed_at": closed, "exchange_fill_id": "activity-2", "exchange_order_id": "manual-order"},
+    ]
+    snapshot = _select_exact_close(
+        rows, target_qty=0.4, opened_after=None, is_recorded=lambda _: False,
+        is_managed_order=lambda row: mod._has_managed_close([managed], [row]),
+    )
+    assert snapshot["components"] == [rows[1]]
+
+
+def test_managed_close_appearing_during_history_read_prevents_any_backfill(monkeypatch):
+    monkeypatch.setattr(mod, "trade_side_net_qty", lambda *a, **k: 1.0)
+    monkeypatch.setattr(mod, "_last_open_trade", lambda *a, **k: {"price": 100, "credential_id": 5})
+    monkeypatch.setattr(mod, "_leg_owner_count", lambda **_: 1)
+    snapshots = iter([[], [{"status": "filled", "exchange_order_id": "system-order"}]])
+    monkeypatch.setattr(mod, "_pending_close_orders", lambda **_: next(snapshots))
+    monkeypatch.setattr(mod, "resolve_exchange_external_close", lambda *a, **k: {"components": [
+        {"amount": 0.4, "price": 105, "exchange_fill_id": "external-fill", "exchange_order_id": "manual-order"},
+        {"amount": 0.6, "price": 106, "exchange_fill_id": "system-fill", "exchange_order_id": "system-order"},
+    ]})
+    monkeypatch.setattr(mod, "record_external_flat_close", lambda **_: pytest.fail("must defer the entire batch"))
+    assert mod.reconcile_external_flat_closes(strategy_id=32, symbol="BTC/USDT", side="long") == 0

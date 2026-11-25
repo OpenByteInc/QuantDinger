@@ -89,14 +89,15 @@ def test_live_sent_sync_persists_only_incremental_partial_fill(monkeypatch):
     assert snapshots[0]["filled"] == pytest.approx(0.75)
 
 
-def test_alpaca_filled_order_backfills_authoritative_zero_fee(monkeypatch):
+@pytest.mark.parametrize("reported_average", [210.5, 210.500001, 210.499999])
+def test_alpaca_filled_order_backfills_authoritative_zero_fee(monkeypatch, reported_average):
     class Broker:
         def get_order_status(self, order_id):
             assert order_id == "alpaca-order-41"
             return SimpleNamespace(
                 status="filled",
                 filled=1.0,
-                avg_price=210.5,
+                avg_price=reported_average,
                 raw={
                     "fee_status": "actual_zero",
                     "fees_by_ccy": {"USD": 0.0},
@@ -145,6 +146,8 @@ def test_alpaca_filled_order_backfills_authoritative_zero_fee(monkeypatch):
     assert persisted[0]["fee_status"] == "actual_zero"
     assert snapshots[0]["fee_status"] == "actual_zero"
     assert snapshots[0]["fee_source"] == "rest"
+    assert snapshots[0]["status"] == "filled"
+    assert snapshots[0]["avg_price"] == reported_average
 
 
 def test_claim_live_sent_order_transitions_the_claimed_row(monkeypatch):
@@ -599,7 +602,7 @@ def test_terminal_fill_without_average_price_remains_open():
     assert is_final_fill(1.0, 1.0, 0.0, "FILLED") is False
 
 
-def test_ibkr_submission_never_fabricates_a_fill_from_requested_amount(monkeypatch):
+def test_ibkr_submission_never_fabricates_a_fill_from_requested_amount(monkeypatch, equity_market_clock):
     class Result:
         success = True
         order_id = "ibkr-1"
@@ -638,7 +641,7 @@ def test_ibkr_submission_never_fabricates_a_fill_from_requested_amount(monkeypat
     assert persisted == []
 
 
-def test_ibkr_accepted_order_with_local_persistence_failure_is_reconciled(monkeypatch):
+def test_ibkr_accepted_order_with_local_persistence_failure_is_reconciled(monkeypatch, equity_market_clock):
     sequence = []
 
     class Result:

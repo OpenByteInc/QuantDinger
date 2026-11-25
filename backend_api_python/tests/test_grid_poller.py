@@ -124,25 +124,3 @@ def test_same_credential_never_reuses_spot_client_for_swap(monkeypatch):
     monkeypatch.setattr(worker, "_poll_order", lambda runner, client, order, market: observed.append((client, market)))
     worker._poll_once()
     assert observed == [("spot", "spot"), ("swap", "swap")]
-
-
-@pytest.mark.parametrize('allowed', [True, False])
-def test_accounting_only_poller_never_rehangs_exits(monkeypatch, allowed):
-    from contextlib import nullcontext
-    from app.services.execution_streams.processor import ExecutionEventProcessor
-    worker = GridFillPoller()
-    runner = MagicMock()
-    runner.exchange_config = {'exchange_id': 'binance'}
-    order = GridRestingOrder(id=13, strategy_id=1, symbol='BTC/USDT', quantity=1)
-    monkeypatch.setattr('app.services.grid.poller.query_grid_order_fill', lambda *a, **k: (.5, 100, 'cancelled'))
-    monkeypatch.setattr('app.services.grid.poller.wait_grid_market_fill', lambda *a, **k: (.5, 100))
-    monkeypatch.setattr('app.utils.db.get_db_transaction', nullcontext)
-    monkeypatch.setattr('app.services.live_trading.fill_accounting.lock_strategy_fills', lambda *a: None)
-    project = MagicMock()
-    monkeypatch.setattr(ExecutionEventProcessor, '_project_grid', project)
-    status = worker._poll_order(runner, object(), order, 'swap', accounting_only=True, before_project=lambda: allowed)
-    assert status == ('cancelled' if allowed else 'unknown')
-    assert project.call_count == int(allowed)
-    if allowed:
-        assert project.call_args.args[0]['_accounting_only'] is True
-    runner.engine.sync_held_cell_exits.assert_not_called()
