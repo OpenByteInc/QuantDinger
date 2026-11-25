@@ -138,6 +138,36 @@ def test_issue_248_quantity_and_net_profit(ledger):
     assert float(trades[-1]["net_pnl"]) == pytest.approx(0.53823708)
 
 
+def test_stopped_partial_cancel_posts_once_without_restarting_grid(ledger, monkeypatch):
+    from app.services.live_trading.grid_cells import GridCellRepository
+    from app.services.grid.resting_orders_repo import GridRestingOrderRepository
+    ledger.query("""INSERT INTO qd_grid_cells
+        (strategy_id, symbol, cell_index, lower_price, upper_price, state, leg_size, leg_entry_price)
+        VALUES (1, 'ETH/USDT', 0, 2300, 2400, 'idle', 0, 0)""")
+    engine = ledger.runner.engine
+    engine._cells = GridCellRepository()
+    engine._observe_market_price = MagicMock()
+    engine._ensure_cell_exit_coverage = MagicMock(side_effect=AssertionError('stopped grid must not create exits'))
+    engine._place_limit = MagicMock(side_effect=AssertionError('stopped grid must not create entries'))
+    monkeypatch.setattr('app.services.grid.engine.append_strategy_log', lambda *a: None)
+    monkeypatch.setattr(poller, 'query_grid_order_fill', lambda *a, **kw: (.026, 2376.11, 'cancelled'))
+    monkeypatch.setattr(poller, 'wait_grid_market_fill', lambda *a, **kw: (.026, 2376.11))
+    worker = poller.GridFillPoller()
+    order = GridRestingOrderRepository().list_for_strategy(1)[-1]
+    assert order.id == 1
+    for _ in range(3):
+        assert worker._poll_order(ledger.runner, ledger.client, order, 'swap',
+            accounting_only=True, before_project=lambda: True) == 'cancelled'
+    saved = ledger.query('SELECT status, filled_quantity, processed_fill_qty FROM qd_grid_resting_orders WHERE id=1')[0]
+    assert saved['status'] == 'cancelled'
+    assert float(saved['processed_fill_qty']) == pytest.approx(.026)
+    assert float(ledger.query('SELECT size FROM qd_strategy_positions')[0]['size']) == pytest.approx(.026)
+    assert float(ledger.query('SELECT leg_size FROM qd_grid_cells')[0]['leg_size']) == pytest.approx(.026)
+    assert len(ledger.query('SELECT id FROM qd_strategy_trades')) == 1
+    engine._ensure_cell_exit_coverage.assert_not_called()
+    engine._place_limit.assert_not_called()
+
+
 def test_partial_fill_cumulative_prices_and_fees(ledger):
     ledger.processor._process_grid(*ledger.event(total=".26", last=".26", average="100", fee=".1"))
     ledger.processor._process_grid(

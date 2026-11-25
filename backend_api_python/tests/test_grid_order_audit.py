@@ -2,12 +2,13 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from app.services.grid import order_audit
+from app.services.grid import order_audit, audit_state
 from app.services.grid.resting_orders_repo import GridRestingOrder
 
 
 @pytest.fixture
 def audit_setup(monkeypatch):
+    monkeypatch.setattr('app.services.grid.resting_orders_repo._ensure_table', lambda: None)
     strategy = {"id": 3, "market_type": "spot", "exchange_config": {"credential_id": 9}, "trading_config": {}}
     config = {"credential_id": 9, "exchange_id": "bybit", "testnet": True}
     resolve = MagicMock(return_value=config)
@@ -74,16 +75,16 @@ def test_grid_route_does_not_count_local_ids_as_exchange_confirmation(monkeypatc
     repo.list_for_strategy.return_value = [GridRestingOrder(id=1, strategy_id=3, symbol="ETH/USDT", exchange_order_id="123", status="open")]
     monkeypatch.setattr("app.services.grid.resting_orders_repo.GridRestingOrderRepository", lambda: repo)
     audit = MagicMock(return_value={"active": 1, "completed": True, "checked_at": "2026-09-19T05:00:00+00:00", "orders": {1: {"status": "open", "price": 2600.01}}})
-    monkeypatch.setattr(order_audit, "audit_grid_orders", audit)
+    monkeypatch.setattr(audit_state, "read_grid_order_audit", audit)
     app = Flask(__name__)
     with app.test_request_context(f"/?id=3&sync={int(sync)}"):
         g.user_id = 7
         result = inspect.unwrap(route.get_grid_resting_orders)().get_json()["data"]
     service.get_strategy.assert_called_once_with(3, user_id=7)
-    assert result["summary"]["verified_exchange_orders"] == int(sync)
-    assert result["summary"]["unverified_orders"] == int(not sync)
-    assert result["orders"][0]["exchange_status"] == ("open" if sync else "unverified")
-    assert audit.call_count == int(sync)
+    assert result["summary"]["verified_exchange_orders"] == 1
+    assert result["summary"]["unverified_orders"] == 0
+    assert result["orders"][0]["exchange_status"] == "open"
+    audit.assert_called_once_with(service.get_strategy.return_value, repo.list_for_strategy.return_value, user_id=7, sync=sync)
 
 
 def test_grid_route_returns_virtual_resting_orders_without_exchange_audit(monkeypatch):
@@ -118,7 +119,7 @@ def test_grid_route_returns_virtual_resting_orders_without_exchange_audit(monkey
         }],
     )
     audit = MagicMock(side_effect=AssertionError("signal mode must not audit an exchange"))
-    monkeypatch.setattr(order_audit, "audit_grid_orders", audit)
+    monkeypatch.setattr(audit_state, "read_grid_order_audit", audit)
     app = Flask(__name__)
     with app.test_request_context("/?id=3&sync=1"):
         g.user_id = 7
@@ -207,7 +208,8 @@ def test_filled_order_missing_from_open_orders_is_reported_not_rewritten(monkeyp
     ledger.mark_cancelled_if_unfilled.assert_not_called()
     assert result["orders"][5]["status"] == "filled"
     assert row.status == "open"
-    assert not result["error"]
+    assert result["error"] == 'grid_exchange_reconciliation_pending'
+    assert result['orders'][5]['reconciliation_pending']
 
 
 def test_unknown_order_lookup_keeps_not_open_without_ledger_write(monkeypatch, binance, ledger):
@@ -257,7 +259,7 @@ def test_grid_route_returns_reconciled_local_status(monkeypatch):
         return {"active": 0, "terminal": 1, "unknown": 0, "completed": True, "checked_at": "2026-11-24T00:00:00+00:00",
                 "orders": {1: {"status": "cancelled", "local_status": "cancelled"}}}
 
-    monkeypatch.setattr(order_audit, "audit_grid_orders", audit)
+    monkeypatch.setattr(audit_state, "read_grid_order_audit", audit)
     app = Flask(__name__)
     with app.test_request_context("/?id=3&sync=1"):
         g.user_id = 7
@@ -267,6 +269,8 @@ def test_grid_route_returns_reconciled_local_status(monkeypatch):
     assert result["summary"]["exchange_not_open_orders"] == 0
     assert result["summary"]["exchange_terminal_orders"] == 1
     assert result["summary"]["sync_ok"] is True
+    assert result['summary']['verified_exchange_orders'] == 1
+    assert result['summary']['unverified_orders'] == 0
 
 
 def test_repository_cancel_only_touches_an_unfilled_open_row(monkeypatch):

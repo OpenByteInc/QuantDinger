@@ -1,9 +1,11 @@
 """Audit persisted grid orders without depending on an execution worker's memory."""
 
 from datetime import datetime, timezone
+import time
 
 from app.services.exchange_execution import coalesce_exchange_config_from_payload, resolve_exchange_config
 from app.services.grid.exchange_orders import query_grid_order_fill
+from app.services.grid.audit_state import audit_identity, audit_is_fresh, cached_order_audit, stamp_audit
 from app.services.grid.resting_orders_repo import GridRestingOrderRepository
 from app.services.live_trading.factory import create_client
 from app.services.live_trading.open_orders import fetch_exchange_open_orders
@@ -44,22 +46,34 @@ def _reconcile_missing_order(client, row, *, symbol: str, market_type: str, exch
         if ledger.mark_cancelled_if_unfilled(int(row.id), str(row.exchange_order_id)):
             row.status = "cancelled"
             entry["local_status"] = "cancelled"
+    entry['reconciliation_pending'] = (
+        (status in {'cancelled', 'filled'} and row.status != status)
+        or float(row.processed_fill_qty or 0) + 1e-12 < float(filled or 0)
+    )
     return entry
 
 
-def audit_grid_orders(strategy: dict, rows: list, *, user_id: int) -> dict:
+def audit_grid_orders(strategy: dict, rows: list, *, user_id: int,
+                      reconcile_order=None, allow_request=None,
+                      max_lookups: int = 10, max_seconds: float = 8.0) -> dict:
     audit = {"completed": False, "active": 0, "terminal": 0, "unknown": len(rows), "error": "",
              "checked_at": None, "orders": {}}
     tc = strategy.get("trading_config") or {}
     mt = str(tc.get("market_type") or strategy.get("market_type") or "swap").lower()
     ledger = None
+    identity = audit_identity(strategy)
+    deadline = time.monotonic() + max_seconds
+    lookups = 0
     try:
         config = resolve_exchange_config(coalesce_exchange_config_from_payload(strategy), user_id=user_id)
         ex = str(config.get("exchange_id") or "").lower()
         symbols = sorted({str(row.symbol) for row in rows})
         for symbol in symbols:
+            if time.monotonic() >= deadline or (allow_request and not allow_request(config)):
+                break
             bound = bind_instrument_product_contract(config, tc, symbol=symbol, exchange_id=ex, market_type=mt)
             client = create_client(bound, market_type=mt)
+            client.timeout_sec = min(float(getattr(client, 'timeout_sec', 3.0) or 3.0), 3.0)
             remote = fetch_exchange_open_orders(client, exchange_id=ex, market_type=mt, symbol=symbol)
             by_id = {str(item["exchange_order_id"]): item for item in remote
                      if normalize_strategy_symbol(item["symbol"]) == normalize_strategy_symbol(symbol)}
@@ -67,14 +81,26 @@ def audit_grid_orders(strategy: dict, rows: list, *, user_id: int) -> dict:
                 if row.symbol != symbol:
                     continue
                 item = by_id.get(str(row.exchange_order_id or ""))
-                if item is None and row.exchange_order_id:
+                if item is None and (row.exchange_order_id or row.client_order_id):
+                    cached = cached_order_audit(row, identity)
+                    if audit_is_fresh(cached):
+                        audit['orders'][row.id] = cached
+                        continue
+                    if (lookups >= max_lookups or time.monotonic() >= deadline
+                            or (allow_request and not allow_request(bound))):
+                        continue
+                    lookups += 1
                     if ledger is None:
                         ledger = GridRestingOrderRepository()
                     entry = _reconcile_missing_order(
                         client, row, symbol=symbol, market_type=mt, exchange_config=bound, ledger=ledger,
                     )
                     state = entry["status"]
-                    audit["orders"][row.id] = entry
+                    if (entry.get('reconciliation_pending') and reconcile_order
+                            and time.monotonic() < deadline
+                            and (not allow_request or allow_request(bound))):
+                        entry['reconciliation_pending'] = not reconcile_order(client, row, bound, mt, entry)
+                    audit["orders"][row.id] = stamp_audit(entry, row, identity)
                 else:
                     if item is None:
                         state = "unverified"
@@ -86,18 +112,18 @@ def audit_grid_orders(strategy: dict, rows: list, *, user_id: int) -> dict:
                             state = "partial"
                         else:
                             state = "unverified"
-                    audit["orders"][row.id] = {"status": state, "price": item.get("price") if item else None,
+                    audit["orders"][row.id] = stamp_audit({"status": state, "price": item.get("price") if item else None,
                                                "quantity": item.get("amount") if item else None,
-                                               "filled": item.get("filled") if item else None}
-                if state in {"open", "partial"}:
-                    audit["active"] += 1
-                elif state in {"filled", "cancelled"}:
-                    audit["terminal"] += 1
+                                               "filled": item.get("filled") if item else None}, row, identity)
+        audit['active'] = sum(entry.get('status') in {'open', 'partial'} for entry in audit['orders'].values())
+        audit['terminal'] = sum(entry.get('status') in {'filled', 'cancelled'} for entry in audit['orders'].values())
         audit["unknown"] = len(rows) - audit["active"] - audit["terminal"]
-        audit["completed"] = True
+        audit["completed"] = len(audit['orders']) == len(rows)
         audit["checked_at"] = datetime.now(timezone.utc).isoformat()
         if audit["unknown"]:
             audit["error"] = "grid_exchange_orders_unverified"
+        if any(entry.get('reconciliation_pending') for entry in audit['orders'].values()):
+            audit['error'] = 'grid_exchange_reconciliation_pending'
     except Exception:
         logger.warning("Grid order audit failed sid=%s", strategy.get("id"), exc_info=True)
         audit["error"] = "grid_exchange_snapshot_failed"

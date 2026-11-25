@@ -39,6 +39,16 @@ Before opening an initial market position, the runner checks every funded grid c
 
 A grid with no confirmed working orders must not report successful startup, unless it is deliberately paused outside its price bounds. Recovery can retain verified exit orders without opening new exposure. These checks do not reserve margin or guarantee venue acceptance. If later order placement fails after a new initial position has filled, the existing rollback path remains responsible for closing only that startup's new exposure; a failed rollback is reported separately.
 
+## Grid order verification
+
+The exchange-order panel reads persisted verification evidence. A refresh queues a deduplicated `reconcile` command for the trading worker; the HTTP process does not query the venue or start a grid runner. Verification uses the open-order snapshot first, then at most 10 individual missing-order lookups per pass, with an eight-second between-request deadline and a three-second REST request timeout. Large sets rotate through older evidence first. The worker shares its existing credential request budget with the grid poller. These are per-worker request budgets, not a global exchange quota.
+
+Fresh results are reused for 30 seconds; orders absent from both current and historical venue responses are retried no sooner than five minutes. Evidence replaces the previous audit metadata on each order rather than accumulating full snapshots in command history. A confirmed terminal status counts as verified, but pending local fill accounting is shown separately. Absence, an API error, and expired venue history never prove cancellation.
+
+Confirmed zero-fill cancellations use a guarded local update. Partial and full fills use the existing cumulative, transactional accounting path. Running grids retain their normal poller/actor owner. For a stopped grid, recovery requires a matching durable account/order binding, unchanged runtime epoch and configuration, no active runtime lease, and a persisted cell. It posts trades, positions and cell state without starting the strategy or creating follow-up entry or exit orders. Unknown legacy ownership remains for operator review. No orders or holdings are deleted by verification.
+
+Deploy the updated backend and trading workers together, followed by the desktop frontend for queued/pending/terminal labels. No database migration is required. This path repairs recoverable evidence; it cannot reconstruct records already removed by the exchange's history-retention policy.
+
 ## While running
 
 - Monitor runtime state, order status, fills, positions, available balance, and notifications.

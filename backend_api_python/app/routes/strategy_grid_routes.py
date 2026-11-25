@@ -48,7 +48,7 @@ def get_grid_resting_orders():
         sync = request.args.get('sync', '').lower() in ('1', 'true', 'yes')
 
         from app.services.grid.resting_orders_repo import GridRestingOrderRepository
-        from app.services.grid.order_audit import audit_grid_orders
+        from app.services.grid.audit_state import read_grid_order_audit
         from app.utils.trade_close_reason import label_for_reason
 
         lang = str(request.args.get("lang") or request.headers.get("Accept-Language") or "zh")
@@ -130,7 +130,7 @@ def get_grid_resting_orders():
 
         repo = GridRestingOrderRepository()
         rows = repo.list_for_strategy(strategy_id, status=status, limit=limit or 200)
-        exchange_audit = audit_grid_orders(st, rows, user_id=user_id) if sync else {}
+        exchange_audit = read_grid_order_audit(st, rows, user_id=user_id, sync=sync)
         sync_error = str(exchange_audit.get('error') or '')
         out = []
         for o in rows:
@@ -157,6 +157,7 @@ def get_grid_resting_orders():
                 'exchange_price': verified_order.get('price'),
                 'exchange_quantity': verified_order.get('quantity'),
                 'exchange_filled_quantity': verified_order.get('filled'),
+                'reconciliation_pending': bool(verified_order.get('reconciliation_pending')),
                 'filled_quantity': o.filled_quantity,
                 'avg_fill_price': o.avg_fill_price,
                 'extra': o.extra or {},
@@ -168,7 +169,8 @@ def get_grid_resting_orders():
             key = str(item.get('status') or 'unknown')
             status_counts[key] = int(status_counts.get(key, 0)) + 1
         audited_active = int(exchange_audit.get('active') or 0)
-        verified = min(len(out), audited_active)
+        audited_terminal = int(exchange_audit.get('terminal') or 0)
+        verified = min(len(out), audited_active + audited_terminal)
         summary = {
             'total': len(out),
             'verified_exchange_orders': verified,
@@ -180,6 +182,8 @@ def get_grid_resting_orders():
             'exchange_audit_completed': bool(exchange_audit.get('completed')) if sync else False,
             'status_counts': status_counts,
             'sync_requested': sync,
+            'sync_pending': bool(exchange_audit.get('pending')),
+            'reconciliation_pending_orders': int(exchange_audit.get('reconciliation_pending') or 0),
             'sync_ok': not bool(sync_error),
             'sync_error': sync_error,
             'synced_count': len(exchange_audit.get('orders') or {}),

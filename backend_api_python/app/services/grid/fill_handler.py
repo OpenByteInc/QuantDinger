@@ -87,6 +87,7 @@ def apply_grid_fill_to_local_state(
         exchange_fill_id=str(exchange_fill_id or ""),
         execution_event_id=int(execution_event_id or 0),
         grid_order_id=int(order.id or 0),
+        strategy_run_id=int(strategy_run_id or order.extra.get("strategy_run_id") or 0),
         fee_status=str(fee_status or "pending"),
         fee_source=str(fee_source or ""),
         fees_by_ccy=fees_by_ccy,
