@@ -6,13 +6,15 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pandas as pd
+import pytest
 
 from app.services import trading_executor as runtime
 from app.services import virtual_trading
 from app.services.strategy_runtime import candle_readiness
 
 
-def test_daily_portfolio_schedules_execute_and_seal_separate_batches(monkeypatch):
+@pytest.mark.parametrize("replay_first", [False, True])
+def test_daily_portfolio_schedules_execute_and_seal_separate_batches(monkeypatch, replay_first):
     clock = [pd.Timestamp("2026-09-14 15:00:05Z")]
     monotonic = [100.0]
 
@@ -93,6 +95,9 @@ def rebalance(context, data):
         assert kwargs["enabled"]
         group = str(kwargs["timestamp"])
         batches.append(group)
+        if replay_first and len(batches) == 1:
+            yield None
+            return
         yield group
         sealed.append(group)
 
@@ -106,10 +111,11 @@ def rebalance(context, data):
         executor.close()
 
     assert executor._last_exit_reason == {}, logs.call_args_list
-    assert submit.call_count == 4, logs.call_args_list
+    assert submit.call_count == (2 if replay_first else 4), logs.call_args_list
     assert batches == ["2026-09-14 15:01:00+00:00", "2026-09-14 15:02:00+00:00"]
-    assert sealed == batches
-    assert [call.kwargs["rebalance_group_id"] for call in submit.call_args_list] == [batches[0]] * 2 + [batches[1]] * 2
-    assert len({call.kwargs["intent"].client_order_id for call in submit.call_args_list}) == 4
+    assert sealed == (batches[1:] if replay_first else batches)
+    assert [call.kwargs["rebalance_group_id"] for call in submit.call_args_list] == [group for group in sealed for _ in range(2)]
+    assert len({call.kwargs["intent"].client_order_id for call in submit.call_args_list}) == submit.call_count
+    assert sum("rebalanceReplaySkipped" in str(call) for call in logs.call_args_list) == int(replay_first)
     assert all(call.kwargs.get("trigger_mode") == "wall_clock_schedule" for call in heartbeat.call_args_list[1:])
     assert fetch.call_count == 1

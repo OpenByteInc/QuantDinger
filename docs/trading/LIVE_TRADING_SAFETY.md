@@ -95,6 +95,8 @@ The completed stop creates one in-app notice and sends the alert through each ex
 
 ### Portfolio rebalance batches
 
+The realtime producer claims each evaluation batch before queueing its first order. The key remains stable across worker ownership changes; a previously recorded batch is never reopened or assigned a new key to bypass sealing. Restart replays skip new submissions, while existing orders continue normal reconciliation. If queueing was interrupted, unqueued legs require review rather than automatic historical replay. This is duplicate prevention, not a guarantee that every leg completed. No existing order, trade, or holding is deleted by this recovery path.
+
 Orders queued by one portfolio evaluation share a durable batch identifier. Dispatch is still asynchronous and does not wait for notification aggregation. Once queueing is sealed, the worker waits until every queued order has an acceptance or terminal result before assessing the batch. Batches are assessed in creation order, not reply order. A pending or unknown submission does not become a failure merely because time has passed.
 
 Any accepted or partially/fully filled order makes the batch a success for the failure counter, even if other symbols fail. A completed batch with no success and at least one counted definitive rejection increments the counter once. Five such consecutive batches stop the strategy; ten rejected orders in one batch count as one failed batch. Batches containing only ignored protective outcomes do not increment or clear the counter. Individual-order and batch failure units are not added together. Successful legs are not rolled back, failed legs remain visible, and this policy does not add automatic retries.

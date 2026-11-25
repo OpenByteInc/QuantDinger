@@ -10,6 +10,7 @@ from app.data_sources.errors import (
     classify_market_data_failure,
 )
 from app.services.strategy_runtime.timeframes import (
+    LiveFrameWarningState,
     live_ready_universe_symbols,
     load_live_frequency_frames,
 )
@@ -97,6 +98,40 @@ def test_live_timeframe_loader_raises_structured_failure_when_all_frames_fail():
 
     assert raised.value.failure.code == "region_restricted"
     assert raised.value.failure.technical_detail == "HTTP 451 restricted location"
+
+
+def test_partial_data_warnings_change_only_with_failures_and_reset_on_recovery():
+    from unittest.mock import Mock
+
+    skipped = [{"symbol": f"USStock:TEST{i}", "frequency": "1d", "reason": "marketData.no_market_data"}
+               for i in range(6)]
+    fetch = Mock(return_value=({"1d": {"USStock:AAPL": pd.DataFrame({"close": [100.]})}}, skipped))
+    warn = Mock()
+    state = LiveFrameWarningState()
+    args = dict(
+        service=SimpleNamespace(fetch_frequency_frames=fetch), candidates=[],
+        manifest=SimpleNamespace(warmup_bars=30, frequencies=("1d",), driving_frequency="1d",
+                                 fundamental_dependencies=()),
+        end_date=datetime.now(timezone.utc), warn=warn, warning_state=state,
+    )
+    load_live_frequency_frames(**args)
+    skipped.reverse()
+    load_live_frequency_frames(**args)
+    assert warn.call_count == 1
+    # A changed sixth failure matters even though the log previews only five.
+    skipped[0]["reason"] = "marketData.rate_limited"
+    load_live_frequency_frames(**args)
+    assert warn.call_count == 2
+    fetch.return_value = ({"1d": {"USStock:AAPL": pd.DataFrame({"close": [100.]})}}, [])
+    load_live_frequency_frames(**args)
+    fetch.return_value = ({"1d": {"USStock:AAPL": pd.DataFrame({"close": [100.]})}}, skipped)
+    load_live_frequency_frames(**args)
+    assert warn.call_count == 3
+    # Total loss remains an error, never suppressed by the warning cache.
+    fetch.return_value = ({"1d": {}}, skipped)
+    with pytest.raises(MarketDataUnavailableError):
+        load_live_frequency_frames(**args)
+    assert LiveFrameWarningState().changed(skipped)
 
 
 def test_strategy_frame_batch_keeps_symbol_on_structured_fetch_failure():

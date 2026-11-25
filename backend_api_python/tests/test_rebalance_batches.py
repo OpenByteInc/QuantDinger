@@ -178,14 +178,83 @@ def test_closed_batch_cannot_receive_new_orders(ledger):
         ), 2)
 
 
-def test_batch_context_seals_on_exception_and_replay_uses_same_key(ledger):
+def batch_context(timestamp=123, **kwargs):
+    return batches.rebalance_batch(
+        strategy_id=7, run_id=11, timestamp=timestamp, enabled=True,
+        user_id=3, execution_mode="live", **kwargs,
+    )
+
+
+def test_batch_context_seals_on_exception_and_replay_skips_without_touching_orders(ledger):
     group = ""
-    with pytest.raises(ValueError), batches.rebalance_batch(strategy_id=7, run_id=11, timestamp=123, enabled=True) as group:
+    with pytest.raises(ValueError), batch_context() as group:
         add_batch(ledger, group, [1], sealed=False)
         raise ValueError("producer failed")
-    assert ledger.query("SELECT sealed_at FROM qd_strategy_order_batches")[0]["sealed_at"]
-    with batches.rebalance_batch(strategy_id=7, run_id=11, timestamp=123, enabled=True) as replay:
-        assert replay == group
+    before = ledger.query("SELECT * FROM qd_strategy_order_batches")
+    orders = ledger.query("SELECT * FROM pending_orders")
+    assert before[0]["sealed_at"]
+    with batch_context() as replay:
+        assert replay is None
+    assert ledger.query("SELECT * FROM qd_strategy_order_batches") == before
+    assert ledger.query("SELECT * FROM pending_orders") == orders
+
+
+@pytest.mark.parametrize("sealed", [False, True])
+def test_new_fence_skips_legacy_batch_and_can_claim_next_evaluation(ledger, sealed):
+    import hashlib
+
+    group = hashlib.sha256(b"7:11:123").hexdigest()
+    add_batch(ledger, group, [1], token=50, sealed=sealed)
+    ledger.query("""INSERT INTO qd_strategy_runtime_leases
+                    (strategy_id, owner_id, fencing_token, lease_expires_at)
+                    VALUES (7, 'new-owner', 51, NOW()+INTERVAL '1 hour')""")
+    before = ledger.query("SELECT * FROM qd_strategy_order_batches")
+    with batch_context(runtime_fencing_token=51) as replay:
+        assert replay is None
+    assert ledger.query("SELECT * FROM qd_strategy_order_batches") == before
+    with batch_context(timestamp=124, runtime_fencing_token=51) as fresh:
+        assert fresh and fresh != group
+        add_batch(ledger, fresh, [2], token=51, sealed=False)
+    assert len(ledger.query("SELECT * FROM pending_orders")) == 2
+    assert ledger.query("SELECT runtime_fencing_token FROM qd_strategy_order_batches ORDER BY id") == [
+        {"runtime_fencing_token": 50}, {"runtime_fencing_token": 51},
+    ]
+
+
+def test_concurrent_evaluations_claim_batch_once(ledger):
+    def claim(_):
+        with batch_context() as group:
+            return group
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(claim, range(8)))
+    assert sum(group is not None for group in results) == 1
+    assert len(ledger.query("SELECT * FROM qd_strategy_order_batches")) == 1
+
+
+def test_stale_producer_cannot_reserve_next_batch(ledger):
+    with pytest.raises(RuntimeError, match="staleFencingToken"), batch_context(runtime_fencing_token=50):
+        pytest.fail("Stale runtime must not enter the batch")
+    assert not ledger.query("SELECT * FROM qd_strategy_order_batches")
+
+
+@pytest.mark.parametrize("field,value", [("user_id", 99), ("execution_mode", "signal")])
+def test_conflicting_batch_scope_is_not_silently_treated_as_replay(ledger, field, value):
+    with batch_context():
+        pass
+    ledger.query(f"UPDATE qd_strategy_order_batches SET {field}=%s", (value,))
+    with pytest.raises(RuntimeError, match="rebalanceBatchClosed"), batch_context():
+        pytest.fail("Conflicting scope must not enter the batch")
+
+
+def test_non_portfolio_batch_never_uses_database(monkeypatch):
+    connect = Mock(side_effect=AssertionError("No DB for non-portfolio"))
+    monkeypatch.setattr(batches, "get_db_connection", connect)
+    with batches.rebalance_batch(
+        strategy_id=7, run_id=11, timestamp=123, enabled=False, user_id=3, execution_mode="live",
+    ) as group:
+        assert group == ""
+    connect.assert_not_called()
 
 
 def test_ten_results_send_once_per_channel_and_delivery_failure_does_not_spam(ledger, monkeypatch):
