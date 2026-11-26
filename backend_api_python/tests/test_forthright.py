@@ -489,9 +489,9 @@ def test_broker_error_decodes_bytes_without_silent_replacement(client, monkeypat
 
 def test_irrecoverable_upstream_replacement_is_reported_not_guessed(client):
     response = requests.Response()
-    response._content = '{"status":10000,"info":"�"}'.encode()
+    response._content = '{"status":10000,"info":"\uFFFD"}'.encode()
     result, decoding = client._decode_response(response)
-    assert result["info"] == "�"
+    assert result["info"] == "\uFFFD"
     assert decoding["replacement_on_wire"] is True
 
 

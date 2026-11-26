@@ -84,9 +84,9 @@ A unified USD reporting layer remains separate from execution: US stock budgets 
 
 ### Encoding investigation on 2026-11-26
 
-Historical futures order diagnostics read top-level `status` and `info` through `response.json()`, not retained HTTP bytes. The limit-test fields were `status=10000` and `info=service response failed: status=1 info=�۸����`; the market-test suffix contained ten `U+FFFD` replacement characters.
+Historical futures order diagnostics read top-level `status` and `info` through `response.json()`, not retained HTTP bytes. The limit-test fields were `status=10000` and `info=service response failed: status=1 info=\uFFFD۸\uFFFD\uFFFD\uFFFD\uFFFD`; the market-test suffix contained ten `U+FFFD` replacement characters.
 
-In an offline comparison, the GBK/GB18030 bytes for `价格错误` (price error), `bc db b8 f1 b4 ed ce f3`, produce exactly `�۸����` when incorrectly decoded as UTF-8 with replacement. This is a matching hypothesis, not a recovery from the historical wire response: replacement decoding is many-to-one. Strict reverse encoding of the retained replacements fails for GBK, Big5 and Latin-1; GB18030 reverse encoding does not recover the original UTF-8 text either. Do not treat this candidate as a confirmed broker rejection or use it to retry an order.
+In an offline comparison, the GBK/GB18030 bytes for `价格错误` (price error), `bc db b8 f1 b4 ed ce f3`, produce exactly `\uFFFD۸\uFFFD\uFFFD\uFFFD\uFFFD` when incorrectly decoded as UTF-8 with replacement. This is a matching hypothesis, not a recovery from the historical wire response: replacement decoding is many-to-one. Strict reverse encoding of the retained replacements fails for GBK, Big5 and Latin-1; GB18030 reverse encoding does not recover the original UTF-8 text either. Do not treat this candidate as a confirmed broker rejection or use it to retry an order.
 
 Read-only futures checks of `fund_total`, `position`, `working_order` and `history_order` returned HTTP 200, business status 0 and `info=success`, declaring `application/json; charset=utf-8`. These ASCII responses parse under UTF-8, GBK, GB18030, Big5 and Latin-1, but not UTF-16LE. Successful ASCII responses do not establish the encoding of the historical failed order response. No new orders or unlock requests were submitted during this investigation.
 

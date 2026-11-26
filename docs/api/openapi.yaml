@@ -788,6 +788,8 @@ tags:
   description: Interactive Brokers adapter (Internal)
 - name: Alpaca
   description: Alpaca adapter (Internal)
+- name: Forthright
+  description: Forthright adapter (Internal)
 servers:
 - url: http://localhost:5000
   description: Backend direct (python run.py)
