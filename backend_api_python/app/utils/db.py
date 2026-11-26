@@ -438,6 +438,10 @@ def _apply_init_sql(logger, *, strict: bool = False):
                 path=Path(__file__).resolve().parent.parent.parent / "migrations" / "20261122_strategy_history_read_indexes.sql",
             )
             _apply_migration_component(
+                conn, logger, name="instrument-board-lots-20261126",
+                path=Path(__file__).resolve().parent.parent.parent / "migrations" / "20261126_instrument_board_lots.sql",
+            )
+            _apply_migration_component(
                 conn,
                 logger,
                 name="market-symbols-master",

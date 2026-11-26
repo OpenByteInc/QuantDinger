@@ -175,7 +175,7 @@ def test_worker_never_submits_when_guard_rejects(scenario, monkeypatch):
 
 
 @pytest.mark.parametrize("side,signal,action", [("long", "close_long", "sell"), ("short", "close_short", "buy")])
-def test_worker_broker_and_fill_record_receive_only_owned_quantity(scenario, monkeypatch, side, signal, action):
+def test_worker_broker_and_fill_record_receive_only_owned_quantity(scenario, monkeypatch, side, signal, action, equity_market_clock):
     from app.services import pending_order_worker as module
     from app.services.live_trading import records
     monkeypatch.setattr(guard, "alpaca_account_lock", lambda cred: nullcontext())

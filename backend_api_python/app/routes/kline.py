@@ -144,6 +144,8 @@ def get_kline():
         
         if not klines:
             msg = 'No data found'
+            if market == 'Futures':
+                msg = 'brokerAccounts.forthright.feedUnavailable'
             if market == 'Forex' and timeframe == '1m':
                 msg = 'Forex 1-minute data requires Tiingo paid subscription'
             elif market == 'Forex' and timeframe in ('1W', '1M'):

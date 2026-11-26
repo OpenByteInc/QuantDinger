@@ -38,6 +38,7 @@ def _build_broker_markets() -> Dict[str, Dict[str, Set[str]]]:
         "alpaca": {"USStock": {"spot"}},
         "tiger": {"USStock": {"spot"}, "HKStock": {"spot"}},
         "webull": {"USStock": {"spot"}},
+        "forthright": {"USStock": {"spot"}, "HKStock": {"spot"}},
     }
     for ex, capability in CRYPTO_VENUE_CAPABILITIES.items():
         matrix[ex] = {"Crypto": set(capability.market_types)}
@@ -223,7 +224,7 @@ def validate_strategy_config(
             )
 
     # Rule 5: long-only brokers
-    if ex in LONG_ONLY_BROKERS and td and td != "long":
+    if (ex in LONG_ONLY_BROKERS or (ex == "forthright" and mc != "Futures")) and td and td != "long":
         raise ValueError(
             f"{ex.upper()} live execution in QuantDinger is currently "
             f"long-only (got trade_direction='{td}'). For short selling "

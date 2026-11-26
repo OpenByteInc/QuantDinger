@@ -408,7 +408,7 @@ def _compile_strategy_v2(
         raise StrategyV2ContractError("strategyV2.directionModeInvalid")
     direction_mode = declared_direction_mode or infer_direction_mode_from_code(raw)
     if not direction_mode and context.instruments and all(
-        item.market_type != "swap" for item in context.instruments
+        item.market_type != "swap" and item.market != "Futures" for item in context.instruments
     ):
         direction_mode = "long_only"
     direction_mode = normalize_direction_mode(direction_mode)

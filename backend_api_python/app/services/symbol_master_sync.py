@@ -43,6 +43,9 @@ class SymbolMasterRow:
     underlying_market: str = ""
     underlying_symbol: str = ""
     product_meta: Optional[Dict[str, object]] = None
+    board_lot: Optional[int] = None
+    rules_as_of: Optional[str] = None
+    rules_source: Optional[str] = None
 
 
 STATIC_MARKET_ROWS = [
@@ -186,26 +189,12 @@ def fetch_hk_stock_symbols() -> List[SymbolMasterRow]:
 
 
 def fetch_hk_stock_symbols_hkex() -> List[SymbolMasterRow]:
-    import pandas as pd
-
-    resp = requests.get(
-        "https://www.hkex.com.hk/eng/services/trading/securities/securitieslists/ListOfSecurities.xlsx",
-        timeout=25,
-        headers={"User-Agent": "Mozilla/5.0"},
-    )
-    resp.raise_for_status()
-    df = pd.read_excel(io.BytesIO(resp.content), sheet_name=0, header=2)
-    rows = []
-    for item in _df_records(df):
-        raw_symbol = item.get("Stock Code")
-        name = _clean_text(item.get("Name of Securities"))
-        category = _clean_text(item.get("Category"))
-        currency = _clean_text(item.get("Trading Currency")) or "HKD"
-        symbol = re.sub(r"[^0-9]", "", _clean_text(raw_symbol)).zfill(5)
-        if symbol and name and category in {"Equity", "Exchange Traded Products"}:
-            asset_class = "etf" if category == "Exchange Traded Products" else "equity"
-            rows.append(SymbolMasterRow("HKStock", symbol, name, "HKEX", currency, asset_class=asset_class))
-    return _unique_rows(rows)
+    from app.services.market.hk_board_lots import _download, SOURCE
+    data = _download()
+    return [SymbolMasterRow("HKStock", row["symbol"], row["name"], "HKEX", row["currency"],
+                            asset_class=row["asset_class"], board_lot=row["board_lot"],
+                            rules_as_of=data["as_of"], rules_source=SOURCE)
+            for row in data["records"]]
 
 
 def fetch_hk_stock_symbols_akshare() -> List[SymbolMasterRow]:
@@ -829,7 +818,8 @@ def fetch_forex_symbols() -> List[SymbolMasterRow]:
 
 def fetch_futures_symbols() -> List[SymbolMasterRow]:
     """Return supported traditional futures symbols."""
-    return _unique_rows(_static_rows("Futures"))
+    from app.services.market.dated_futures import contract_catalog_rows, preset_contracts
+    return _unique_rows(_static_rows("Futures") + contract_catalog_rows(preset_contracts()))
 
 
 def fetch_moex_symbols() -> List[SymbolMasterRow]:
@@ -887,8 +877,8 @@ def upsert_symbol_master(rows: Sequence[SymbolMasterRow]) -> int:
                 INSERT INTO qd_market_symbols
                     (market, symbol, name, exchange, currency, market_type, instrument_id, settle_currency,
                      asset_class, product_type, api_family, underlying_market, underlying_symbol, product_meta,
-                     metadata_updated_at, is_active, is_hot, sort_order)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, NOW(), 1, 0, 0)
+                     metadata_updated_at, is_active, is_hot, sort_order, board_lot, rules_as_of, rules_source)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, NOW(), 1, 0, 0, ?, ?, ?)
                 ON CONFLICT (market, symbol, exchange, market_type, instrument_id) DO UPDATE
                   SET name = EXCLUDED.name,
                       exchange = COALESCE(NULLIF(EXCLUDED.exchange, ''), qd_market_symbols.exchange),
@@ -900,6 +890,9 @@ def upsert_symbol_master(rows: Sequence[SymbolMasterRow]) -> int:
                       underlying_market = EXCLUDED.underlying_market,
                       underlying_symbol = EXCLUDED.underlying_symbol,
                       product_meta = EXCLUDED.product_meta,
+                      board_lot = COALESCE(EXCLUDED.board_lot, qd_market_symbols.board_lot),
+                      rules_as_of = COALESCE(EXCLUDED.rules_as_of, qd_market_symbols.rules_as_of),
+                      rules_source = COALESCE(EXCLUDED.rules_source, qd_market_symbols.rules_source),
                       metadata_updated_at = NOW(),
                       is_active = 1
                 """,
@@ -918,6 +911,7 @@ def upsert_symbol_master(rows: Sequence[SymbolMasterRow]) -> int:
                     row.underlying_market or "",
                     row.underlying_symbol or "",
                     json.dumps(row.product_meta or {}, ensure_ascii=False),
+                    row.board_lot, row.rules_as_of, row.rules_source,
                 ),
             )
             count += 1

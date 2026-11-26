@@ -85,6 +85,8 @@ def test_initial_sync_respects_disabled_setting(monkeypatch):
 
 def test_catalog_schema_version_is_recorded_for_upgrade_detection(monkeypatch):
     from app.services import market_catalog_sync
+    from app.services import symbol_master_sync
+    monkeypatch.setattr(symbol_master_sync, "sync_symbol_master", lambda markets: {market: {"ok": True, "rows": 1, "upserted": 1} for market in markets})
 
     completed = {}
     monkeypatch.setattr(
@@ -108,6 +110,7 @@ def test_catalog_schema_version_is_recorded_for_upgrade_detection(monkeypatch):
     market_catalog_sync._run_sync(17)
 
     assert completed["status"] == "success"
+    assert {item['market_type'] for item in completed['result']['contexts']} == {'HKStock', 'Futures'}
     assert completed["result"]["catalog_schema_version"] == (
         market_catalog_sync.MARKET_CATALOG_SCHEMA_VERSION
     )
@@ -127,7 +130,7 @@ def test_catalog_schema_version_is_recorded_for_upgrade_detection(monkeypatch):
         }, False),
         ({
             "active_crypto": 10,
-            "latest_success_result": {"catalog_schema_version": 3},
+            "latest_success_result": {"catalog_schema_version": 4},
         }, True),
     ],
 )

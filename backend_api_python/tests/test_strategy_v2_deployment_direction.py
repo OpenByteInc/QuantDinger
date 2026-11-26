@@ -1,4 +1,5 @@
 import json
+import sys
 
 import pytest
 
@@ -106,6 +107,26 @@ def test_deployment_persists_strategy_equity_limits(monkeypatch):
         "equity_take_profit_pct": pytest.approx(0.50),
         "equity_stop_loss_pct": pytest.approx(0.30),
     }
+
+
+def test_forthright_futures_deployment_validates_contract_and_persists_currency(monkeypatch):
+    from types import SimpleNamespace
+    from app.services import exchange_execution
+    from app.services.live_trading import factory
+    cursor = _Cursor()
+    monkeypatch.setattr(sys.modules[__name__], "SOURCE", SOURCE.replace("Crypto:BTC/USDT@okx:swap", "Futures:HSIZ99"))
+    monkeypatch.setattr(deployment, "get_script_source_service", lambda: _Sources())
+    monkeypatch.setattr(deployment, "get_db_connection", lambda: _Db(cursor))
+    monkeypatch.setattr(deployment, "is_trading_venue_enabled", lambda value: True)
+    monkeypatch.setattr(StrategyV2DeploymentService, "_credential_exchange", staticmethod(lambda *a: "forthright"))
+    monkeypatch.setattr(exchange_execution, "resolve_exchange_config", lambda *a, **k: {"currency": "HKD"})
+    calls = []
+    client = SimpleNamespace(validate_instrument=lambda *args: calls.append(args), disconnect=lambda: calls.append("disconnect"))
+    monkeypatch.setattr(factory, "create_client", lambda *args: client)
+    payload = {**_payload("both"), "executionMode": "live", "credentialId": 8}
+    with pytest.raises(StrategyV2ContractError, match="liveMarketUnsupported"):
+        StrategyV2DeploymentService().save(user_id=7, payload=payload)
+    assert calls == []
 
 
 @pytest.mark.parametrize(("field", "value"), [

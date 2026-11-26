@@ -64,6 +64,9 @@ def ensure_alpaca_settled(*, user_id, credential_id, order_id=0, symbol=""):
 def guarded_alpaca_quantity(*, client, strategy_id, user_id, credential_id, symbol, signal_type, amount, order_id, exchange_id="alpaca"):
     """Return a safe submission quantity; caller must hold the account lock."""
     amount = _quantity(amount)
+    whole_lot_tiger = exchange_id == "tiger" and str(symbol).upper().endswith(".HK")
+    if exchange_id == "forthright" or whole_lot_tiger:
+        amount = client.normalize_strategy_quantity(symbol, amount)
     if amount <= 0:
         raise ValueError("positionOwnership.noStrategyInventory")
     ensure_alpaca_settled(user_id=user_id, credential_id=credential_id, order_id=order_id, symbol=symbol)
@@ -76,6 +79,7 @@ def guarded_alpaca_quantity(*, client, strategy_id, user_id, credential_id, symb
     if any(canonical_symbol(row.get("symbol")) == wanted for row in orders):
         raise ValueError("positionOwnership.ordersPending")
     account = {"long": 0.0, "short": 0.0}
+    sellable = {"long": 0.0, "short": 0.0}
     for row in positions:
         if canonical_symbol(row.get("symbol")) != wanted:
             continue
@@ -86,6 +90,9 @@ def guarded_alpaca_quantity(*, client, strategy_id, user_id, credential_id, symb
         if side not in account:
             raise ValueError("positionOwnership.snapshotUnavailable")
         account[side] += abs(qty)
+        if exchange_id == "forthright":
+            reported = row.get("salable_qty", row.get("available_qty", abs(qty)))
+            sellable[side] += max(0.0, min(abs(qty), _quantity(reported)))
     allocations = list_strategy_allocations_for_account(
         user_id=user_id, credential_id=credential_id, market_type="spot",
         allowed_symbols={symbol}, exchange_id=exchange_id,
@@ -118,6 +125,10 @@ def guarded_alpaca_quantity(*, client, strategy_id, user_id, credential_id, symb
         raise ValueError("positionOwnership.invalidRepairRequest")
     available = max(0.0, account[side] - max(0.0, total - own))
     quantity = min(amount, own, available)
+    if exchange_id == "forthright" or whole_lot_tiger:
+        if exchange_id == "forthright":
+            quantity = min(quantity, sellable[side])
+        quantity = client.normalize_strategy_quantity(symbol, quantity)
     if quantity <= 1e-8:
         raise ValueError("positionOwnership.noStrategyInventory")
     return quantity
@@ -160,7 +171,10 @@ def execute_guarded_alpaca_order(worker, **kwargs):
         if reason in {"positionOwnership.accountBusy", "positionOwnership.ordersPending"}:
             worker._mark_deferred(order_id, reason)
         else:
-            if not reason.startswith("positionOwnership."):
+            if not reason.startswith("positionOwnership.") and not (exchange_id in {"forthright", "tiger"} and reason in {
+                "brokerAccounts.forthright.lotUnavailable", "brokerAccounts.forthright.belowBoardLot",
+                "brokerAccounts.forthright.wholeBoardLot",
+            }):
                 logger.exception("Broker ownership check failed: exchange=%s pending_id=%s", exchange_id, order_id)
                 reason = "positionOwnership.snapshotUnavailable"
             worker._mark_failed(order_id=order_id, error=reason)

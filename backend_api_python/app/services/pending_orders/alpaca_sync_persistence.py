@@ -29,7 +29,7 @@ class AlpacaOrderSyncPersistenceMixin:
                             dispatch_note = 'alpaca_fill_sync:requeued_stale_sync',
                             updated_at = NOW()
                         WHERE status = 'syncing'
-                          AND LOWER(COALESCE(exchange_id, '')) IN ('alpaca', 'tiger', 'webull')
+                          AND LOWER(COALESCE(exchange_id, '')) IN ('alpaca', 'tiger', 'webull', 'forthright')
                           AND updated_at < NOW() - (%s * INTERVAL '1 second')
                         """,
                         (stale_sec,),
@@ -59,7 +59,7 @@ class AlpacaOrderSyncPersistenceMixin:
                                 )
                             )
                           )
-                      AND LOWER(COALESCE(exchange_id, '')) IN ('alpaca', 'tiger', 'webull')
+                      AND LOWER(COALESCE(exchange_id, '')) IN ('alpaca', 'tiger', 'webull', 'forthright')
                       AND (
                             COALESCE(exchange_order_id, '') <> ''
                             OR COALESCE(client_order_id, '') <> ''
@@ -107,7 +107,7 @@ class AlpacaOrderSyncPersistenceMixin:
                                 )
                             )
                           )
-                      AND LOWER(COALESCE(exchange_id, '')) IN ('alpaca', 'tiger', 'webull')
+                      AND LOWER(COALESCE(exchange_id, '')) IN ('alpaca', 'tiger', 'webull', 'forthright')
                       AND (COALESCE(exchange_order_id, '') <> '' OR COALESCE(client_order_id, '') <> '')
                     RETURNING *
                     """,

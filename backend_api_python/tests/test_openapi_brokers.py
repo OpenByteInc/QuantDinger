@@ -81,11 +81,13 @@ def test_tiger_connects_directly_and_normalizes_positions(monkeypatch):
 
 
 def test_tiger_order_uses_official_sdk_order_and_user_mark(monkeypatch):
+    from app.services.market import hk_board_lots
+    monkeypatch.setattr(hk_board_lots, "board_lot_rule", lambda symbol: {"lot_size": 100})
     trade_client = FakeTigerTradeClient()
     client = TigerClient(TigerConfig(tiger_id="tiger-1", account_id="account-1", private_key="pem"))
     monkeypatch.setattr(client, "_sdk", lambda: fake_tiger_sdk(trade_client))
     result = client.place_limit_order(
-        symbol="3690.HK", side="buy", quantity=2, price=70.5,
+        symbol="3690.HK", side="buy", quantity=200, price=70.5,
         market_type="HKStock", client_order_id="qd-order-1",
     )
     assert result.order_id == "401001"
@@ -93,6 +95,7 @@ def test_tiger_order_uses_official_sdk_order_and_user_mark(monkeypatch):
     assert order.contract.symbol == "03690"
     assert order.contract.currency == "HKD"
     assert order.limit_price == 70.5
+    assert order.quantity == 200
     assert order.user_mark == "qd-order-1"
 
 

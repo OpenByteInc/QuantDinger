@@ -43,7 +43,7 @@ def resolve_strategy_direction_mode(strategy: Dict[str, Any]) -> str:
         or strategy.get("market_type")
         or "swap"
     ).strip().lower()
-    if market_type == "spot":
+    if market_type == "spot" and strategy.get("market_category") != "Futures":
         return "long_only"
 
     executor_config = trading_config.get("executor_config") if isinstance(trading_config.get("executor_config"), dict) else {}

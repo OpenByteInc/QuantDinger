@@ -45,6 +45,7 @@ class LiveOrderRequest:
     exchange_id: str = ""
     credential_id: int = 0
     rebalance_group_id: str = ""
+    market_category: str = ""
 
 
 class StrategyV2OrderGateway:
@@ -216,6 +217,7 @@ class StrategyV2OrderGateway:
             price_hint=request.reference_price,
             reason=request.reason,
             source="strategy_v2",
+            metadata={"market_category": request.market_category},
             rebalance_group_id=request.rebalance_group_id,
         )
         intent = service.create_intent(
@@ -460,7 +462,7 @@ class StrategyV2OrderGateway:
             raise ValueError("strategyV2.invalidOrderSize")
         if request.execution_mode not in {"signal", "live"}:
             raise ValueError("strategyV2.invalidExecutionMode")
-        if request.market_type == "spot" and "short" in request.action:
+        if request.market_type == "spot" and request.market_category != "Futures" and "short" in request.action:
             raise ValueError("strategyV2.spotShortUnsupported")
         if request.order_type not in {"market", "limit"}:
             raise ValueError("strategyV2.orderTypeUnsupported")

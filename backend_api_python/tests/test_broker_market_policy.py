@@ -92,7 +92,7 @@ class TestHelpers:
         assert "tiger" in usstock_brokers
         assert "webull" in usstock_brokers
         assert "binance" not in usstock_brokers
-        assert list_supported_brokers_for_market("HKStock") == {"tiger"}
+        assert list_supported_brokers_for_market("HKStock") == {"tiger", "forthright"}
         assert list_supported_brokers_for_market("Forex") == set()
 
 

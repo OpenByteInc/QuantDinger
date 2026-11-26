@@ -153,6 +153,7 @@ def validate_exchange_environment(exchange_id: str, environment: str, market_sco
         "alpaca": {"live", "demo"},
         "tiger": {"live", "demo"},
         "webull": {"live", "testnet"},
+        "forthright": {"live", "testnet"},
     }
     if env not in allowed.get(ex, {"live"}):
         if ex == "htx" and env != "live":
@@ -359,6 +360,16 @@ def create_client(exchange_config: Dict[str, Any], *, market_type: str = "swap")
     # Caller is responsible for validating market_category in (USStock, Crypto).
     if exchange_id == "alpaca":
         return create_alpaca_client({**exchange_config, "paper": is_demo})
+
+    if exchange_id == "forthright":
+        from app.services.openapi_brokers import ForthrightClient, ForthrightConfig
+        if exchange_config.get("account_type") == "futures" or exchange_config.get("market_category") == "Futures":
+            raise LiveTradingError("strategyV2.liveMarketUnsupported")
+        config = {key: exchange_config[key] for key in ForthrightConfig.__dataclass_fields__ if key in exchange_config}
+        config["environment"] = "sandbox" if is_demo else "live"
+        client = ForthrightClient(ForthrightConfig(**config), strategy_units=True)
+        client.connect()
+        return client
 
     if exchange_id == "tiger":
         return create_tiger_client({**exchange_config, "environment": "paper" if is_demo else "live"})

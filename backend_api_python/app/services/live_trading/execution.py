@@ -123,9 +123,9 @@ def place_order_from_signal(
     cfg = exchange_config if isinstance(exchange_config, dict) else {}
     mt = normalize_order_market_type(market_type or cfg.get("market_type") or "swap")
 
-    from app.services.openapi_brokers import TigerClient, WebullClient
-    if isinstance(client, (TigerClient, WebullClient)):
-        broker_id = "tiger" if isinstance(client, TigerClient) else "webull"
+    from app.services.openapi_brokers import TigerClient, WebullClient, ForthrightClient
+    if isinstance(client, (TigerClient, WebullClient, ForthrightClient)):
+        broker_id = "forthright" if isinstance(client, ForthrightClient) else "tiger" if isinstance(client, TigerClient) else "webull"
         market_category = str(
             cfg.get("market_category") or cfg.get("market_type") or market_type or "USStock"
         ).strip()
@@ -135,6 +135,7 @@ def place_order_from_signal(
             quantity=qty,
             market_type=market_category,
             client_order_id=client_order_id or "",
+            **({"reference_price": cfg.get("reference_price", 0)} if isinstance(client, ForthrightClient) else {}),
         )
         if not result.success:
             raise LiveTradingError(result.message or f"{broker_id} order placement failed")

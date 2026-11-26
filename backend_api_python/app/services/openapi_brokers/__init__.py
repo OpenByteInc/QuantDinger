@@ -5,8 +5,11 @@ from .clients import (
     WebullClient,
     WebullConfig,
 )
+from .forthright import ForthrightClient, ForthrightConfig
 
 __all__ = [
+    "ForthrightClient",
+    "ForthrightConfig",
     "BrokerOrderResult",
     "TigerClient",
     "TigerConfig",

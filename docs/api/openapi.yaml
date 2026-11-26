@@ -2781,6 +2781,26 @@ paths:
       - Market
       operationId: getApiMarketAssetsSearch
       x-visibility: public
+  /api/market/futures/products:
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - Market
+      operationId: getApiMarketFuturesProducts
+      summary: Get Api Market Futures Products
+      x-visibility: public
   /api/market/assets/capabilities:
     get:
       responses:
@@ -6375,6 +6395,113 @@ paths:
       - Settings
       operationId: getApiSettingsBrandConfig
       x-visibility: internal
+  /api/settings/advertisements:
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+        '401':
+          description: Authentication required
+        '403':
+          description: Administrator role required
+      tags:
+      - Settings
+      operationId: getApiSettingsAdvertisements
+      summary: Read advertisement configuration (administrators only)
+      x-visibility: internal
+      security:
+      - HumanJWT: []
+    put:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+        '401':
+          description: Authentication required
+        '403':
+          description: Administrator role required
+        '409':
+          description: Revision conflict; reload before saving
+      tags:
+      - Settings
+      operationId: putApiSettingsAdvertisements
+      summary: Replace advertisements using optimistic revision checking
+      x-visibility: internal
+      security:
+      - HumanJWT: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - items
+              - revision
+              properties:
+                revision:
+                  type: integer
+                  minimum: 0
+                items:
+                  type: array
+                  maxItems: 40
+                  items:
+                    type: object
+                    required:
+                    - id
+                    - name
+                    - image_url
+                    - target_url
+                    - position
+                    - sort_order
+                    - enabled
+                    properties:
+                      id:
+                        type: string
+                        minLength: 1
+                        maxLength: 64
+                      name:
+                        type: string
+                        minLength: 1
+                        maxLength: 80
+                      image_url:
+                        type: string
+                        format: uri
+                        maxLength: 2048
+                      target_url:
+                        type: string
+                        format: uri
+                        maxLength: 2048
+                      position:
+                        type: string
+                        enum:
+                        - sidebar
+                        - accounts
+                      sort_order:
+                        type: integer
+                        minimum: 0
+                        maximum: 9999
+                      enabled:
+                        type: boolean
   /api/settings/values:
     get:
       responses:
@@ -6430,10 +6557,30 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HumanSuccessEnvelope'
-      summary: Start a non-blocking full sync for the supported crypto venues.
+      summary: Start a non-blocking sync of venue products and instrument specifications.
       tags:
       - Settings
       operationId: postApiSettingsMarketCatalogSync
+      x-visibility: internal
+  /api/settings/instrument-catalog:
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - Settings
+      operationId: getApiSettingsInstrumentCatalog
+      summary: Get Api Settings Instrument Catalog
       x-visibility: internal
   /api/settings/save:
     post:
@@ -7509,6 +7656,66 @@ paths:
       schema:
         type: string
         minLength: 1
+  /api/forthright/authorization:
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - Forthright
+      operationId: getApiForthrightAuthorization
+      summary: Get Api Forthright Authorization
+      x-visibility: internal
+  /api/forthright/unlock:
+    post:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - Forthright
+      operationId: postApiForthrightUnlock
+      summary: Post Api Forthright Unlock
+      x-visibility: internal
+  /api/forthright/contracts:
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - Forthright
+      operationId: getApiForthrightContracts
+      summary: Get Api Forthright Contracts
+      x-visibility: internal
   /api/{broker}/account:
     get:
       responses:
@@ -7641,6 +7848,39 @@ paths:
       schema:
         type: string
         minLength: 1
+  /api/{broker}/instrument-rules:
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - Account
+      operationId: getApiBrokerInstrumentRules
+      summary: Get Api Broker Instrument Rules
+      parameters:
+      - name: broker
+        in: path
+        required: true
+        schema:
+          type: string
+      x-visibility: internal
+    parameters:
+    - in: path
+      name: broker
+      required: true
+      schema:
+        type: string
+        minLength: 1
   /api/{broker}/order:
     post:
       responses:
@@ -7718,6 +7958,26 @@ paths:
       schema:
         type: string
         minLength: 1
+  /api/forthright/close-position:
+    post:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - Forthright
+      operationId: postApiForthrightClosePosition
+      summary: Post Api Forthright Close Position
+      x-visibility: internal
   /api/global-market/overview:
     get:
       responses:

@@ -1,5 +1,7 @@
 # Live-trading safety guide
 
+> Forthright futures currently support manual trading only. Automated futures strategy execution is disabled; contract specification notes below are retained for future integration.
+
 This guide defines the minimum checks before moving from backtest or signal mode to real capital. Venue, broker, region, and account type affect available products; the active catalog and account response take precedence over static examples.
 
 ## Support boundary
@@ -11,8 +13,9 @@ This guide defines the minimum checks before moving from backtest or signal mode
 | Exchange tokenized equities | OKX, Bybit, Bitget Reality | catalog and regional availability required; long-only |
 | Exchange equity perpetuals | Binance, OKX, Bitget, Bybit, Gate | derivative exposure; exact native contract and swap rules required |
 | Binance bStocks | Binance | exact catalog pair, spot semantics, and no leverage |
-| USStock | Alpaca, IBKR, Futu/Moomoo OpenD, Webull OpenAPI | current broker strategy policy is long-only |
-| HKStock | Futu/Moomoo OpenD | current broker strategy policy is long-only |
+| USStock | Alpaca, IBKR, Tiger, Webull, Forthright | current broker strategy policy is long-only |
+| HKStock | Tiger, Forthright | current broker strategy policy is long-only |
+| Futures | none | automated strategy execution is disabled; Forthright manual trading only |
 | Other parsed markets | none | data or backtest support does not imply live support |
 
 HTX equity products are rejected until authoritative metadata and an execution contract are available. Mixed-market live deployment is unsupported. See [Section 18 of the Strategy API V2 guide](STRATEGY_DEV_GUIDE.md#18-deployment-and-live-boundaries) for canonical identifiers and the full boundary.

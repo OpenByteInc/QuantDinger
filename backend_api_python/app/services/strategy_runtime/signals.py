@@ -157,7 +157,7 @@ class StrategySignal:
             raise ValueError("amount cannot be negative")
         if self.quote_amount < 0:
             raise ValueError("quote_amount cannot be negative")
-        if self.market_type == "spot" and "short" in self.action:
+        if self.market_type == "spot" and self.metadata.get("market_category") != "Futures" and "short" in self.action:
             raise ValueError("spot market does not support short signals")
 
     def to_signal_dict(self) -> Dict[str, Any]:
