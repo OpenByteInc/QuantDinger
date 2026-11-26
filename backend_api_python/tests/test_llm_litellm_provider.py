@@ -107,6 +107,67 @@ def test_atlascloud_openai_compatible_call_skips_response_format(monkeypatch):
     assert "response_format" not in captured["json"]
 
 
+def test_martllm_env_mapping(monkeypatch):
+    monkeypatch.setenv("MARTLLM_API_KEY", "martllm-key")
+    monkeypatch.setenv("MARTLLM_MODEL", "deepseek/deepseek-v4-flash")
+    monkeypatch.setenv("MARTLLM_BASE_URL", "https://api.martllm.com/v1")
+    _reset_config_cache()
+
+    cfg = load_addon_config()
+
+    assert cfg["martllm"]["api_key"] == "martllm-key"
+    assert cfg["martllm"]["model"] == "deepseek/deepseek-v4-flash"
+    assert cfg["martllm"]["base_url"] == "https://api.martllm.com/v1"
+
+
+def test_martllm_provider_defaults_and_model_ids(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "martllm")
+    monkeypatch.delenv("MARTLLM_MODEL", raising=False)
+    monkeypatch.delenv("MARTLLM_BASE_URL", raising=False)
+    _reset_config_cache()
+
+    service = LLMService()
+
+    assert service.provider == LLMProvider.MARTLLM
+    assert service.get_default_model() == "openai/gpt-5.4"
+    assert service.get_base_url() == "https://api.martllm.com/v1"
+    assert (
+        service._normalize_model_for_provider("anthropic/claude-sonnet-4.6", LLMProvider.MARTLLM)
+        == "anthropic/claude-sonnet-4.6"
+    )
+    assert (
+        service._normalize_model_for_provider("martllm/deepseek/deepseek-v4-flash", LLMProvider.MARTLLM)
+        == "deepseek/deepseek-v4-flash"
+    )
+    assert service._detect_provider_from_model("martllm/deepseek/deepseek-v4-flash") == LLMProvider.MARTLLM
+
+
+def test_martllm_retries_without_response_format_when_rejected(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "martllm")
+    _reset_config_cache()
+    service = LLMService()
+    captured = {}
+
+    monkeypatch.setattr(service, "get_api_key", lambda provider=None: "martllm-key")
+
+    def fake_call(messages, model, temperature, api_key, base_url, timeout, **options):
+        captured.update({"model": model, "base_url": base_url, "options": options})
+        return "{\"ok\": true}"
+
+    monkeypatch.setattr(service, "_call_openai_compatible", fake_call)
+
+    result = service.call_llm_api(
+        [{"role": "user", "content": "hello"}],
+        model="deepseek/deepseek-v4-flash",
+        try_alternative_providers=False,
+    )
+
+    assert result == "{\"ok\": true}"
+    assert captured["model"] == "deepseek/deepseek-v4-flash"
+    assert captured["base_url"] == "https://api.martllm.com/v1"
+    assert captured["options"] == {"use_json_mode": True, "allow_response_format_retry": True}
+
+
 def test_google_gemini_uses_uniform_max_tokens(monkeypatch):
     captured = {}
 

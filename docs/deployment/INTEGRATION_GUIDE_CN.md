@@ -37,7 +37,7 @@ IBKR、Futu/Moomoo 等本地桌面网关必须与 QuantDinger 后端网络可达
 
 ## AI / LLM
 
-“系统设置 → AI / LLM”用于选择提供商、模型、API Key 和高级参数。当前界面可能提供 OpenAI、Google、DeepSeek、Grok、AtlasCloud、自定义 OpenAI 兼容服务等选项。
+“系统设置 → AI / LLM”用于选择提供商、模型、API Key 和高级参数。当前界面可能提供 OpenAI、Google、DeepSeek、Grok、AtlasCloud、MartLLM、自定义 OpenAI 兼容服务等选项。
 
 接入时：
 

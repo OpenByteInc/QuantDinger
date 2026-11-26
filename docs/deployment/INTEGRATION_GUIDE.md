@@ -37,7 +37,7 @@ Public sources may be delayed, incomplete, or license restricted. Production dec
 
 ## AI / LLM
 
-Settings → AI / LLM selects the provider, model, API key, and advanced parameters. Depending on the build, the UI may offer OpenAI, Google, DeepSeek, Grok, AtlasCloud, and custom OpenAI-compatible services.
+Settings → AI / LLM selects the provider, model, API key, and advanced parameters. Depending on the build, the UI may offer OpenAI, Google, DeepSeek, Grok, AtlasCloud, MartLLM, and custom OpenAI-compatible services.
 
 - Select the provider before entering its credential and model name.
 - Use a trusted HTTPS endpoint for custom services and verify the compatible API path.

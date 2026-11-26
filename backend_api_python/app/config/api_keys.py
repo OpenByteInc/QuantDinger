@@ -154,6 +154,16 @@ class MetaAPIKeys(type):
         return val if val else ''
 
     @property
+    def MARTLLM_API_KEY(cls):
+        """MartLLM API key"""
+        env_val = os.getenv('MARTLLM_API_KEY', '').strip()
+        if env_val:
+            return env_val
+        from app.utils.config_loader import load_addon_config
+        val = load_addon_config().get('martllm', {}).get('api_key')
+        return val if val else ''
+
+    @property
     def CUSTOM_API_KEY(cls):
         """Custom LLM API key (for OpenAI-compatible custom endpoints)"""
         env_val = os.getenv('CUSTOM_API_KEY', '').strip()

@@ -110,7 +110,7 @@ ADVANCED_KEYS = {
     'ALPHA_VANTAGE_API_KEY', 'ALPHA_VANTAGE_BASE_URL', 'ALPHA_VANTAGE_TIMEOUT', 'ALPHA_VANTAGE_NEWS_LIMIT',
     'AI_CODE_GEN_MODEL', 'LLM_PROXY_URL', 'LLM_USE_SYSTEM_PROXY',
     'JEV_BASE_URL', 'JEV_MODEL', 'JEV_TIMEOUT_SECONDS', 'JEV_MIN_CONFIDENCE', 'AI_DECISION_TIMEOUT_SECONDS',
-    'OPENAI_BASE_URL', 'DEEPSEEK_BASE_URL', 'GROK_BASE_URL', 'ATLASCLOUD_BASE_URL', 'MINIMAX_BASE_URL',
+    'OPENAI_BASE_URL', 'DEEPSEEK_BASE_URL', 'GROK_BASE_URL', 'ATLASCLOUD_BASE_URL', 'MARTLLM_BASE_URL', 'MINIMAX_BASE_URL',
     # Data source internals
     'FINNHUB_API_KEY', 'FINNHUB_FREE_ONLY',
     'TRADING_ECONOMICS_CLIENT', 'TRADING_ECONOMICS_KEY',
@@ -485,6 +485,7 @@ CONFIG_SCHEMA = {
                     {'value': 'deepseek', 'label': 'DeepSeek'},
                     {'value': 'grok', 'label': 'xAI Grok'},
                     {'value': 'atlascloud', 'label': 'AtlasCloud'},
+                    {'value': 'martllm', 'label': 'MartLLM (Multi-model gateway)'},
                     {'value': 'custom', 'label': 'Custom API (OpenAI-compatible)'},
                     {'value': 'minimax', 'label': 'MiniMax'},
                     {'value': 'litellm', 'label': 'LiteLLM (100+ providers)'},
@@ -656,6 +657,35 @@ CONFIG_SCHEMA = {
                 'default': 'https://api.atlascloud.ai/v1',
                 'description': 'AtlasCloud OpenAI-compatible API endpoint. Must include /v1.',
                 'group': 'atlascloud'
+            },
+            # MartLLM
+            {
+                'key': 'MARTLLM_API_KEY',
+                'label': 'MartLLM API Key',
+                'type': 'password',
+                'required': False,
+                'link': 'https://martllm.com/signup',
+                'link_text': 'settings.link.getApiKey',
+                'description': 'MartLLM API key. One OpenAI-compatible key for GPT, Claude, Gemini, DeepSeek, Qwen and other models.',
+                'group': 'martllm'
+            },
+            {
+                'key': 'MARTLLM_MODEL',
+                'label': 'MartLLM Model',
+                'type': 'text',
+                'default': 'openai/gpt-5.4',
+                'link': 'https://martllm.com/models',
+                'link_text': 'settings.link.viewModels',
+                'description': 'MartLLM model ID in vendor/model form, e.g. openai/gpt-5.4, anthropic/claude-sonnet-4.6 or deepseek/deepseek-v4-flash.',
+                'group': 'martllm'
+            },
+            {
+                'key': 'MARTLLM_BASE_URL',
+                'label': 'MartLLM Base URL',
+                'type': 'text',
+                'default': 'https://api.martllm.com/v1',
+                'description': 'MartLLM OpenAI-compatible API endpoint. Must include /v1.',
+                'group': 'martllm'
             },
             # Custom API (OpenAI-compatible)
             {
