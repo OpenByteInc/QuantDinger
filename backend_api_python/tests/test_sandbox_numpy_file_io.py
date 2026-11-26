@@ -115,6 +115,28 @@ def test_dotted_import_cannot_reach_a_blocked_capability():
         importer("numpy.fromregex")
 
 
+def test_cold_process_ndarray_reductions_keep_private_imports_blocked():
+    source = """
+from app.utils.safe_exec import safe_exec_with_validation, build_safe_builtins
+namespace = {}
+result = safe_exec_with_validation(
+    'import numpy as np\\na=np.array([1., 2., 3.])\\noutput=[float(a.mean()), float(a.std()), float(a.sum()), float(a.min()), float(a.max()), float(a.var()), float(a.prod()), bool(a.any()), bool(a.all())]',
+    namespace,
+)
+assert result['success'], result['error']
+assert namespace['output'][0] == 2.0
+assert namespace['output'][2:5] == [6.0, 1.0, 3.0]
+try:
+    build_safe_builtins()['__import__']('numpy._core._methods')
+except ImportError:
+    pass
+else:
+    raise AssertionError('private module import must remain forbidden')
+"""
+    completed = subprocess.run([sys.executable, '-c', source], capture_output=True, text=True, timeout=20)
+    assert completed.returncode == 0, completed.stderr
+
+
 def test_computation_and_descriptive_variable_names_remain_supported():
     namespace = {}
     result = safe_exec.safe_exec_with_validation(
