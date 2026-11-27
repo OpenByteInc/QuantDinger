@@ -25,7 +25,11 @@ def refresh_members(service, candidates, manifest, user_id, strategy_id, now, ex
     merged = {item['key']: item for item in fresh}
     for item in candidates:
         if str(item.get('symbol')) in active:
-            merged[item['key']] = item
+            if item.get('market') == 'HKStock':
+                spec = parse_instrument(item['symbol'], default_market='HKStock')
+                merged.setdefault(spec.key, {**item, 'key': spec.key, 'symbol': spec.symbol})
+            else:
+                merged[item['key']] = item
     if len(manifest.markets) == 1:
         for symbol in active:
             spec = parse_instrument(f'{manifest.markets[0]}:{symbol}')
@@ -52,11 +56,18 @@ def positions_by_symbol(executor, strategy_id, candidates, strategy):
         or 'spot'
     ).strip().lower()
     grouped = defaultdict(list)
+    hk_rows = defaultdict(list)
+    has_hk_members = any(member.get('market') == 'HKStock' for member in candidates)
     for row in executor._get_current_positions(strategy_id, None):
         grouped[str(row.get('symbol') or '').split(':')[0]].append(row)
+        if has_hk_members and row.get('symbol'):
+            spec = parse_instrument(row.get('symbol'), default_market='HKStock')
+            if spec.market == 'HKStock':
+                hk_rows[spec.symbol].append(row)
     output = {}
     for member in candidates:
-        rows = grouped.get(str(member.get('symbol') or '').split(':')[0], [])
+        rows = (hk_rows.get(member['symbol'], []) if member.get('market') == 'HKStock'
+                else grouped.get(str(member.get('symbol') or '').split(':')[0], []))
         market_type = str(member.get('market_type') or default_market_type).strip().lower()
         if market_type in {'future', 'futures', 'perp', 'perpetual'}:
             market_type = 'swap'

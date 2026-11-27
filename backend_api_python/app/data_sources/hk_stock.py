@@ -12,6 +12,8 @@
 from __future__ import annotations
 
 from typing import Dict, List, Any, Optional
+import threading
+import time
 
 from app.data_sources.base import BaseDataSource
 from app.data_sources.tencent import normalize_hk_code, fetch_quote, parse_quote_to_ticker, fetch_kline, tencent_kline_rows_to_dicts
@@ -31,6 +33,8 @@ class HKStockDataSource(BaseDataSource):
     """港股/H股数据源（TwelveData + Tencent + yfinance + AkShare）"""
 
     name = "HKStock/multi-source"
+    _tencent_backoff_lock = threading.Lock()
+    _tencent_blocked_until = 0.0
 
     def get_ticker(self, symbol: str) -> Dict[str, Any]:
         code = normalize_hk_code(symbol)
@@ -63,9 +67,27 @@ class HKStockDataSource(BaseDataSource):
         code = normalize_hk_code(symbol)
         tf = normalize_chart_timeframe(timeframe)
         lim = max(int(limit or 300), 1)
+        failures = []
+
+        def attempt(provider, fetch, **kwargs):
+            if provider == "tencent":
+                with self._tencent_backoff_lock:
+                    if time.monotonic() < self._tencent_blocked_until:
+                        return []
+            try:
+                return fetch(**kwargs)
+            except Exception as exc:
+                failures.append(exc)
+                status = getattr(getattr(exc, "response", None), "status_code", None)
+                if provider == "tencent" and status in {403, 429, 501}:
+                    with self._tencent_backoff_lock:
+                        type(self)._tencent_blocked_until = time.monotonic() + 60.0
+                logger.warning("HK candle provider %s failed for %s (%s); trying fallback",
+                               provider, code, type(exc).__name__)
+                return []
 
         # Tier 1: Twelve Data (paid, most reliable)
-        rows = fetch_twelvedata_klines(
+        rows = attempt("twelvedata", fetch_twelvedata_klines,
             is_hk=True, tencent_code=code, timeframe=tf, limit=lim, before_time=before_time
         )
         if rows:
@@ -81,7 +103,7 @@ class HKStockDataSource(BaseDataSource):
         if tf in ("1D", "1W"):
             tf_map = {"1D": "day", "1W": "week"}
             period = tf_map.get(tf, "day")
-            raw_rows = fetch_kline(code, period=period, count=lim, adj="qfq")
+            raw_rows = attempt("tencent", fetch_kline, code=code, period=period, count=lim, adj="qfq")
             out = tencent_kline_rows_to_dicts(raw_rows)
             if out:
                 return self.filter_and_limit(
@@ -93,7 +115,7 @@ class HKStockDataSource(BaseDataSource):
                 )
 
         # Tier 3: yfinance (works when Yahoo not rate-limited)
-        rows = fetch_yfinance_klines(
+        rows = attempt("yahoo", fetch_yfinance_klines,
             is_hk=True,
             tencent_code=code,
             timeframe=tf,
@@ -112,7 +134,7 @@ class HKStockDataSource(BaseDataSource):
 
         # Tier 4: AkShare (fragile overseas, last resort)
         if tf in ("1m", "5m", "15m", "30m", "1H", "4H"):
-            rows = fetch_akshare_minute_klines(
+            rows = attempt("akshare", fetch_akshare_minute_klines,
                 is_hk=True,
                 tencent_code=code,
                 timeframe=tf,
@@ -121,11 +143,14 @@ class HKStockDataSource(BaseDataSource):
                 after_time=after_time,
             )
         elif tf == "1W":
-            rows = fetch_akshare_weekly_klines(
+            rows = attempt("akshare", fetch_akshare_weekly_klines,
                 is_hk=True, tencent_code=code, limit=lim, before_time=before_time
             )
         else:
             rows = []
+
+        if not rows and failures:
+            raise failures[-1]
 
         return self.filter_and_limit(
             rows,

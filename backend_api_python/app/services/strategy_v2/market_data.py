@@ -38,7 +38,7 @@ _shared_frames: dict[str, _SharedFrameEntry] = {}
 _shared_frame_locks: dict[str, threading.RLock] = {}
 _shared_frames_lock = threading.RLock()
 _shared_frames_bytes = 0
-_SHARED_FRAME_CACHE_MAX_SIZE = 256
+_SHARED_FRAME_CACHE_MAX_SIZE = max(1, int(os.getenv("STRATEGY_SHARED_FRAME_CACHE_MAX_SIZE", "4096")))
 _SHARED_FRAME_CACHE_MAX_BYTES = max(
     0,
     int(os.getenv("STRATEGY_SHARED_FRAME_CACHE_MAX_BYTES", str(256 * 1024 * 1024))),
@@ -142,6 +142,8 @@ def _covers_equity_window(
     requested_start: pd.Timestamp,
     requested_end: pd.Timestamp,
     timeframe_seconds: int,
+    *,
+    required_warmup_bars: int = 0,
 ) -> bool:
     if frame is None or frame.empty:
         return False
@@ -149,8 +151,16 @@ def _covers_equity_window(
         pd.Timedelta(days=10),
         pd.Timedelta(seconds=max(1, timeframe_seconds) * 2),
     )
+    warmup_covered = False
+    if (required_warmup_bars > 0 and frame.index.min() > requested_start + tolerance
+            and all(name in frame for name in ("open", "high", "low", "close"))):
+        window = frame.loc[(frame.index >= requested_start) & (frame.index <= requested_end)]
+        ohlc = window[["open", "high", "low", "close"]].apply(pd.to_numeric, errors="coerce")
+        valid = (ohlc.gt(0) & ohlc.lt(float("inf"))).all(axis=1)
+        warmup_covered = window.index[valid].nunique() >= required_warmup_bars
     return bool(
-        frame.index.min() <= requested_start + tolerance
+        (frame.index.min() <= requested_start + tolerance
+         or warmup_covered)
         and frame.index.max() >= requested_end - tolerance
     )
 
@@ -166,6 +176,7 @@ def _load_strategy_frame_uncached(
     exchange_id: Optional[str] = None,
     instrument_id: Optional[str] = None,
     api_family: Optional[str] = None,
+    required_warmup_bars: int = 0,
 ) -> pd.DataFrame:
     product = _resolve_catalog_product(
         market,
@@ -201,6 +212,7 @@ def _load_strategy_frame_uncached(
         resolved_api_family,
         start_utc.isoformat(),
         end_utc.isoformat(),
+        str(required_warmup_bars),
     ))
     requested_start = pd.Timestamp(start_utc).tz_localize(None)
     requested_end = pd.Timestamp(end_utc).tz_localize(None)
@@ -246,6 +258,7 @@ def _load_strategy_frame_uncached(
                 requested_start,
                 coverage_end,
                 timeframe_seconds,
+                required_warmup_bars=required_warmup_bars,
             )
         if cache_is_usable and requested_end >= closed_bar_cutoff and data_market in {"Crypto", "Cryptocurrency", "USStock", "HKStock"}:
             from app.services.strategy_runtime.candle_readiness import frame_covers_bar
@@ -294,7 +307,7 @@ def _load_strategy_frame_uncached(
         }
         if rows is not None:
             pass
-        elif effective_market == market and str(exchange_id or "").strip():
+        elif (required_warmup_bars and effective_market in {"USStock", "HKStock"}) or (effective_market == market and str(exchange_id or "").strip()):
             rows, failure = DataSourceFactory.get_kline_with_diagnostics(**kwargs)
             if not rows and failure is not None:
                 raise MarketDataUnavailableError(failure)
@@ -401,6 +414,7 @@ def _load_strategy_frame_uncached(
         requested_start,
         coverage_end,
         timeframe_seconds,
+        required_warmup_bars=required_warmup_bars,
     ):
         raise MarketDataUnavailableError(
             classify_market_data_failure(
@@ -622,6 +636,7 @@ def load_strategy_frame(
     exchange_id: Optional[str] = None,
     instrument_id: Optional[str] = None,
     api_family: Optional[str] = None,
+    required_warmup_bars: int = 0,
 ) -> pd.DataFrame:
     """Load candles through a process-wide, incremental singleflight cache.
 
@@ -649,6 +664,13 @@ def load_strategy_frame(
         closed_cutoff,
         timeframe_seconds,
     )
+    required_warmup_bars = max(0, int(required_warmup_bars)) if (
+        live_request and data_market in {"USStock", "HKStock"} and normalized_timeframe == "1d"
+    ) else 0
+    if required_warmup_bars:
+        # Reuse the same closed-session request across startup/heartbeat clocks.
+        requested_start = requested_start.normalize()
+        requested_end = coverage_end
     continuous_crypto_market = bool(
         str(market or "").strip().lower() == "crypto"
         and (
@@ -669,6 +691,8 @@ def load_strategy_frame(
         instrument_id,
         api_family,
     )
+    if required_warmup_bars:
+        key += f":warmup:{required_warmup_bars}"
 
     with _lock_for_shared_frame(key):
         entry = _shared_frames.get(key)
@@ -696,6 +720,7 @@ def load_strategy_frame(
                     requested_start,
                     coverage_end,
                     timeframe_seconds,
+                    required_warmup_bars=required_warmup_bars,
                 )
                 if live_request and data_market in {"USStock", "HKStock"}:
                     cached_result_is_usable = cached_result_is_usable and frame_covers_bar(
@@ -743,6 +768,7 @@ def load_strategy_frame(
                         exchange_id=exchange_id,
                         instrument_id=instrument_id,
                         api_family=api_family,
+                        **({"required_warmup_bars": required_warmup_bars} if required_warmup_bars else {}),
                     )
                     last_failure = None
                     break
@@ -788,6 +814,7 @@ def load_strategy_frame(
                 requested_start,
                 coverage_end,
                 timeframe_seconds,
+                required_warmup_bars=required_warmup_bars,
             )
         )
         cached_coverage_start = (
@@ -839,6 +866,7 @@ def load_strategy_frame(
             requested_start,
             coverage_end,
             timeframe_seconds,
+            required_warmup_bars=required_warmup_bars,
         ):
             logger.warning(
                 "Refused incomplete cached equity frame for %s %s: "

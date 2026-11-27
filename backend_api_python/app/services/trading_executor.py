@@ -32,7 +32,7 @@ from app.services.market_context import (
 )
 from app.services.market_schedule import equity_order_session_error
 from app.services.strategy_runtime.health import record_runtime_heartbeat
-from app.services.strategy_runtime.price_freshness import filter_execution_prices
+from app.services.strategy_runtime.price_freshness import filter_execution_prices, daily_signal_wait_reason
 from app.services.strategy_runtime.identity import ensure_strategy_run, finish_strategy_run
 from app.services.strategy_runtime.order_intents import OrderIntentService
 from app.services.strategy_runtime.scheduler import CooperativeRuntimeScheduler
@@ -780,7 +780,12 @@ class TradingExecutor:
 
                 exchange_config = resolve_exchange_config(exchange_config, user_id=user_id)
 
-            service = StrategyV2BacktestService()
+            from functools import partial
+            from app.services.strategy_v2.market_data import load_strategy_frame
+
+            service = StrategyV2BacktestService(frame_fetcher=partial(
+                load_strategy_frame, required_warmup_bars=max(1, program.manifest.warmup_bars),
+            ))
             now = datetime.now(timezone.utc)
             candidates, universe_id = service.resolve_candidates(
                 user_id=user_id,
@@ -1114,6 +1119,8 @@ class TradingExecutor:
             last_market_data_failure_key = ""
             last_market_data_log_at = 0.0
             signal_data_error = ""
+            daily_wait_reason = ""
+            daily_wait_logged_at = 0.0
             last_execution_session_error = ""
             strategy_name = str(strategy.get("strategy_name") or f"strategy_{strategy_id}")
             notification_config = _json_object(strategy.get("notification_config"))
@@ -1489,8 +1496,17 @@ class TradingExecutor:
                                     if str(member.get("key") or "") in ready_universe_symbols
                                 ]
                             if not runtime_frames_ready(frequency_frames, signal_members):
+                                from app.services.strategy_runtime.candle_readiness import frame_is_current
+
+                                missing_bars = [
+                                    f"{member['key']}@{tf}"
+                                    for tf, bundle in frequency_frames.items()
+                                    for member in signal_members
+                                    if not frame_is_current(bundle.get(str(member['key'])), member, tf)
+                                ]
                                 raise MarketDataUnavailableError(classify_market_data_failure(
-                                    "Incomplete K-line history: latest closed candle is not ready",
+                                    "Incomplete K-line history: latest closed candle is not ready; "
+                                    + ", ".join(missing_bars[:10]),
                                     exchange_id=str(primary.get("exchange_id") or ""),
                                     market_type=str(primary.get("market_type") or ""),
                                     symbol=str(primary.get("symbol") or ""), timeframe=frequency,
@@ -1540,6 +1556,19 @@ class TradingExecutor:
                                 )
                             )
                             if daily_policy:
+                                wait_reason = daily_signal_wait_reason(
+                                    daily_members, active_prices, last_price_seen_at,
+                                    clock=time.monotonic(), max_age=price_stale_after,
+                                    quotes=equity_quotes, now=pd.Timestamp.now(tz="UTC"),
+                                )
+                                if wait_reason:
+                                    signal_data_error = "marketData.incomplete_market_data"
+                                    if not daily_wait_reason or time.monotonic() - daily_wait_logged_at >= 60:
+                                        append_strategy_log(strategy_id, "warning", wait_reason)
+                                        daily_wait_logged_at = time.monotonic()
+                                elif daily_wait_reason:
+                                    append_strategy_log(strategy_id, "info", "Daily signal quote requirements recovered")
+                                daily_wait_reason = wait_reason
                                 frame_advanced = bool(
                                     frame_advanced
                                     and equity_daily_execution_session(*daily_policy) == signal_session
@@ -1549,12 +1578,7 @@ class TradingExecutor:
                                         signal_session,
                                         daily_policy[0],
                                     )
-                                    and all(
-                                        str(member["key"]) in active_prices
-                                        and time.monotonic() - last_price_seen_at.get(str(member["key"]), 0.0)
-                                        <= price_stale_after
-                                        for member in daily_members
-                                    )
+                                    and not wait_reason
                                 )
                             if frame_advanced or schedule_due:
                                 begin_signal_cycle = getattr(
@@ -1581,6 +1605,11 @@ class TradingExecutor:
                                         intent.position_side,
                                     ) not in protected
                                 ]
+                                if daily_policy:
+                                    append_strategy_log(strategy_id, "info",
+                                        f"Daily signal evaluated: session={signal_session.date()}, "
+                                        f"instruments={len(daily_members)}, intents={len(intents)}, "
+                                        f"broker={account_exchange or 'none'}")
                                 for message in messages:
                                     append_strategy_log(strategy_id, "info", message)
                                 with ExitStack() as batch_contexts:

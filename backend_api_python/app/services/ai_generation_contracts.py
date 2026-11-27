@@ -1,6 +1,11 @@
 """Central AI generation contracts for QuantDinger code assets."""
 
 STRATEGY_INSTRUMENT_IDENTITY_CONTRACT = """
+## Broker-listed Hong Kong stock identity
+- Write broker-listed Hong Kong instruments as `HKStock:00700.HK`: exactly five digits, including leading zeros, followed by `.HK`. In an explicit HKStock context the platform normalizes input aliases such as `00700`, `700.HK`, `HK00700`, `HK.00700`, and `00700.XHKG`; generated source must use the canonical form.
+- All HKStock pools, including `hk_hsi`, `hk_tech30`, `hk_china_enterprises50`, `hk_stock_connect`, `hk_etf`, and user watchlists, resolve their members to the same canonical strategy identity. Use `get_universe_stocks()` or `get_index_stocks(...)` results unchanged for data, positions, and orders; never strip the market prefix or `.HK`, or hardcode today's constituents. Alias normalization preserves point-in-time membership and does not create missing historical coverage.
+- Catalog underlying metadata can retain raw codes such as `00700`; it is not an execution instrument. This HKStock rule does not rewrite US share classes such as `USStock:BRK.B`, futures contracts, or Crypto exchange products. It does not enable unsupported brokers, bypass board-lot checks, or authorize live trading.
+
 ## Exchange-routed equity product contract
 - Preserve the complete canonical instrument returned by product discovery, including leading zeros, quote or settlement currency, exchange, and market type. Examples are `Crypto:00700/HKD@gate:spot`, `Crypto:AAPL/USD@gate:spot`, and a catalog-confirmed Binance Hong Kong equity perpetual such as `Crypto:HK0700/USDT@binance:swap`.
 - The `Crypto` prefix is the exchange-routing namespace; it does not assert that the underlying asset is cryptocurrency. The catalog distinguishes `direct_equity`, `tokenized_equity`, `stock_perpetual`, and ordinary `crypto` products and records an API family for execution.

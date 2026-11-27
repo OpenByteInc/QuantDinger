@@ -148,6 +148,16 @@ Orders already accepted by a broker, including native brackets, remain broker-ma
 
 Broker-equity runtime prices retain the provider's observation timestamp through quote caching. Automatic protection and portfolio risk use prices only when that timestamp is known, no later than the evaluation time, at most 90 seconds old, and within the current regular-session segment. The 90-second bound accommodates quotes derived from one-minute bars, whose timestamps identify the minute's beginning. Repeated requests or cache hits never renew observation time; unchanged prices with genuinely current timestamps remain usable. An untimed or delayed provider response may remain visible in market-data screens but cannot trigger these live exits. Missing data does not cancel broker-accepted orders or stop reconciliation. Crypto and signal-mode price policies are unchanged.
 
+## Large equity universes and market-data diagnosis
+
+Live US/HK daily warmup accepts the declared number of distinct, valid OHLC bars even when a newer listing does not cover the full padded calendar lookback. This exception is limited to runtime warmup; historical backtests still require their requested window. Latest completed-session checks, warmup readiness, and execution-quote freshness remain enforced. A successful HTTP response does not prove that a candle is current.
+
+Daily runtime requests share normalized start dates and completed-session cutoffs across startup clocks. The process cache retains up to `STRATEGY_SHARED_FRAME_CACHE_MAX_SIZE` streams (default 4096), subject to `STRATEGY_SHARED_FRAME_CACHE_MAX_BYTES` (default 256 MiB). Each worker has its own bound. Redis reuse still depends on cache configuration and expiration; this is not a durable historical-data store. Crypto and intraday window rules are unchanged.
+
+HK candle-provider exceptions now permit the next configured fallback. Tencent HTTP 403/429/501 responses open a 60-second process-local cooldown to avoid repeating blocked requests for every stock in a large pool. Already in-flight requests may still fail. No fallback fabricates candles, and public-provider availability or licensed coverage is not guaranteed by this mechanism.
+
+For daily live evaluation, `Daily signal waiting for fresh quotes` lists missing symbols, provider sources and observation ages (up to ten examples). Recovery is logged separately. `Daily signal evaluated` reports the completed signal session and intent count, including zero. Intent count is before broker submission and does not mean filled orders. Compare the same source, parameters, completed session **and strategy-owned positions** when investigating different accounts: a held stock may qualify for continued allocation while an empty account has no new-entry signal. These changes require updated strategy workers; no database migration is needed.
+
 ## Incident response
 
 1. Stop new entries and additions.

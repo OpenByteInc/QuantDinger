@@ -521,6 +521,34 @@ def _macd(frame: pd.DataFrame, params: Mapping[str, Any]) -> float:
     return macd_value - signal_value
 
 
+def compute_bollinger_series(frame: pd.DataFrame, params: Mapping[str, Any]) -> pd.Series:
+    """Compute causal prefix-equivalent values without rescanning every prefix."""
+    merged = {**get_factor("bollinger_bands").default_params, **dict(params)}
+    period = _period(merged)
+    multiplier = _positive_float(merged, "stddev", 2.0)
+    output = _choice(merged, "output", {"upper", "middle", "lower", "bandwidth", "position"}, "position")
+    if "close" not in frame:
+        raise FactorError("factor.missingFields")
+    values = _numeric(frame["close"])
+    window = values.rolling(period, min_periods=period)
+    middle = window.mean()
+    deviation = multiplier * window.std(ddof=0)
+    upper, lower = middle + deviation, middle - deviation
+    if output == "upper":
+        result = upper
+    elif output == "middle":
+        result = middle
+    elif output == "lower":
+        result = lower
+    elif output == "bandwidth":
+        result = (upper - lower) / middle.replace(0, np.nan)
+    else:
+        width = upper - lower
+        result = ((values - lower) / width.where(width > 0)).where(width != 0, 0.5)
+    # Scalar factors ignore invalid closes and retain the last valid window.
+    return result.reindex(frame.index, method="ffill").replace([np.inf, -np.inf], np.nan)
+
+
 def _bollinger(frame: pd.DataFrame, params: Mapping[str, Any]) -> float:
     period = _period(params)
     multiplier = _positive_float(params, "stddev", 2.0)

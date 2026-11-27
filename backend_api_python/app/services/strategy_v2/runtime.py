@@ -524,6 +524,10 @@ class StrategyRuntimeContext:
         frequency: str,
     ) -> pd.Series | pd.DataFrame:
         factor_id, normalized, outputs = _builtin_indicator_contract(library_id, params)
+        if factor_id == "bollinger_bands" and not frame.empty:
+            from app.services.factors.registry import compute_bollinger_series
+
+            return compute_bollinger_series(frame, normalized).rename(outputs[0][0])
         resolved_target = self.portal.resolve_key(target, frequency=frequency)
         cache_key = (
             resolved_target,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from dataclasses import dataclass
 from typing import Any, Mapping
@@ -22,6 +23,45 @@ def canonical_symbol(value: Any) -> str:
     if ":" in text:
         text = text.split(":", 1)[-1]
     return text.split("@", 1)[0].upper()
+
+
+def _symbol_aliases(symbol: str) -> list[str]:
+    key = canonical_symbol(symbol)
+    if re.fullmatch(r"\d{5}\.HK", key):
+        digits = key[:-3]
+        return list(dict.fromkeys([key, digits, str(int(digits)), f"HK{digits}",
+                                   f"HK.{digits}", f"{int(digits)}.HK", f"{digits}.XHKG"]))
+    return [key]
+
+
+def _price_for_symbol(prices: Mapping[str, float], symbol: str) -> float:
+    key = canonical_symbol(symbol)
+    direct = prices.get(key)
+    if direct is not None:
+        return direct
+    matches = [price for instrument, price in prices.items() if key in _symbol_aliases(instrument)]
+    return matches[0] if len(matches) == 1 else 0.0
+
+
+def _locked_virtual_position(cur, strategy_id: int, symbol_key: str, side: str) -> dict:
+    aliases = _symbol_aliases(symbol_key)
+    if len(aliases) == 1:
+        cur.execute("""
+            SELECT * FROM qd_strategy_virtual_positions
+            WHERE strategy_id = %s AND symbol_canonical = %s AND side = %s
+            FOR UPDATE
+        """, (strategy_id, symbol_key, side))
+        return cur.fetchone() or {}
+    cur.execute("""
+        SELECT * FROM qd_strategy_virtual_positions
+        WHERE strategy_id = %s AND symbol_canonical = ANY(%s) AND side = %s
+        FOR UPDATE
+    """, (strategy_id, aliases, side))
+    rows = cur.fetchall() or []
+    if len(rows) > 1:
+        # Conflicting historical allocations must not be silently merged or dropped.
+        raise ValueError("virtualTrading.invalidIdentity")
+    return dict(rows[0]) if rows else {}
 
 
 @dataclass(frozen=True)
@@ -215,6 +255,10 @@ def execute_virtual_signal_order(order_row: Mapping[str, Any], payload: Mapping[
         fill_price = forced_fill_price or _fill_price(action, reference_price, slippage_rate)
         market_type = cost_policy.market_type
         market_category = str(strategy.get("market_category") or "").strip()
+        if market_category == "HKStock":
+            from app.services.strategy_v2.instruments import parse_instrument
+
+            symbol_key = parse_instrument(symbol, default_market="HKStock").symbol
         market_open = is_equity_market_open(market_category)
 
         cur.execute(
@@ -311,15 +355,9 @@ def execute_virtual_signal_order(order_row: Mapping[str, Any], payload: Mapping[
                     "idempotent": False,
                 }
             fill_price = immediate_fill
-        cur.execute(
-            """
-            SELECT * FROM qd_strategy_virtual_positions
-            WHERE strategy_id = %s AND symbol_canonical = %s AND side = %s
-            FOR UPDATE
-            """,
-            (strategy_id, symbol_key, side),
-        )
-        position = cur.fetchone() or {}
+        position = _locked_virtual_position(cur, strategy_id, symbol_key, side)
+        # Keep an existing allocation's storage key for updates and full exits.
+        symbol_key = str(position.get("symbol_canonical") or symbol_key)
         transition = calculate_virtual_fill(
             action=action,
             requested_quantity=requested_quantity,
@@ -656,7 +694,7 @@ def match_virtual_limit_orders(
         ).strip()
         if not is_equity_market_open(market_category):
             continue
-        market_price = normalized_prices.get(canonical_symbol(row.get("symbol"))) or 0.0
+        market_price = _price_for_symbol(normalized_prices, row.get("symbol")) or 0.0
         order_type = str(row.get("order_type") or "limit").strip().lower()
         if order_type == "market":
             fill_price = _fill_price(
@@ -748,7 +786,7 @@ def mark_virtual_positions(
         rows = cur.fetchall() or []
         for row in rows:
             symbol_key = canonical_symbol(row.get("symbol_canonical") or "")
-            current_price = normalized_prices.get(symbol_key)
+            current_price = _price_for_symbol(normalized_prices, symbol_key)
             if not current_price:
                 continue
             size = max(0.0, float(row.get("size") or 0.0))
@@ -844,10 +882,10 @@ def list_virtual_positions(strategy_id: int, symbol: str | None = None) -> list[
                    current_price, highest_price, lowest_price, unrealized_pnl,
                    pnl_percent, market_type, strategy_run_id, updated_at
             FROM qd_strategy_virtual_positions
-            WHERE strategy_id = %s AND (%s = '' OR symbol_canonical = %s)
+            WHERE strategy_id = %s AND (%s = '' OR symbol_canonical = ANY(%s))
             ORDER BY id DESC
             """,
-            (int(strategy_id), symbol_key, symbol_key),
+            (int(strategy_id), symbol_key, _symbol_aliases(symbol_key)),
         )
         rows = cur.fetchall() or []
         cur.close()
