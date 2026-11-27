@@ -39,6 +39,7 @@ from app.services.strategy_runtime.identity import ensure_strategy_run, finish_s
 from app.services.strategy_runtime.order_intents import OrderIntentService
 from app.services.strategy_runtime.scheduler import CooperativeRuntimeScheduler
 from app.services.strategy_runtime.state import RuntimeStateStore
+from app.services.strategy_runtime.cooldown import exchange_cooldown_seconds
 from app.services.pending_orders.rebalance_batches import rebalance_batch
 from app.services.strategy_runtime.live_portfolio import refresh_members, positions_by_symbol, available_strategy_cash, pricing_members
 from app.services.strategy_runtime.cancellations import persist_cancellations
@@ -141,6 +142,8 @@ class TradingExecutor:
             try:
                 self._preflight_live_strategy(strategy_id)
             except Exception as exc:
+                if exchange_cooldown_seconds(exc):
+                    self._defer_exchange_start(strategy_id, exc)
                 self._last_start_failure = str(exc or "strategyV2.livePreflightFailed")
                 logger.warning("Strategy %s live preflight rejected: %s", strategy_id, exc)
                 return False
@@ -417,6 +420,16 @@ class TradingExecutor:
         )
         if conflict:
             raise RuntimeError(live_conflict_message(conflict))
+
+    def _defer_exchange_start(self, strategy_id, error, strategy=None):
+        from app.services.strategy_command_repository import StrategyCommandRepository
+
+        strategy = strategy or self._load_strategy(strategy_id) or {}
+        StrategyCommandRepository().defer_exchange_start(
+            strategy_id, epoch=int(strategy.get("desired_runtime_epoch") or 1),
+            seconds=exchange_cooldown_seconds(error),
+            token=int(self._runtime_fencing_tokens.get(int(strategy_id), 0)),
+        )
 
     def wait_strategy_running(self, strategy_id: int, timeout: float = 3.0) -> Tuple[bool, str]:
         strategy_id = int(strategy_id)
@@ -766,6 +779,7 @@ class TradingExecutor:
         state_store: RuntimeStateStore | None = None
         session: StrategyV2LiveSession | None = None
         strategy = None
+        cooldown_exit = False
         try:
             strategy = self._load_strategy(strategy_id)
             if not strategy:
@@ -1733,12 +1747,13 @@ class TradingExecutor:
                         last_market_data_failure_key = ""
                         last_market_data_log_at = 0.0
                 except Exception as exc:
-                    if isinstance(exc, MarketDataUnavailableError) or str(exc) == "strategyV2.noMarketData":
-                        next_signal_poll = cycle_started + signal_poll
+                    cooldown_seconds = exchange_cooldown_seconds(exc)
+                    if cooldown_seconds or isinstance(exc, MarketDataUnavailableError) or str(exc) == "strategyV2.noMarketData":
+                        next_signal_poll = cycle_started + max(signal_poll, cooldown_seconds)
                         failure = (
                             exc.failure
                             if isinstance(exc, MarketDataUnavailableError)
-                            else classify_market_data_failure("No usable market data")
+                            else classify_market_data_failure(str(exc) if cooldown_seconds else "No usable market data")
                         )
                         failure_key = "|".join((
                             failure.code,
@@ -1746,19 +1761,17 @@ class TradingExecutor:
                             failure.market_type,
                             failure.symbol,
                             failure.timeframe,
-                            failure.technical_detail,
+                            "" if failure.code == "rate_limited" else failure.technical_detail,
                         ))
                         signal_data_error = f"marketData.{failure.code}"
-                        logger.warning(
-                            "Strategy %s market data unavailable (%s): %s",
-                            strategy_id,
-                            failure.code,
-                            failure.technical_detail or failure.message,
-                        )
                         if (
                             failure_key != last_market_data_failure_key
                             or cycle_started - last_market_data_log_at >= 60.0
                         ):
+                            logger.warning(
+                                "Strategy %s market data unavailable (%s): %s",
+                                strategy_id, failure.code, failure.technical_detail or failure.message,
+                            )
                             append_strategy_log(
                                 strategy_id,
                                 "warning",
@@ -1797,12 +1810,18 @@ class TradingExecutor:
         except Exception as exc:
             exit_reason = str(exc)
             self._last_exit_reason[strategy_id] = exit_reason
-            logger.exception("Strategy %s stopped after runtime failure", strategy_id)
-            if isinstance(exc, MarketDataUnavailableError):
-                append_strategy_log(strategy_id, "error", format_market_data_log(exc.failure))
+            cooldown_exit = bool(exchange_cooldown_seconds(exc))
+            if cooldown_exit:
+                self._defer_exchange_start(strategy_id, exc, strategy)
+                logger.warning("Strategy %s waiting for exchange cooldown", strategy_id)
             else:
-                append_strategy_log(strategy_id, "error", exit_reason)
-            if not self.runtime_guard or self.runtime_guard(strategy_id):
+                logger.exception("Strategy %s stopped after runtime failure", strategy_id)
+            level = "warning" if cooldown_exit else "error"
+            if isinstance(exc, MarketDataUnavailableError):
+                append_strategy_log(strategy_id, level, format_market_data_log(exc.failure))
+            else:
+                append_strategy_log(strategy_id, level, exit_reason)
+            if not cooldown_exit and (not self.runtime_guard or self.runtime_guard(strategy_id)):
                 self._mark_stopped(
                     strategy_id,
                     expected_epoch=int(strategy.get("desired_runtime_epoch") or 1) if strategy else None,
@@ -1838,7 +1857,7 @@ class TradingExecutor:
             if market_price_feed is not None:
                 market_price_feed.release()
             with self.lock:
-                preserve_run = strategy_id in self._runtime_handoff_ids
+                preserve_run = cooldown_exit or strategy_id in self._runtime_handoff_ids
             if self.external_bar_triggers and self.runtime_guard and not self.runtime_guard(strategy_id):
                 # A replacement may already have resumed this run under a new lease.
                 preserve_run = True
@@ -2437,6 +2456,11 @@ class TradingExecutor:
                     self._mark_stopped(strategy_id)
                     break
                 yield tick_seconds
+        except Exception as exc:
+            if exchange_cooldown_seconds(exc):
+                with self.lock:
+                    self._runtime_handoff_ids.add(strategy_id)
+            raise
         finally:
             grid_price_feed.release()
             with self.lock:

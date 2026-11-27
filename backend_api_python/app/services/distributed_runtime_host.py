@@ -7,6 +7,7 @@ import threading
 
 from app.services.strategy_command_repository import StrategyCommandRepository
 from app.services.strategy_v2.sandbox import live_sandbox_timeout_seconds
+from app.services.strategy_runtime.cooldown import exchange_cooldown_seconds
 from app.services.trading_executor import TradingExecutor
 from app.utils.logger import get_logger
 from app.utils.strategy_runtime_logs import append_strategy_log
@@ -59,6 +60,8 @@ class DistributedRuntimeHost:
         request = self.repository.runtime_request(strategy_id)
         if request.get("status") != "running":
             return False
+        if float(request.get("retry_after_seconds") or 0) > 0:
+            return False
         epoch = int(request.get("desired_runtime_epoch") or 1)
         startup_timeout = live_sandbox_timeout_seconds() + 30.0
         if self.executor.is_running(strategy_id) and (
@@ -101,7 +104,7 @@ class DistributedRuntimeHost:
                     strategy_id,
                     str(hint or "strategyRuntime.startFailed"),
                 )
-                if self.executor.stop_strategy(strategy_id, persist_status=False):
+                if self.executor.stop_strategy(strategy_id, persist_status=False, cancel_orders=False):
                     self._release_runtime(strategy_id)
                 return False
         with self._lock:
@@ -121,7 +124,7 @@ class DistributedRuntimeHost:
             if self._start_failures.get(strategy_id) == detail:
                 return
             self._start_failures[strategy_id] = detail
-        append_strategy_log(strategy_id, "error", detail)
+        append_strategy_log(strategy_id, "warning" if exchange_cooldown_seconds(detail) else "error", detail)
 
     def reconcile(self, running_strategy_ids: set[int] | None = None) -> None:
         local_ids = set(self.local_strategy_ids())

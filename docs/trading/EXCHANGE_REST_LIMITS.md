@@ -1,5 +1,26 @@
 # Exchange REST coordination
 
+## Strategy recovery during throttling
+
+Exchange cooldowns preserve the strategy's desired `running` state. Runtime
+rate-limit failures do not count toward the repeated-failure stop threshold.
+Startup throttling persists an epoch-scoped `startup_cooldown` record in the
+existing runtime-state table (run ID zero); controllers and distributed evaluators
+wait before starting again. A deferred start does not consume a command attempt,
+and startup receives its normal readiness budget after the cooldown expires.
+The REST guard remains authoritative if the exchange extends the cooldown.
+
+Manual stops and newer runtime generations fence recovery. Authentication,
+configuration and other terminal failures retain their existing stop policy.
+Recovery rechecks account requirements and data readiness, retains run/order
+idempotency, and does not cancel resting grid orders solely because of throttling.
+No running strategy is guaranteed timely local risk execution while its required
+exchange data or private REST operations are unavailable.
+
+Deploy the same backend revision to trading and evaluator workers. Previously
+stopped strategies are not automatically reactivated: an operator must explicitly
+start those strategies again after deployment.
+
 Reviewed against official documentation on 2026-11-28. The implementation supplements existing transports; it never resends an HTTP request automatically.
 
 | Venue | Official behavior used by the guard |
@@ -31,5 +52,47 @@ Deploy the backend and restart API/market-data/trading workers to apply the code
 行情请求受限后不连续重试、不误报无效币种。已经确认的成交仍然保留；手续费暂时取不到时交给后续对账补齐，不当作已确认零手续费。成功下单不会因为记录限流反馈失败而变成失败，也没有新增下单自动重试。
 
 多进程、多部署若共用出口 IP，必须使用相同的 Redis 协调地址和命名空间；没有 Redis 配置时只能进程内协调。已配置的协调服务不可用时暂缓请求。部署后重启相关后端、行情和交易进程，无需数据库迁移；已有封禁仍需等待交易所解除。
+
+## Binance incident tracing
+
+Deploy the same backend revision to every API, trading, evaluator, scheduler and
+Celery process that can call Binance. Verify that they share
+`BINANCE_REST_REDIS_URL` (or the configured jobs Redis fallback) and
+`BINANCE_REST_NAMESPACE`. Restarting only the trading process leaves other callers
+on their previous code. Fee queries stop their local retries on a rate-limit
+exception; missing fees remain pending reconciliation. K-line rate limits do not
+start immediate pagination retries or fallback requests. Existing bans must expire.
+
+For a short diagnostic window, set `BINANCE_REST_TRACE_ENABLED=1` with INFO logging
+and recreate the relevant containers to load the environment. It defaults to `0`
+to avoid high-volume request logs; turn it off after capture. Logs distinguish:
+
+- `event=start`: one transport invocation after guard admission; count these by
+  timestamp for per-second request attempts. A transport failure does not prove
+  that the request reached Binance or that an order was rejected.
+- `event=response`: HTTP status, elapsed milliseconds, and the numeric
+  `used_weight_1m` header if present. Weight is not a request count.
+- `event=transport_error`: invocation raised before returning a response.
+- `event=blocked`: local guard denied the request; no HTTP call was made.
+
+`trace_id` correlates start and outcome; `pid`, process role and container identify
+the caller. Do not sum start and response as two requests. Capture all callers;
+the sample cannot account for another application sharing the outbound IP.
+The trace excludes query strings, API keys, signatures, response bodies and
+exception text. Tracing never retries HTTP or alters a successful order result.
+
+## 币安故障追踪
+
+需要统一更新会访问币安的 API、交易、策略评估、调度和 Celery 进程，并确认它们使用同一个
+`BINANCE_REST_REDIS_URL`（或默认任务 Redis）及 `BINANCE_REST_NAMESPACE`。
+只重启交易进程不能更新其他调用方。手续费查询遇到限流立即结束本轮重试，费用留待对账；
+K 线限流不立即重试分页或备用请求。已有封禁仍需等待到期。
+
+需要统计时，临时设置 `BINANCE_REST_TRACE_ENABLED=1`，保持 INFO 日志并重建相关容器使环境变量生效。
+默认关闭，采集结束后恢复为 `0`。按秒统计 `event=start`，它表示通过检查后开始一次 HTTP 调用；
+超时不保证请求未到达币安，也不证明订单被拒绝。`event=response` 记录状态码、耗时和币安返回的分钟权重，
+`event=transport_error` 表示未拿到响应，`event=blocked` 表示本地拦截、没有发出 HTTP 调用。
+不要把开始和响应各算一次请求，也不要把权重当请求次数。用 `trace_id` 配对，结合进程角色、PID 和容器定位来源。
+统计需要涵盖所有调用进程，不包含同一出口 IP 上其他应用的流量。日志不记录 URL 查询参数、密钥、签名或响应正文。
 
 账户协调标识使用 API Key 作为密钥的 HMAC-SHA256，不将原始凭据写入 Redis 键，且跨进程、重启后保持一致。升级时统一更新所有参与协调的进程：旧版普通哈希与新版账户标识不共享接口冷却；IP 冷却和共享读取预算的键保持不变，不改写交易记录或凭据。

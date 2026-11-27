@@ -91,7 +91,7 @@ def classify_market_data_failure(
         code = "symbol_not_found"
         message = "The trading pair does not exist for this exchange and market type."
         retryable = False
-    elif any(token in text for token in ("429", "too many requests", "rate limit", "ratelimit")):
+    elif any(token in text for token in ("429", "too many requests", "rate limit", "ratelimit")) or re.search(r"http[ :]+418\b", text):
         code = "rate_limited"
         message = "The exchange rate limit was reached. Market data will be retried."
         retryable = True

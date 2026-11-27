@@ -604,6 +604,8 @@ class BinanceFuturesClient(BaseRestClient):
             val = bool(v)
             self._dual_side_cache = (now, val)
             return val
+        except BinanceRateLimitError:
+            raise
         except Exception:
             return None
 

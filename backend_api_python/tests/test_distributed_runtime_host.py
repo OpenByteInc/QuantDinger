@@ -184,6 +184,24 @@ def test_daily_runtime_prepares_without_a_bar_or_order_callback(monkeypatch):
     assert host._owned_epochs == {1324: 6}
 
 
+def test_distributed_cooldown_waits_then_starts_without_submitting_orders(monkeypatch):
+    host, repository, executor = _running_host(monkeypatch)
+    repository.request["retry_after_seconds"] = 1084
+    assert not host.prepare(1324)
+    assert not executor.starts and not executor.bars
+    repository.request["retry_after_seconds"] = 0
+    assert host.prepare(1324)
+    assert executor.starts == [1324]
+    assert not executor.bars
+
+
+def test_manual_stop_during_distributed_cooldown_does_not_restart(monkeypatch):
+    host, repository, executor = _running_host(monkeypatch)
+    repository.request.update(status="stopped", retry_after_seconds=0)
+    assert not host.prepare(1324)
+    assert not executor.starts
+
+
 def test_new_epoch_replaces_old_runtime_before_evaluation(monkeypatch):
     host, repository, executor = _running_host(monkeypatch)
     assert host.prepare(1324)

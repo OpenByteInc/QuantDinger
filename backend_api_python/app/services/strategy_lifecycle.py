@@ -278,6 +278,10 @@ def maybe_auto_stop_on_exchange_error(
     reason = (msg or "").strip()
     if not reason:
         return False
+    from app.services.strategy_runtime.cooldown import exchange_cooldown_seconds
+
+    if exchange_cooldown_seconds(reason):
+        return False
     if is_fatal_exchange_error(reason):
         if perform_stop:
             auto_stop_live_strategy(sid, reason, source=source)

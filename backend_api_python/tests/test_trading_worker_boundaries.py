@@ -160,6 +160,67 @@ def test_starting_command_is_deferred_until_real_readiness(monkeypatch):
     assert repository.completed[0][1]["status"] == "running"
 
 
+def test_cooldown_survives_start_timeout_and_exhausted_attempts_then_recovers(monkeypatch):
+    from dataclasses import replace
+    from app.utils.binance_request_guard import BinanceRateLimitError
+
+    worker = TradingWorker(FakeExecutor(), FakeRepository())
+    monkeypatch.setattr(worker, "_start", lambda sid: (_ for _ in ()).throw(BinanceRateLimitError(1084)))
+    command = replace(_command("start"), attempts=worker.max_attempts, elapsed_seconds=10000)
+    worker._execute(command)
+    assert not worker.repository.failed and not worker.repository.completed
+    result = worker.repository.deferred[-1][1]["result"]
+    assert result["retry_after_seconds"] == 1084
+    assert not worker.executor.stopped
+    monkeypatch.setattr(worker, "_start", lambda sid: {"status": "starting"})
+    worker._execute(replace(command, result=result))
+    assert not worker.repository.failed
+    monkeypatch.setattr(worker, "_start", lambda sid: {"status": "running"})
+    worker._execute(replace(command, result=result))
+    assert worker.repository.completed[-1][1]["status"] == "running"
+
+
+def test_start_wait_reads_durable_cooldown_but_respects_manual_stop(monkeypatch):
+    from app.services.strategy import StrategyService
+
+    worker = TradingWorker(FakeExecutor(), FakeRepository())
+    monkeypatch.setattr(StrategyService, "get_strategy", lambda *a: {"status": "running", "desired_runtime_epoch": 1})
+    monkeypatch.setattr(worker.repository, "runtime_request", lambda sid: {
+        "status": "running", "desired_runtime_epoch": 1, "retry_after_seconds": 1084, "startup_retry_at": 2000,
+    })
+    assert worker._start(55)["retry_after_seconds"] == 1084
+    assert not worker.executor.running_strategies
+    monkeypatch.setattr(StrategyService, "get_strategy", lambda *a: {"status": "stopped"})
+    assert worker._start(55)["status"] == "skipped"
+    assert not worker.executor.running_strategies
+
+
+def test_expired_cooldown_does_not_disable_real_startup_timeout(monkeypatch):
+    from dataclasses import replace
+
+    worker = TradingWorker(FakeExecutor(), FakeRepository())
+    monkeypatch.setattr(worker, "_start", lambda sid: {"status": "starting", "startup_retry_at": 1})
+    worker._execute(replace(_command("start"), elapsed_seconds=10000))
+    assert worker.repository.failed[0][1] == "strategyRuntime.startFailed"
+
+
+def test_restore_rate_limits_do_not_exhaust_attempts(monkeypatch):
+    from unittest.mock import Mock
+    from app.services.strategy import StrategyService
+    from app.services import strategy_lifecycle
+    from app.utils.binance_request_guard import BinanceRateLimitError
+
+    worker = TradingWorker(FakeExecutor(), FakeRepository())
+    monkeypatch.setattr(StrategyService, "get_running_strategies_with_type", lambda *a: [{"id": 55}])
+    monkeypatch.setattr(worker, "_start", Mock(side_effect=BinanceRateLimitError(1084)))
+    stopped = Mock()
+    monkeypatch.setattr(strategy_lifecycle, "maybe_auto_stop_on_exchange_error", stopped)
+    for _ in range(10):
+        worker.restore_desired_strategies()
+    stopped.assert_not_called()
+    assert worker._restore_failure_counts == {}
+
+
 def test_readiness_deadline_is_a_failure_not_infinite_polling(monkeypatch):
     from dataclasses import replace
 

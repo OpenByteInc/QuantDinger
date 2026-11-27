@@ -86,9 +86,12 @@ def test_shared_store_failure_never_becomes_unlimited_local_fallback(guard):
     assert guard._redis.eval.call_count == 1
 
 
-def test_http_clients_share_cooldown_without_making_another_http_call(guard, monkeypatch):
+def test_http_clients_share_cooldown_without_making_another_http_call(guard, monkeypatch, caplog):
     from app.data_sources import native_crypto
     from app.services.live_trading import base
+
+    monkeypatch.setenv("BINANCE_REST_TRACE_ENABLED", "1")
+    caplog.set_level("INFO", logger=module.__name__)
 
     monkeypatch.setattr(native_crypto, "binance_request_guard", guard)
     monkeypatch.setattr(base, "binance_request_guard", guard)
@@ -106,6 +109,77 @@ def test_http_clients_share_cooldown_without_making_another_http_call(guard, mon
     session.get.assert_called_once()
     response.close.assert_called_once()
     private._request_session.request.assert_not_called()
+    traces = [record.message for record in caplog.records if "Binance REST trace" in record.message]
+    assert sum("event=start " in item for item in traces) == 1
+    assert sum("event=response " in item and "status=418 " in item for item in traces) == 1
+    assert sum("event=blocked " in item for item in traces) == 1
+
+
+def test_trace_records_weight_without_credentials_or_query(monkeypatch, caplog):
+    monkeypatch.setenv("BINANCE_REST_TRACE_ENABLED", "1")
+    caplog.set_level("INFO", logger=module.__name__)
+    response = Mock(status_code=200, headers={"X-MBX-USED-WEIGHT-1M": "1720", "secret": "private-header"})
+    request = Mock(return_value=response)
+    url = "https://private-user:private-pass@fapi.binance.com/fapi/v1/userTrades?signature=private-signature"
+    assert module.traced_binance_request(request, url) is response
+    request.assert_called_once_with()
+    assert "event=start " in caplog.text
+    assert "event=response " in caplog.text
+    assert "used_weight_1m=1720" in caplog.text
+    assert "private-" not in caplog.text
+    assert "signature" not in caplog.text
+
+
+def test_trace_never_retries_transport_failure(monkeypatch, caplog):
+    monkeypatch.setenv("BINANCE_REST_TRACE_ENABLED", "1")
+    caplog.set_level("INFO", logger=module.__name__)
+    request = Mock(side_effect=TimeoutError("private-signature"))
+    with pytest.raises(TimeoutError):
+        module.traced_binance_request(request, SPOT, "POST")
+    request.assert_called_once_with()
+    assert "event=transport_error " in caplog.text
+    assert "event=response " not in caplog.text
+    assert "private-signature" not in caplog.text
+
+
+def test_trace_logging_failure_preserves_success(monkeypatch):
+    monkeypatch.setenv("BINANCE_REST_TRACE_ENABLED", "1")
+    monkeypatch.setattr(module.logger, "info", Mock(side_effect=RuntimeError("log failure")))
+    response = Mock(status_code=200, headers={})
+    request = Mock(return_value=response)
+    assert module.traced_binance_request(request, SPOT, "POST") is response
+    request.assert_called_once_with()
+
+
+@pytest.mark.parametrize("enabled,url", [("0", LIVE), ("1", "https://api.alpaca.markets/v2/orders")])
+def test_trace_disabled_or_other_broker_has_no_logs(enabled, url, monkeypatch, caplog):
+    monkeypatch.setenv("BINANCE_REST_TRACE_ENABLED", enabled)
+    caplog.set_level("INFO", logger=module.__name__)
+    request = Mock(return_value=object())
+    assert module.traced_binance_request(request, url) is request.return_value
+    request.assert_called_once_with()
+    assert "Binance REST trace" not in caplog.text
+
+
+def test_private_client_trace_records_one_http_call(guard, monkeypatch, caplog):
+    import requests
+    from app.services.live_trading import base
+
+    monkeypatch.setattr(base, "binance_request_guard", guard)
+    monkeypatch.setenv("BINANCE_REST_TRACE_ENABLED", "1")
+    caplog.set_level("INFO", logger=module.__name__)
+    response = requests.Response()
+    response.status_code = 200
+    response._content = b'{"orderId":123}'
+    response.headers["X-MBX-USED-WEIGHT-1M"] = "15"
+    client = base.BaseRestClient("https://api.binance.com")
+    client._request_session = Mock()
+    client._request_session.request.return_value = response
+    assert client._request("POST", "/api/v3/order")[1] == {"orderId": 123}
+    client._request_session.request.assert_called_once()
+    assert caplog.text.count("event=start ") == 1
+    assert caplog.text.count("event=response ") == 1
+    assert "used_weight_1m=15" in caplog.text
 
 
 def test_accepted_write_is_returned_even_if_weight_publication_fails(guard, monkeypatch):
