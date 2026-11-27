@@ -32,7 +32,9 @@ from app.services.market_context import (
 )
 from app.services.market_schedule import equity_order_session_error
 from app.services.strategy_runtime.health import record_runtime_heartbeat
-from app.services.strategy_runtime.price_freshness import filter_execution_prices, daily_signal_wait_reason
+from app.services.strategy_runtime.price_freshness import (
+    filter_execution_prices, daily_signal_wait_reason, execution_price_age_limit,
+)
 from app.services.strategy_runtime.identity import ensure_strategy_run, finish_strategy_run
 from app.services.strategy_runtime.order_intents import OrderIntentService
 from app.services.strategy_runtime.scheduler import CooperativeRuntimeScheduler
@@ -1185,7 +1187,7 @@ class TradingExecutor:
                         symbol_key: value
                         for symbol_key, value in last_prices.items()
                         if price_clock - last_price_seen_at.get(symbol_key, 0.0)
-                        <= price_stale_after
+                        <= execution_price_age_limit(symbol_key, price_stale_after, execution_mode)
                     }
                     risk_timestamp = pd.Timestamp.now(tz="UTC")
                     execution_session_error = ""
@@ -1539,7 +1541,7 @@ class TradingExecutor:
                                     for symbol_key, value in last_prices.items()
                                     if daily_price_clock
                                     - last_price_seen_at.get(symbol_key, 0.0)
-                                    <= price_stale_after
+                                    <= execution_price_age_limit(symbol_key, price_stale_after, execution_mode)
                                 }
                                 active_prices = filter_execution_prices(
                                     active_prices, equity_quotes,
@@ -1560,6 +1562,7 @@ class TradingExecutor:
                                     daily_members, active_prices, last_price_seen_at,
                                     clock=time.monotonic(), max_age=price_stale_after,
                                     quotes=equity_quotes, now=pd.Timestamp.now(tz="UTC"),
+                                    execution_mode=execution_mode,
                                 )
                                 if wait_reason:
                                     signal_data_error = "marketData.incomplete_market_data"

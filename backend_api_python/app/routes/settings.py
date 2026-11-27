@@ -67,6 +67,7 @@ STRATEGY_RUNTIME_SETTINGS = {
 }
 
 TRADING_RUNTIME_SETTINGS = {
+    'EQUITY_QUOTE_MAX_AGE_MINUTES',
     'MAKER_WAIT_SEC',
     'MAKER_OFFSET_BPS',
     'AGENT_LIVE_TRADING_ENABLED',
@@ -786,6 +787,16 @@ CONFIG_SCHEMA = {
         'icon': 'stock',
         'order': 3,
         'items': [
+            {
+                'key': 'EQUITY_QUOTE_MAX_AGE_MINUTES',
+                'label': 'settings.field.EQUITY_QUOTE_MAX_AGE_MINUTES',
+                'type': 'number',
+                'default': '16',
+                'min': 1,
+                'max': 60,
+                'precision': 0,
+                'description': 'settings.desc.EQUITY_QUOTE_MAX_AGE_MINUTES'
+            },
             {
                 'key': 'AGENT_LIVE_TRADING_ENABLED',
                 'label': 'settings.field.AGENT_LIVE_TRADING_ENABLED',
@@ -2286,6 +2297,15 @@ def save_settings():
                             updates[key] = ''
                     else:
                         updates[key] = str(new_value)
+
+        if 'EQUITY_QUOTE_MAX_AGE_MINUTES' in updates:
+            from app.services.strategy_runtime.price_freshness import parse_equity_quote_max_age_minutes
+            try:
+                updates['EQUITY_QUOTE_MAX_AGE_MINUTES'] = str(parse_equity_quote_max_age_minutes(
+                    updates['EQUITY_QUOTE_MAX_AGE_MINUTES']
+                ))
+            except (TypeError, ValueError):
+                return jsonify({'code': 0, 'msg': 'settings.invalidEquityQuoteMaxAge'}), 400
 
         if 'REFERRAL_REWARD_RATES' in updates:
             try:

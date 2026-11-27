@@ -95,7 +95,7 @@ def test_ai_settings_expose_only_effective_controls_in_the_right_groups():
     assert {"LLM_PROXY_URL", "LLM_USE_SYSTEM_PROXY"}.issubset(network_keys)
 
 
-def test_live_trading_settings_expose_only_order_execution_defaults():
+def test_live_trading_settings_expose_quote_age_and_order_execution_defaults():
     import app.routes.settings as settings_route
 
     trading_keys = {
@@ -104,6 +104,7 @@ def test_live_trading_settings_expose_only_order_execution_defaults():
     }
 
     assert trading_keys == {
+        "EQUITY_QUOTE_MAX_AGE_MINUTES",
         "AGENT_LIVE_TRADING_ENABLED",
         "MAKER_WAIT_SEC",
         "MAKER_OFFSET_BPS",
