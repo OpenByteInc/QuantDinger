@@ -26,6 +26,7 @@ from app.services.live_trading.ws_order_transport import submit_gate_order
 from app.services.live_trading.symbols import to_gate_currency_pair
 from app.services.live_trading.gate_spot_fill import parse_gate_spot_fill
 from app.utils.numeric_precision import floor_decimal_to_step
+from app.utils.exchange_request_budget import ExchangeRateLimitError
 
 logger = logging.getLogger(__name__)
 
@@ -283,6 +284,8 @@ class GateSpotClient(_GateBase):
     def get_spot_trades_for_order(self, *, order_id: str, currency_pair: str, details=None) -> Tuple[float, str]:
         try:
             rows = self._order_trade_rows('/api/v4/spot/my_trades', {'currency_pair': currency_pair, 'order_id': str(order_id)})
+        except ExchangeRateLimitError:
+            raise
         except Exception:
             return 0.0, ''
         fees = {}
@@ -333,6 +336,9 @@ class GateSpotClient(_GateBase):
                         currency_pair=str(last.get("currency_pair") or to_gate_currency_pair(symbol)),
                         details=fees_by_ccy,
                     )
+                except ExchangeRateLimitError:
+                    timed_out = True
+                    mt_fee, mt_ccy = 0.0, ""
                 except Exception:
                     mt_fee, mt_ccy = 0.0, ""
                 if mt_ccy:
@@ -1090,6 +1096,8 @@ class GateUsdtFuturesClient(_GateBase):
             return 0.0, ""
         try:
             resp = self._order_trade_rows('/api/v4/futures/usdt/my_trades', {'contract': c, 'order': oid})
+        except ExchangeRateLimitError:
+            raise
         except Exception:
             return 0.0, ''
         total = 0.0
@@ -1157,6 +1165,9 @@ class GateUsdtFuturesClient(_GateBase):
                         order_id=str(order_id),
                         contract=str(contract),
                     )
+                except ExchangeRateLimitError:
+                    timed_out = True
+                    mt_fee, mt_ccy = 0.0, ""
                 except Exception:
                     mt_fee, mt_ccy = 0.0, ""
                 if mt_ccy:

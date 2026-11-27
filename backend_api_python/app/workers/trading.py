@@ -33,6 +33,9 @@ class TradingWorker:
         self.strategy_lease_seconds = max(10, int(os.getenv("STRATEGY_RUNTIME_LEASE_SEC", "30")))
         self.poll_seconds = max(0.1, float(os.getenv("STRATEGY_COMMAND_WORKER_POLL_SEC", "0.5")))
         self.max_attempts = max(1, int(os.getenv("STRATEGY_COMMAND_MAX_ATTEMPTS", "3")))
+        self.startup_timeout_seconds = max(
+            60.0, float(os.getenv("STRATEGY_RUNTIME_STARTUP_TIMEOUT_SECONDS", "900")),
+        )
         self.restore_max_attempts = max(
             1,
             int(os.getenv("STRATEGY_RESTORE_MAX_ATTEMPTS", "5")),
@@ -238,10 +241,16 @@ class TradingWorker:
                 result = self._reconcile(command.strategy_id)
             if self._lease_heartbeat.command_valid(command.id):
                 if result.get("status") == "starting":
-                    from app.services.strategy_v2.sandbox import live_sandbox_timeout_seconds
-
-                    if command.elapsed_seconds >= live_sandbox_timeout_seconds() + 60.0:
-                        raise RuntimeError("strategyRuntime.startFailed")
+                    if command.elapsed_seconds >= self.startup_timeout_seconds:
+                        ready = False
+                        if command.strategy_id in self._local_strategy_ids():
+                            ready, _hint = self.executor.wait_strategy_running(command.strategy_id, timeout=0.5)
+                        if not ready:
+                            raise RuntimeError("strategyRuntime.startFailed")
+                        result = {**result, "status": "running"}
+                if result.get("status") == "starting":
+                    # A deferred command is no longer renewable as processing.
+                    self._lease_heartbeat.forget_command()
                     self.repository.defer_start(
                         command.id, owner_id=self.worker_id, result=result,
                     )
@@ -269,12 +278,33 @@ class TradingWorker:
                 if command.command_type in {"start", "restart"}:
                     from app.services.trading_executor import TradingExecutor
 
-                    TradingExecutor._mark_stopped(
-                        command.strategy_id,
-                        expected_epoch=expected_epoch or int((command.result or {}).get("runtime_epoch") or 0) or None,
-                    )
+                    failed_epoch = expected_epoch or int((command.result or {}).get("runtime_epoch") or 0)
+                    TradingExecutor._mark_stopped(command.strategy_id, expected_epoch=failed_epoch or None)
+                    self._cleanup_failed_start(command.strategy_id, failed_epoch)
         finally:
             self._lease_heartbeat.forget_command()
+
+    def _cleanup_failed_start(self, strategy_id: int, expected_epoch: int) -> None:
+        if expected_epoch:
+            request = self.repository.runtime_request(strategy_id)
+            if int(request.get("desired_runtime_epoch") or 0) != expected_epoch:
+                return
+        local = strategy_id in self._local_strategy_ids()
+        if not local and strategy_id not in self._lease_heartbeat.strategy_ids():
+            return
+        # Fence execution immediately, including a loader still inside blocking I/O.
+        # Do not revoke another owner's lease or cancel broker-side protection.
+        self._lease_heartbeat.forget_strategy(strategy_id)
+        stopped = not local or self.executor.stop_strategy(
+            strategy_id, persist_status=False, cancel_orders=False,
+        )
+        if stopped:
+            self.repository.release_strategy_lease(strategy_id=strategy_id, owner_id=self.worker_id)
+            clear_token = getattr(self.executor, "clear_runtime_fencing_token", None)
+            if callable(clear_token):
+                clear_token(strategy_id)
+        else:
+            logger.error("Failed startup runtime fenced; awaiting local exit: strategy=%s", strategy_id)
 
     def _start(self, strategy_id: int, *, wait_ready: bool = True) -> dict:
         from app.services.strategy import StrategyService

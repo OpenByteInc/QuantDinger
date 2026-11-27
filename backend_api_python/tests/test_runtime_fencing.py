@@ -150,7 +150,7 @@ def test_control_commands_are_claimed_without_runtime_owner_restrictions(monkeyp
         assert "active.status = 'processing'" in sql
         assert "active.lease_expires_at >= NOW()" in sql
     assert select_params == (3,)
-    assert claim_params == ("worker-a", 30, 17)
+    assert claim_params == ("worker-a", "worker-a", 30, 17)
 
 
 def test_releasing_shard_lease_preserves_fencing_row(monkeypatch):

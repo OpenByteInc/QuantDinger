@@ -89,7 +89,9 @@ def _native_symbol(symbol: str) -> str:
 
 
 def _request_page(url: str, *, params: dict[str, Any], proxies: Any) -> list[Any]:
-    response = requests.get(
+    from app.utils.exchange_request_guard import guarded_exchange_request
+
+    response = guarded_exchange_request(requests.get,
         url,
         params=params,
         timeout=(6.0, 15.0),

@@ -115,7 +115,13 @@ def handle_data(context, data):
 
     monkeypatch.setattr(runtime, "StrategyV2LiveSession", create_session)
     try:
-        for index, _delay in enumerate(executor._run_strategy_loop(1)):
+        loop = executor._run_strategy_loop(1)
+        assert next(loop) == 0.0
+        sessions[0].evaluate_protections.assert_not_called()
+        sessions[0].process.assert_not_called()
+        submit.assert_not_called()
+        assert any("Strategy runtime ready" in str(call) for call in logs.call_args_list)
+        for index, _delay in enumerate(loop):
             if index < 2:
                 sessions[0].evaluate_protections.assert_not_called()
                 sessions[0].evaluate_equity_risk.assert_not_called()

@@ -170,7 +170,15 @@ def test_binance_futures_retains_listen_key_subscription(monkeypatch, environmen
     adapter, _states = _adapter(BinanceExecutionAdapter)
     adapter.config["environment"] = environment
     calls = []
-    response = SimpleNamespace(raise_for_status=lambda: None, json=lambda: {"listenKey": "stream-key"})
+    from app.utils import binance_request_guard as guard_module
+
+    guard = guard_module.BinanceRequestGuard()
+    guard._redis_url = ""
+    monkeypatch.setattr(guard_module, "binance_request_guard", guard)
+    response = SimpleNamespace(
+        status_code=200, headers={}, text='{"listenKey":"stream-key"}',
+        raise_for_status=lambda: None, json=lambda: {"listenKey": "stream-key"},
+    )
     monkeypatch.setattr("app.services.execution_streams.adapters.requests.post", lambda url, **kw: calls.append((url, kw)) or response)
     adapter._keepalive_thread = SimpleNamespace(is_alive=lambda: True)
 

@@ -7,6 +7,8 @@ API docs (reference):
 
 from __future__ import annotations
 
+from app.utils.binance_request_guard import BinanceRateLimitError
+
 from app.services.live_trading.binance_fees import aggregate_commissions
 from app.services.live_trading.fill_evidence import binance_execution_average
 
@@ -769,6 +771,8 @@ class BinanceFuturesClient(BaseRestClient):
                     return total_fee, fee_ccy, fees
                 if attempt < attempts - 1:
                     time.sleep(1.5)
+            except BinanceRateLimitError:
+                return 0.0, "", {}
             except Exception as e:
                 log = logger.warning if warn_missing else logger.debug
                 log("Binance userTrades fee query failed (attempt=%d): %s", attempt, e)

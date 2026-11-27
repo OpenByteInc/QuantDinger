@@ -182,7 +182,9 @@ class StrategyCommandRepository:
                     UPDATE qd_strategy_commands AS command
                     SET status = 'processing',
                         claimed_by = %s,
-                        claimed_at = COALESCE(command.claimed_at, NOW()),
+                        claimed_at = CASE WHEN command.status = 'processing'
+                            AND command.claimed_by IS DISTINCT FROM %s
+                            THEN NOW() ELSE COALESCE(command.claimed_at, NOW()) END,
                         lease_expires_at = NOW() + (%s * INTERVAL '1 second'),
                         attempts = command.attempts + 1,
                         updated_at = NOW()
@@ -195,7 +197,7 @@ class StrategyCommandRepository:
                     RETURNING command.*,
                         EXTRACT(EPOCH FROM (NOW() - command.claimed_at)) AS elapsed_seconds
                     """,
-                    (owner_id, int(lease_seconds), int(candidate["id"])),
+                    (owner_id, owner_id, int(lease_seconds), int(candidate["id"])),
                 )
                 row = cur.fetchone()
                 db.commit()

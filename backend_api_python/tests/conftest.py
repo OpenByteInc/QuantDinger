@@ -29,6 +29,17 @@ import pytest
 from app import create_app
 
 
+@pytest.fixture(autouse=True)
+def isolated_exchange_request_guard(monkeypatch):
+    from app.utils import exchange_request_guard as module
+
+    guard = module.ExchangeRequestGuard()
+    for budget in guard.budgets.values():
+        budget._redis_url = ""
+    monkeypatch.setattr(module, "exchange_request_guard", guard)
+    return guard
+
+
 @pytest.fixture(scope="session")
 def app():
     """Create application for testing."""

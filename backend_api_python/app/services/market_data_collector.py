@@ -27,6 +27,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
 import yfinance as yf
 import pandas as pd
 import requests
+from app.utils.binance_request_guard import guarded_binance_request
 
 from app.data_sources import DataSourceFactory
 from app.services.kline import KlineService
@@ -1918,7 +1919,7 @@ class MarketDataCollector:
             "long_short_ratio": None, "source": "", "field_metadata": {},
         }
         try:
-            contract_response = requests.get(
+            contract_response = guarded_binance_request(requests.get,
                 f"https://api.gateio.ws/api/v4/futures/usdt/contracts/{contract}",
                 headers={"Accept": "application/json"},
                 timeout=6,
@@ -1941,7 +1942,7 @@ class MarketDataCollector:
             logger.debug("Gate public funding failed for %s: %s", contract, exc)
 
         try:
-            stats_response = requests.get(
+            stats_response = guarded_binance_request(requests.get,
                 "https://api.gateio.ws/api/v4/futures/usdt/contract_stats",
                 params={"contract": contract, "interval": "1d", "limit": 2},
                 headers={"Accept": "application/json"},
@@ -1989,7 +1990,7 @@ class MarketDataCollector:
             "long_short_ratio": None, "source": "", "field_metadata": {},
         }
         try:
-            funding_response = requests.get(
+            funding_response = guarded_binance_request(requests.get,
                 "https://www.okx.com/api/v5/public/funding-rate-history",
                 params={"instId": instrument, "limit": 2},
                 timeout=6,
@@ -2009,7 +2010,7 @@ class MarketDataCollector:
         except Exception as exc:
             logger.debug("OKX public funding failed for %s: %s", instrument, exc)
         try:
-            oi_response = requests.get(
+            oi_response = guarded_binance_request(requests.get,
                 "https://www.okx.com/api/v5/public/open-interest",
                 params={"instType": "SWAP", "instId": instrument},
                 timeout=6,
@@ -2055,7 +2056,7 @@ class MarketDataCollector:
 
         fallback = {"field_metadata": {}}
         try:
-            funding_resp = requests.get(
+            funding_resp = guarded_binance_request(requests.get,
                 "https://fapi.binance.com/fapi/v1/fundingRate",
                 params={"symbol": pair, "limit": 1},
                 timeout=8,
@@ -2078,7 +2079,7 @@ class MarketDataCollector:
             logger.debug(f"Binance funding fallback failed for {pair}: {e}")
 
         try:
-            oi_resp = requests.get(
+            oi_resp = guarded_binance_request(requests.get,
                 "https://fapi.binance.com/futures/data/openInterestHist",
                 params={"symbol": pair, "period": "1d", "limit": 2},
                 timeout=8,
@@ -2110,7 +2111,7 @@ class MarketDataCollector:
             logger.debug(f"Binance open interest fallback failed for {pair}: {e}")
 
         try:
-            ratio_resp = requests.get(
+            ratio_resp = guarded_binance_request(requests.get,
                 "https://fapi.binance.com/futures/data/globalLongShortAccountRatio",
                 params={"symbol": pair, "period": "1d", "limit": 1},
                 timeout=8,

@@ -20,6 +20,7 @@ from urllib.parse import urlencode
 from app.services.live_trading.base import BaseRestClient, LiveOrderResult, LiveTradingError
 from app.services.live_trading.ws_order_transport import submit_bitget_order
 from app.utils.numeric_precision import floor_decimal_to_step, format_decimal
+from app.utils.exchange_request_budget import ExchangeRateLimitError
 
 logger = logging.getLogger(__name__)
 from app.services.live_trading.symbols import to_bitget_um_symbol
@@ -1189,6 +1190,8 @@ class BitgetMixClient(BaseRestClient):
                         "detail": last_detail,
                         "fills": last_fills,
                     }
+            except ExchangeRateLimitError:
+                timed_out = True
             except Exception:
                 pass
 
