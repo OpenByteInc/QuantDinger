@@ -580,3 +580,62 @@ def test_unconfigured_ai_does_not_charge(monkeypatch):
 
     assert result.allowed is True
     assert result.reason == "ai_not_configured"
+
+
+def _jev_settings(min_confidence="0.55"):
+    return {
+        "api_key": "secret",
+        "base_url": "https://api.typesafe.ai/v1",
+        "model": "jev-latest",
+        "timeout_seconds": "8",
+        "min_confidence": min_confidence,
+    }
+
+
+class _FallbackLLM:
+    def is_configured(self):
+        return True
+
+    def get_default_model(self):
+        return "fallback-model"
+
+    def call_llm_api(self, *args, **kwargs):
+        return '{"decision":"pass","confidence":0.8,"reason":"fallback_reviewed","checks":[]}'
+
+
+def test_jev_timeout_falls_back_to_llm(monkeypatch):
+    def timeout(*args, **kwargs):
+        raise module.requests.Timeout("read timed out")
+
+    monkeypatch.setattr(module.AIDecisionFilter, "_jev_config", staticmethod(_jev_settings))
+    monkeypatch.setattr(module.requests, "post", timeout)
+    monkeypatch.setattr(module, "LLMService", _FallbackLLM)
+    monkeypatch.setattr(module.AIDecisionFilter, "_persist", staticmethod(lambda request, result: None))
+
+    result = module.AIDecisionFilter().evaluate(_request(), enabled=True)
+
+    assert result.provider == "llm"
+    assert result.allowed is True
+    assert result.fallback_reason == "jev:read timed out"
+
+
+def test_jev_answer_without_confidence_falls_back_to_llm(monkeypatch):
+    answers = _jev_answers()
+    del answers["risk_check"]["confidence"]
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"answers": answers}
+
+    monkeypatch.setattr(module.AIDecisionFilter, "_jev_config", staticmethod(_jev_settings))
+    monkeypatch.setattr(module.requests, "post", lambda *args, **kwargs: Response())
+    monkeypatch.setattr(module, "LLMService", _FallbackLLM)
+    monkeypatch.setattr(module.AIDecisionFilter, "_persist", staticmethod(lambda request, result: None))
+
+    result = module.AIDecisionFilter().evaluate(_request(), enabled=True)
+
+    assert result.provider == "llm"
+    assert result.fallback_reason == "jev:Jev response confidence was invalid for risk_check"
