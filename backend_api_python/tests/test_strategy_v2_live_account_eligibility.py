@@ -24,7 +24,8 @@ def handle_data(context, data):
 '''
 
 
-def test_crypto_portfolio_manifest_accepts_every_supported_crypto_credential():
+def test_crypto_portfolio_manifest_accepts_every_supported_crypto_credential(monkeypatch):
+    monkeypatch.setattr("app.services.strategy_v2.deployment.is_trading_venue_enabled", lambda _: True)
     manifest = compile_strategy_v2(CRYPTO_PORTFOLIO_SOURCE).manifest
 
     assert manifest.strategy_type == "portfolio"
@@ -58,7 +59,7 @@ def test_mixed_market_portfolio_remains_signal_only():
         )
 
 
-@pytest.mark.parametrize("exchange_id", ["alpaca", "ibkr", "tiger", "webull"])
+@pytest.mark.parametrize("exchange_id", ["alpaca", "ibkr", "tiger", "webull", "forthright"])
 def test_us_stock_live_execution_accepts_configured_stock_brokers(exchange_id):
     StrategyV2DeploymentService._validate_execution_account(
         ("USStock",),
@@ -75,18 +76,30 @@ def test_signal_mode_does_not_require_a_live_credential():
     )
 
 
-def test_hk_stock_live_execution_accepts_tiger_only():
+@pytest.mark.parametrize("exchange_id", ["tiger", "forthright"])
+def test_hk_stock_live_execution_accepts_supported_stock_brokers(exchange_id):
     StrategyV2DeploymentService._validate_execution_account(
         ("HKStock",),
-        "tiger",
+        exchange_id,
         "live",
     )
+
+
+@pytest.mark.parametrize("exchange_id", ["alpaca", "ibkr", "webull", "binance"])
+def test_hk_stock_live_execution_keeps_unsupported_brokers_blocked(exchange_id):
     with pytest.raises(StrategyV2ContractError, match="strategyV2.stockCredentialRequired"):
         StrategyV2DeploymentService._validate_execution_account(
             ("HKStock",),
-            "webull",
+            exchange_id,
             "live",
         )
+
+
+@pytest.mark.parametrize("market,exchange_id", [("HKStock", "forthright"), ("HKStock", "tiger"), ("USStock", "alpaca")])
+def test_stock_normalization_does_not_bypass_disabled_venues(monkeypatch, market, exchange_id):
+    monkeypatch.setattr("app.services.strategy_v2.deployment.is_trading_venue_enabled", lambda _: False)
+    with pytest.raises(StrategyV2ContractError, match="strategyV2.tradingVenueDisabled"):
+        StrategyV2DeploymentService._validate_execution_account((market,), exchange_id, "live")
 
 
 def _stock_live_strategy(exchange_id="alpaca"):

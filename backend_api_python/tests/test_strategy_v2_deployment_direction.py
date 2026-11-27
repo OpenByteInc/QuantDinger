@@ -129,6 +129,52 @@ def test_forthright_futures_deployment_validates_contract_and_persists_currency(
     assert calls == []
 
 
+def test_hk_stock_connect_deployment_uses_canonical_pool_members(monkeypatch):
+    from types import SimpleNamespace
+    from app.services import exchange_execution
+    from app.services.live_trading import factory
+    from app.services.market import hk_board_lots
+    from app.services.openapi_brokers.forthright import ForthrightClient
+
+    source = '''
+def initialize(context):
+    context.set_universe(pool="hk_stock_connect")
+    context.subscribe(frequency="1d")
+    context.set_benchmark("HKStock:02800.HK")
+    context.set_metadata(direction_mode="long_only")
+
+def on_rebalance(context, data):
+    pass
+'''
+    cursor = _Cursor()
+    monkeypatch.setattr(sys.modules[__name__], "SOURCE", source)
+    monkeypatch.setattr(deployment, "get_script_source_service", lambda: _Sources())
+    monkeypatch.setattr(deployment, "get_db_connection", lambda: _Db(cursor))
+    monkeypatch.setattr(deployment, "is_live_trading_enabled", lambda: True)
+    monkeypatch.setattr(deployment, "is_trading_venue_enabled", lambda value: True)
+    monkeypatch.setattr(StrategyV2DeploymentService, "_credential_exchange", staticmethod(lambda *a: "forthright"))
+    universe = SimpleNamespace(
+        list_universes=lambda user_id: [{"id": 7, "code": "hk_stock_connect"}],
+        candidate_members=lambda *args, **kwargs: [{"market": "HKStock", "symbol": "00700"}],
+    )
+    monkeypatch.setattr("app.services.strategy_v2.service.get_universe_service", lambda: universe)
+    monkeypatch.setattr(exchange_execution, "resolve_exchange_config", lambda *a, **k: {"currency": "HKD"})
+    client = object.__new__(ForthrightClient)
+    client.is_futures = False
+    client.strategy_units = True
+    checked = []
+    monkeypatch.setattr(hk_board_lots, "board_lot_rule", lambda symbol: checked.append(symbol) or {"lot_size": 100})
+    monkeypatch.setattr(client, "disconnect", lambda: None)
+    monkeypatch.setattr(factory, "create_client", lambda *args: client)
+    strategy_id = StrategyV2DeploymentService().save(user_id=7, payload={
+        **_payload("long_only"), "executionMode": "live", "credentialId": 8,
+    })
+    assert strategy_id == 41
+    assert checked == ["00700"]
+    trading_config = json.loads(cursor.params[-2])
+    assert trading_config["strategy_manifest"]["universe"]["reference"] == "POOL:hk_stock_connect"
+
+
 @pytest.mark.parametrize(("field", "value"), [
     ("equityStopLossPct", -0.01),
     ("equityStopLossPct", 1.01),

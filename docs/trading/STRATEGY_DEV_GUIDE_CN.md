@@ -162,6 +162,10 @@ Content-Type: application/json
 
 系统也会规范化部分别名，例如 <code>600519.XSHG</code> → <code>CNStock:600519.SH</code>、<code>BTCUSDT</code> → <code>BTC/USDT</code>。
 
+在明确的港股市场上下文中，纯数字和 HK 前缀别名会统一为五位数字加 <code>.HK</code>。动态股票池成分在行情、策略回调、部署校验和执行中使用同一标识，重复别名合并时保留历史成分区间，不改写公共股票池的原始记录。该规范化不适用于 Crypto 通道的股票产品或期货合约。
+
+该规则覆盖所有 HKStock 股票池：恒生指数（<code>hk_hsi</code>）、恒生科技（<code>hk_tech30</code>）、国企指数（<code>hk_china_enterprises50</code>）、港股通（<code>hk_stock_connect</code>）、ETF（<code>hk_etf</code>）、自定义池及自选列表。股票池和指数仍按时间解析成分；历史行情、因子、持仓和下单均原样使用 <code>get_universe_stocks()</code> / <code>get_index_stocks(...)</code> 返回的规范标识，不截掉市场前缀或 <code>.HK</code>，也不将当前成分硬编码为固定列表。统一标识不会补造历史数据、放宽券商支持范围或绕过每手股数校验。<code>USStock:BRK.B</code> 等美股类别代码保持不变。产品目录的底层股票元数据可以保留 <code>00700</code>，但不能用它替换交易所产品的执行标识。
+
 券商交易的证券统一使用 <code>Market:Symbol</code> 作为策略层规范身份。<code>USStock</code>、<code>HKStock</code>、<code>CNStock</code>、<code>Forex</code>、<code>Futures</code> 和 <code>MOEX</code> 标的后面不要添加 <code>@NASDAQ</code>、<code>@NYSE</code>、<code>@HKEX</code> 或 <code>@spot</code>。运行时会把券商、上市地点等执行元数据单独保存。普通 Crypto 策略源码只使用产品类型后缀 <code>@spot</code> 或 <code>@swap</code>；创建实盘部署时由所选账户凭证提供执行交易所，平台再解析该交易所上的对应产品。只有主动锁定交易所路由，或保留产品目录返回的交易所专属产品时，才使用 <code>@venue:market_type</code>。一旦源码显式指定交易所，该交易所就是数据和执行身份的一部分，系统不能静默替换。
 
 为避免歧义，生产策略应写完整市场前缀。Crypto 未写市场类型时默认为 spot。只有 swap 可以启用合约杠杆。能够解析市场名称并不代表一定有数据或支持实盘，实盘支持范围见第 18 节。

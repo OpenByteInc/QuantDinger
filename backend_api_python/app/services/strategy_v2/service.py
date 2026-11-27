@@ -223,10 +223,10 @@ class StrategyV2BacktestService:
             start=start_date.date(),
             end=end_date.date(),
         )
+        candidates = _canonical_members(candidates)
         limit = strategy_universe_symbol_limit(normalized_frequency)
         if len(candidates) > limit:
             raise StrategyV2ContractError("strategyV2.universeTooLarge")
-        candidates = [{**item, "key": _member_key(item)} for item in candidates]
         _attach_catalog_products(candidates)
 
         minimum_symbols = 3
@@ -390,10 +390,10 @@ class StrategyV2BacktestService:
             start=start_date.date(),
             end=end_date.date(),
         )
+        candidates = _canonical_members(candidates)
         limit = strategy_universe_symbol_limit(normalized_frequency)
         if len(candidates) > limit:
             raise StrategyV2ContractError("strategyV2.universeTooLarge")
-        candidates = [{**item, "key": _member_key(item)} for item in candidates]
         _attach_catalog_products(candidates)
         if len(candidates) < 3:
             raise StrategyV2ContractError("strategyV2.factorResearchUniverseTooSmall:3")
@@ -703,11 +703,11 @@ class StrategyV2BacktestService:
             if not universe_id:
                 return [item["key"] for item in candidates]
             members = self.universe_service.resolve_members(user_id, universe_id, as_of=timestamp.date())
-            return [
+            return list(dict.fromkeys(
                 key
                 for item in members
                 if (key := _member_key(item)) in available_universe_members
-            ]
+            ))
 
         rules_snapshot = None
         if any(str(item.get("market") or "") == "Crypto" for item in candidates):
@@ -979,10 +979,11 @@ class StrategyV2BacktestService:
             start=start_date.date(),
             end=end_date.date(),
         )
+        candidates = _canonical_members(members)
         limit = strategy_universe_symbol_limit(manifest.driving_frequency)
-        if len(members) > limit:
+        if len(candidates) > limit:
             raise StrategyV2ContractError("strategyV2.universeTooLarge")
-        return [{**item, "key": _member_key(item)} for item in members], universe_id
+        return candidates, universe_id
 
     def fetch_frames(
         self,
@@ -1572,6 +1573,29 @@ def _resample_review_frame(
 
 def _member_key(member: dict[str, Any]) -> str:
     return instrument_key_from_metadata(member)
+
+
+def _canonical_members(members: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    candidates = []
+    hk_members = {}
+    for item in members:
+        key = _member_key(item)
+        member = {**item, "key": key}
+        if item.get("market") == "HKStock":
+            # Share the data, callback and ledger identity without rewriting source snapshots.
+            member["symbol"] = key.split(":", 1)[1]
+            if key in hk_members:
+                previous = hk_members[key]
+                periods = list(previous.get("membership_periods") or [])
+                for period in member.get("membership_periods") or []:
+                    if period not in periods:
+                        periods.append(period)
+                if periods:
+                    previous["membership_periods"] = periods
+                continue
+            hk_members[key] = member
+        candidates.append(member)
+    return candidates
 
 
 def _universe_matches(item: dict[str, Any], reference: str) -> bool:

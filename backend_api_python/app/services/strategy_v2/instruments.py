@@ -61,6 +61,10 @@ def parse_instrument(value: object, *, default_market: str = "") -> InstrumentSp
     else:
         exchange_id = ""
         market_type = ""
+        if market == "HKStock":
+            from app.services.openapi_brokers.symbols import equity_symbol
+
+            symbol = equity_symbol(symbol, market)
 
     return InstrumentSpec(
         market=market,
