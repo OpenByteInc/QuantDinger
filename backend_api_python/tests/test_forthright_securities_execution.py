@@ -98,16 +98,20 @@ def test_worker_rejects_closed_session_before_connecting_to_any_broker(monkeypat
 @pytest.mark.parametrize('market,exchange,currency,symbol', [
     ('USStock', 'US', 'USD', 'AAPL'), ('HKStock', 'HK', 'HKD', '00700.HK'),
 ])
+@pytest.mark.parametrize('status', ['8', '6'])
+@pytest.mark.parametrize('delayed_fee', [False, True])
 def test_stock_fill_sync_preserves_cumulative_fee_currency_on_repeated_snapshot(
-    monkeypatch, market, exchange, currency, symbol,
+    monkeypatch, market, exchange, currency, symbol, status, delayed_fee,
 ):
     client = object.__new__(ForthrightClient)
     client.is_futures = False
     wire = {'order_id': 'F1', 'exchange_code': exchange, 'product_code': symbol.removesuffix('.HK'),
-            'order_status': '8', 'order_qty': 100, 'last_qty': 100, 'last_amt': 34540,
+            'order_status': status, 'order_qty': 200 if status == '6' else 100, 'last_qty': 100, 'last_amt': 34540,
             'side': 'B', 'fare_amt': 64.38, 'ccy': currency}
     result = client._result(client._order(wire))
-    monkeypatch.setattr(client, 'get_order_status', lambda _: result)
+    pending = client._result(client._order({k: v for k, v in wire.items() if k != 'fare_amt'}))
+    snapshots = iter([pending, result, result] if delayed_fee else [result, result])
+    monkeypatch.setattr(client, 'get_order_status', lambda _: next(snapshots))
     config = {'exchange_id': 'forthright', 'credential_id': 18}
     monkeypatch.setattr(worker_module, 'load_strategy_configs', lambda _: {
         'user_id': 1, 'market_category': market, 'exchange_config': config})
@@ -124,9 +128,11 @@ def test_stock_fill_sync_preserves_cumulative_fee_currency_on_repeated_snapshot(
     worker._update_alpaca_sent_order_snapshot = lambda **kw: row.update(kw)
     worker._sync_one_alpaca_sent_order(row)
     worker._sync_one_alpaca_sent_order(row)
-    assert [r['filled'] for r in recorded] == [100, 0]
-    assert [r['commission'] for r in recorded] == [64.38, 0]
-    for snapshot in recorded:
+    if delayed_fee:
+        worker._sync_one_alpaca_sent_order(row)
+    assert [r['filled'] for r in recorded] == ([100, 0, 0] if delayed_fee else [100, 0])
+    assert [r['commission'] for r in recorded] == ([0, 64.38, 0] if delayed_fee else [64.38, 0])
+    for snapshot in recorded[1:] if delayed_fee else recorded:
         assert snapshot['cumulative_filled'] == 100
         assert snapshot['cumulative_fees'] == {currency: 64.38}
         assert snapshot['cumulative_commission_quote'] == 64.38

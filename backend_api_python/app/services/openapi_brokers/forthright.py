@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 import math
 import os
 import re
@@ -628,16 +629,19 @@ class ForthrightClient(_HttpClient):
             cursor = next_cursor
         raise BrokerApiError("brokerAccounts.forthright.invalidSnapshot")
 
-    def get_orders(self, *, status="all", limit=100, symbol="", raise_on_error=True):
+    def _order_snapshots(self, *, include_history=True):
         if self.is_futures:
             rows = self._pages("working_order", limit=100)
         else:
             data = self._query("today_order")
             rows = self._rows([] if data is None else data)
-        if status != "open":
+        if include_history:
             rows = self._history() + rows
         orders = {order["id"]: order for order in map(self._order, rows)}
-        result = list(orders.values())
+        return list(orders.values())
+
+    def get_orders(self, *, status="all", limit=100, symbol="", raise_on_error=True):
+        result = self._order_snapshots(include_history=status != "open")
         if status == "open":
             result = [r for r in result if r["status"] not in {"filled", "cancelled", "rejected"}]
         elif status == "filled":
@@ -680,8 +684,47 @@ class ForthrightClient(_HttpClient):
         if symbol:
             canonical = equity_symbol(symbol)
             result = [row for row in result if row["symbol"] == canonical]
+        self._allocate_execution_fees(result)
         result.sort(key=lambda row: (str(row.get("filled_at") or ""), row["id"]), reverse=True)
         return result[:max(1, int(limit))]
+
+    def _allocate_execution_fees(self, executions):
+        """Allocate verified order totals only over a complete execution set."""
+        if not executions:
+            return
+        try:
+            orders = {row["id"]: row for row in self._order_snapshots()}
+        except Exception as exc:
+            # Fees are optional evidence; an order lookup must not hide real fills.
+            logging.getLogger(__name__).warning("Forthright execution fees unavailable: %s", type(exc).__name__)
+            return
+        groups = {}
+        for execution in executions:
+            groups.setdefault(execution["order_id"], []).append(execution)
+        for order_id, fills in groups.items():
+            order = orders.get(order_id)
+            if not order or order.get("fee_status") not in {"actual", "actual_zero"}:
+                continue
+            if any(any(fill[key] != order[key] for key in ("symbol", "market", "side", "currency")) for fill in fills):
+                continue
+            quantity = sum(Decimal(str(fill["filled_qty"])) for fill in fills)
+            notional = sum(Decimal(str(fill["amount"])) for fill in fills)
+            expected_notional = Decimal(str(order["raw"].get("last_amt", 0)))
+            if (quantity != Decimal(str(order["filled_qty"])) or notional <= 0
+                    or abs(notional - expected_notional) > Decimal("0.01")):
+                continue
+            total = Decimal(str(order["fee_amount"]))
+            allocated = Decimal(0)
+            ordered = sorted(fills, key=lambda fill: fill["id"])
+            for index, fill in enumerate(ordered):
+                share = (total - allocated if index == len(ordered) - 1 else
+                         (total * Decimal(str(fill["amount"])) / notional).quantize(Decimal("0.00000001"), rounding=ROUND_DOWN))
+                allocated += share
+                amount, currency = float(share), order["currency"]
+                fill.update(fee_amount=amount, fee_currency=currency, commission=amount,
+                            commission_ccy=currency, commission_quote=amount, fees_by_ccy={currency: amount},
+                            fee_status="actual" if amount else "actual_zero", fee_scope="execution",
+                            fee_source="order_allocation", order_fee_amount=float(total))
 
     def _result(self, order):
         raw = {**order["raw"], **self._order_fees(order)}

@@ -48,7 +48,7 @@ class AlpacaOrderSyncPersistenceMixin:
                                 COALESCE((SELECT SUM(t.amount) FROM qd_strategy_trades t
                                           WHERE t.pending_order_id = pending_orders.id), 0))
                             OR (
-                                status = 'filled'
+                                status IN ('filled', 'cancelled')
                                 AND COALESCE(filled, 0) > 0
                                 AND updated_at < NOW() - (%s * INTERVAL '1 second')
                                 AND EXISTS (
@@ -96,7 +96,7 @@ class AlpacaOrderSyncPersistenceMixin:
                                 COALESCE((SELECT SUM(t.amount) FROM qd_strategy_trades t
                                           WHERE t.pending_order_id = pending_orders.id), 0))
                             OR (
-                                status = 'filled'
+                                status IN ('filled', 'cancelled')
                                 AND COALESCE(filled, 0) > 0
                                 AND updated_at < NOW() - (%s * INTERVAL '1 second')
                                 AND EXISTS (
