@@ -14,6 +14,7 @@ from app.utils.trading_venue_visibility import (
 
 def test_missing_venue_setting_keeps_existing_installations_enabled():
     assert enabled_trading_venues({}) == set(TRADING_VENUE_IDS)
+    assert is_trading_venue_enabled("forthright", {}) is True
 
 
 def test_explicit_empty_venue_setting_disables_every_venue():

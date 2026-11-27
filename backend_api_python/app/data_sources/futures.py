@@ -5,7 +5,7 @@
 2. 传统期货（三级降级: Twelve Data → yfinance → Tiingo(贵金属)）
 """
 from typing import Dict, List, Any, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import os
 import requests
 import yfinance as yf
@@ -14,6 +14,7 @@ from app.data_sources.base import BaseDataSource, TIMEFRAME_SECONDS
 from app.data_sources.native_crypto import create_native_crypto_client
 from app.utils.logger import get_logger
 from app.config import CryptoPublicConfig, TiingoConfig, APIKeys
+from app.services.market.dated_futures import dated_future_feed, is_dated_future
 
 logger = get_logger(__name__)
 
@@ -104,6 +105,12 @@ class FuturesDataSource(BaseDataSource):
         Crypto futures: native Binance public REST.
         """
         sym = (symbol or "").strip()
+        feed = dated_future_feed(sym, required=is_dated_future(sym), allow_default=True)
+        if feed:
+            provider, exact_symbol = feed
+            result = (self._get_ticker_yfinance(exact_symbol, exact=True) if provider == "yfinance"
+                      else self._get_ticker_twelvedata(exact_symbol))
+            return {**(result or {}), "symbol": sym, "last": (result or {}).get("last", 0)}
         is_traditional = sym in self.YF_SYMBOLS or sym.endswith("=F") or sym in _TD_FUTURES_SYMBOLS
         if is_traditional:
             for fetcher in (self._get_ticker_twelvedata, self._get_ticker_yfinance, self._get_ticker_tiingo):
@@ -153,11 +160,11 @@ class FuturesDataSource(BaseDataSource):
             logger.debug("TwelveData futures quote failed %s: %s", symbol, e)
             return None
 
-    def _get_ticker_yfinance(self, symbol: str) -> Dict[str, Any]:
+    def _get_ticker_yfinance(self, symbol: str, *, exact=False) -> Dict[str, Any]:
         """Fetch traditional futures quote from yfinance (fallback)."""
         try:
             yf_symbol = self.YF_SYMBOLS.get(symbol, symbol)
-            if not yf_symbol.endswith("=F"):
+            if not exact and not yf_symbol.endswith("=F"):
                 yf_symbol = yf_symbol + "=F"
             t = yf.Ticker(yf_symbol)
             last = None
@@ -173,6 +180,10 @@ class FuturesDataSource(BaseDataSource):
                     last = float(hist["Close"].iloc[-1])
                     source = "kline_1d"
                     timestamp = int(hist.index[-1].timestamp())
+            if exact:
+                metadata = t.history_metadata or {}
+                if metadata.get("symbol") != yf_symbol or metadata.get("instrumentType") != "FUTURE":
+                    return {"symbol": symbol, "last": 0.0}
             return {"symbol": yf_symbol, "last": float(last or 0.0), "source": source, "timestamp": timestamp}
         except Exception:
             return {"symbol": symbol, "last": 0.0}
@@ -229,6 +240,12 @@ class FuturesDataSource(BaseDataSource):
             after_time: 预留与基类一致（当前期货链路未使用）
         """
         _ = after_time
+        feed = dated_future_feed(symbol, required=is_dated_future(symbol), allow_default=True)
+        if feed:
+            provider, exact_symbol = feed
+            if provider == "yfinance":
+                return self._get_traditional_futures_yf(exact_symbol, timeframe, limit, before_time, exact=True)
+            return self._get_traditional_futures_td(exact_symbol, timeframe, limit, before_time)
         base_symbol = symbol.replace("=F", "").upper()
         if base_symbol in _TD_FUTURES_SYMBOLS or symbol.endswith('=F'):
             return self._get_traditional_futures(symbol, timeframe, limit, before_time)
@@ -326,31 +343,50 @@ class FuturesDataSource(BaseDataSource):
             return []
 
     def _get_traditional_futures_yf(
-        self, symbol: str, timeframe: str, limit: int, before_time: Optional[int] = None
+        self, symbol: str, timeframe: str, limit: int, before_time: Optional[int] = None, *, exact=False
     ) -> List[Dict[str, Any]]:
         """Fetch traditional futures K-lines from yfinance (fallback)."""
         try:
             yf_symbol = self.YF_SYMBOLS.get(symbol, symbol)
-            if not yf_symbol.endswith('=F'):
+            if not exact and not yf_symbol.endswith('=F'):
                 yf_symbol = symbol + '=F'
 
-            yf_interval = self.YF_TIMEFRAME_MAP.get(timeframe, '1d')
+            resample_hours = {'2H': 2, '4H': 4, '6H': 6, '8H': 8, '12H': 12}.get(timeframe)
+            yf_interval = '1h' if resample_hours else ('1m' if timeframe == '3m' else self.YF_TIMEFRAME_MAP.get(timeframe))
+            if not yf_interval:
+                raise ValueError('brokerAccounts.forthright.unsupportedTimeframe')
 
             if before_time:
-                end_time = datetime.fromtimestamp(before_time)
+                end_time = datetime.fromtimestamp(before_time, tz=timezone.utc)
             else:
-                end_time = datetime.now()
+                end_time = datetime.now(timezone.utc)
 
-            tf_seconds = self._get_timeframe_seconds(timeframe)
+            tf_seconds = (resample_hours * 3600 if resample_hours else (180 if timeframe == '3m' else self._get_timeframe_seconds(timeframe)))
             start_time = end_time - timedelta(seconds=tf_seconds * limit * 1.5)
-            end_time_inclusive = end_time + timedelta(days=1)
+            retention = 7 if yf_interval == '1m' else (60 if yf_interval in {'5m', '15m', '30m'} else (729 if yf_interval == '1h' else None))
+            if retention:
+                start_time = min(start_time, end_time - timedelta(days=4))
+                start_time = max(start_time, datetime.now(timezone.utc) - timedelta(days=retention - 1))
+            if start_time >= end_time:
+                return []
+            end_time_inclusive = end_time if retention else end_time + timedelta(days=1)
 
             ticker = yf.Ticker(yf_symbol)
-            df = ticker.history(start=start_time, end=end_time_inclusive, interval=yf_interval)
+            df = ticker.history(start=start_time, end=end_time_inclusive, interval=yf_interval, auto_adjust=False)
 
             if df.empty:
                 logger.warning("No yfinance data: %s", yf_symbol)
                 return []
+
+            if exact:
+                metadata = ticker.history_metadata
+                if metadata.get('symbol') != yf_symbol or metadata.get('instrumentType') != 'FUTURE':
+                    raise ValueError('brokerAccounts.forthright.contractMetadataRequired')
+            if resample_hours or timeframe == '3m':
+                rule = f'{resample_hours}h' if resample_hours else '3min'
+                df = df.resample(rule, origin='start_day').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna(subset=['Open', 'High', 'Low', 'Close'])
+            if before_time:
+                df = df[df.index.map(lambda value: value.timestamp() < before_time)]
 
             klines = []
             for index, row in df.iterrows():

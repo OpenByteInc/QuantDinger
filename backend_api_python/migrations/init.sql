@@ -2186,6 +2186,9 @@ CREATE TABLE IF NOT EXISTS qd_market_symbols (
 );
 
 CREATE INDEX IF NOT EXISTS idx_market_symbols_market ON qd_market_symbols(market);
+ALTER TABLE qd_market_symbols ADD COLUMN IF NOT EXISTS board_lot INTEGER CHECK (board_lot > 0);
+ALTER TABLE qd_market_symbols ADD COLUMN IF NOT EXISTS rules_as_of DATE;
+ALTER TABLE qd_market_symbols ADD COLUMN IF NOT EXISTS rules_source TEXT;
 CREATE INDEX IF NOT EXISTS idx_market_symbols_is_hot ON qd_market_symbols(market, is_hot);
 CREATE INDEX IF NOT EXISTS idx_market_symbols_market_upper_symbol
   ON qd_market_symbols(market, UPPER(symbol));
@@ -3491,3 +3494,10 @@ DROP TRIGGER IF EXISTS trg_cleanup_deleted_strategy ON qd_strategies_trading;
 CREATE TRIGGER trg_cleanup_deleted_strategy
 BEFORE DELETE ON qd_strategies_trading
 FOR EACH ROW EXECUTE FUNCTION qd_cleanup_deleted_strategy();
+
+CREATE TABLE IF NOT EXISTS qd_advertisement_config (
+    id SMALLINT PRIMARY KEY CHECK (id = 1),
+    items JSONB NOT NULL DEFAULT '[]'::jsonb,
+    revision INTEGER NOT NULL DEFAULT 0,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);

@@ -49,6 +49,13 @@ class KlineService:
             K线数据列表
         """
         normalized_market = DataSourceFactory.normalize_market(market or "")
+        if normalized_market == "Futures":
+            from app.services.market.dated_futures import dated_future_feed, is_dated_future
+            if is_dated_future(symbol):
+                try:
+                    dated_future_feed(symbol, required=True, allow_default=True)
+                except ValueError as exc:
+                    raise ValueError('brokerAccounts.forthright.feedMissing') from exc
         ex_key = (exchange_id or "").strip().lower()
         effective_ex_key = ex_key or str(CryptoPublicConfig.DEFAULT_EXCHANGE or "").strip().lower()
         mt_key = (market_type or "").strip().lower()

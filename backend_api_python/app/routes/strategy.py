@@ -256,6 +256,8 @@ def start_strategy(strategy_id: int):
         return _error("strategyV2.strategyNotFound", 404)
     if str(row.get("execution_mode") or "signal").strip().lower() == "live" and not is_live_trading_enabled():
         return _error("strategyV2.liveTradingDisabled", 403)
+    if row.get("execution_mode") == "live" and row.get("market_category") == "Futures":
+        return _error("strategyV2.liveMarketUnsupported", 400)
     service = get_strategy_service()
     try:
         if not service.update_strategy_status(strategy_id, "running", user_id=int(g.user_id)):

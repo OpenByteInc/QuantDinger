@@ -626,6 +626,7 @@ class TradingExecutor:
                     signal_timestamp=signal_ts,
                     market_type=str(row.get("market_type") or strategy.get("market_type") or "swap"),
                     execution_mode="live",
+                    market_category=str(strategy.get("market_category") or ""),
                     leverage=leverage,
                     reason="user_stop_and_close",
                     notification_config=notification_config,
@@ -713,6 +714,7 @@ class TradingExecutor:
                     signal_timestamp=signal_ts,
                     market_type=str(row.get("market_type") or strategy.get("market_type") or "spot"),
                     execution_mode="signal",
+                    market_category=str(strategy.get("market_category") or ""),
                     leverage=leverage,
                     reason="user_stop_and_close",
                     notification_config=notification_config,
@@ -1897,7 +1899,7 @@ class TradingExecutor:
                 target_amount,
                 direction_mode=direction_mode,
             )
-        if market_type == "spot" and target_amount < -1e-12:
+        if market_type == "spot" and member.get("market") != "Futures" and target_amount < -1e-12:
             raise RuntimeError("strategyV2.spotShortUnsupported")
 
         closes_position = abs(target_amount) <= 1e-12 and abs(current_amount) > 1e-12
@@ -2092,6 +2094,7 @@ class TradingExecutor:
             signal_timestamp=int(values.get("signal_ts") or time.time()),
             market_type=str(values.get("market_type") or "spot"),
             execution_mode=str(values.get("execution_mode") or "signal"),
+            market_category=str(values.get("market_category") or strategy.get("market_category") or ""),
             exchange_id=str((values.get("exchange_config") or {}).get("exchange_id") or ""),
             credential_id=int((values.get("exchange_config") or {}).get("credential_id") or 0),
             rebalance_group_id=str(values.get("rebalance_group_id") or ""),

@@ -52,6 +52,21 @@ def test_openapi_shared_schemas(openapi_spec):
         assert name in schemas, f"missing shared schema {name}"
 
 
+def test_all_operation_tags_are_declared(openapi_spec):
+    from copy import deepcopy
+
+    from app.openapi.register import enrich_spec
+
+    openapi_spec = enrich_spec(deepcopy(openapi_spec))
+    declared = {tag["name"] for tag in openapi_spec["tags"]}
+    methods = {"get", "post", "put", "patch", "delete", "head", "options", "trace"}
+    for path, operations in openapi_spec["paths"].items():
+        for method, operation in operations.items():
+            if method in methods:
+                assert set(operation.get("tags", [])) <= declared, (method, path)
+    assert openapi_spec["paths"]["/api/forthright/unlock"]["post"]["tags"] == ["Forthright"]
+
+
 def test_author_published_query_contract_is_generated(openapi_spec):
     operation = openapi_spec["paths"]["/api/community/author/published"]["get"]
     parameters = {item["name"]: item for item in operation["parameters"]}

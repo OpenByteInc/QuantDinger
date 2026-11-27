@@ -1,5 +1,7 @@
 # Strategy API V2 Development Guide
 
+> Forthright futures currently support manual trading only. Automated futures strategy execution is disabled; contract specification notes below are retained for future integration.
+
 > Applies to: the current executable QuantDinger strategy contract
 > Audience: first-time strategy authors, indicator-conversion users, and developers targeting both backtest and live execution
 
@@ -1066,7 +1068,9 @@ Current live-account boundaries:
 | Exchange equity perpetuals | Binance, OKX, Bitget, Bybit, Gate | <code>stock_perpetual / swap / swap</code>; derivative exposure, Crypto swap direction/leverage rules, and exact native contract required |
 | Binance bStocks | Binance | <code>tokenized_equity / spot / spot</code>; exact catalog symbol such as <code>NVDAB/USDT</code>, ordinary spot order semantics, and no leverage |
 | Unverified exchange equities | HTX | rejected until authoritative product metadata and an execution API family are verified |
-| USStock | Alpaca, IBKR | current broker policy is long-only |
+| USStock | Alpaca, IBKR, Tiger, Webull, Forthright | current broker policy is long-only |
+| HKStock | Tiger, Forthright | long-only |
+| Futures | none | automated strategy execution is disabled; Forthright manual trading only |
 | Other parsed markets | none | backtest/data availability does not imply live support |
 
 Mixed-market live deployment is unsupported. Other markets cannot be forced through a mismatched credential. A live allocation must also keep a compatible quote/settlement currency and API family; do not combine HKD Gate direct equities with USDT equity perpetuals merely because both refer to Hong Kong companies.

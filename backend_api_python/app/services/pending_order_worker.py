@@ -472,7 +472,7 @@ class PendingOrderWorker(
         sc = load_strategy_configs(strategy_id)
         exchange_config = resolve_exchange_config(sc.get("exchange_config") or {}, user_id=int(sc.get("user_id") or 1))
         exchange_id = str(exchange_config.get("exchange_id") or row.get("exchange_id") or "").strip().lower()
-        if exchange_id not in {"alpaca", "tiger", "webull"}:
+        if exchange_id not in {"alpaca", "tiger", "webull", "forthright"}:
             return
 
         try:
@@ -488,8 +488,8 @@ class PendingOrderWorker(
                 AlpacaClient = _AlpacaClient
             except Exception:
                 AlpacaClient = None
-        from app.services.openapi_brokers import TigerClient, WebullClient
-        supported = (TigerClient, WebullClient)
+        from app.services.openapi_brokers import TigerClient, WebullClient, ForthrightClient
+        supported = (TigerClient, WebullClient, ForthrightClient)
         if not isinstance(client, supported) and (AlpacaClient is None or not isinstance(client, AlpacaClient)):
             return
 
@@ -1768,11 +1768,11 @@ class PendingOrderWorker(
             except ImportError:
                 pass
 
-        from app.services.openapi_brokers import TigerClient, WebullClient
+        from app.services.openapi_brokers import TigerClient, WebullClient, ForthrightClient
         stock_broker_id = ""
         if AlpacaClient is not None and isinstance(client, AlpacaClient):
             stock_broker_id = "alpaca"
-        elif isinstance(client, (TigerClient, WebullClient)):
+        elif isinstance(client, (TigerClient, WebullClient, ForthrightClient)):
             stock_broker_id = exchange_id
         if stock_broker_id:
             self._execute_stock_broker_order(
@@ -2715,7 +2715,7 @@ class PendingOrderWorker(
                 signal_type=str(signal_type or ""),
                 entry_price=protection_ref,
             )
-            protection_kwargs = {}
+            protection_kwargs = {"reference_price": ref_price} if broker_name == "forthright" else {}
             if broker_name == "alpaca" and market_type_for_client == "USStock" and _stock_protection(payload, exchange_config, amount, stop_price, take_price):
                 protection_kwargs = {
                     "stop_loss_price": stop_price,

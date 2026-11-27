@@ -114,6 +114,27 @@ class StrategyV2DeploymentService:
             execution_mode=execution_mode,
         )
 
+        if execution_mode == "live" and exchange_id == "forthright":
+            from app.services.exchange_execution import resolve_exchange_config
+            from app.services.live_trading.factory import create_client
+
+            account_config = resolve_exchange_config(
+                {"credential_id": credential_id, "exchange_id": exchange_id}, user_id=user_id,
+            )
+            client = None
+            try:
+                client = create_client(account_config)
+                for instrument in live_instruments or (manifest.metadata().get("universe") or {}).get("instruments", []):
+                    client.validate_instrument(instrument["symbol"], instrument["market"])
+                if manifest.markets == ("Futures",):
+                    quote_currency = account_config.get("currency", "USD")
+            except (ValueError, RuntimeError, ConnectionError) as exc:
+                key = str(exc) if str(exc).startswith("brokerAccounts.") else "brokerAccounts.snapshotConnectionFailed"
+                raise StrategyV2ContractError(key) from exc
+            finally:
+                if client is not None:
+                    client.disconnect()
+
         leverage_enabled = bool(payload.get("leverageEnabled"))
         leverage = float(payload.get("leverage") or 1)
         if leverage_enabled and not self._supports_contract_leverage(manifest.metadata()):
@@ -139,7 +160,7 @@ class StrategyV2DeploymentService:
             raise StrategyV2ContractError("strategyV2.directionModeMismatch")
         direction_mode = manifest.direction_mode or requested_direction_mode
         manifest_market_type = self._manifest_market_type(manifest.metadata())
-        if execution_mode == "live" and manifest_market_type == "swap" and not direction_mode:
+        if execution_mode == "live" and (manifest_market_type == "swap" or "Futures" in manifest.markets) and not direction_mode:
             raise StrategyV2ContractError("strategyV2.directionModeRequired")
         position_side = direction_mode_position_side(direction_mode)
         notification_config = {
@@ -448,9 +469,9 @@ class StrategyV2DeploymentService:
         market = next(iter(market_set), "")
         if market == "Crypto" and exchange_id not in supported_crypto_exchange_ids():
             raise StrategyV2ContractError("strategyV2.cryptoCredentialRequired")
-        if market == "USStock" and exchange_id not in {"alpaca", "ibkr", "tiger", "webull"}:
+        if market == "USStock" and exchange_id not in {"alpaca", "ibkr", "tiger", "webull", "forthright"}:
             raise StrategyV2ContractError("strategyV2.stockCredentialRequired")
-        if market == "HKStock" and exchange_id != "tiger":
+        if market == "HKStock" and exchange_id not in {"tiger", "forthright"}:
             raise StrategyV2ContractError("strategyV2.stockCredentialRequired")
         if market not in {"Crypto", "USStock", "HKStock"}:
             raise StrategyV2ContractError("strategyV2.liveMarketUnsupported")

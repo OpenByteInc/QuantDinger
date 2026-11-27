@@ -4,7 +4,6 @@ Exchange credentials vault.
 encrypted_config stores Fernet ciphertext managed by app.utils.credential_crypto.
 """
 
-import traceback
 import json
 from flask import g, jsonify, request
 from app.openapi.blueprint import HumanBlueprint as Blueprint
@@ -31,6 +30,23 @@ from app.services.live_trading.capabilities import supported_crypto_exchange_ids
 from app.utils.trading_venue_visibility import is_trading_venue_enabled
 
 logger = get_logger(__name__)
+
+_SAFE_CREDENTIAL_ERRORS = {
+    'MISSING_EXCHANGE_API_CREDENTIALS', 'INVALID_BITGET_ACCOUNT_MODE',
+    'ALPACA_BASE_URL_OVERRIDE_NOT_ALLOWED', 'CREDENTIAL_CONNECTION_FAILED',
+    'EXCHANGE_PRIVATE_ACCOUNT_PROBE_UNAVAILABLE', 'UNSUPPORTED_TRADING_ENVIRONMENT',
+    'INVALID_CREDENTIAL_MARKET_SCOPE', 'HTX_DEMO_NOT_SUPPORTED',
+    'CREDENTIAL_MARKET_SCOPE_MISMATCH', 'TRADING_VENUE_DISABLED',
+}
+
+
+def _credential_error(exc):
+    value = str(exc)
+    for code in _SAFE_CREDENTIAL_ERRORS:
+        if value == code:
+            return code
+    return 'CREDENTIAL_CONNECTION_FAILED'
+
 
 credentials_blp = Blueprint('credentials', __name__)
 
@@ -91,7 +107,7 @@ def list_credentials():
         for row in rows:
             item = dict(row or {})
             exchange_id = str(item.get('exchange_id') or '').strip().lower()
-            if exchange_id not in {*CRYPTO_EXCHANGES, 'ibkr', 'alpaca', 'tiger', 'webull'}:
+            if exchange_id not in {*CRYPTO_EXCHANGES, 'ibkr', 'alpaca', 'tiger', 'webull', 'forthright'}:
                 continue
             if not is_trading_venue_enabled(exchange_id):
                 continue
@@ -104,6 +120,15 @@ def list_credentials():
                 item['enable_demo_trading'] = exchange_demo_mode_enabled(cfg if isinstance(cfg, dict) else {})
                 item['environment'] = exchange_trading_environment(cfg if isinstance(cfg, dict) else {}, item.get('exchange_id'))
                 item['market_scope'] = exchange_market_scope(cfg if isinstance(cfg, dict) else {})
+                if exchange_id == 'forthright':
+                    item['account_type'] = cfg.get('account_type', 'securities')
+                    item['currency'] = cfg.get('currency', 'USD')
+                    from app.services.openapi_brokers.forthright import gateway_environment, gateway_url
+                    item['environment'] = gateway_environment(cfg)
+                    item['gateway'] = gateway_url(cfg)
+                    item['enable_demo_trading'] = item['environment'] == 'sandbox'
+                    item['account_id'] = cfg.get('account_id', '')
+                    item['api_key_hint'] = f"{_api_key_hint(cfg.get('app_id'))} · {item['account_id']}"
             except Exception:
                 item['enable_demo_trading'] = False
             item.pop('encrypted_config', None)
@@ -111,9 +136,8 @@ def list_credentials():
 
         return jsonify({'code': 1, 'msg': 'success', 'data': {'items': items}})
     except Exception as e:
-        logger.error(f"list_credentials failed: {str(e)}")
-        logger.error(traceback.format_exc())
-        return jsonify({'code': 0, 'msg': str(e), 'data': {'items': []}}), 500
+        logger.error("list_credentials failed (%s)", type(e).__name__)
+        return jsonify({'code': 0, 'msg': 'brokerAccounts.accountLoadFailed', 'data': {'items': []}}), 500
 
 
 CRYPTO_EXCHANGES = sorted(supported_crypto_exchange_ids(include_aliases=True))
@@ -252,7 +276,7 @@ def test_credential(data):
             return jsonify({'code': 1, 'msg': 'CREDENTIAL_CONNECTION_OK', 'data': None})
         return jsonify({'code': 0, 'msg': 'UNSUPPORTED_EXCHANGE', 'data': None}), 400
     except Exception as exc:
-        return jsonify({'code': 0, 'msg': str(exc) or 'CREDENTIAL_CONNECTION_FAILED', 'data': None}), 400
+        return jsonify({'code': 0, 'msg': _credential_error(exc), 'data': None}), 400
 
 
 @credentials_blp.route('/create', methods=['POST'])
@@ -324,7 +348,7 @@ def create_credential(data):
             try:
                 config = _crypto_credential_config(data, exchange_id)
             except Exception as exc:
-                return jsonify({'code': 0, 'msg': str(exc), 'data': None}), 400
+                return jsonify({'code': 0, 'msg': _credential_error(exc), 'data': None}), 400
             hint = _api_key_hint(config['api_key'])
         else:
             return jsonify({'code': 0, 'msg': f'Unsupported exchange: {exchange_id}', 'data': None}), 400
@@ -349,9 +373,8 @@ def create_credential(data):
 
         return jsonify({'code': 1, 'msg': 'success', 'data': {'id': new_id}})
     except Exception as e:
-        logger.error(f"create_credential failed: {str(e)}")
-        logger.error(traceback.format_exc())
-        return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
+        logger.error("create_credential failed (%s)", type(e).__name__)
+        return jsonify({'code': 0, 'msg': 'brokerAccounts.accountLoadFailed', 'data': None}), 500
 
 
 @credentials_blp.route('/update-name', methods=['PUT', 'PATCH'])
@@ -396,9 +419,8 @@ def update_credential_name():
         item = dict(row or {})
         return jsonify({'code': 1, 'msg': 'success', 'data': item})
     except Exception as e:
-        logger.error(f"update_credential_name failed: {str(e)}")
-        logger.error(traceback.format_exc())
-        return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
+        logger.error("update_credential_name failed (%s)", type(e).__name__)
+        return jsonify({'code': 0, 'msg': 'brokerAccounts.accountLoadFailed', 'data': None}), 500
 
 
 @credentials_blp.route('/delete', methods=['DELETE'])
@@ -423,10 +445,19 @@ def delete_credential(query):
 
         return jsonify({'code': 1, 'msg': 'success', 'data': None})
     except Exception as e:
-        logger.error(f"delete_credential failed: {str(e)}")
-        logger.error(traceback.format_exc())
-        return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
+        logger.error("delete_credential failed (%s)", type(e).__name__)
+        return jsonify({'code': 0, 'msg': 'brokerAccounts.accountLoadFailed', 'data': None}), 500
 
 
 # openapi-compat: legacy import name
 credentials_bp = credentials_blp
+
+
+@credentials_blp.after_request
+def protect_credential_response(response):
+    from app.utils.structured_redaction import redact_structured_secrets
+    response.headers['Cache-Control'] = 'no-store'
+    response.headers['Pragma'] = 'no-cache'
+    if response.is_json:
+        response.set_data(json.dumps(redact_structured_secrets(response.get_json()), ensure_ascii=False))
+    return response

@@ -76,6 +76,17 @@ def add_watchlist_item(
         return False, str(exc)
     if not asset:
         return False, "market.assetNotFound"
+    if asset.get('market') == 'Futures':
+        from datetime import datetime, timezone
+        today = datetime.now(timezone.utc).strftime('%Y%m%d')
+        contexts = get_asset_capabilities(int(asset['asset_id'])).get('contexts') or []
+        def active_contract(context):
+            meta = context.get('product_meta') or {}
+            expiry = str(meta.get('expiry') or '')
+            last_trade = str(meta.get('last_trade_date') or expiry).replace('-', '')
+            return bool(re.fullmatch(r'\d{8}', expiry) and expiry >= today and last_trade >= today)
+        if not any(active_contract(context) for context in contexts):
+            return False, "market.assetNotFound"
 
     with get_db_connection() as db:
         cur = db.cursor()

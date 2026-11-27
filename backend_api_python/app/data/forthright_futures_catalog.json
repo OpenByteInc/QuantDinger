@@ -1,0 +1,2918 @@
+{
+  "source": "Forthright trade_contracts",
+  "captured_on": "2026-11-26",
+  "contracts": [
+    {
+      "prodCode": "6AF27",
+      "prodName": "Australian Dollar 2027-01",
+      "marketCode": "CME",
+      "expiryYmd": "20270115",
+      "lastTradeDate": "2027-01-15",
+      "instmntCode": "AUD"
+    },
+    {
+      "prodCode": "6AG27",
+      "prodName": "Australian Dollar 2027-02",
+      "marketCode": "CME",
+      "expiryYmd": "20270212",
+      "lastTradeDate": "2027-02-12",
+      "instmntCode": "AUD"
+    },
+    {
+      "prodCode": "6AH27",
+      "prodName": "Australian Dollar 2027-03",
+      "marketCode": "CME",
+      "expiryYmd": "20270315",
+      "lastTradeDate": "2027-03-15",
+      "instmntCode": "AUD"
+    },
+    {
+      "prodCode": "6AJ27",
+      "prodName": "Australian Dollar 2027-04",
+      "marketCode": "CME",
+      "expiryYmd": "20270419",
+      "lastTradeDate": "2027-04-19",
+      "instmntCode": "AUD"
+    },
+    {
+      "prodCode": "6AK27",
+      "prodName": "Australian Dollar 2027-05",
+      "marketCode": "CME",
+      "expiryYmd": "20270517",
+      "lastTradeDate": "2027-05-17",
+      "instmntCode": "AUD"
+    },
+    {
+      "prodCode": "6AM27",
+      "prodName": "Australian Dollar 2027-06",
+      "marketCode": "CME",
+      "expiryYmd": "20270614",
+      "lastTradeDate": "2027-06-14",
+      "instmntCode": "AUD"
+    },
+    {
+      "prodCode": "6AN27",
+      "prodName": "Australian Dollar 2027-07",
+      "marketCode": "CME",
+      "expiryYmd": "20270719",
+      "lastTradeDate": "2027-07-19",
+      "instmntCode": "AUD"
+    },
+    {
+      "prodCode": "6AQ27",
+      "prodName": "Australian Dollar 2027-08",
+      "marketCode": "CME",
+      "expiryYmd": "20270816",
+      "lastTradeDate": "2027-08-16",
+      "instmntCode": "AUD"
+    },
+    {
+      "prodCode": "6AU27",
+      "prodName": "Australian Dollar 2027-09",
+      "marketCode": "CME",
+      "expiryYmd": "20270913",
+      "lastTradeDate": "2027-09-13",
+      "instmntCode": "AUD"
+    },
+    {
+      "prodCode": "6AV27",
+      "prodName": "Australian Dollar 2027-10",
+      "marketCode": "CME",
+      "expiryYmd": "20271018",
+      "lastTradeDate": "2027-10-18",
+      "instmntCode": "AUD"
+    },
+    {
+      "prodCode": "6AX27",
+      "prodName": "Australian Dollar 2027-11",
+      "marketCode": "CME",
+      "expiryYmd": "20271115",
+      "lastTradeDate": "2027-11-15",
+      "instmntCode": "AUD"
+    },
+    {
+      "prodCode": "6AZ26",
+      "prodName": "Australian Dollar 2026-12",
+      "marketCode": "CME",
+      "expiryYmd": "20261214",
+      "lastTradeDate": "2026-12-14",
+      "instmntCode": "AUD"
+    },
+    {
+      "prodCode": "6AZ27",
+      "prodName": "Australian Dollar 2027-12",
+      "marketCode": "CME",
+      "expiryYmd": "20271213",
+      "lastTradeDate": "2027-12-13",
+      "instmntCode": "AUD"
+    },
+    {
+      "prodCode": "6BF27",
+      "prodName": "British Pound 2027-01",
+      "marketCode": "CME",
+      "expiryYmd": "20270115",
+      "lastTradeDate": "2027-01-15",
+      "instmntCode": "GBP"
+    },
+    {
+      "prodCode": "6BG27",
+      "prodName": "British Pound 2027-02",
+      "marketCode": "CME",
+      "expiryYmd": "20270212",
+      "lastTradeDate": "2027-02-12",
+      "instmntCode": "GBP"
+    },
+    {
+      "prodCode": "6BH27",
+      "prodName": "British Pound 2027-03",
+      "marketCode": "CME",
+      "expiryYmd": "20270315",
+      "lastTradeDate": "2027-03-15",
+      "instmntCode": "GBP"
+    },
+    {
+      "prodCode": "6BJ27",
+      "prodName": "British Pound 2027-04",
+      "marketCode": "CME",
+      "expiryYmd": "20270419",
+      "lastTradeDate": "2027-04-19",
+      "instmntCode": "GBP"
+    },
+    {
+      "prodCode": "6BK27",
+      "prodName": "British Pound 2027-05",
+      "marketCode": "CME",
+      "expiryYmd": "20270517",
+      "lastTradeDate": "2027-05-17",
+      "instmntCode": "GBP"
+    },
+    {
+      "prodCode": "6BM27",
+      "prodName": "British Pound 2027-06",
+      "marketCode": "CME",
+      "expiryYmd": "20270614",
+      "lastTradeDate": "2027-06-14",
+      "instmntCode": "GBP"
+    },
+    {
+      "prodCode": "6BN27",
+      "prodName": "British Pound 2027-07",
+      "marketCode": "CME",
+      "expiryYmd": "20270719",
+      "lastTradeDate": "2027-07-19",
+      "instmntCode": "GBP"
+    },
+    {
+      "prodCode": "6BQ27",
+      "prodName": "British Pound 2027-08",
+      "marketCode": "CME",
+      "expiryYmd": "20270816",
+      "lastTradeDate": "2027-08-16",
+      "instmntCode": "GBP"
+    },
+    {
+      "prodCode": "6BU27",
+      "prodName": "British Pound 2027-09",
+      "marketCode": "CME",
+      "expiryYmd": "20270913",
+      "lastTradeDate": "2027-09-13",
+      "instmntCode": "GBP"
+    },
+    {
+      "prodCode": "6BV27",
+      "prodName": "British Pound 2027-10",
+      "marketCode": "CME",
+      "expiryYmd": "20271018",
+      "lastTradeDate": "2027-10-18",
+      "instmntCode": "GBP"
+    },
+    {
+      "prodCode": "6BX27",
+      "prodName": "British Pound 2027-11",
+      "marketCode": "CME",
+      "expiryYmd": "20271115",
+      "lastTradeDate": "2027-11-15",
+      "instmntCode": "GBP"
+    },
+    {
+      "prodCode": "6BZ26",
+      "prodName": "British Pound 2026-12",
+      "marketCode": "CME",
+      "expiryYmd": "20261214",
+      "lastTradeDate": "2026-12-14",
+      "instmntCode": "GBP"
+    },
+    {
+      "prodCode": "6BZ27",
+      "prodName": "British Pound 2027-12",
+      "marketCode": "CME",
+      "expiryYmd": "20271213",
+      "lastTradeDate": "2027-12-13",
+      "instmntCode": "GBP"
+    },
+    {
+      "prodCode": "6CF27",
+      "prodName": "Canadian Dollar 2027-01",
+      "marketCode": "CME",
+      "expiryYmd": "20270119",
+      "lastTradeDate": "2027-01-19",
+      "instmntCode": "CAD"
+    },
+    {
+      "prodCode": "6CG27",
+      "prodName": "Canadian Dollar 2027-02",
+      "marketCode": "CME",
+      "expiryYmd": "20270216",
+      "lastTradeDate": "2027-02-16",
+      "instmntCode": "CAD"
+    },
+    {
+      "prodCode": "6CH27",
+      "prodName": "CAD 2027-03",
+      "marketCode": "CME",
+      "expiryYmd": "20270316",
+      "lastTradeDate": "2027-03-16",
+      "instmntCode": "CAD"
+    },
+    {
+      "prodCode": "6CJ27",
+      "prodName": "Canadian Dollar 2027-04",
+      "marketCode": "CME",
+      "expiryYmd": "20270420",
+      "lastTradeDate": "2027-04-20",
+      "instmntCode": "CAD"
+    },
+    {
+      "prodCode": "6CK27",
+      "prodName": "CAD 2027-05",
+      "marketCode": "CME",
+      "expiryYmd": "20270518",
+      "lastTradeDate": "2027-05-18",
+      "instmntCode": "CAD"
+    },
+    {
+      "prodCode": "6CM27",
+      "prodName": "CAD 2027-06",
+      "marketCode": "CME",
+      "expiryYmd": "20270615",
+      "lastTradeDate": "2027-06-15",
+      "instmntCode": "CAD"
+    },
+    {
+      "prodCode": "6CN27",
+      "prodName": "CAD 2027-07",
+      "marketCode": "CME",
+      "expiryYmd": "20270720",
+      "lastTradeDate": "2027-07-20",
+      "instmntCode": "CAD"
+    },
+    {
+      "prodCode": "6CQ27",
+      "prodName": "Canadian Dollar 2027-08",
+      "marketCode": "CME",
+      "expiryYmd": "20270817",
+      "lastTradeDate": "2027-08-17",
+      "instmntCode": "CAD"
+    },
+    {
+      "prodCode": "6CU27",
+      "prodName": "CAD 2027-09",
+      "marketCode": "CME",
+      "expiryYmd": "20270914",
+      "lastTradeDate": "2027-09-14",
+      "instmntCode": "CAD"
+    },
+    {
+      "prodCode": "6CV27",
+      "prodName": "CAD 2027-10",
+      "marketCode": "CME",
+      "expiryYmd": "20271019",
+      "lastTradeDate": "2027-10-19",
+      "instmntCode": "CAD"
+    },
+    {
+      "prodCode": "6CX27",
+      "prodName": "Canadian Dollar 2027-11",
+      "marketCode": "CME",
+      "expiryYmd": "20271116",
+      "lastTradeDate": "2027-11-16",
+      "instmntCode": "CAD"
+    },
+    {
+      "prodCode": "6CZ26",
+      "prodName": "CAD 2026-12",
+      "marketCode": "CME",
+      "expiryYmd": "20261215",
+      "lastTradeDate": "2026-12-15",
+      "instmntCode": "CAD"
+    },
+    {
+      "prodCode": "6EF27",
+      "prodName": "Euro FX 2027-01",
+      "marketCode": "CME",
+      "expiryYmd": "20270115",
+      "lastTradeDate": "2027-01-15",
+      "instmntCode": "EUR"
+    },
+    {
+      "prodCode": "6EG27",
+      "prodName": "Euro FX 2027-02",
+      "marketCode": "CME",
+      "expiryYmd": "20270212",
+      "lastTradeDate": "2027-02-12",
+      "instmntCode": "EUR"
+    },
+    {
+      "prodCode": "6EH27",
+      "prodName": "Euro Dollar 2027-03",
+      "marketCode": "CME",
+      "expiryYmd": "20270315",
+      "lastTradeDate": "2027-03-15",
+      "instmntCode": "EUR"
+    },
+    {
+      "prodCode": "6EJ27",
+      "prodName": "Euro FX 2027-04",
+      "marketCode": "CME",
+      "expiryYmd": "20270419",
+      "lastTradeDate": "2027-04-19",
+      "instmntCode": "EUR"
+    },
+    {
+      "prodCode": "6EK27",
+      "prodName": "Euro FX 2027-05",
+      "marketCode": "CME",
+      "expiryYmd": "20270517",
+      "lastTradeDate": "2027-05-17",
+      "instmntCode": "EUR"
+    },
+    {
+      "prodCode": "6EM27",
+      "prodName": "Euro Dollar 2027-06",
+      "marketCode": "CME",
+      "expiryYmd": "20270614",
+      "lastTradeDate": "2027-06-14",
+      "instmntCode": "EUR"
+    },
+    {
+      "prodCode": "6EN27",
+      "prodName": "Euro Dollar 2027-07",
+      "marketCode": "CME",
+      "expiryYmd": "20270719",
+      "lastTradeDate": "2027-07-19",
+      "instmntCode": "EUR"
+    },
+    {
+      "prodCode": "6EQ27",
+      "prodName": "Euro FX 2027-08",
+      "marketCode": "CME",
+      "expiryYmd": "20270816",
+      "lastTradeDate": "2027-08-16",
+      "instmntCode": "EUR"
+    },
+    {
+      "prodCode": "6EU27",
+      "prodName": "Euro FX 2027-09",
+      "marketCode": "CME",
+      "expiryYmd": "20270913",
+      "lastTradeDate": "2027-09-13",
+      "instmntCode": "EUR"
+    },
+    {
+      "prodCode": "6EV27",
+      "prodName": "Euro Dollar 2027-10",
+      "marketCode": "CME",
+      "expiryYmd": "20271018",
+      "lastTradeDate": "2027-10-18",
+      "instmntCode": "EUR"
+    },
+    {
+      "prodCode": "6EX27",
+      "prodName": "Euro FX 2027-11",
+      "marketCode": "CME",
+      "expiryYmd": "20271115",
+      "lastTradeDate": "2027-11-15",
+      "instmntCode": "EUR"
+    },
+    {
+      "prodCode": "6EZ26",
+      "prodName": "Euro Dollar 2026-12",
+      "marketCode": "CME",
+      "expiryYmd": "20261214",
+      "lastTradeDate": "2026-12-14",
+      "instmntCode": "EUR"
+    },
+    {
+      "prodCode": "6EZ27",
+      "prodName": "Euro Dollar 2027-12",
+      "marketCode": "CME",
+      "expiryYmd": "20271213",
+      "lastTradeDate": "2027-12-13",
+      "instmntCode": "EUR"
+    },
+    {
+      "prodCode": "6JF27",
+      "prodName": "Japanese Yen 2027-01",
+      "marketCode": "CME",
+      "expiryYmd": "20270115",
+      "lastTradeDate": "2027-01-15",
+      "instmntCode": "JPY"
+    },
+    {
+      "prodCode": "6JG27",
+      "prodName": "Japanese Yen 2027-02",
+      "marketCode": "CME",
+      "expiryYmd": "20270212",
+      "lastTradeDate": "2027-02-12",
+      "instmntCode": "JPY"
+    },
+    {
+      "prodCode": "6JH27",
+      "prodName": "Japanese Yen 2027-03",
+      "marketCode": "CME",
+      "expiryYmd": "20270315",
+      "lastTradeDate": "2027-03-15",
+      "instmntCode": "JPY"
+    },
+    {
+      "prodCode": "6JJ27",
+      "prodName": "Japanese Yen 2027-04",
+      "marketCode": "CME",
+      "expiryYmd": "20270419",
+      "lastTradeDate": "2027-04-19",
+      "instmntCode": "JPY"
+    },
+    {
+      "prodCode": "6JK27",
+      "prodName": "Japanese Yen 2027-05",
+      "marketCode": "CME",
+      "expiryYmd": "20270517",
+      "lastTradeDate": "2027-05-17",
+      "instmntCode": "JPY"
+    },
+    {
+      "prodCode": "6JM27",
+      "prodName": "Japanese Yen 2027-06",
+      "marketCode": "CME",
+      "expiryYmd": "20270614",
+      "lastTradeDate": "2027-06-14",
+      "instmntCode": "JPY"
+    },
+    {
+      "prodCode": "6JN27",
+      "prodName": "Japanese Yen 2027-07",
+      "marketCode": "CME",
+      "expiryYmd": "20270719",
+      "lastTradeDate": "2027-07-19",
+      "instmntCode": "JPY"
+    },
+    {
+      "prodCode": "6JQ27",
+      "prodName": "Japanese Yen 2027-08",
+      "marketCode": "CME",
+      "expiryYmd": "20270816",
+      "lastTradeDate": "2027-08-16",
+      "instmntCode": "JPY"
+    },
+    {
+      "prodCode": "6JU27",
+      "prodName": "Japanese Yen 2027-09",
+      "marketCode": "CME",
+      "expiryYmd": "20270913",
+      "lastTradeDate": "2027-09-13",
+      "instmntCode": "JPY"
+    },
+    {
+      "prodCode": "6JV27",
+      "prodName": "Japanese Yen 2027-10",
+      "marketCode": "CME",
+      "expiryYmd": "20271018",
+      "lastTradeDate": "2027-10-18",
+      "instmntCode": "JPY"
+    },
+    {
+      "prodCode": "6JX27",
+      "prodName": "Japanese Yen 2027-11",
+      "marketCode": "CME",
+      "expiryYmd": "20271115",
+      "lastTradeDate": "2027-11-15",
+      "instmntCode": "JPY"
+    },
+    {
+      "prodCode": "6JZ26",
+      "prodName": "Japanese Yen 2026-12",
+      "marketCode": "CME",
+      "expiryYmd": "20261214",
+      "lastTradeDate": "2026-12-14",
+      "instmntCode": "JPY"
+    },
+    {
+      "prodCode": "6JZ27",
+      "prodName": "Japanese Yen 2027-12",
+      "marketCode": "CME",
+      "expiryYmd": "20271213",
+      "lastTradeDate": "2027-12-13",
+      "instmntCode": "JPY"
+    },
+    {
+      "prodCode": "6NH27",
+      "prodName": "New Zealand Dollar 2027-03",
+      "marketCode": "CME",
+      "expiryYmd": "20270315",
+      "lastTradeDate": "2027-03-15",
+      "instmntCode": "NZD"
+    },
+    {
+      "prodCode": "6NM27",
+      "prodName": "NZD 2027-06",
+      "marketCode": "CME",
+      "expiryYmd": "20270614",
+      "lastTradeDate": "2027-06-14",
+      "instmntCode": "NZD"
+    },
+    {
+      "prodCode": "6NU27",
+      "prodName": "New Zealand Dollar 2027-09",
+      "marketCode": "CME",
+      "expiryYmd": "20270913",
+      "lastTradeDate": "2027-09-13",
+      "instmntCode": "NZD"
+    },
+    {
+      "prodCode": "6NZ26",
+      "prodName": "NZD 2026-12",
+      "marketCode": "CME",
+      "expiryYmd": "20261214",
+      "lastTradeDate": "2026-12-14",
+      "instmntCode": "NZD"
+    },
+    {
+      "prodCode": "6NZ27",
+      "prodName": "NZD 2027-12",
+      "marketCode": "CME",
+      "expiryYmd": "20271213",
+      "lastTradeDate": "2027-12-13",
+      "instmntCode": "NZD"
+    },
+    {
+      "prodCode": "6SH27",
+      "prodName": "Swiss Franc 2027-03",
+      "marketCode": "CME",
+      "expiryYmd": "20270315",
+      "lastTradeDate": "2027-03-15",
+      "instmntCode": "CHF"
+    },
+    {
+      "prodCode": "6SM27",
+      "prodName": "Swiss Franc 2027-06",
+      "marketCode": "CME",
+      "expiryYmd": "20270614",
+      "lastTradeDate": "2027-06-14",
+      "instmntCode": "CHF"
+    },
+    {
+      "prodCode": "6SU27",
+      "prodName": "Swiss Franc 2027-09",
+      "marketCode": "CME",
+      "expiryYmd": "20270913",
+      "lastTradeDate": "2027-09-13",
+      "instmntCode": "CHF"
+    },
+    {
+      "prodCode": "6SZ26",
+      "prodName": "Swiss Franc 2026-12",
+      "marketCode": "CME",
+      "expiryYmd": "20261214",
+      "lastTradeDate": "2026-12-14",
+      "instmntCode": "CHF"
+    },
+    {
+      "prodCode": "6SZ27",
+      "prodName": "Swiss Franc 2027-12",
+      "marketCode": "CME",
+      "expiryYmd": "20271213",
+      "lastTradeDate": "2027-12-13",
+      "instmntCode": "CHF"
+    },
+    {
+      "prodCode": "CLF27",
+      "prodName": "LIGHT SWEET CRUDE OIL 2027-01",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20261221",
+      "lastTradeDate": "2026-12-21",
+      "instmntCode": "CL"
+    },
+    {
+      "prodCode": "CLG27",
+      "prodName": "LIGHT SWEET CRUDE OIL 2027-02",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270120",
+      "lastTradeDate": "2027-01-20",
+      "instmntCode": "CL"
+    },
+    {
+      "prodCode": "CLH27",
+      "prodName": "LIGHT SWEET CRUDE OIL 2027-03",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270222",
+      "lastTradeDate": "2027-02-22",
+      "instmntCode": "CL"
+    },
+    {
+      "prodCode": "CLJ27",
+      "prodName": "LIGHT SWEET CRUDE OIL 2027-04",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270322",
+      "lastTradeDate": "2027-03-22",
+      "instmntCode": "CL"
+    },
+    {
+      "prodCode": "CLK27",
+      "prodName": "LIGHT SWEET CRUDE OIL 2027-05",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270420",
+      "lastTradeDate": "2027-04-20",
+      "instmntCode": "CL"
+    },
+    {
+      "prodCode": "CLM27",
+      "prodName": "LIGHT SWEET CRUDE OIL 2027-06",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270520",
+      "lastTradeDate": "2027-05-20",
+      "instmntCode": "CL"
+    },
+    {
+      "prodCode": "CLN27",
+      "prodName": "LIGHT SWEET CRUDE OIL 2027-07",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270622",
+      "lastTradeDate": "2027-06-22",
+      "instmntCode": "CL"
+    },
+    {
+      "prodCode": "CLQ27",
+      "prodName": "LIGHT SWEET CRUDE OIL 2027-08",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270720",
+      "lastTradeDate": "2027-07-20",
+      "instmntCode": "CL"
+    },
+    {
+      "prodCode": "CLU27",
+      "prodName": "LIGHT SWEET CRUDE OIL 2027-09",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270820",
+      "lastTradeDate": "2027-08-20",
+      "instmntCode": "CL"
+    },
+    {
+      "prodCode": "CLV27",
+      "prodName": "LIGHT SWEET CRUDE OIL 2027-10",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270921",
+      "lastTradeDate": "2027-09-21",
+      "instmntCode": "CL"
+    },
+    {
+      "prodCode": "CLX27",
+      "prodName": "LIGHT SWEET CRUDE OIL 2027-11",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20271020",
+      "lastTradeDate": "2027-10-20",
+      "instmntCode": "CL"
+    },
+    {
+      "prodCode": "CLZ27",
+      "prodName": "LIGHT SWEET CRUDE OIL 2027-12",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20271119",
+      "lastTradeDate": "2027-11-19",
+      "instmntCode": "CL"
+    },
+    {
+      "prodCode": "CUSF7",
+      "prodName": "CUS 2027-01",
+      "marketCode": "HKIF",
+      "expiryYmd": "20270118",
+      "lastTradeDate": "2027-01-18",
+      "instmntCode": "CUS"
+    },
+    {
+      "prodCode": "CUSG7",
+      "prodName": "CUS 2027-02",
+      "marketCode": "HKIF",
+      "expiryYmd": "20270215",
+      "lastTradeDate": "2027-02-15",
+      "instmntCode": "CUS"
+    },
+    {
+      "prodCode": "CUSH7",
+      "prodName": "CUS 2027-03",
+      "marketCode": "HKIF",
+      "expiryYmd": "20270315",
+      "lastTradeDate": "2027-03-15",
+      "instmntCode": "CUS"
+    },
+    {
+      "prodCode": "CUSH8",
+      "prodName": "CUS 2028-03",
+      "marketCode": "HKIF",
+      "expiryYmd": "20280313",
+      "lastTradeDate": "2028-03-13",
+      "instmntCode": "CUS"
+    },
+    {
+      "prodCode": "CUSM7",
+      "prodName": "CUS 2027-06",
+      "marketCode": "HKIF",
+      "expiryYmd": "20270614",
+      "lastTradeDate": "2027-06-14",
+      "instmntCode": "CUS"
+    },
+    {
+      "prodCode": "CUSM8",
+      "prodName": "CUS 2028-06",
+      "marketCode": "HKIF",
+      "expiryYmd": "20280619",
+      "lastTradeDate": "2028-06-19",
+      "instmntCode": "CUS"
+    },
+    {
+      "prodCode": "CUSU7",
+      "prodName": "CUS 2027-09",
+      "marketCode": "HKIF",
+      "expiryYmd": "20270913",
+      "lastTradeDate": "2027-09-13",
+      "instmntCode": "CUS"
+    },
+    {
+      "prodCode": "CUSU8",
+      "prodName": "CUS 2028-09",
+      "marketCode": "HKIF",
+      "expiryYmd": "20280918",
+      "lastTradeDate": "2028-09-18",
+      "instmntCode": "CUS"
+    },
+    {
+      "prodCode": "CUSZ6",
+      "prodName": "CUS 2026-12",
+      "marketCode": "HKIF",
+      "expiryYmd": "20261214",
+      "lastTradeDate": "2026-12-14",
+      "instmntCode": "CUS"
+    },
+    {
+      "prodCode": "CUSZ7",
+      "prodName": "CUS 2027-12",
+      "marketCode": "HKIF",
+      "expiryYmd": "20271213",
+      "lastTradeDate": "2027-12-13",
+      "instmntCode": "CUS"
+    },
+    {
+      "prodCode": "ESH27",
+      "prodName": "E-MINI S&P 500 2027-03",
+      "marketCode": "CME",
+      "expiryYmd": "20270319",
+      "lastTradeDate": "2027-03-19",
+      "instmntCode": "ES"
+    },
+    {
+      "prodCode": "ESM27",
+      "prodName": "E-MINI S&P 500 2027-06",
+      "marketCode": "CME",
+      "expiryYmd": "20270617",
+      "lastTradeDate": "2027-06-17",
+      "instmntCode": "ES"
+    },
+    {
+      "prodCode": "ESZ26",
+      "prodName": "E-MINI S&P 500 2026-12",
+      "marketCode": "CME",
+      "expiryYmd": "20261218",
+      "lastTradeDate": "2026-12-18",
+      "instmntCode": "ES"
+    },
+    {
+      "prodCode": "GCG27",
+      "prodName": "COMEX GOLD 2027-02",
+      "marketCode": "COMEX",
+      "expiryYmd": "20270224",
+      "lastTradeDate": "2027-02-24",
+      "instmntCode": "GC"
+    },
+    {
+      "prodCode": "GCJ27",
+      "prodName": "COMEX GOLD 2027-04",
+      "marketCode": "COMEX",
+      "expiryYmd": "20270428",
+      "lastTradeDate": "2027-04-28",
+      "instmntCode": "GC"
+    },
+    {
+      "prodCode": "GCM27",
+      "prodName": "COMEX GOLD 2027-06",
+      "marketCode": "COMEX",
+      "expiryYmd": "20270628",
+      "lastTradeDate": "2027-06-28",
+      "instmntCode": "GC"
+    },
+    {
+      "prodCode": "GCQ27",
+      "prodName": "COMEX GOLD 2027-08",
+      "marketCode": "COMEX",
+      "expiryYmd": "20270827",
+      "lastTradeDate": "2027-08-27",
+      "instmntCode": "GC"
+    },
+    {
+      "prodCode": "GCV27",
+      "prodName": "COMEX GOLD 2027-10",
+      "marketCode": "COMEX",
+      "expiryYmd": "20271027",
+      "lastTradeDate": "2027-10-27",
+      "instmntCode": "GC"
+    },
+    {
+      "prodCode": "GCZ26",
+      "prodName": "COMEX GOLD 2026-12",
+      "marketCode": "COMEX",
+      "expiryYmd": "20261229",
+      "lastTradeDate": "2026-12-29",
+      "instmntCode": "GC"
+    },
+    {
+      "prodCode": "GFF27",
+      "prodName": "Feeder Cattle 2027-01",
+      "marketCode": "CME",
+      "expiryYmd": "20270128",
+      "lastTradeDate": "2027-01-28",
+      "instmntCode": "GF"
+    },
+    {
+      "prodCode": "GFH27",
+      "prodName": "Feeder Cattle 2027-03",
+      "marketCode": "CME",
+      "expiryYmd": "20270325",
+      "lastTradeDate": "2027-03-25",
+      "instmntCode": "GF"
+    },
+    {
+      "prodCode": "GFJ27",
+      "prodName": "Feeder Cattle 2027-04",
+      "marketCode": "CME",
+      "expiryYmd": "20270429",
+      "lastTradeDate": "2027-04-29",
+      "instmntCode": "GF"
+    },
+    {
+      "prodCode": "GFK27",
+      "prodName": "Feeder Cattle 2027-05",
+      "marketCode": "CME",
+      "expiryYmd": "20270527",
+      "lastTradeDate": "2027-05-27",
+      "instmntCode": "GF"
+    },
+    {
+      "prodCode": "GFQ27",
+      "prodName": "Feeder Cattle 2027-08",
+      "marketCode": "CME",
+      "expiryYmd": "20270826",
+      "lastTradeDate": "2027-08-26",
+      "instmntCode": "GF"
+    },
+    {
+      "prodCode": "GFU27",
+      "prodName": "Feeder Cattle 2027-09",
+      "marketCode": "CME",
+      "expiryYmd": "20270930",
+      "lastTradeDate": "2027-09-30",
+      "instmntCode": "GF"
+    },
+    {
+      "prodCode": "GFV27",
+      "prodName": "Feeder Cattle 2027-10",
+      "marketCode": "CME",
+      "expiryYmd": "20271028",
+      "lastTradeDate": "2027-10-28",
+      "instmntCode": "GF"
+    },
+    {
+      "prodCode": "GFX27",
+      "prodName": "Feeder Cattle 2027-11",
+      "marketCode": "CME",
+      "expiryYmd": "20271118",
+      "lastTradeDate": "2027-11-18",
+      "instmntCode": "GF"
+    },
+    {
+      "prodCode": "HEG27",
+      "prodName": "Lean Hogs 2027-02",
+      "marketCode": "CME",
+      "expiryYmd": "20270212",
+      "lastTradeDate": "2027-02-12",
+      "instmntCode": "HE"
+    },
+    {
+      "prodCode": "HEJ27",
+      "prodName": "Lean Hogs 2027-04",
+      "marketCode": "CME",
+      "expiryYmd": "20270414",
+      "lastTradeDate": "2027-04-14",
+      "instmntCode": "HE"
+    },
+    {
+      "prodCode": "HEK27",
+      "prodName": "Lean Hogs 2027-05",
+      "marketCode": "CME",
+      "expiryYmd": "20270514",
+      "lastTradeDate": "2027-05-14",
+      "instmntCode": "HE"
+    },
+    {
+      "prodCode": "HEM27",
+      "prodName": "Lean Hogs 2027-06",
+      "marketCode": "CME",
+      "expiryYmd": "20270614",
+      "lastTradeDate": "2027-06-14",
+      "instmntCode": "HE"
+    },
+    {
+      "prodCode": "HEN27",
+      "prodName": "Lean Hogs 2027-07",
+      "marketCode": "CME",
+      "expiryYmd": "20270715",
+      "lastTradeDate": "2027-07-15",
+      "instmntCode": "HE"
+    },
+    {
+      "prodCode": "HEQ27",
+      "prodName": "Lean Hogs 2027-08",
+      "marketCode": "CME",
+      "expiryYmd": "20270813",
+      "lastTradeDate": "2027-08-13",
+      "instmntCode": "HE"
+    },
+    {
+      "prodCode": "HEV27",
+      "prodName": "Lean Hogs 2027-10",
+      "marketCode": "CME",
+      "expiryYmd": "20271014",
+      "lastTradeDate": "2027-10-14",
+      "instmntCode": "HE"
+    },
+    {
+      "prodCode": "HEZ26",
+      "prodName": "Lean Hogs 2026-12",
+      "marketCode": "CME",
+      "expiryYmd": "20261214",
+      "lastTradeDate": "2026-12-14",
+      "instmntCode": "HE"
+    },
+    {
+      "prodCode": "HGF27",
+      "prodName": "High Grade Copper 2027-01",
+      "marketCode": "COMEX",
+      "expiryYmd": "20270127",
+      "lastTradeDate": "2027-01-27",
+      "instmntCode": "HG"
+    },
+    {
+      "prodCode": "HGH27",
+      "prodName": "High Grade Copper 2027-03",
+      "marketCode": "COMEX",
+      "expiryYmd": "20270329",
+      "lastTradeDate": "2027-03-29",
+      "instmntCode": "HG"
+    },
+    {
+      "prodCode": "HGK27",
+      "prodName": "High Grade Copper 2027-05",
+      "marketCode": "COMEX",
+      "expiryYmd": "20270526",
+      "lastTradeDate": "2027-05-26",
+      "instmntCode": "HG"
+    },
+    {
+      "prodCode": "HGN27",
+      "prodName": "High Grade Copper 2027-07",
+      "marketCode": "COMEX",
+      "expiryYmd": "20270728",
+      "lastTradeDate": "2027-07-28",
+      "instmntCode": "HG"
+    },
+    {
+      "prodCode": "HGU27",
+      "prodName": "High Grade Copper 2027-09",
+      "marketCode": "COMEX",
+      "expiryYmd": "20270928",
+      "lastTradeDate": "2027-09-28",
+      "instmntCode": "HG"
+    },
+    {
+      "prodCode": "HGZ26",
+      "prodName": "High Grade Copper 2026-12",
+      "marketCode": "COMEX",
+      "expiryYmd": "20261229",
+      "lastTradeDate": "2026-12-29",
+      "instmntCode": "HG"
+    },
+    {
+      "prodCode": "HHIF7",
+      "prodName": "HHI 2027-01",
+      "marketCode": "HKIF",
+      "expiryYmd": "20270128",
+      "lastTradeDate": "2027-01-28",
+      "instmntCode": "HHI"
+    },
+    {
+      "prodCode": "HHIG7",
+      "prodName": "HHI 2027-02",
+      "marketCode": "HKIF",
+      "expiryYmd": "20270225",
+      "lastTradeDate": "2027-02-25",
+      "instmntCode": "HHI"
+    },
+    {
+      "prodCode": "HHIH7",
+      "prodName": "HHI 2027-03",
+      "marketCode": "HKIF",
+      "expiryYmd": "20270330",
+      "lastTradeDate": "2027-03-30",
+      "instmntCode": "HHI"
+    },
+    {
+      "prodCode": "HHIM7",
+      "prodName": "HHI 2027-06",
+      "marketCode": "HKIF",
+      "expiryYmd": "20270629",
+      "lastTradeDate": "2027-06-29",
+      "instmntCode": "HHI"
+    },
+    {
+      "prodCode": "HHIM8",
+      "prodName": "HHI 2028-06",
+      "marketCode": "HKIF",
+      "expiryYmd": "20280629",
+      "lastTradeDate": "2028-06-29",
+      "instmntCode": "HHI"
+    },
+    {
+      "prodCode": "HHIU7",
+      "prodName": "HHI 2027-09",
+      "marketCode": "HKIF",
+      "expiryYmd": "20270929",
+      "lastTradeDate": "2027-09-29",
+      "instmntCode": "HHI"
+    },
+    {
+      "prodCode": "HHIX6",
+      "prodName": "HHI 2026-11",
+      "marketCode": "HKIF",
+      "expiryYmd": "20261127",
+      "lastTradeDate": "2026-11-27",
+      "instmntCode": "HHI"
+    },
+    {
+      "prodCode": "HHIZ0",
+      "prodName": "HHI 2030-12",
+      "marketCode": "HKIF",
+      "expiryYmd": "20301230",
+      "lastTradeDate": "2030-12-30",
+      "instmntCode": "HHI"
+    },
+    {
+      "prodCode": "HHIZ1",
+      "prodName": "HHI 2031-12",
+      "marketCode": "HKIF",
+      "expiryYmd": "20311230",
+      "lastTradeDate": "2031-12-30",
+      "instmntCode": "HHI"
+    },
+    {
+      "prodCode": "HHIZ6",
+      "prodName": "HHI 2026-12",
+      "marketCode": "HKIF",
+      "expiryYmd": "20261230",
+      "lastTradeDate": "2026-12-30",
+      "instmntCode": "HHI"
+    },
+    {
+      "prodCode": "HHIZ7",
+      "prodName": "HHI 2027-12",
+      "marketCode": "HKIF",
+      "expiryYmd": "20271230",
+      "lastTradeDate": "2027-12-30",
+      "instmntCode": "HHI"
+    },
+    {
+      "prodCode": "HHIZ8",
+      "prodName": "HHI 2028-12",
+      "marketCode": "HKIF",
+      "expiryYmd": "20281228",
+      "lastTradeDate": "2028-12-28",
+      "instmntCode": "HHI"
+    },
+    {
+      "prodCode": "HHIZ9",
+      "prodName": "HHI 2029-12",
+      "marketCode": "HKIF",
+      "expiryYmd": "20291228",
+      "lastTradeDate": "2029-12-28",
+      "instmntCode": "HHI"
+    },
+    {
+      "prodCode": "HOF27",
+      "prodName": "Heating Oil 2027-01",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20261231",
+      "lastTradeDate": "2026-12-31",
+      "instmntCode": "HO"
+    },
+    {
+      "prodCode": "HOG27",
+      "prodName": "Heating Oil 2027-02",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270129",
+      "lastTradeDate": "2027-01-29",
+      "instmntCode": "HO"
+    },
+    {
+      "prodCode": "HOH27",
+      "prodName": "Heating Oil 2027-03",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270226",
+      "lastTradeDate": "2027-02-26",
+      "instmntCode": "HO"
+    },
+    {
+      "prodCode": "HOJ27",
+      "prodName": "Heating Oil 2027-04",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270331",
+      "lastTradeDate": "2027-03-31",
+      "instmntCode": "HO"
+    },
+    {
+      "prodCode": "HOK27",
+      "prodName": "Heating Oil 2027-05",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270430",
+      "lastTradeDate": "2027-04-30",
+      "instmntCode": "HO"
+    },
+    {
+      "prodCode": "HOM27",
+      "prodName": "Heating Oil 2027-06",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270528",
+      "lastTradeDate": "2027-05-28",
+      "instmntCode": "HO"
+    },
+    {
+      "prodCode": "HON27",
+      "prodName": "Heating Oil 2027-07",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270630",
+      "lastTradeDate": "2027-06-30",
+      "instmntCode": "HO"
+    },
+    {
+      "prodCode": "HOQ27",
+      "prodName": "Heating Oil 2027-08",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270730",
+      "lastTradeDate": "2027-07-30",
+      "instmntCode": "HO"
+    },
+    {
+      "prodCode": "HOU27",
+      "prodName": "Heating Oil 2027-09",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270831",
+      "lastTradeDate": "2027-08-31",
+      "instmntCode": "HO"
+    },
+    {
+      "prodCode": "HOV27",
+      "prodName": "Heating Oil 2027-10",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270930",
+      "lastTradeDate": "2027-09-30",
+      "instmntCode": "HO"
+    },
+    {
+      "prodCode": "HOX27",
+      "prodName": "Heating Oil 2027-11",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20271029",
+      "lastTradeDate": "2027-10-29",
+      "instmntCode": "HO"
+    },
+    {
+      "prodCode": "HOZ26",
+      "prodName": "Heating Oil 2026-12",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20261130",
+      "lastTradeDate": "2026-11-30",
+      "instmntCode": "HO"
+    },
+    {
+      "prodCode": "HOZ27",
+      "prodName": "Heating Oil 2027-12",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20271130",
+      "lastTradeDate": "2027-11-30",
+      "instmntCode": "HO"
+    },
+    {
+      "prodCode": "HSIF7",
+      "prodName": "HSI 2027-01",
+      "marketCode": "HKIF",
+      "expiryYmd": "20270128",
+      "lastTradeDate": "2027-01-28",
+      "instmntCode": "HSI"
+    },
+    {
+      "prodCode": "HSIG7",
+      "prodName": "HSI 2027-02",
+      "marketCode": "HKIF",
+      "expiryYmd": "20270225",
+      "lastTradeDate": "2027-02-25",
+      "instmntCode": "HSI"
+    },
+    {
+      "prodCode": "HSIH7",
+      "prodName": "HSI 2027-03",
+      "marketCode": "HKIF",
+      "expiryYmd": "20270330",
+      "lastTradeDate": "2027-03-30",
+      "instmntCode": "HSI"
+    },
+    {
+      "prodCode": "HSIM7",
+      "prodName": "HSI 2027-06",
+      "marketCode": "HKIF",
+      "expiryYmd": "20270629",
+      "lastTradeDate": "2027-06-29",
+      "instmntCode": "HSI"
+    },
+    {
+      "prodCode": "HSIM8",
+      "prodName": "HSI 2028-06",
+      "marketCode": "HKIF",
+      "expiryYmd": "20280629",
+      "lastTradeDate": "2028-06-29",
+      "instmntCode": "HSI"
+    },
+    {
+      "prodCode": "HSIU7",
+      "prodName": "HSI 2027-09",
+      "marketCode": "HKIF",
+      "expiryYmd": "20270929",
+      "lastTradeDate": "2027-09-29",
+      "instmntCode": "HSI"
+    },
+    {
+      "prodCode": "HSIX6",
+      "prodName": "HSI 2026-11",
+      "marketCode": "HKIF",
+      "expiryYmd": "20261127",
+      "lastTradeDate": "2026-11-27",
+      "instmntCode": "HSI"
+    },
+    {
+      "prodCode": "HSIZ0",
+      "prodName": "HSI 2030-12",
+      "marketCode": "HKIF",
+      "expiryYmd": "20301230",
+      "lastTradeDate": "2030-12-30",
+      "instmntCode": "HSI"
+    },
+    {
+      "prodCode": "HSIZ1",
+      "prodName": "HSI 2031-12",
+      "marketCode": "HKIF",
+      "expiryYmd": "20311230",
+      "lastTradeDate": "2031-12-30",
+      "instmntCode": "HSI"
+    },
+    {
+      "prodCode": "HSIZ6",
+      "prodName": "HSI 2026-12",
+      "marketCode": "HKIF",
+      "expiryYmd": "20261230",
+      "lastTradeDate": "2026-12-30",
+      "instmntCode": "HSI"
+    },
+    {
+      "prodCode": "HSIZ7",
+      "prodName": "HSI 2027-12",
+      "marketCode": "HKIF",
+      "expiryYmd": "20271230",
+      "lastTradeDate": "2027-12-30",
+      "instmntCode": "HSI"
+    },
+    {
+      "prodCode": "HSIZ8",
+      "prodName": "HSI 2028-12",
+      "marketCode": "HKIF",
+      "expiryYmd": "20281228",
+      "lastTradeDate": "2028-12-28",
+      "instmntCode": "HSI"
+    },
+    {
+      "prodCode": "HSIZ9",
+      "prodName": "HSI 2029-12",
+      "marketCode": "HKIF",
+      "expiryYmd": "20291228",
+      "lastTradeDate": "2029-12-28",
+      "instmntCode": "HSI"
+    },
+    {
+      "prodCode": "HTIF7",
+      "prodName": "HTI 2027-01",
+      "marketCode": "HKIF",
+      "expiryYmd": "20270128",
+      "lastTradeDate": "2027-01-28",
+      "instmntCode": "HTI"
+    },
+    {
+      "prodCode": "HTIG7",
+      "prodName": "HTI 2027-02",
+      "marketCode": "HKIF",
+      "expiryYmd": "20270225",
+      "lastTradeDate": "2027-02-25",
+      "instmntCode": "HTI"
+    },
+    {
+      "prodCode": "HTIH7",
+      "prodName": "HTI 2027-03",
+      "marketCode": "HKIF",
+      "expiryYmd": "20270330",
+      "lastTradeDate": "2027-03-30",
+      "instmntCode": "HTI"
+    },
+    {
+      "prodCode": "HTIM7",
+      "prodName": "HTI 2027-06",
+      "marketCode": "HKIF",
+      "expiryYmd": "20270629",
+      "lastTradeDate": "2027-06-29",
+      "instmntCode": "HTI"
+    },
+    {
+      "prodCode": "HTIM8",
+      "prodName": "HTI 2028-06",
+      "marketCode": "HKIF",
+      "expiryYmd": "20280629",
+      "lastTradeDate": "2028-06-29",
+      "instmntCode": "HTI"
+    },
+    {
+      "prodCode": "HTIU7",
+      "prodName": "HTI 2027-09",
+      "marketCode": "HKIF",
+      "expiryYmd": "20270929",
+      "lastTradeDate": "2027-09-29",
+      "instmntCode": "HTI"
+    },
+    {
+      "prodCode": "HTIX6",
+      "prodName": "HTI 2026-11",
+      "marketCode": "HKIF",
+      "expiryYmd": "20261127",
+      "lastTradeDate": "2026-11-27",
+      "instmntCode": "HTI"
+    },
+    {
+      "prodCode": "HTIZ6",
+      "prodName": "HTI 2026-12",
+      "marketCode": "HKIF",
+      "expiryYmd": "20261230",
+      "lastTradeDate": "2026-12-30",
+      "instmntCode": "HTI"
+    },
+    {
+      "prodCode": "HTIZ7",
+      "prodName": "HTI 2027-12",
+      "marketCode": "HKIF",
+      "expiryYmd": "20271230",
+      "lastTradeDate": "2027-12-30",
+      "instmntCode": "HTI"
+    },
+    {
+      "prodCode": "HTIZ8",
+      "prodName": "HTI 2028-12",
+      "marketCode": "HKIF",
+      "expiryYmd": "20281228",
+      "lastTradeDate": "2028-12-28",
+      "instmntCode": "HTI"
+    },
+    {
+      "prodCode": "LEG27",
+      "prodName": "Live Cattle 2027-02",
+      "marketCode": "CME",
+      "expiryYmd": "20270226",
+      "lastTradeDate": "2027-02-26",
+      "instmntCode": "LE"
+    },
+    {
+      "prodCode": "LEJ27",
+      "prodName": "Live Cattle 2027-04",
+      "marketCode": "CME",
+      "expiryYmd": "20270430",
+      "lastTradeDate": "2027-04-30",
+      "instmntCode": "LE"
+    },
+    {
+      "prodCode": "LEM27",
+      "prodName": "Live Cattle 2027-06",
+      "marketCode": "CME",
+      "expiryYmd": "20270630",
+      "lastTradeDate": "2027-06-30",
+      "instmntCode": "LE"
+    },
+    {
+      "prodCode": "LEQ27",
+      "prodName": "Live Cattle 2027-08",
+      "marketCode": "CME",
+      "expiryYmd": "20270831",
+      "lastTradeDate": "2027-08-31",
+      "instmntCode": "LE"
+    },
+    {
+      "prodCode": "LEV27",
+      "prodName": "Live Cattle 2027-10",
+      "marketCode": "CME",
+      "expiryYmd": "20271029",
+      "lastTradeDate": "2027-10-29",
+      "instmntCode": "LE"
+    },
+    {
+      "prodCode": "LEZ26",
+      "prodName": "Live Cattle 2026-12",
+      "marketCode": "CME",
+      "expiryYmd": "20261231",
+      "lastTradeDate": "2026-12-31",
+      "instmntCode": "LE"
+    },
+    {
+      "prodCode": "M2KH27",
+      "prodName": "Micro Russell 2000 2027-03",
+      "marketCode": "CME",
+      "expiryYmd": "20270319",
+      "lastTradeDate": "2027-03-19",
+      "instmntCode": "M2K"
+    },
+    {
+      "prodCode": "M2KM27",
+      "prodName": "Micro Russell 2000 2027-06",
+      "marketCode": "CME",
+      "expiryYmd": "20270617",
+      "lastTradeDate": "2027-06-17",
+      "instmntCode": "M2K"
+    },
+    {
+      "prodCode": "M2KU27",
+      "prodName": "Micro Russell 2000 2027-09",
+      "marketCode": "CME",
+      "expiryYmd": "20270917",
+      "lastTradeDate": "2027-09-17",
+      "instmntCode": "M2K"
+    },
+    {
+      "prodCode": "M2KZ26",
+      "prodName": "Micro Russell 2000 2026-12",
+      "marketCode": "CME",
+      "expiryYmd": "20261218",
+      "lastTradeDate": "2026-12-18",
+      "instmntCode": "M2K"
+    },
+    {
+      "prodCode": "MBTF27",
+      "prodName": "Micro Bitcoin 2027-01",
+      "marketCode": "CME",
+      "expiryYmd": "20270129",
+      "lastTradeDate": "2027-01-29",
+      "instmntCode": "MBT"
+    },
+    {
+      "prodCode": "MBTG27",
+      "prodName": "Micro Bitcoin 2027-02",
+      "marketCode": "CME",
+      "expiryYmd": "20270226",
+      "lastTradeDate": "2027-02-26",
+      "instmntCode": "MBT"
+    },
+    {
+      "prodCode": "MBTH27",
+      "prodName": "Micro Bitcoin 2027-03",
+      "marketCode": "CME",
+      "expiryYmd": "20270325",
+      "lastTradeDate": "2027-03-25",
+      "instmntCode": "MBT"
+    },
+    {
+      "prodCode": "MBTJ27",
+      "prodName": "Micro Bitcoin 2027-04",
+      "marketCode": "CME",
+      "expiryYmd": "20270430",
+      "lastTradeDate": "2027-04-30",
+      "instmntCode": "MBT"
+    },
+    {
+      "prodCode": "MBTM27",
+      "prodName": "Micro Bitcoin 2027-06",
+      "marketCode": "CME",
+      "expiryYmd": "20270625",
+      "lastTradeDate": "2027-06-25",
+      "instmntCode": "MBT"
+    },
+    {
+      "prodCode": "MBTU27",
+      "prodName": "Micro Bitcoin 2027-09",
+      "marketCode": "CME",
+      "expiryYmd": "20270924",
+      "lastTradeDate": "2027-09-24",
+      "instmntCode": "MBT"
+    },
+    {
+      "prodCode": "MBTX26",
+      "prodName": "Micro Bitcoin 2026-11",
+      "marketCode": "CME",
+      "expiryYmd": "20261127",
+      "lastTradeDate": "2026-11-27",
+      "instmntCode": "MBT"
+    },
+    {
+      "prodCode": "MBTZ26",
+      "prodName": "Micro Bitcoin 2026-12",
+      "marketCode": "CME",
+      "expiryYmd": "20261224",
+      "lastTradeDate": "2026-12-24",
+      "instmntCode": "MBT"
+    },
+    {
+      "prodCode": "MCAF7",
+      "prodName": "MCA 2027-01",
+      "marketCode": "HKMF",
+      "expiryYmd": "20270115",
+      "lastTradeDate": "2027-01-15",
+      "instmntCode": "MCA"
+    },
+    {
+      "prodCode": "MCAH7",
+      "prodName": "MCA 2027-03",
+      "marketCode": "HKMF",
+      "expiryYmd": "20270319",
+      "lastTradeDate": "2027-03-19",
+      "instmntCode": "MCA"
+    },
+    {
+      "prodCode": "MCAM7",
+      "prodName": "MCA 2027-06",
+      "marketCode": "HKMF",
+      "expiryYmd": "20270618",
+      "lastTradeDate": "2027-06-18",
+      "instmntCode": "MCA"
+    },
+    {
+      "prodCode": "MCAU7",
+      "prodName": "MCA 2027-09",
+      "marketCode": "HKMF",
+      "expiryYmd": "20270917",
+      "lastTradeDate": "2027-09-17",
+      "instmntCode": "MCA"
+    },
+    {
+      "prodCode": "MCAZ6",
+      "prodName": "MCA 2026-12",
+      "marketCode": "HKMF",
+      "expiryYmd": "20261218",
+      "lastTradeDate": "2026-12-18",
+      "instmntCode": "MCA"
+    },
+    {
+      "prodCode": "MCHH7",
+      "prodName": "MCH 2027-03",
+      "marketCode": "HKIF",
+      "expiryYmd": "20270330",
+      "lastTradeDate": "2027-03-30",
+      "instmntCode": "MCH"
+    },
+    {
+      "prodCode": "MCHM7",
+      "prodName": "MCH 2027-06",
+      "marketCode": "HKIF",
+      "expiryYmd": "20270629",
+      "lastTradeDate": "2027-06-29",
+      "instmntCode": "MCH"
+    },
+    {
+      "prodCode": "MCHX6",
+      "prodName": "MCH 2026-11",
+      "marketCode": "HKIF",
+      "expiryYmd": "20261127",
+      "lastTradeDate": "2026-11-27",
+      "instmntCode": "MCH"
+    },
+    {
+      "prodCode": "MCHZ6",
+      "prodName": "MCH 2026-12",
+      "marketCode": "HKIF",
+      "expiryYmd": "20261230",
+      "lastTradeDate": "2026-12-30",
+      "instmntCode": "MCH"
+    },
+    {
+      "prodCode": "MCLF27",
+      "prodName": "Micro WTI Crude Oil 2027-01",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20261218",
+      "lastTradeDate": "2026-12-18",
+      "instmntCode": "MCL"
+    },
+    {
+      "prodCode": "MCLG27",
+      "prodName": "Micro WTI Crude Oil 2027-02",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270119",
+      "lastTradeDate": "2027-01-19",
+      "instmntCode": "MCL"
+    },
+    {
+      "prodCode": "MCLH27",
+      "prodName": "Micro WTI Crude Oil 2027-03",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270219",
+      "lastTradeDate": "2027-02-19",
+      "instmntCode": "MCL"
+    },
+    {
+      "prodCode": "MCLJ27",
+      "prodName": "Micro WTI Crude Oil 2027-04",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270319",
+      "lastTradeDate": "2027-03-19",
+      "instmntCode": "MCL"
+    },
+    {
+      "prodCode": "MCLK27",
+      "prodName": "Micro WTI Crude Oil 2027-05",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270419",
+      "lastTradeDate": "2027-04-19",
+      "instmntCode": "MCL"
+    },
+    {
+      "prodCode": "MCLM27",
+      "prodName": "Micro WTI Crude Oil 2027-06",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270519",
+      "lastTradeDate": "2027-05-19",
+      "instmntCode": "MCL"
+    },
+    {
+      "prodCode": "MCLN27",
+      "prodName": "Micro WTI Crude Oil 2027-07",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270621",
+      "lastTradeDate": "2027-06-21",
+      "instmntCode": "MCL"
+    },
+    {
+      "prodCode": "MCLQ27",
+      "prodName": "Micro WTI Crude Oil 2027-08",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270719",
+      "lastTradeDate": "2027-07-19",
+      "instmntCode": "MCL"
+    },
+    {
+      "prodCode": "MCLU27",
+      "prodName": "Micro WTI Crude Oil 2027-09",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270819",
+      "lastTradeDate": "2027-08-19",
+      "instmntCode": "MCL"
+    },
+    {
+      "prodCode": "MCLV27",
+      "prodName": "Micro WTI Crude Oil 2027-10",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270920",
+      "lastTradeDate": "2027-09-20",
+      "instmntCode": "MCL"
+    },
+    {
+      "prodCode": "MCLX27",
+      "prodName": "Micro WTI Crude Oil 2027-11",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20271019",
+      "lastTradeDate": "2027-10-19",
+      "instmntCode": "MCL"
+    },
+    {
+      "prodCode": "MCLZ27",
+      "prodName": "Micro WTI Crude Oil 2027-12",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20271118",
+      "lastTradeDate": "2027-11-18",
+      "instmntCode": "MCL"
+    },
+    {
+      "prodCode": "MESH27",
+      "prodName": "Micro S&P 500 2027-03",
+      "marketCode": "CME",
+      "expiryYmd": "20270319",
+      "lastTradeDate": "2027-03-19",
+      "instmntCode": "MES"
+    },
+    {
+      "prodCode": "MESM27",
+      "prodName": "Micro S&P 500 2027-06",
+      "marketCode": "CME",
+      "expiryYmd": "20270617",
+      "lastTradeDate": "2027-06-17",
+      "instmntCode": "MES"
+    },
+    {
+      "prodCode": "MESU27",
+      "prodName": "Micro S&P 500 2027-09",
+      "marketCode": "CME",
+      "expiryYmd": "20270917",
+      "lastTradeDate": "2027-09-17",
+      "instmntCode": "MES"
+    },
+    {
+      "prodCode": "MESZ26",
+      "prodName": "Micro S&P 500 2026-12",
+      "marketCode": "CME",
+      "expiryYmd": "20261218",
+      "lastTradeDate": "2026-12-18",
+      "instmntCode": "MES"
+    },
+    {
+      "prodCode": "MGCG27",
+      "prodName": "COMEX Micro Gold 2027-02",
+      "marketCode": "COMEX",
+      "expiryYmd": "20270224",
+      "lastTradeDate": "2027-02-24",
+      "instmntCode": "MGC"
+    },
+    {
+      "prodCode": "MGCJ27",
+      "prodName": "COMEX Micro Gold 2027-04",
+      "marketCode": "COMEX",
+      "expiryYmd": "20270428",
+      "lastTradeDate": "2027-04-28",
+      "instmntCode": "MGC"
+    },
+    {
+      "prodCode": "MGCM27",
+      "prodName": "COMEX Micro Gold 2027-06",
+      "marketCode": "COMEX",
+      "expiryYmd": "20270628",
+      "lastTradeDate": "2027-06-28",
+      "instmntCode": "MGC"
+    },
+    {
+      "prodCode": "MGCQ27",
+      "prodName": "COMEX Micro Gold 2027-08",
+      "marketCode": "COMEX",
+      "expiryYmd": "20270827",
+      "lastTradeDate": "2027-08-27",
+      "instmntCode": "MGC"
+    },
+    {
+      "prodCode": "MGCV27",
+      "prodName": "COMEX Micro Gold 2027-10",
+      "marketCode": "COMEX",
+      "expiryYmd": "20271027",
+      "lastTradeDate": "2027-10-27",
+      "instmntCode": "MGC"
+    },
+    {
+      "prodCode": "MGCZ26",
+      "prodName": "COMEX Micro Gold 2026-12",
+      "marketCode": "COMEX",
+      "expiryYmd": "20261229",
+      "lastTradeDate": "2026-12-29",
+      "instmntCode": "MGC"
+    },
+    {
+      "prodCode": "MHIH7",
+      "prodName": "MHI 2027-03",
+      "marketCode": "HKIF",
+      "expiryYmd": "20270330",
+      "lastTradeDate": "2027-03-30",
+      "instmntCode": "MHI"
+    },
+    {
+      "prodCode": "MHIM7",
+      "prodName": "MHI 2027-06",
+      "marketCode": "HKIF",
+      "expiryYmd": "20270629",
+      "lastTradeDate": "2027-06-29",
+      "instmntCode": "MHI"
+    },
+    {
+      "prodCode": "MHIX6",
+      "prodName": "MHI 2026-11",
+      "marketCode": "HKIF",
+      "expiryYmd": "20261127",
+      "lastTradeDate": "2026-11-27",
+      "instmntCode": "MHI"
+    },
+    {
+      "prodCode": "MHIZ6",
+      "prodName": "MHI 2026-12",
+      "marketCode": "HKIF",
+      "expiryYmd": "20261230",
+      "lastTradeDate": "2026-12-30",
+      "instmntCode": "MHI"
+    },
+    {
+      "prodCode": "MNQH27",
+      "prodName": "Micro Nasdaq 100 2027-03",
+      "marketCode": "CME",
+      "expiryYmd": "20270319",
+      "lastTradeDate": "2027-03-19",
+      "instmntCode": "MNQ"
+    },
+    {
+      "prodCode": "MNQM27",
+      "prodName": "Micro Nasdaq 100 2027-06",
+      "marketCode": "CME",
+      "expiryYmd": "20270617",
+      "lastTradeDate": "2027-06-17",
+      "instmntCode": "MNQ"
+    },
+    {
+      "prodCode": "MNQU27",
+      "prodName": "Micro Nasdaq 100 2027-09",
+      "marketCode": "CME",
+      "expiryYmd": "20270917",
+      "lastTradeDate": "2027-09-17",
+      "instmntCode": "MNQ"
+    },
+    {
+      "prodCode": "MNQZ26",
+      "prodName": "Micro Nasdaq 100 2026-12",
+      "marketCode": "CME",
+      "expiryYmd": "20261218",
+      "lastTradeDate": "2026-12-18",
+      "instmntCode": "MNQ"
+    },
+    {
+      "prodCode": "MYMH27",
+      "prodName": "Micro Dow 2027-03",
+      "marketCode": "CBOT",
+      "expiryYmd": "20270319",
+      "lastTradeDate": "2027-03-19",
+      "instmntCode": "MYM"
+    },
+    {
+      "prodCode": "MYMM27",
+      "prodName": "Micro Dow 2027-06",
+      "marketCode": "CBOT",
+      "expiryYmd": "20270617",
+      "lastTradeDate": "2027-06-17",
+      "instmntCode": "MYM"
+    },
+    {
+      "prodCode": "MYMU27",
+      "prodName": "Micro Dow 2027-09",
+      "marketCode": "CBOT",
+      "expiryYmd": "20270917",
+      "lastTradeDate": "2027-09-17",
+      "instmntCode": "MYM"
+    },
+    {
+      "prodCode": "MYMZ26",
+      "prodName": "Micro Dow 2026-12",
+      "marketCode": "CBOT",
+      "expiryYmd": "20261218",
+      "lastTradeDate": "2026-12-18",
+      "instmntCode": "MYM"
+    },
+    {
+      "prodCode": "NGF27",
+      "prodName": "Natural Gas 2027-01",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20261229",
+      "lastTradeDate": "2026-12-29",
+      "instmntCode": "NG"
+    },
+    {
+      "prodCode": "NGG27",
+      "prodName": "Natural Gas 2027-02",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270127",
+      "lastTradeDate": "2027-01-27",
+      "instmntCode": "NG"
+    },
+    {
+      "prodCode": "NGH27",
+      "prodName": "Natural Gas 2027-03",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270224",
+      "lastTradeDate": "2027-02-24",
+      "instmntCode": "NG"
+    },
+    {
+      "prodCode": "NGJ27",
+      "prodName": "Natural Gas 2027-04",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270329",
+      "lastTradeDate": "2027-03-29",
+      "instmntCode": "NG"
+    },
+    {
+      "prodCode": "NGK27",
+      "prodName": "Natural Gas 2027-05",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270428",
+      "lastTradeDate": "2027-04-28",
+      "instmntCode": "NG"
+    },
+    {
+      "prodCode": "NGM27",
+      "prodName": "Natural Gas 2027-06",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270526",
+      "lastTradeDate": "2027-05-26",
+      "instmntCode": "NG"
+    },
+    {
+      "prodCode": "NGN27",
+      "prodName": "Natural Gas 2027-07",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270628",
+      "lastTradeDate": "2027-06-28",
+      "instmntCode": "NG"
+    },
+    {
+      "prodCode": "NGQ27",
+      "prodName": "Natural Gas 2027-08",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270728",
+      "lastTradeDate": "2027-07-28",
+      "instmntCode": "NG"
+    },
+    {
+      "prodCode": "NGU27",
+      "prodName": "Natural Gas 2027-09",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270827",
+      "lastTradeDate": "2027-08-27",
+      "instmntCode": "NG"
+    },
+    {
+      "prodCode": "NGV27",
+      "prodName": "Natural Gas 2027-10",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270928",
+      "lastTradeDate": "2027-09-28",
+      "instmntCode": "NG"
+    },
+    {
+      "prodCode": "NGX27",
+      "prodName": "Natural Gas 2027-11",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20271027",
+      "lastTradeDate": "2027-10-27",
+      "instmntCode": "NG"
+    },
+    {
+      "prodCode": "NGZ27",
+      "prodName": "Natural Gas 2027-12",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20271126",
+      "lastTradeDate": "2027-11-26",
+      "instmntCode": "NG"
+    },
+    {
+      "prodCode": "NQH27",
+      "prodName": "E-MINI NASDAQ 100 2027-03",
+      "marketCode": "CME",
+      "expiryYmd": "20270319",
+      "lastTradeDate": "2027-03-19",
+      "instmntCode": "NQ"
+    },
+    {
+      "prodCode": "NQM27",
+      "prodName": "E-MINI NASDAQ 100 2027-06",
+      "marketCode": "CME",
+      "expiryYmd": "20270617",
+      "lastTradeDate": "2027-06-17",
+      "instmntCode": "NQ"
+    },
+    {
+      "prodCode": "NQZ26",
+      "prodName": "E-MINI NASDAQ 100 2026-12",
+      "marketCode": "CME",
+      "expiryYmd": "20261218",
+      "lastTradeDate": "2026-12-18",
+      "instmntCode": "NQ"
+    },
+    {
+      "prodCode": "QCF27",
+      "prodName": "COMEX Mini Copper 2027-01",
+      "marketCode": "COMEX",
+      "expiryYmd": "20261229",
+      "lastTradeDate": "2026-12-29",
+      "instmntCode": "QC"
+    },
+    {
+      "prodCode": "QCG27",
+      "prodName": "COMEX Mini Copper 2027-02",
+      "marketCode": "COMEX",
+      "expiryYmd": "20270127",
+      "lastTradeDate": "2027-01-27",
+      "instmntCode": "QC"
+    },
+    {
+      "prodCode": "QCH27",
+      "prodName": "COMEX Mini Copper 2027-03",
+      "marketCode": "COMEX",
+      "expiryYmd": "20270224",
+      "lastTradeDate": "2027-02-24",
+      "instmntCode": "QC"
+    },
+    {
+      "prodCode": "QCJ27",
+      "prodName": "COMEX Mini Copper 2027-04",
+      "marketCode": "COMEX",
+      "expiryYmd": "20270329",
+      "lastTradeDate": "2027-03-29",
+      "instmntCode": "QC"
+    },
+    {
+      "prodCode": "QCK27",
+      "prodName": "COMEX Mini Copper 2027-05",
+      "marketCode": "COMEX",
+      "expiryYmd": "20270428",
+      "lastTradeDate": "2027-04-28",
+      "instmntCode": "QC"
+    },
+    {
+      "prodCode": "QCM27",
+      "prodName": "COMEX Mini Copper 2027-06",
+      "marketCode": "COMEX",
+      "expiryYmd": "20270526",
+      "lastTradeDate": "2027-05-26",
+      "instmntCode": "QC"
+    },
+    {
+      "prodCode": "QCN27",
+      "prodName": "COMEX Mini Copper 2027-07",
+      "marketCode": "COMEX",
+      "expiryYmd": "20270628",
+      "lastTradeDate": "2027-06-28",
+      "instmntCode": "QC"
+    },
+    {
+      "prodCode": "QCQ27",
+      "prodName": "COMEX Mini Copper 2027-08",
+      "marketCode": "COMEX",
+      "expiryYmd": "20270728",
+      "lastTradeDate": "2027-07-28",
+      "instmntCode": "QC"
+    },
+    {
+      "prodCode": "QCU27",
+      "prodName": "COMEX Mini Copper 2027-09",
+      "marketCode": "COMEX",
+      "expiryYmd": "20270827",
+      "lastTradeDate": "2027-08-27",
+      "instmntCode": "QC"
+    },
+    {
+      "prodCode": "QCV27",
+      "prodName": "COMEX Mini Copper 2027-10",
+      "marketCode": "COMEX",
+      "expiryYmd": "20270928",
+      "lastTradeDate": "2027-09-28",
+      "instmntCode": "QC"
+    },
+    {
+      "prodCode": "QCX27",
+      "prodName": "COMEX Mini Copper 2027-11",
+      "marketCode": "COMEX",
+      "expiryYmd": "20271027",
+      "lastTradeDate": "2027-10-27",
+      "instmntCode": "QC"
+    },
+    {
+      "prodCode": "QCZ27",
+      "prodName": "COMEX Mini Copper 2027-12",
+      "marketCode": "COMEX",
+      "expiryYmd": "20271126",
+      "lastTradeDate": "2027-11-26",
+      "instmntCode": "QC"
+    },
+    {
+      "prodCode": "QGF27",
+      "prodName": "Mini Natural Gas 2027-01",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20261228",
+      "lastTradeDate": "2026-12-28",
+      "instmntCode": "QG"
+    },
+    {
+      "prodCode": "QGG27",
+      "prodName": "Mini Natural Gas 2027-02",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270126",
+      "lastTradeDate": "2027-01-26",
+      "instmntCode": "QG"
+    },
+    {
+      "prodCode": "QGH27",
+      "prodName": "Mini Natural Gas 2027-03",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270223",
+      "lastTradeDate": "2027-02-23",
+      "instmntCode": "QG"
+    },
+    {
+      "prodCode": "QGJ27",
+      "prodName": "Mini Natural Gas 2027-04",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270325",
+      "lastTradeDate": "2027-03-25",
+      "instmntCode": "QG"
+    },
+    {
+      "prodCode": "QGK27",
+      "prodName": "Mini Natural Gas 2027-05",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270427",
+      "lastTradeDate": "2027-04-27",
+      "instmntCode": "QG"
+    },
+    {
+      "prodCode": "QGM27",
+      "prodName": "Mini Natural Gas 2027-06",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270525",
+      "lastTradeDate": "2027-05-25",
+      "instmntCode": "QG"
+    },
+    {
+      "prodCode": "QGN27",
+      "prodName": "Mini Natural Gas 2027-07",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270625",
+      "lastTradeDate": "2027-06-25",
+      "instmntCode": "QG"
+    },
+    {
+      "prodCode": "QGQ27",
+      "prodName": "Mini Natural Gas 2027-08",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270727",
+      "lastTradeDate": "2027-07-27",
+      "instmntCode": "QG"
+    },
+    {
+      "prodCode": "QGU27",
+      "prodName": "Mini Natural Gas 2027-09",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270826",
+      "lastTradeDate": "2027-08-26",
+      "instmntCode": "QG"
+    },
+    {
+      "prodCode": "QGV27",
+      "prodName": "Mini Natural Gas 2027-10",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270927",
+      "lastTradeDate": "2027-09-27",
+      "instmntCode": "QG"
+    },
+    {
+      "prodCode": "QGX27",
+      "prodName": "Mini Natural Gas 2027-11",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20271026",
+      "lastTradeDate": "2027-10-26",
+      "instmntCode": "QG"
+    },
+    {
+      "prodCode": "QGZ27",
+      "prodName": "Mini Natural Gas 2027-12",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20271124",
+      "lastTradeDate": "2027-11-24",
+      "instmntCode": "QG"
+    },
+    {
+      "prodCode": "QMF27",
+      "prodName": "Mini-Crude Oil 2027-01",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20261218",
+      "lastTradeDate": "2026-12-18",
+      "instmntCode": "QM"
+    },
+    {
+      "prodCode": "QMG27",
+      "prodName": "Mini-Crude Oil 2027-02",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270119",
+      "lastTradeDate": "2027-01-19",
+      "instmntCode": "QM"
+    },
+    {
+      "prodCode": "QMH27",
+      "prodName": "Mini-Crude Oil 2027-03",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270219",
+      "lastTradeDate": "2027-02-19",
+      "instmntCode": "QM"
+    },
+    {
+      "prodCode": "QMJ27",
+      "prodName": "Mini-Crude Oil 2027-04",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270319",
+      "lastTradeDate": "2027-03-19",
+      "instmntCode": "QM"
+    },
+    {
+      "prodCode": "QMK27",
+      "prodName": "Mini-Crude Oil 2027-05",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270419",
+      "lastTradeDate": "2027-04-19",
+      "instmntCode": "QM"
+    },
+    {
+      "prodCode": "QMM27",
+      "prodName": "Mini-Crude Oil 2027-06",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270519",
+      "lastTradeDate": "2027-05-19",
+      "instmntCode": "QM"
+    },
+    {
+      "prodCode": "QMN27",
+      "prodName": "Mini-Crude Oil 2027-07",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270621",
+      "lastTradeDate": "2027-06-21",
+      "instmntCode": "QM"
+    },
+    {
+      "prodCode": "QMQ27",
+      "prodName": "Mini-Crude Oil 2027-08",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270719",
+      "lastTradeDate": "2027-07-19",
+      "instmntCode": "QM"
+    },
+    {
+      "prodCode": "QMU27",
+      "prodName": "Mini-Crude Oil 2027-09",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270819",
+      "lastTradeDate": "2027-08-19",
+      "instmntCode": "QM"
+    },
+    {
+      "prodCode": "QMV27",
+      "prodName": "Mini-Crude Oil 2027-10",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270920",
+      "lastTradeDate": "2027-09-20",
+      "instmntCode": "QM"
+    },
+    {
+      "prodCode": "QMX27",
+      "prodName": "Mini-Crude Oil 2027-11",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20271019",
+      "lastTradeDate": "2027-10-19",
+      "instmntCode": "QM"
+    },
+    {
+      "prodCode": "QMZ27",
+      "prodName": "Mini-Crude Oil 2027-12",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20271118",
+      "lastTradeDate": "2027-11-18",
+      "instmntCode": "QM"
+    },
+    {
+      "prodCode": "RBF27",
+      "prodName": "Gasoline 2027-01",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20261231",
+      "lastTradeDate": "2026-12-31",
+      "instmntCode": "RB"
+    },
+    {
+      "prodCode": "RBG27",
+      "prodName": "Gasoline 2027-02",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270129",
+      "lastTradeDate": "2027-01-29",
+      "instmntCode": "RB"
+    },
+    {
+      "prodCode": "RBH27",
+      "prodName": "Gasoline 2027-03",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270226",
+      "lastTradeDate": "2027-02-26",
+      "instmntCode": "RB"
+    },
+    {
+      "prodCode": "RBJ27",
+      "prodName": "Gasoline 2027-04",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270331",
+      "lastTradeDate": "2027-03-31",
+      "instmntCode": "RB"
+    },
+    {
+      "prodCode": "RBK27",
+      "prodName": "Gasoline 2027-05",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270430",
+      "lastTradeDate": "2027-04-30",
+      "instmntCode": "RB"
+    },
+    {
+      "prodCode": "RBM27",
+      "prodName": "Gasoline 2027-06",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270528",
+      "lastTradeDate": "2027-05-28",
+      "instmntCode": "RB"
+    },
+    {
+      "prodCode": "RBN27",
+      "prodName": "Gasoline 2027-07",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270630",
+      "lastTradeDate": "2027-06-30",
+      "instmntCode": "RB"
+    },
+    {
+      "prodCode": "RBQ27",
+      "prodName": "Gasoline 2027-08",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270730",
+      "lastTradeDate": "2027-07-30",
+      "instmntCode": "RB"
+    },
+    {
+      "prodCode": "RBU27",
+      "prodName": "Gasoline 2027-09",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270831",
+      "lastTradeDate": "2027-08-31",
+      "instmntCode": "RB"
+    },
+    {
+      "prodCode": "RBV27",
+      "prodName": "Gasoline 2027-10",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20270930",
+      "lastTradeDate": "2027-09-30",
+      "instmntCode": "RB"
+    },
+    {
+      "prodCode": "RBX27",
+      "prodName": "Gasoline 2027-11",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20271029",
+      "lastTradeDate": "2027-10-29",
+      "instmntCode": "RB"
+    },
+    {
+      "prodCode": "RBZ26",
+      "prodName": "Gasoline 2026-12",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20261130",
+      "lastTradeDate": "2026-11-30",
+      "instmntCode": "RB"
+    },
+    {
+      "prodCode": "RBZ27",
+      "prodName": "Gasoline 2027-12",
+      "marketCode": "NYMEX",
+      "expiryYmd": "20271130",
+      "lastTradeDate": "2027-11-30",
+      "instmntCode": "RB"
+    },
+    {
+      "prodCode": "SIF27",
+      "prodName": "COMEX SILVER 2027-01",
+      "marketCode": "COMEX",
+      "expiryYmd": "20270127",
+      "lastTradeDate": "2027-01-27",
+      "instmntCode": "SI"
+    },
+    {
+      "prodCode": "SIF28",
+      "prodName": "COMEX SILVER 2028-01",
+      "marketCode": "COMEX",
+      "expiryYmd": "20280127",
+      "lastTradeDate": "2028-01-27",
+      "instmntCode": "SI"
+    },
+    {
+      "prodCode": "SIF29",
+      "prodName": "COMEX SILVER 2029-01",
+      "marketCode": "COMEX",
+      "expiryYmd": "20290129",
+      "lastTradeDate": "2029-01-29",
+      "instmntCode": "SI"
+    },
+    {
+      "prodCode": "SIH27",
+      "prodName": "COMEX SILVER 2027-03",
+      "marketCode": "COMEX",
+      "expiryYmd": "20270329",
+      "lastTradeDate": "2027-03-29",
+      "instmntCode": "SI"
+    },
+    {
+      "prodCode": "SIH28",
+      "prodName": "COMEX SILVER 2028-03",
+      "marketCode": "COMEX",
+      "expiryYmd": "20280329",
+      "lastTradeDate": "2028-03-29",
+      "instmntCode": "SI"
+    },
+    {
+      "prodCode": "SIK27",
+      "prodName": "COMEX SILVER 2027-05",
+      "marketCode": "COMEX",
+      "expiryYmd": "20270526",
+      "lastTradeDate": "2027-05-26",
+      "instmntCode": "SI"
+    },
+    {
+      "prodCode": "SIK28",
+      "prodName": "COMEX SILVER 2028-05",
+      "marketCode": "COMEX",
+      "expiryYmd": "20280526",
+      "lastTradeDate": "2028-05-26",
+      "instmntCode": "SI"
+    },
+    {
+      "prodCode": "SILF27",
+      "prodName": "COMEX Micro Silver 2027-01",
+      "marketCode": "COMEX",
+      "expiryYmd": "20270127",
+      "lastTradeDate": "2027-01-27",
+      "instmntCode": "SIL"
+    },
+    {
+      "prodCode": "SILH27",
+      "prodName": "COMEX Micro Silver 2027-03",
+      "marketCode": "COMEX",
+      "expiryYmd": "20270329",
+      "lastTradeDate": "2027-03-29",
+      "instmntCode": "SIL"
+    },
+    {
+      "prodCode": "SILK27",
+      "prodName": "COMEX Micro Silver 2027-05",
+      "marketCode": "COMEX",
+      "expiryYmd": "20270526",
+      "lastTradeDate": "2027-05-26",
+      "instmntCode": "SIL"
+    },
+    {
+      "prodCode": "SILN27",
+      "prodName": "COMEX Micro Silver 2027-07",
+      "marketCode": "COMEX",
+      "expiryYmd": "20270728",
+      "lastTradeDate": "2027-07-28",
+      "instmntCode": "SIL"
+    },
+    {
+      "prodCode": "SILU27",
+      "prodName": "COMEX Micro Silver 2027-09",
+      "marketCode": "COMEX",
+      "expiryYmd": "20270928",
+      "lastTradeDate": "2027-09-28",
+      "instmntCode": "SIL"
+    },
+    {
+      "prodCode": "SILZ26",
+      "prodName": "COMEX Micro Silver 2026-12",
+      "marketCode": "COMEX",
+      "expiryYmd": "20261229",
+      "lastTradeDate": "2026-12-29",
+      "instmntCode": "SIL"
+    },
+    {
+      "prodCode": "SIN27",
+      "prodName": "COMEX SILVER 2027-07",
+      "marketCode": "COMEX",
+      "expiryYmd": "20270728",
+      "lastTradeDate": "2027-07-28",
+      "instmntCode": "SI"
+    },
+    {
+      "prodCode": "SIN28",
+      "prodName": "COMEX SILVER 2028-07",
+      "marketCode": "COMEX",
+      "expiryYmd": "20280727",
+      "lastTradeDate": "2028-07-27",
+      "instmntCode": "SI"
+    },
+    {
+      "prodCode": "SIN29",
+      "prodName": "COMEX SILVER 2029-07",
+      "marketCode": "COMEX",
+      "expiryYmd": "20290727",
+      "lastTradeDate": "2029-07-27",
+      "instmntCode": "SI"
+    },
+    {
+      "prodCode": "SIU27",
+      "prodName": "COMEX SILVER 2027-09",
+      "marketCode": "COMEX",
+      "expiryYmd": "20270928",
+      "lastTradeDate": "2027-09-28",
+      "instmntCode": "SI"
+    },
+    {
+      "prodCode": "SIU28",
+      "prodName": "COMEX SILVER 2028-09",
+      "marketCode": "COMEX",
+      "expiryYmd": "20280927",
+      "lastTradeDate": "2028-09-27",
+      "instmntCode": "SI"
+    },
+    {
+      "prodCode": "SIZ26",
+      "prodName": "COMEX SILVER 2026-12",
+      "marketCode": "COMEX",
+      "expiryYmd": "20261229",
+      "lastTradeDate": "2026-12-29",
+      "instmntCode": "SI"
+    },
+    {
+      "prodCode": "SIZ27",
+      "prodName": "COMEX SILVER 2027-12",
+      "marketCode": "COMEX",
+      "expiryYmd": "20271229",
+      "lastTradeDate": "2027-12-29",
+      "instmntCode": "SI"
+    },
+    {
+      "prodCode": "SIZ28",
+      "prodName": "COMEX SILVER 2028-12",
+      "marketCode": "COMEX",
+      "expiryYmd": "20281227",
+      "lastTradeDate": "2028-12-27",
+      "instmntCode": "SI"
+    },
+    {
+      "prodCode": "YMH27",
+      "prodName": "mini-sized Dow ($5) 2027-03",
+      "marketCode": "CBOT",
+      "expiryYmd": "20270319",
+      "lastTradeDate": "2027-03-19",
+      "instmntCode": "YM"
+    },
+    {
+      "prodCode": "YMM27",
+      "prodName": "mini-sized Dow ($5) 2027-06",
+      "marketCode": "CBOT",
+      "expiryYmd": "20270617",
+      "lastTradeDate": "2027-06-17",
+      "instmntCode": "YM"
+    },
+    {
+      "prodCode": "YMZ26",
+      "prodName": "mini-sized Dow ($5) 2026-12",
+      "marketCode": "CBOT",
+      "expiryYmd": "20261218",
+      "lastTradeDate": "2026-12-18",
+      "instmntCode": "YM"
+    },
+    {
+      "prodCode": "ZCH27",
+      "prodName": "Corn 2027-03",
+      "marketCode": "CBOT",
+      "expiryYmd": "20270312",
+      "lastTradeDate": "2027-03-12",
+      "instmntCode": "ZC"
+    },
+    {
+      "prodCode": "ZCH28",
+      "prodName": "Corn 2028-03",
+      "marketCode": "CBOT",
+      "expiryYmd": "20280314",
+      "lastTradeDate": "2028-03-14",
+      "instmntCode": "ZC"
+    },
+    {
+      "prodCode": "ZCK27",
+      "prodName": "Corn 2027-05",
+      "marketCode": "CBOT",
+      "expiryYmd": "20270514",
+      "lastTradeDate": "2027-05-14",
+      "instmntCode": "ZC"
+    },
+    {
+      "prodCode": "ZCK28",
+      "prodName": "Corn 2028-05",
+      "marketCode": "CBOT",
+      "expiryYmd": "20280512",
+      "lastTradeDate": "2028-05-12",
+      "instmntCode": "ZC"
+    },
+    {
+      "prodCode": "ZCN27",
+      "prodName": "Corn 2027-07",
+      "marketCode": "CBOT",
+      "expiryYmd": "20270714",
+      "lastTradeDate": "2027-07-14",
+      "instmntCode": "ZC"
+    },
+    {
+      "prodCode": "ZCU27",
+      "prodName": "Corn 2027-09",
+      "marketCode": "CBOT",
+      "expiryYmd": "20270914",
+      "lastTradeDate": "2027-09-14",
+      "instmntCode": "ZC"
+    },
+    {
+      "prodCode": "ZCZ26",
+      "prodName": "Corn 2026-12",
+      "marketCode": "CBOT",
+      "expiryYmd": "20261214",
+      "lastTradeDate": "2026-12-14",
+      "instmntCode": "ZC"
+    },
+    {
+      "prodCode": "ZCZ27",
+      "prodName": "Corn 2027-12",
+      "marketCode": "CBOT",
+      "expiryYmd": "20271214",
+      "lastTradeDate": "2027-12-14",
+      "instmntCode": "ZC"
+    },
+    {
+      "prodCode": "ZLF27",
+      "prodName": "Soyabean Oil 2027-01",
+      "marketCode": "CBOT",
+      "expiryYmd": "20270114",
+      "lastTradeDate": "2027-01-14",
+      "instmntCode": "ZL"
+    },
+    {
+      "prodCode": "ZLH27",
+      "prodName": "Soyabean Oil 2027-03",
+      "marketCode": "CBOT",
+      "expiryYmd": "20270312",
+      "lastTradeDate": "2027-03-12",
+      "instmntCode": "ZL"
+    },
+    {
+      "prodCode": "ZLK27",
+      "prodName": "Soyabean Oil 2027-05",
+      "marketCode": "CBOT",
+      "expiryYmd": "20270514",
+      "lastTradeDate": "2027-05-14",
+      "instmntCode": "ZL"
+    },
+    {
+      "prodCode": "ZLN27",
+      "prodName": "Soybean Oil 2027-07",
+      "marketCode": "CBOT",
+      "expiryYmd": "20270714",
+      "lastTradeDate": "2027-07-14",
+      "instmntCode": "ZL"
+    },
+    {
+      "prodCode": "ZLQ27",
+      "prodName": "Soybean Oil 2027-08",
+      "marketCode": "CBOT",
+      "expiryYmd": "20270813",
+      "lastTradeDate": "2027-08-13",
+      "instmntCode": "ZL"
+    },
+    {
+      "prodCode": "ZLU27",
+      "prodName": "Soyabean Oil 2027-09",
+      "marketCode": "CBOT",
+      "expiryYmd": "20270914",
+      "lastTradeDate": "2027-09-14",
+      "instmntCode": "ZL"
+    },
+    {
+      "prodCode": "ZLV27",
+      "prodName": "Soybean Oil 2027-10",
+      "marketCode": "CBOT",
+      "expiryYmd": "20271014",
+      "lastTradeDate": "2027-10-14",
+      "instmntCode": "ZL"
+    },
+    {
+      "prodCode": "ZLZ26",
+      "prodName": "Soyabean Oil 2026-12",
+      "marketCode": "CBOT",
+      "expiryYmd": "20261214",
+      "lastTradeDate": "2026-12-14",
+      "instmntCode": "ZL"
+    },
+    {
+      "prodCode": "ZMF27",
+      "prodName": "Soyabean Meal 2027-01",
+      "marketCode": "CBOT",
+      "expiryYmd": "20270114",
+      "lastTradeDate": "2027-01-14",
+      "instmntCode": "ZM"
+    },
+    {
+      "prodCode": "ZMH27",
+      "prodName": "Soyabean Meal 2027-03",
+      "marketCode": "CBOT",
+      "expiryYmd": "20270312",
+      "lastTradeDate": "2027-03-12",
+      "instmntCode": "ZM"
+    },
+    {
+      "prodCode": "ZMK27",
+      "prodName": "Soyabean Meal 2027-05",
+      "marketCode": "CBOT",
+      "expiryYmd": "20270514",
+      "lastTradeDate": "2027-05-14",
+      "instmntCode": "ZM"
+    },
+    {
+      "prodCode": "ZMN27",
+      "prodName": "Soyabean Meal 2027-07",
+      "marketCode": "CBOT",
+      "expiryYmd": "20270714",
+      "lastTradeDate": "2027-07-14",
+      "instmntCode": "ZM"
+    },
+    {
+      "prodCode": "ZMQ27",
+      "prodName": "Soyabean Meal 2027-08",
+      "marketCode": "CBOT",
+      "expiryYmd": "20270813",
+      "lastTradeDate": "2027-08-13",
+      "instmntCode": "ZM"
+    },
+    {
+      "prodCode": "ZMU27",
+      "prodName": "Soyabean Meal 2027-09",
+      "marketCode": "CBOT",
+      "expiryYmd": "20270914",
+      "lastTradeDate": "2027-09-14",
+      "instmntCode": "ZM"
+    },
+    {
+      "prodCode": "ZMV27",
+      "prodName": "Soyabean Meal 2027-10",
+      "marketCode": "CBOT",
+      "expiryYmd": "20271014",
+      "lastTradeDate": "2027-10-14",
+      "instmntCode": "ZM"
+    },
+    {
+      "prodCode": "ZMZ26",
+      "prodName": "Soyabean Meal 2026-12",
+      "marketCode": "CBOT",
+      "expiryYmd": "20261214",
+      "lastTradeDate": "2026-12-14",
+      "instmntCode": "ZM"
+    },
+    {
+      "prodCode": "ZSF27",
+      "prodName": "Soyabean 2027-01",
+      "marketCode": "CBOT",
+      "expiryYmd": "20270114",
+      "lastTradeDate": "2027-01-14",
+      "instmntCode": "ZS"
+    },
+    {
+      "prodCode": "ZSF28",
+      "prodName": "Soyabean 2028-01",
+      "marketCode": "CBOT",
+      "expiryYmd": "20280114",
+      "lastTradeDate": "2028-01-14",
+      "instmntCode": "ZS"
+    },
+    {
+      "prodCode": "ZSH27",
+      "prodName": "Soyabean 2027-03",
+      "marketCode": "CBOT",
+      "expiryYmd": "20270312",
+      "lastTradeDate": "2027-03-12",
+      "instmntCode": "ZS"
+    },
+    {
+      "prodCode": "ZSH28",
+      "prodName": "Soyabean 2028-03",
+      "marketCode": "CBOT",
+      "expiryYmd": "20280314",
+      "lastTradeDate": "2028-03-14",
+      "instmntCode": "ZS"
+    },
+    {
+      "prodCode": "ZSK27",
+      "prodName": "Soyabean 2027-05",
+      "marketCode": "CBOT",
+      "expiryYmd": "20270514",
+      "lastTradeDate": "2027-05-14",
+      "instmntCode": "ZS"
+    },
+    {
+      "prodCode": "ZSN27",
+      "prodName": "Soyabean 2027-07",
+      "marketCode": "CBOT",
+      "expiryYmd": "20270714",
+      "lastTradeDate": "2027-07-14",
+      "instmntCode": "ZS"
+    },
+    {
+      "prodCode": "ZSQ27",
+      "prodName": "Soyabean 2027-08",
+      "marketCode": "CBOT",
+      "expiryYmd": "20270813",
+      "lastTradeDate": "2027-08-13",
+      "instmntCode": "ZS"
+    },
+    {
+      "prodCode": "ZSU27",
+      "prodName": "Soyabean 2027-09",
+      "marketCode": "CBOT",
+      "expiryYmd": "20270914",
+      "lastTradeDate": "2027-09-14",
+      "instmntCode": "ZS"
+    },
+    {
+      "prodCode": "ZSX27",
+      "prodName": "Soyabean 2027-11",
+      "marketCode": "CBOT",
+      "expiryYmd": "20271112",
+      "lastTradeDate": "2027-11-12",
+      "instmntCode": "ZS"
+    },
+    {
+      "prodCode": "ZWH27",
+      "prodName": "Wheat 2027-03",
+      "marketCode": "CBOT",
+      "expiryYmd": "20270312",
+      "lastTradeDate": "2027-03-12",
+      "instmntCode": "ZW"
+    },
+    {
+      "prodCode": "ZWK27",
+      "prodName": "Wheat 2027-05",
+      "marketCode": "CBOT",
+      "expiryYmd": "20270514",
+      "lastTradeDate": "2027-05-14",
+      "instmntCode": "ZW"
+    },
+    {
+      "prodCode": "ZWN27",
+      "prodName": "Wheat 2027-07",
+      "marketCode": "CBOT",
+      "expiryYmd": "20270714",
+      "lastTradeDate": "2027-07-14",
+      "instmntCode": "ZW"
+    },
+    {
+      "prodCode": "ZWU27",
+      "prodName": "Wheat 2027-09",
+      "marketCode": "CBOT",
+      "expiryYmd": "20270914",
+      "lastTradeDate": "2027-09-14",
+      "instmntCode": "ZW"
+    },
+    {
+      "prodCode": "ZWZ26",
+      "prodName": "Wheat 2026-12",
+      "marketCode": "CBOT",
+      "expiryYmd": "20261214",
+      "lastTradeDate": "2026-12-14",
+      "instmntCode": "ZW"
+    },
+    {
+      "prodCode": "ZWZ27",
+      "prodName": "Wheat 2027-12",
+      "marketCode": "CBOT",
+      "expiryYmd": "20271214",
+      "lastTradeDate": "2027-12-14",
+      "instmntCode": "ZW"
+    }
+  ]
+}

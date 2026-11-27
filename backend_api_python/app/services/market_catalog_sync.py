@@ -18,7 +18,7 @@ from app.utils.logger import get_logger
 logger = get_logger(__name__)
 _thread_lock = threading.Lock()
 _worker = None
-MARKET_CATALOG_SCHEMA_VERSION = 3
+MARKET_CATALOG_SCHEMA_VERSION = 4
 
 
 def _json_value(value):
@@ -82,6 +82,11 @@ def _run_sync(run_id: int) -> None:
     try:
         rows, contexts = fetch_crypto_symbols_with_diagnostics()
         written = upsert_symbol_master(rows) if rows else 0
+        from app.services.symbol_master_sync import sync_symbol_master
+        for market, result in sync_symbol_master(["HKStock", "Futures"]).items():
+            contexts.append({"exchange": "HKEX" if market == "HKStock" else "forthright",
+                             "market_type": market, **result})
+            written += int(result.get("upserted") or 0)
         reclassified = reclassify_stored_equity_products()
         succeeded = sum(1 for item in contexts if item.get("ok"))
         failed = len(contexts) - succeeded

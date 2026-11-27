@@ -81,11 +81,13 @@ def test_tiger_connects_directly_and_normalizes_positions(monkeypatch):
 
 
 def test_tiger_order_uses_official_sdk_order_and_user_mark(monkeypatch):
+    from app.services.market import hk_board_lots
+    monkeypatch.setattr(hk_board_lots, "board_lot_rule", lambda symbol: {"lot_size": 100})
     trade_client = FakeTigerTradeClient()
     client = TigerClient(TigerConfig(tiger_id="tiger-1", account_id="account-1", private_key="pem"))
     monkeypatch.setattr(client, "_sdk", lambda: fake_tiger_sdk(trade_client))
     result = client.place_limit_order(
-        symbol="3690.HK", side="buy", quantity=2, price=70.5,
+        symbol="3690.HK", side="buy", quantity=200, price=70.5,
         market_type="HKStock", client_order_id="qd-order-1",
     )
     assert result.order_id == "401001"
@@ -93,6 +95,7 @@ def test_tiger_order_uses_official_sdk_order_and_user_mark(monkeypatch):
     assert order.contract.symbol == "03690"
     assert order.contract.currency == "HKD"
     assert order.limit_price == 70.5
+    assert order.quantity == 200
     assert order.user_mark == "qd-order-1"
 
 
@@ -192,6 +195,18 @@ def test_webull_signature_matches_hmac_sha1_contract():
         hmac.new(b"secret&", quote(source, safe="").encode("utf-8"), hashlib.sha1).digest()
     ).decode("ascii")
     assert actual == expected
+
+
+def test_webull_signature_binds_body_account_nonce_and_timestamp():
+    client = WebullClient(WebullConfig(app_key='app-key', app_secret='secret', environment='sandbox'))
+    arguments = dict(method='POST', path='/trading/orders/place', params={'account_id': '123'},
+                     body='{"quantity":"1"}', timestamp='2026-10-29T01:02:03Z', nonce='nonce-1')
+    baseline = client.build_signature(**arguments)
+    for change in ({'body': '{"quantity":"2"}'}, {'body': ''}, {'params': {'account_id': '456'}},
+                   {'nonce': 'nonce-2'}, {'timestamp': '2026-10-29T01:02:04Z'}):
+        assert client.build_signature(**{**arguments, **change}) != baseline
+    assert client.base_url == 'https://api.sandbox.webull.com'
+    assert client.session.verify is True
 
 
 def test_public_broker_error_only_returns_allowlisted_keys():

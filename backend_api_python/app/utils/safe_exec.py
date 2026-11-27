@@ -239,6 +239,14 @@ def _wrap_imported_module(module: Any) -> Any:
     if not isinstance(module, types.ModuleType):
         return module
 
+    if module.__name__ == 'numpy':
+        # NumPy's C reductions lazily import _methods using the calling frame's
+        # builtins. Initialize their caches in trusted code; user imports of
+        # private modules remain forbidden by both validation and the importer.
+        sample = module.array([1.0, 2.0])
+        for operation in ('mean', 'std', 'var', 'sum', 'prod', 'min', 'max', 'any', 'all'):
+            getattr(sample, operation)()
+
     proxy = _SafeModuleProxy(getattr(module, '__name__', 'safe_module'))
     for name, value in module.__dict__.items():
         if name in _DANGEROUS_METHOD_NAMES or name in _BLOCKED_MODULE_ATTRS:

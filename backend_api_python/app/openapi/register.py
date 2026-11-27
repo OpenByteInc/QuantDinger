@@ -38,6 +38,7 @@ _PREFIX_TAGS: list[tuple[str, str]] = [
     ("/api/{broker}", "Account"),
     ("/api/tiger", "Tiger Brokers"),
     ("/api/webull", "Webull"),
+    ("/api/forthright", "Forthright"),
     ("/api/global-market", "GlobalMarket"),
     ("/api/community", "Community"),
     ("/api/fast-analysis", "FastAnalysis"),
@@ -132,6 +133,50 @@ def register_human_blueprints(api: Api) -> None:
 _SSE_PATHS = frozenset({
     "/api/indicator/aiGenerate",
 })
+
+
+def _document_advertisements(paths: dict) -> None:
+    operations = paths.get("/api/settings/advertisements", {})
+    for method in ("get", "put"):
+        operation = operations.get(method)
+        if operation is None:
+            continue
+        operation["security"] = [{"HumanJWT": []}]
+        operation["responses"].update({
+            "401": {"description": "Authentication required"},
+            "403": {"description": "Administrator role required"},
+        })
+        if method == "get":
+            operation["summary"] = "Read advertisement configuration (administrators only)"
+            continue
+        operation["summary"] = "Replace advertisements using optimistic revision checking"
+        operation["responses"]["409"] = {"description": "Revision conflict; reload before saving"}
+        operation["requestBody"] = {
+            "required": True,
+            "content": {"application/json": {"schema": {
+                "type": "object",
+                "required": ["items", "revision"],
+                "properties": {
+                    "revision": {"type": "integer", "minimum": 0},
+                    "items": {
+                        "type": "array", "maxItems": 40,
+                        "items": {
+                            "type": "object",
+                            "required": ["id", "name", "image_url", "target_url", "position", "sort_order", "enabled"],
+                            "properties": {
+                                "id": {"type": "string", "minLength": 1, "maxLength": 64},
+                                "name": {"type": "string", "minLength": 1, "maxLength": 80},
+                                "image_url": {"type": "string", "format": "uri", "maxLength": 2048},
+                                "target_url": {"type": "string", "format": "uri", "maxLength": 2048},
+                                "position": {"type": "string", "enum": ["sidebar", "accounts"]},
+                                "sort_order": {"type": "integer", "minimum": 0, "maximum": 9999},
+                                "enabled": {"type": "boolean"},
+                            },
+                        },
+                    },
+                },
+            }}},
+        }
 
 
 def enrich_spec(spec_dict: dict) -> dict:
@@ -271,4 +316,5 @@ def enrich_spec(spec_dict: dict) -> dict:
                 else:
                     op["x-visibility"] = "internal"
 
+    _document_advertisements(paths)
     return spec_dict

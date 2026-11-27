@@ -86,6 +86,9 @@ def safe_exchange_config_for_log(cfg: Dict[str, Any]) -> Dict[str, Any]:
     )
 
     out = redact_partner_attribution(strip_partner_config(cfg))
+    for key in ("private_key", "privateKey", "trade_password", "tradePassword"):
+        if key in out:
+            out[key] = "[redacted]"
     for k in ["api_key", "secret_key", "passphrase", "apiKey", "secret", "password"]:
         if k in out and out.get(k):
             out[k] = mask_secret(str(out.get(k)))
@@ -210,7 +213,7 @@ def resolve_exchange_config(exchange_config: Dict[str, Any], user_id: int = 1) -
     credential_owned_keys = {
         "exchange_id", "exchangeId", "exchange",
         "api_key", "apiKey", "secret_key", "secret", "passphrase", "password",
-        "environment", "network", "env",
+        "environment", "network", "env", "gateway_environment",
         "market_scope", "marketScope",
         "enable_demo_trading", "enableDemoTrading", "simulated_trading", "simulatedTrading",
         "use_testnet", "is_testnet", "isTestnet", "sandbox", "paper_trading", "paperTrading",

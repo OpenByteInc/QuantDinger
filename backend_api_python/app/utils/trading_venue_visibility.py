@@ -10,6 +10,7 @@ TRADING_VENUE_IDS = (
     "ibkr",
     "tiger",
     "webull",
+    "forthright",
     "binance",
     "okx",
     "bybit",

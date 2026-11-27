@@ -240,7 +240,7 @@ def search_assets():
         market = (request.args.get('market') or '').strip()
         keyword = (request.args.get('keyword') or '').strip()
         limit = int(request.args.get('limit') or 20)
-        if not market or not keyword:
+        if not market or (not keyword and market != 'Futures'):
             return jsonify({'code': 1, 'msg': 'success', 'data': []})
         return jsonify({
             'code': 1,
@@ -251,6 +251,12 @@ def search_assets():
         logger.error(f"search_assets failed: {str(e)}")
         logger.error(traceback.format_exc())
         return jsonify({'code': 0, 'msg': 'internal_server_error', 'data': []}), 500
+
+
+@market_blp.route('/futures/products', methods=['GET'])
+def futures_products():
+    from app.services.market.dated_futures import futures_products as products
+    return jsonify({'code': 1, 'msg': 'success', 'data': products()})
 
 
 @market_blp.route('/assets/capabilities', methods=['GET'])

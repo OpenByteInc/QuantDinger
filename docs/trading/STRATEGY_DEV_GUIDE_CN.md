@@ -1,5 +1,7 @@
 # Strategy API V2 策略开发指南
 
+> 当前方德期货仅开放手动交易；期货自动策略下单暂时关闭。下文点值与合约映射说明保留供后续接入。
+
 > 适用范围：当前 QuantDinger 可执行策略契约 Strategy API V2
 > 面向读者：第一次编写策略的用户、指标转策略用户，以及需要同时覆盖回测与实盘的策略开发者
 
@@ -1068,7 +1070,9 @@ def rebalance(context, data):
 | 交易所股票永续 | Binance、OKX、Bitget、Bybit、Gate | <code>stock_perpetual / swap / swap</code>；属于衍生品，遵守 Crypto swap 方向和杠杆规则，必须使用准确原生合约 |
 | Binance bStocks | Binance | <code>tokenized_equity / spot / spot</code>；必须使用目录中的准确交易对（如 <code>NVDAB/USDT</code>），按普通现货下单且不可使用杠杆 |
 | 未验证交易所股票 | HTX | 在权威产品元数据和执行 API family 验证完成前拒绝 |
-| USStock | Alpaca、IBKR | 当前券商策略按 long-only |
+| USStock | Alpaca、IBKR、Tiger、Webull、方德 | 当前券商策略按 long-only |
+| HKStock | Tiger、方德 | 仅做多 |
+| Futures | 无 | 自动策略下单暂未开放；方德仅支持手动交易 |
 | 其他可解析市场 | 暂无 | 可回测或有数据不等于支持实盘 |
 
 混合市场 live 不支持，其他市场不能强行用不匹配的凭证部署。一个实盘资金分配还必须保持兼容的计价/结算币种和 API family；例如不能因为底层都是港股公司，就把 HKD Gate 直接股票和 USDT 股票永续放进同一资金池。
