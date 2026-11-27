@@ -185,4 +185,41 @@ def adjust_order_fee(owner_column, owner_id, fees, quote, status, source="websoc
                 f"UPDATE qd_strategy_trades SET fee_status = %s, fee_source = %s WHERE {owner_column} = %s AND COALESCE(fee_status, 'pending') = 'pending'",
                 (status, source, owner_id),
             )
+        if owner_column == "pending_order_id":
+            _sync_runtime_order_fee(cur, owner_id, row, quote, status)
         cur.close()
+
+
+def _sync_runtime_order_fee(cur, pending_order_id, trade, quote_delta, status):
+    """Keep strategy callback fee totals aligned after a fee-only update."""
+    intent_id = int(trade.get("order_intent_id") or 0)
+    exchange_order_id = str(trade.get("exchange_order_id") or "")
+    if not intent_id or not exchange_order_id:
+        return
+    cur.execute(
+        """SELECT id, quantity, fee, commission_quote FROM strategy_order_fills
+        WHERE strategy_id = %s AND order_intent_id = %s AND credential_id = %s
+          AND exchange_id = (SELECT exchange_id FROM pending_orders WHERE id = %s)
+          AND exchange_order_id = %s
+        ORDER BY id FOR UPDATE""",
+        (trade["strategy_id"], intent_id, int(trade.get("credential_id") or 0),
+         pending_order_id, exchange_order_id),
+    )
+    rows = cur.fetchall() or []
+    if not rows:
+        return
+    totals = posted_totals("pending_order_id", pending_order_id)
+    if not math.isclose(sum(float(row["quantity"]) for row in rows), totals["quantity"], rel_tol=1e-12, abs_tol=1e-12):
+        return
+    currency, amount = next(iter(totals["fees"].items())) if len(totals["fees"]) == 1 else ("MIXED", 0)
+    # Replace the remaining total rather than re-applying the observed fee delta.
+    fee = amount - sum(float(row.get("fee") or 0) for row in rows[:-1])
+    quote = (totals["quote"] - sum(float(row.get("commission_quote") or 0) for row in rows[:-1])
+             if quote_delta is not None else None)
+    cur.execute(
+        """UPDATE strategy_order_fills SET fee = %s, fee_ccy = %s,
+        commission_quote = %s, fee_status = %s WHERE id = %s""",
+        (fee, currency, quote, status, rows[-1]["id"]),
+    )
+    for row in rows[:-1]:
+        cur.execute("UPDATE strategy_order_fills SET fee_status = %s WHERE id = %s", (status, row["id"]))
