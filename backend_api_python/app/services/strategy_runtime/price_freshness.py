@@ -12,6 +12,23 @@ from app.services.market_schedule import CALENDAR_BY_MARKET, equity_order_sessio
 EQUITY_QUOTE_MAX_AGE_SECONDS = 90.0
 
 
+def daily_signal_wait_reason(candidates, prices, seen_at, *, clock, max_age, quotes, now):
+    """Describe the exact missing execution quotes without weakening freshness."""
+    missing = sorted(str(member["key"]) for member in candidates if (
+        str(member["key"]) not in prices
+        or clock - seen_at.get(str(member["key"]), 0.0) > max_age
+    ))
+    if not missing:
+        return ""
+    details = []
+    for key in missing[:10]:
+        quote = quotes.get(key) or {}
+        observed = quote_timestamp(quote.get("quote_time"))
+        age = f"{max(0, int(pd.Timestamp(now).timestamp() - observed))}s" if observed else "unknown"
+        details.append(f"{key}[source={quote.get('quote_source') or 'unknown'},age={age}]")
+    return f"Daily signal waiting for fresh quotes: {len(missing)}/{len(candidates)}; " + ", ".join(details)
+
+
 def filter_execution_prices(prices, equity_quotes, *, now, execution_mode):
     if execution_mode != "live":
         return prices

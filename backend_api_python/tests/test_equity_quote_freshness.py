@@ -8,11 +8,25 @@ import pytest
 from app.data_sources.quote_time import quote_timestamp
 from app.data_sources.us_stock import USStockDataSource
 from app.services.strategy_runtime.price_freshness import filter_execution_prices
+from app.services.strategy_runtime.price_freshness import daily_signal_wait_reason
 from app.services.trading_executor import TradingExecutor
 
 
 NOW = pd.Timestamp("2026-11-25T15:00:30Z")
 KEY = "USStock:WDAY"
+
+
+def test_daily_wait_diagnostic_tracks_missing_quotes_and_recovery():
+    members = [{"key": KEY}, {"key": "USStock:AAPL"}]
+    quotes = {KEY: {"quote_source": "yahoo", "quote_time": NOW.timestamp() - 600}}
+    reason = daily_signal_wait_reason(members, {"USStock:AAPL": 100}, {"USStock:AAPL": 10},
+                                     clock=10, max_age=90, quotes=quotes, now=NOW)
+    assert "1/2" in reason
+    assert f"{KEY}[source=yahoo,age=600s]" in reason
+    prices = {KEY: 171.17, "USStock:AAPL": 100}
+    seen = {KEY: 10, "USStock:AAPL": 10}
+    assert daily_signal_wait_reason(members, prices, seen, clock=10, max_age=90, quotes={}, now=NOW) == ""
+    assert "2/2" in daily_signal_wait_reason(members, prices, seen, clock=101, max_age=90, quotes={}, now=NOW)
 
 
 def filtered(observed, now=NOW, *, market="USStock", mode="live"):
