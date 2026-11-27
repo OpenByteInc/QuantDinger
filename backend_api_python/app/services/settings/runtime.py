@@ -13,6 +13,7 @@ from app.utils.logger import get_logger
 logger = get_logger(__name__)
 
 _PROCESS_OWNED_ENV_KEYS = (
+    "EQUITY_QUOTE_MAX_AGE_MINUTES",
     # Security roots must remain identical for every worker until the process
     # group is restarted. Rotating either key in just the worker that handled a
     # settings request makes JWTs or encrypted credentials unreadable by the
@@ -50,6 +51,7 @@ def reload_runtime_env() -> None:
         for key in _PROCESS_OWNED_ENV_KEYS
         if key in os.environ
     }
+    process_owned.setdefault("EQUITY_QUOTE_MAX_AGE_MINUTES", "16")
 
     load_dotenv(ENV_FILE_PATH, override=True)
     # Runtime topology belongs to the process supervisor (Docker/systemd), not

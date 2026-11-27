@@ -9,11 +9,17 @@ from app.data_sources.quote_time import quote_timestamp
 from app.data_sources.us_stock import USStockDataSource
 from app.services.strategy_runtime.price_freshness import filter_execution_prices
 from app.services.strategy_runtime.price_freshness import daily_signal_wait_reason
+from app.services.strategy_runtime.price_freshness import execution_price_age_limit, equity_quote_max_age_seconds
 from app.services.trading_executor import TradingExecutor
 
 
 NOW = pd.Timestamp("2026-11-25T15:00:30Z")
 KEY = "USStock:WDAY"
+
+
+@pytest.fixture(autouse=True)
+def default_quote_age(monkeypatch):
+    monkeypatch.delenv("EQUITY_QUOTE_MAX_AGE_MINUTES", raising=False)
 
 
 def test_daily_wait_diagnostic_tracks_missing_quotes_and_recovery():
@@ -26,7 +32,8 @@ def test_daily_wait_diagnostic_tracks_missing_quotes_and_recovery():
     prices = {KEY: 171.17, "USStock:AAPL": 100}
     seen = {KEY: 10, "USStock:AAPL": 10}
     assert daily_signal_wait_reason(members, prices, seen, clock=10, max_age=90, quotes={}, now=NOW) == ""
-    assert "2/2" in daily_signal_wait_reason(members, prices, seen, clock=101, max_age=90, quotes={}, now=NOW)
+    assert daily_signal_wait_reason(members, prices, seen, clock=101, max_age=10, quotes={}, now=NOW) == ""
+    assert "2/2" in daily_signal_wait_reason(members, prices, seen, clock=971, max_age=10, quotes={}, now=NOW)
 
 
 def filtered(observed, now=NOW, *, market="USStock", mode="live"):
@@ -50,9 +57,26 @@ def test_provider_times_have_explicit_timezone_and_seconds():
     assert quote_timestamp(NOW.isoformat()) == NOW.timestamp()
 
 
-@pytest.mark.parametrize("age,valid", [(0, True), (60, True), (90, True), (91, False), (900, False), (-1, False)])
+@pytest.mark.parametrize("age,valid", [(0, True), (60, True), (90, True), (91, True), (300, True), (900, True), (960, True), (961, False), (-1, False)])
 def test_quote_age_is_based_on_provider_time(age, valid):
     assert bool(filtered(NOW.timestamp() - age)) is valid
+
+
+@pytest.mark.parametrize("market", ["USStock", "HKStock", "CNStock", "AStock"])
+def test_configured_age_applies_to_observation_and_receipt_clocks(monkeypatch, market):
+    monkeypatch.setenv("EQUITY_QUOTE_MAX_AGE_MINUTES", "5")
+    now = pd.Timestamp("2026-11-25T06:00:00Z") if market != "USStock" else NOW
+    assert filtered(now.timestamp() - 300, now, market=market)
+    assert not filtered(now.timestamp() - 301, now, market=market)
+    assert execution_price_age_limit(f"{market}:TEST", 10) == 300
+    assert execution_price_age_limit(f"{market}:TEST", 10, "signal") == 10
+    assert execution_price_age_limit("Crypto:BTC/USDT", 10) == 10
+
+
+@pytest.mark.parametrize("value", ["", "nan", "inf", "-1", "0", "61", "1.5", "bad"])
+def test_invalid_environment_age_uses_bounded_default(monkeypatch, value):
+    monkeypatch.setenv("EQUITY_QUOTE_MAX_AGE_MINUTES", value)
+    assert equity_quote_max_age_seconds() == 960
 
 
 @pytest.mark.parametrize("observed", [None, 0, "broken", float("nan")])
@@ -107,7 +131,7 @@ def test_expired_quote_cannot_be_revived_by_cache_hit_or_receipt_clock(monkeypat
         again = TradingExecutor._execution_account_prices(candidates, {}, {}, equity_quotes=quotes)
         assert again == first
         assert quotes[KEY]["quote_time"] == NOW.timestamp()
-        assert filter_execution_prices(again, quotes, now=NOW + pd.Timedelta(seconds=91), execution_mode="live") == {}
+        assert filter_execution_prices(again, quotes, now=NOW + pd.Timedelta(seconds=961), execution_mode="live") == {}
     finally:
         source.clear_quote_cache()
 

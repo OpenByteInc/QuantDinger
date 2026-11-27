@@ -86,8 +86,10 @@ def test_agent_tuning_and_live_order_defaults_are_curated_for_the_settings_ui():
     assert ai["AI_ENSEMBLE_MODELS"]["is_advanced"] is True
     assert ai["AI_ENSEMBLE_MODELS"]["default"] == ""
     assert trading["AGENT_LIVE_TRADING_ENABLED"]["is_advanced"] is False
+    assert trading["EQUITY_QUOTE_MAX_AGE_MINUTES"]["is_advanced"] is False
     assert set(trading) == {
         "AGENT_LIVE_TRADING_ENABLED",
+        "EQUITY_QUOTE_MAX_AGE_MINUTES",
         "MAKER_WAIT_SEC",
         "MAKER_OFFSET_BPS",
     }

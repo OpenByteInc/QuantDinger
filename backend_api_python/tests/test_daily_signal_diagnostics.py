@@ -10,7 +10,9 @@ from app.services.strategy_runtime import candle_readiness
 
 
 @pytest.mark.parametrize("market,symbol,hour", [("USStock", "AAPL", 15), ("HKStock", "00700.HK", 2)])
-def test_daily_loop_waits_for_quotes_then_records_zero_intents_once(monkeypatch, market, symbol, hour):
+@pytest.mark.parametrize("minutes,recovered_age", [(16, 900), (5, 300)])
+def test_daily_loop_waits_for_quotes_then_records_zero_intents_once(monkeypatch, market, symbol, hour, minutes, recovered_age):
+    monkeypatch.setenv("EQUITY_QUOTE_MAX_AGE_MINUTES", str(minutes))
     key = f"{market}:{symbol}"
     now = pd.Timestamp(f"2026-11-25T{hour:02d}:00:00Z")
     tick = [100.]
@@ -50,7 +52,7 @@ def handle_data(context, data):
     monkeypatch.setattr(runtime.StrategyV2BacktestService, "resolve_candidates", lambda *a, **kw: (members, 0))
     monkeypatch.setattr(runtime.StrategyV2BacktestService, "fetch_frequency_frames", lambda *a, **kw: ({"1d": {key: frame}}, []))
     monkeypatch.setattr(runtime.DataSourceFactory, "get_tickers", lambda *a, **kw: {
-        symbol: {"last": 100., "quote_source": "test", "quote_time": now.timestamp() - (0 if fresh[0] else 600)},
+        symbol: {"last": 100., "quote_source": "test", "quote_time": now.timestamp() - (recovered_age if fresh[0] else minutes * 60 + 1)},
     })
     monkeypatch.setattr(runtime, "build_runtime_event_bus", Mock(return_value=Mock()))
     executor = runtime.TradingExecutor(external_bar_triggers=False)
