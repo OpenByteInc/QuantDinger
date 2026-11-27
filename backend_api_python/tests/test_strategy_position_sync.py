@@ -301,9 +301,7 @@ def position_ledger(monkeypatch):
 
     monkeypatch.setattr(records, "get_db_connection", connection)
     monkeypatch.setattr(records, "_get_user_id_from_strategy", lambda _sid: 2)
-    monkeypatch.setattr(records, "_purge_position_symbol_duplicates", lambda *_args: None)
     monkeypatch.setattr(records, "_fetch_position", fetch)
-    monkeypatch.setattr(records, "_fetch_position_fuzzy", lambda sid, sym, side: (fetch(sid, sym, side), sym))
     yield db
     db.close()
 
@@ -345,9 +343,27 @@ def test_partial_close_preserves_real_small_holdings(position_ledger, symbol, qu
                             entry_price=100, current_price=200)
     records.apply_fill_to_local_position(strategy_id=7, symbol=symbol, signal_type="reduce_long",
                                          filled=closed, avg_price=200)
-    row = records._fetch_position(7, symbol, "long")
+    row, _ = records._fetch_position_fuzzy(7, symbol, "long")
     assert row["size"] == pytest.approx(quantity - closed, rel=1e-12, abs=0)
     assert row["unrealized_pnl"] == pytest.approx(100 * (quantity - closed), rel=1e-12, abs=0)
+
+
+@pytest.mark.parametrize("legacy_symbol", ["00700", "700", "700.HK", "HK.00700", "HKStock:00700"])
+def test_hk_close_resolves_legacy_ledger_and_keeps_one_canonical_position(position_ledger, legacy_symbol):
+    from app.services.live_trading import records
+
+    records.upsert_position(strategy_id=7, symbol="00700.HK", side="long", size=200,
+                            entry_price=350, current_price=353)
+    position_ledger.execute("UPDATE qd_strategy_positions SET symbol = ?, symbol_canonical = ?",
+                            (legacy_symbol, legacy_symbol))
+    records.apply_fill_to_local_position(strategy_id=7, symbol="00700.HK", signal_type="reduce_long",
+                                         filled=100, avg_price=353)
+    rows = position_ledger.execute("SELECT symbol, size, entry_price FROM qd_strategy_positions").fetchall()
+    assert [tuple(row) for row in rows] == [("00700.HK", 100, 350)]
+    assert records.fetch_position_size_for_side(7, legacy_symbol, "long") == 100
+    records.apply_fill_to_local_position(strategy_id=7, symbol="700", signal_type="close_long",
+                                         filled=100, avg_price=354)
+    assert position_ledger.execute("SELECT COUNT(*) FROM qd_strategy_positions").fetchone()[0] == 0
 
 
 def test_mark_revalues_historical_precision_tail_without_deleting_inventory(position_ledger):

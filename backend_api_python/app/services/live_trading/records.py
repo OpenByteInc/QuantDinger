@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from typing import Any, Dict, List, Mapping, Optional, Set, Tuple, TYPE_CHECKING
 
 from app.utils.db import get_db_connection
@@ -32,7 +33,16 @@ def normalize_strategy_symbol(symbol: str) -> str:
     Mixed formats (BTCUSDT vs BTC/USDT) previously broke position lookup, so closes
     had no local entry_price and profit stayed NULL.
     """
-    s = str(symbol or "").strip().upper().replace("-", "")
+    s = str(symbol or "").strip().upper()
+    # Equity ledger keys must retain share classes and unify HK broker aliases.
+    if re.fullmatch(r"(?:HKSTOCK:)?(?:HK\.)?\d{1,5}(?:\.HK)?", s):
+        from app.services.openapi_brokers.symbols import equity_symbol
+        return equity_symbol(s, "HKStock")
+    if s.startswith(("USSTOCK:", "FUTURES:")):
+        return s
+    if re.fullmatch(r"[A-Z]{1,5}[-./][A-Z]{1,2}", s):
+        return s
+    s = s.replace("-", "")
     if not s:
         return ""
     if "/" in s:
@@ -54,12 +64,19 @@ def _position_symbol_candidates(symbol: str) -> List[str]:
     if not raw:
         return []
     norm = normalize_strategy_symbol(raw)
-    compact = norm.replace("/", "")
-    raw_compact = raw.upper().replace("/", "").replace("-", "")
+    is_share_class = bool(re.fullmatch(r"[A-Z]{1,5}[-./][A-Z]{1,2}", norm))
+    compact = norm if is_share_class else norm.replace("/", "")
+    raw_compact = raw.upper() if is_share_class else raw.upper().replace("/", "").replace("-", "")
     out: List[str] = []
     for x in (raw, raw.upper(), norm, compact, raw_compact):
         if x and x not in out:
             out.append(x)
+    if re.fullmatch(r"\d{5}\.HK", norm):
+        digits = norm[:-3]
+        for alias in (digits, str(int(digits)), f"{int(digits)}.HK", f"HK.{digits}",
+                      f"HKStock:{digits}", f"HKSTOCK:{digits}"):
+            if alias not in out:
+                out.append(alias)
     return out
 
 

@@ -964,7 +964,7 @@ class PendingOrderPositionSyncMixin:
                         # IBKR US-stock positions. `quantity` is signed: >0 = long, <0 = short.
                         # Mirror both sides because IBKR stock positions are signed.
                         try:
-                            positions = client.get_positions() or []
+                            positions = client.get_positions(raise_on_error=True)
                         except Exception as e:
                             msg = str(e)
                             if is_file_descriptor_exhausted(e):
@@ -1039,6 +1039,15 @@ class PendingOrderPositionSyncMixin:
                                 if avg > 0:
                                     exch_entry_price.setdefault(sym, {"long": 0.0, "short": 0.0})[side_str] = avg
                         # Continue to reconciliation logic below
+
+                    elif exchange_id in {"tiger", "webull", "forthright"}:
+                        from app.services.live_trading.broker_snapshot import broker_position_maps
+
+                        if getattr(client, "is_futures", False):
+                            raise ValueError("Automated futures position sync is unsupported")
+                        exch_size, exch_entry_price, exch_inst_id = broker_position_maps(
+                            client.get_positions(raise_on_error=True)
+                        )
 
                     elif market_type == "spot":
                         from app.services.live_trading.spot_wallet_snapshot import list_spot_wallet_positions

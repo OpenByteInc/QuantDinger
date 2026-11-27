@@ -188,6 +188,7 @@ class TigerClient:
         }
 
     def get_orders(self, status: str = "all", limit: int = 100, symbol: str = "", **_: Any) -> List[dict]:
+        symbol = self._query_symbol(symbol)
         sdk = self._sdk()
         normalized_status = status.lower()
         if normalized_status in ("open", "pending"):
@@ -212,6 +213,7 @@ class TigerClient:
         return [self._normalize_order(order) for order in orders[:min(max(int(limit), 1), 100)]]
 
     def get_transactions(self, symbol: str = "", limit: int = 100) -> List[dict]:
+        symbol = self._query_symbol(symbol)
         sdk = self._sdk()
         transactions = self._ensure_client().get_transactions(
             account=self.account_id,
@@ -258,6 +260,12 @@ class TigerClient:
         if match is None:
             raise BrokerApiError("brokerAccounts.orderUnavailable")
         return self.get_order_status(str(getattr(match, "id", None) or ""))
+
+    @staticmethod
+    def _query_symbol(symbol: str) -> str:
+        from .symbols import equity_symbol
+        value = equity_symbol(symbol)
+        return value.removesuffix(".HK") if value.endswith(".HK") else value
 
     @staticmethod
     def _instrument(symbol: str, market_type: str) -> tuple[str, str]:

@@ -544,14 +544,24 @@ def fills(broker: str):
                 logger.info("Transaction history unavailable for %s; using filled orders: %s", broker, type(exc).__name__)
         if data is None:
             symbol = str(request.args.get("symbol") or "").strip().upper()
-            rows = client.get_orders(
-                status="filled",
-                limit=int(request.args.get("limit") or 100),
-                symbol=symbol,
-            )
-            data = [row for row in rows if str(row.get("status") or "").lower() == "filled"]
+            limit = min(max(int(request.args.get("limit") or 100), 1), 100)
+            rows = client.get_orders(status="all", limit=limit, symbol=symbol)
+            rows += client.get_orders(status="open", limit=limit, symbol=symbol)
+            executions = {}
+            for row in rows:
+                quantity = float(row.get("filled_qty") or 0)
+                key = str(row.get("id") or row.get("order_id") or "")
+                if quantity <= 0 or not key:
+                    continue
+                previous = executions.get(key)
+                if previous is None or quantity >= float(previous.get("filled_qty") or 0):
+                    executions[key] = row
+            data = list(executions.values())
             if symbol and broker != "forthright":
-                data = [row for row in data if str(row.get("symbol") or "").strip().upper() == symbol]
+                from app.services.openapi_brokers.symbols import equity_symbols_match
+                data = [row for row in data if equity_symbols_match(row.get("symbol"), symbol)]
+            data.sort(key=lambda row: str(row.get("filled_at") or row.get("submitted_at") or ""), reverse=True)
+            data = data[:limit]
         return jsonify({"success": True, "data": data})
     except Exception as exc:
         logger.warning("%s fills request failed: %s", broker, type(exc).__name__)

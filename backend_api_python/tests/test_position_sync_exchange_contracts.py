@@ -166,7 +166,7 @@ class _Htx(HtxClient):
         return {"contract_size": "0.001"}
 
 
-def _run_sync(monkeypatch, client, exchange_id):
+def _run_sync(monkeypatch, client, exchange_id, market_type="swap", symbol="BTC/USDT"):
     monkeypatch.setattr(sync_module, "get_db_connection", lambda: _Database())
     monkeypatch.setattr(sync_module, "should_skip_position_sync", lambda _strategy_id: False)
     monkeypatch.setattr(
@@ -176,8 +176,8 @@ def _run_sync(monkeypatch, client, exchange_id):
             "status": "running",
             "execution_mode": "live",
             "user_id": 7,
-            "market_type": "swap",
-            "symbol": "BTC/USDT",
+            "market_type": market_type,
+            "symbol": symbol,
             "exchange_config": {
                 "exchange_id": exchange_id,
                 "credential_id": 11,
@@ -186,7 +186,7 @@ def _run_sync(monkeypatch, client, exchange_id):
     )
     monkeypatch.setattr(sync_module, "resolve_exchange_config", lambda cfg, user_id: dict(cfg))
     monkeypatch.setattr(sync_module, "safe_exchange_config_for_log", lambda cfg: dict(cfg))
-    monkeypatch.setattr(sync_module, "strategy_allowed_symbols", lambda _cfg: {"BTC/USDT"})
+    monkeypatch.setattr(sync_module, "strategy_allowed_symbols", lambda _cfg: {symbol})
     monkeypatch.setattr(sync_module, "position_sync_cache_key", lambda *_args: "position-cache")
     monkeypatch.setattr(sync_module, "get_position_sync_snapshot", lambda _key: None)
     monkeypatch.setattr(sync_module, "is_exchange_sync_backoff", lambda _key: False)
@@ -217,6 +217,27 @@ def _run_sync(monkeypatch, client, exchange_id):
     worker = object.__new__(worker_module.PendingOrderWorker)
     worker._sync_positions_best_effort(target_strategy_id=90)
     return snapshots, account_legs, purges
+
+
+@pytest.mark.parametrize("broker", ["tiger", "webull", "forthright"])
+def test_stock_broker_sync_never_falls_through_to_crypto_wallet(monkeypatch, broker):
+    from types import SimpleNamespace
+    def positions(**kwargs):
+        assert kwargs == {"raise_on_error": True}
+        return [{"symbol": "AAPL", "quantity": 10, "avg_entry_price": 200}]
+    snapshots, legs, purges = _run_sync(monkeypatch, SimpleNamespace(get_positions=positions), broker, "spot", "AAPL")
+    assert snapshots[0][1]["AAPL"]["long"] == 10
+    assert legs[0].size == 10
+    assert purges[0]["AAPL"]["long"] == 10
+
+
+@pytest.mark.parametrize("broker", ["tiger", "webull", "forthright"])
+def test_failed_broker_sync_does_not_publish_an_empty_snapshot(monkeypatch, broker):
+    from types import SimpleNamespace
+    def positions(**kwargs):
+        raise TimeoutError("offline")
+    snapshots, legs, purges = _run_sync(monkeypatch, SimpleNamespace(get_positions=positions), broker, "spot", "AAPL")
+    assert snapshots == [] and legs == [] and purges == []
 
 
 @pytest.mark.parametrize(

@@ -651,21 +651,26 @@ class IBKRClient:
                 raise
             return []
 
-    def get_executions(self, symbol: str = "") -> List[Dict[str, Any]]:
+    def get_executions(self, symbol: str = "", *, raise_on_error: bool = False) -> List[Dict[str, Any]]:
         """Return normalized account executions for reconciliation."""
         try:
             self._ensure_connected()
             method = getattr(self._ib, "reqExecutions", None)
             if not callable(method):
+                if raise_on_error:
+                    raise RuntimeError("Execution history is unavailable")
                 return []
-            wanted = str(symbol or "").replace("/", "").replace("-", "").upper()
+            wanted = str(symbol or "").strip().upper().removeprefix("USSTOCK:")
             output: List[Dict[str, Any]] = []
             for fill in list(method() or []):
                 contract = getattr(fill, "contract", None)
                 execution = getattr(fill, "execution", None)
                 if execution is None:
                     continue
-                row_symbol = str(getattr(contract, "symbol", "") or "").replace("/", "").replace("-", "").upper()
+                account = str(getattr(self, "_account", "") or "")
+                if account and str(getattr(execution, "acctNumber", "") or "") != account:
+                    continue
+                row_symbol = str(getattr(contract, "symbol", "") or "").strip().upper()
                 if wanted and row_symbol != wanted:
                     continue
                 report = getattr(fill, "commissionReport", None)
@@ -685,9 +690,11 @@ class IBKRClient:
             return output
         except Exception as e:
             logger.error(f"Get executions failed: {e}")
+            if raise_on_error:
+                raise
             return []
     
-    def get_open_orders(self) -> List[Dict[str, Any]]:
+    def get_open_orders(self, *, raise_on_error: bool = False) -> List[Dict[str, Any]]:
         """
         Get open orders.
         
@@ -705,6 +712,9 @@ class IBKRClient:
                 order = trade.order
                 contract = trade.contract
                 status = trade.orderStatus
+                account = str(getattr(self, "_account", "") or "")
+                if account and str(getattr(order, "account", "") or "") != account:
+                    continue
                 
                 result.append({
                     "orderId": order.orderId,
@@ -724,6 +734,8 @@ class IBKRClient:
             
         except Exception as e:
             logger.error(f"Get orders failed: {e}")
+            if raise_on_error:
+                raise
             return []
     
     def get_quote(self, symbol: str, market_type: str = "USStock") -> Dict[str, Any]:

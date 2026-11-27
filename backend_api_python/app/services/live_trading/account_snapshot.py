@@ -685,6 +685,46 @@ def _fetch_alpaca_snapshot(exchange_config: Dict[str, Any], errors: List[str]) -
     return [], positions, orders
 
 
+def _fetch_equity_broker_snapshot(exchange_config, errors):
+    from app.services.live_trading.broker_snapshot import broker_position_maps
+    positions, orders = [], []
+    try:
+        client = create_client(exchange_config, market_type="spot")
+        if getattr(client, "is_futures", False):
+            raise ValueError("Futures require the dedicated account endpoint")
+    except Exception:
+        errors.append("brokerAccounts.snapshotConnectionFailed")
+        return [], positions, orders
+    try:
+        sizes, prices, instruments = broker_position_maps(client.get_positions(raise_on_error=True))
+        for symbol, sides in sizes.items():
+            for side, size in sides.items():
+                if size > 0:
+                    positions.append({"symbol": symbol, "side": side, "size": size,
+                                      "entry_price": prices[symbol][side], "inst_id": instruments[symbol][side],
+                                      "market_type": "spot"})
+    except Exception:
+        errors.append("brokerAccounts.snapshotPositionsFailed")
+    try:
+        rows = (client.get_open_orders(raise_on_error=True) if exchange_config.get("exchange_id") == "ibkr"
+                else client.get_orders(status="open", limit=500, raise_on_error=True))
+        for item in rows:
+            orders.append({
+                "symbol": normalize_strategy_symbol(item.get("symbol")), "market_type": "spot",
+                "exchange_order_id": str(item.get("id") or item.get("orderId") or ""),
+                "side": str(item.get("side") or item.get("action") or "").lower(),
+                "order_type": str(item.get("order_type") or item.get("orderType") or "").lower(),
+                "price": float(item.get("limit_price") or item.get("limitPrice") or 0),
+                "amount": abs(float(item.get("qty") or item.get("quantity") or 0)),
+                "filled": abs(float(item.get("filled_qty") or item.get("filled") or 0)),
+                "status": str(item.get("status") or ""),
+            })
+    except Exception:
+        orders = []
+        errors.append("brokerAccounts.snapshotOrdersFailed")
+    return [], positions, orders
+
+
 def fetch_account_snapshot(*, user_id: int, credential_id: int) -> Dict[str, Any]:
     """Live fetch swap/spot legs + open orders for one credential."""
     cred = int(credential_id or 0)
@@ -716,6 +756,11 @@ def fetch_account_snapshot(*, user_id: int, credential_id: int) -> Dict[str, Any
 
     if exchange_id == "alpaca":
         sp, st, od = _fetch_alpaca_snapshot(exchange_config, errors)
+        swap_all.extend(sp)
+        spot_all.extend(st)
+        orders_all.extend(od)
+    elif exchange_id in {"tiger", "webull", "forthright", "ibkr"}:
+        sp, st, od = _fetch_equity_broker_snapshot(exchange_config, errors)
         swap_all.extend(sp)
         spot_all.extend(st)
         orders_all.extend(od)

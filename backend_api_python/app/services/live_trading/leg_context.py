@@ -39,7 +39,7 @@ def credential_id_from_exchange_config(exchange_config: Optional[Dict[str, Any]]
 def inst_id_for_symbol(symbol: str, market_type: str, exchange_id: str = "") -> str:
     """Best-effort instId for OKX-style venues."""
     canon = normalize_strategy_symbol(symbol) or str(symbol or "").strip()
-    if str(exchange_id or "").lower() == "alpaca":
+    if str(exchange_id or "").strip().lower() in {"alpaca", "ibkr", "tiger", "webull", "forthright"}:
         return canon
     if not canon or "/" not in canon:
         return ""

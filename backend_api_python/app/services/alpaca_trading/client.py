@@ -658,7 +658,11 @@ class AlpacaClient:
     ) -> List[Dict[str, Any]]:
         """Return account-owned Alpaca executions, one row per fill activity."""
         requested_limit = max(1, min(int(limit or 100), 500))
-        requested_symbol = str(symbol or "").replace("/", "").replace("-", "").upper()
+        def fill_symbol(value):
+            normalized, asset_class = parse_symbol(str(value or ""))
+            return normalized.replace("/", "") if asset_class == "crypto" else normalized
+
+        requested_symbol = fill_symbol(symbol)
         activities = self.get_account_activities(
             activity_types=["FILL"],
             direction="desc",
@@ -667,7 +671,7 @@ class AlpacaClient:
         )
         output: List[Dict[str, Any]] = []
         for activity in activities:
-            row_symbol = str(activity.get("symbol") or "").replace("/", "").replace("-", "").upper()
+            row_symbol = fill_symbol(activity.get("symbol"))
             if requested_symbol and row_symbol != requested_symbol:
                 continue
             quantity = abs(_num(activity.get("qty") or activity.get("quantity")))
