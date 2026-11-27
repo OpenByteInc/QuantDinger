@@ -23,6 +23,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519, padding, rsa
 
 from .base import BrokerApiError, BrokerOrderResult, _HttpClient
+from .symbols import equity_symbol
 
 _request_lock = threading.Lock()
 _next_request = {}
@@ -449,7 +450,7 @@ class ForthrightClient(_HttpClient):
             return symbol, "", matches[0]
         if market == "hkstock":
             original = symbol.upper()
-            symbol = re.sub(r"\.HK$", "", symbol, flags=re.I)
+            symbol = equity_symbol(symbol, "HKStock").removesuffix(".HK")
             if not re.fullmatch(r"\d{1,5}", symbol):
                 raise ValueError("brokerAccounts.forthright.unsupportedMarket")
             if self.strategy_units and original != symbol.zfill(5) + ".HK":
@@ -642,9 +643,7 @@ class ForthrightClient(_HttpClient):
         elif status == "filled":
             result = [r for r in result if r["status"] == "filled"]
         if symbol:
-            symbol = str(symbol).removeprefix("HKStock:").removeprefix("USStock:")
-            if not self.is_futures and re.fullmatch(r"\d{1,5}(?:\.HK)?", symbol, re.I):
-                symbol = re.sub(r"\.HK$", "", symbol, flags=re.I).zfill(5) + ".HK"
+            symbol = str(symbol) if self.is_futures else equity_symbol(symbol)
             result = [r for r in result if r["symbol"] == symbol]
         result.sort(key=lambda row: (str(row.get("submitted_at") or ""), row["id"]), reverse=True)
         return result[:max(1, int(limit))]
@@ -679,9 +678,7 @@ class ForthrightClient(_HttpClient):
             }
         result = list(transactions.values())
         if symbol:
-            canonical = str(symbol).upper().removeprefix("HKSTOCK:").removeprefix("USSTOCK:")
-            if re.fullmatch(r"\d{1,5}(?:\.HK)?", canonical):
-                canonical = canonical.removesuffix(".HK").zfill(5) + ".HK"
+            canonical = equity_symbol(symbol)
             result = [row for row in result if row["symbol"] == canonical]
         result.sort(key=lambda row: (str(row.get("filled_at") or ""), row["id"]), reverse=True)
         return result[:max(1, int(limit))]

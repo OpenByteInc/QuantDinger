@@ -7169,6 +7169,26 @@ paths:
       - IBKR
       operationId: getApiIbkrOrders
       x-visibility: internal
+  /api/ibkr/fills:
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      summary: Read actual executions; open orders are never transaction history.
+      tags:
+      - IBKR
+      operationId: getApiIbkrFills
+      x-visibility: internal
   /api/ibkr/order:
     post:
       responses:

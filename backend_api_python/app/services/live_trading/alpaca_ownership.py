@@ -64,7 +64,7 @@ def ensure_alpaca_settled(*, user_id, credential_id, order_id=0, symbol=""):
 def guarded_alpaca_quantity(*, client, strategy_id, user_id, credential_id, symbol, signal_type, amount, order_id, exchange_id="alpaca"):
     """Return a safe submission quantity; caller must hold the account lock."""
     amount = _quantity(amount)
-    whole_lot_tiger = exchange_id == "tiger" and str(symbol).upper().endswith(".HK")
+    whole_lot_tiger = exchange_id == "tiger" and canonical_symbol(symbol).endswith(".HK")
     if exchange_id == "forthright" or whole_lot_tiger:
         amount = client.normalize_strategy_quantity(symbol, amount)
     if amount <= 0:

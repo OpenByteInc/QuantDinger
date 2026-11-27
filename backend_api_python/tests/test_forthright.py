@@ -613,11 +613,13 @@ def test_fills_route_preserves_broker_normalized_hk_symbol(app, monkeypatch):
     calls = []
     def orders(**kwargs):
         calls.append(kwargs)
-        return [{"symbol": "03690.HK", "status": "filled", "order_id": "F1"}]
+        return [{"symbol": "03690.HK", "status": "filled", "order_id": "F1", "filled_qty": 100}]
     monkeypatch.setattr(routes, "_connected_client", lambda broker: (SimpleNamespace(get_orders=orders), None))
     with app.test_request_context('/api/forthright/fills?symbol=03690'):
         response = inspect.unwrap(routes.fills)("forthright").get_json()
     assert response["data"][0]["symbol"] == "03690.HK"
+    assert len(response["data"]) == 1
+    assert response["data"][0]["filled_qty"] == 100
     assert calls[0]["symbol"] == "03690"
 
 
@@ -670,13 +672,14 @@ def test_stock_order_history_uses_calendar_time_latest_order_and_order_fee(clien
     assert orders[0]["fee_status"] == "actual"
 
 
-def test_true_stock_fills_include_partial_cancelled_executions_once(client, monkeypatch):
+@pytest.mark.parametrize("symbol", ["700", "HK00700", "HK.00700", "00700.HK"])
+def test_true_stock_fills_include_partial_cancelled_executions_once(client, monkeypatch, symbol):
     base = {"exchange_code": "HK", "product_code": "00700", "side": "B", "ccy": "HKD",
             "order_id": "partial-cancelled", "trade_date": 20261127, "curr_date": 20261126,
             "last_qty": 10, "last_px": 345.4, "serial_no": 1, "business_time": 90501}
     second = dict(base, serial_no=2, last_qty=20, last_px=345.5, business_time=90502)
     monkeypatch.setattr(client, "_query", lambda method, **kw: [base, second] if method == "history_match" else [second])
-    rows = client.get_transactions(symbol="700")
+    rows = client.get_transactions(symbol=symbol)
     assert len(rows) == 2 and sum(r["filled_qty"] for r in rows) == 30
     assert rows[0]["amount"] == 6910
     assert rows[0]["filled_at"] == "2026-11-26T09:05:02"

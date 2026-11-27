@@ -169,6 +169,9 @@ def symbols_equivalent(a: str, b: str) -> bool:
         return False
     if na == nb:
         return True
+    import re
+    if any(re.fullmatch(r"[A-Z]{1,5}[-./][A-Z]{1,2}", symbol) for symbol in (na, nb)):
+        return False
     return na.replace("/", "") == nb.replace("/", "")
 
 
@@ -229,7 +232,11 @@ def query_exchange_position_size(
 
     # Spot ownership is the complete base inventory.  Sell sizing has a
     # separate free/available clamp because locked balances are still owned.
-    if mt == "spot":
+    from app.services.openapi_brokers import TigerClient, WebullClient, ForthrightClient
+    from app.services.alpaca_trading import AlpacaClient
+    from app.services.ibkr_trading import IBKRClient
+    is_broker = isinstance(client, (TigerClient, WebullClient, ForthrightClient, AlpacaClient, IBKRClient))
+    if mt == "spot" and not is_broker:
         if side != "long":
             return 0.0
         try:

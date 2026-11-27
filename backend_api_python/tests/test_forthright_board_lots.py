@@ -46,6 +46,19 @@ def test_manual_lots_and_us_fractionals_preserve_quantity(client, monkeypatch, s
     assert [r["order_qty"] for r in calls] == [100,0.1]
 
 
+@pytest.mark.parametrize("symbol", ["07709", "HK07709", "HK.07709", "7709.HK", "HKStock:07709"])
+def test_manual_hk_aliases_resolve_rules_and_submit_same_product(client, monkeypatch, symbol):
+    calls = []
+    monkeypatch.setattr(client, "_trade", lambda *a, **kw: calls.append(kw) or {"order_id": "O1"})
+    assert client.get_instrument_rules(symbol)["lot_size"] == 100
+    client.place_limit_order(symbol=symbol, market_type="HKStock", side="buy", quantity=100, price=12.87)
+    assert calls[0]["product_code"] == "07709"
+    assert calls[0]["exchange_code"] == "HK"
+    client.strategy_units = True
+    with pytest.raises(ValueError, match="canonicalSymbolRequired"):
+        client._instrument(symbol, "HKStock")
+
+
 @pytest.mark.parametrize("owned,sellable,expected", [(137,1000,100),(37,1000,None),(500,137,100),(500,0,None)])
 def test_exit_reapplies_lot_after_ownership_cap_preserving_residual(client, monkeypatch, owned, sellable, expected):
     monkeypatch.setattr(guard, "ensure_alpaca_settled", lambda **kw: None)
