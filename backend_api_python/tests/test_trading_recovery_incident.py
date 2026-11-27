@@ -74,7 +74,11 @@ def test_restore_24_strategies_schedules_without_serial_ready_waits(monkeypatch)
         database.strategies[kwargs['strategy_id']] = database.now + kwargs['lease_seconds']
         return 1
     executor.start_strategy, executor.wait_strategy_running = start, wait
-    repository = SimpleNamespace(has_pending_stop=lambda _: False, acquire_strategy_lease=acquire)
+    repository = SimpleNamespace(
+        has_pending_stop=lambda _: False,
+        acquire_strategy_lease=acquire,
+        runtime_request=lambda _: {"retry_after_seconds": 0, "startup_retry_at": 0},
+    )
     worker = TradingWorker(executor, repository)
     heartbeat = worker._lease_heartbeat
     heartbeat._connect = lambda: database

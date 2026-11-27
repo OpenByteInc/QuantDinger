@@ -7,12 +7,55 @@ import logging
 import os
 import re
 import time
+import uuid
 from email.utils import parsedate_to_datetime
 from urllib.parse import urlsplit
 
 from app.utils.exchange_request_budget import ExchangeRateLimitError, SharedRequestBudget
 
 logger = logging.getLogger(__name__)
+
+
+def _trace_enabled(url):
+    return bool(_scope(url)) and os.getenv("BINANCE_REST_TRACE_ENABLED", "0").strip().lower() in {"1", "true", "yes"}
+
+
+def _trace_event(url, method, event, trace_id, *, status="-", elapsed_ms=0, weight="-", retry_after=0):
+    try:
+        target = urlsplit(url)
+        logger.info(
+            "Binance REST trace event=%s trace_id=%s pid=%s method=%s target=%s%s "
+            "status=%s elapsed_ms=%s used_weight_1m=%s retry_after_sec=%s",
+            event, trace_id, os.getpid(), method.upper(), target.hostname, target.path,
+            status, elapsed_ms, weight, retry_after,
+        )
+    except Exception:
+        # Diagnostic failures must never alter an exchange order outcome.
+        pass
+
+
+def traced_binance_request(request, url, method="GET"):
+    """Trace transport invocations, not guard admissions; never replay a request."""
+    if not _trace_enabled(url):
+        return request()
+    trace_id = uuid.uuid4().hex
+    started = time.monotonic()
+    _trace_event(url, method, "start", trace_id)
+    try:
+        response = request()
+    except Exception:
+        _trace_event(url, method, "transport_error", trace_id,
+                     elapsed_ms=int((time.monotonic() - started) * 1000))
+        raise
+    try:
+        headers = {str(k).lower(): str(v) for k, v in response.headers.items()}
+        raw_weight = headers.get("x-mbx-used-weight-1m", "")
+        weight = int(raw_weight) if raw_weight.isdigit() else "-"
+        _trace_event(url, method, "response", trace_id, status=int(response.status_code),
+                     elapsed_ms=int((time.monotonic() - started) * 1000), weight=weight)
+    except Exception:
+        pass
+    return response
 
 
 class BinanceRateLimitError(ExchangeRateLimitError):
@@ -39,6 +82,14 @@ class BinanceRequestGuard(SharedRequestBudget):
         return BinanceRateLimitError(seconds, reason)
 
     def before_request(self, url, method="GET", *, public=False):
+        try:
+            return self._before_request(url, method, public=public)
+        except BinanceRateLimitError as exc:
+            if _trace_enabled(url):
+                _trace_event(url, method, "blocked", "-", retry_after=math.ceil(exc.retry_after))
+            raise
+
+    def _before_request(self, url, method="GET", *, public=False):
         scope = _scope(url)
         if not scope:
             return
@@ -108,7 +159,7 @@ def guarded_binance_request(request, url, *, method="GET", public=True, **kwargs
 
         return guarded_exchange_request(request, url, method=method, **kwargs)
     binance_request_guard.before_request(url, method, public=public)
-    response = request(url, **kwargs)
+    response = traced_binance_request(lambda: request(url, **kwargs), url, method)
     try:
         binance_request_guard.observe(
             url, response.status_code, getattr(response, "headers", {}), response.text,

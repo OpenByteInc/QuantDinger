@@ -101,7 +101,12 @@ def _worker(monkeypatch):
     )
     monkeypatch.setattr("app.services.strategy.StrategyService", lambda: service)
     executor = SimpleNamespace(running_strategies={}, start_strategy=Mock(return_value=True), wait_strategy_running=Mock(return_value=(True, "")))
-    repository = SimpleNamespace(acquire_strategy_lease=Mock(side_effect=[None, 1]), release_strategy_lease=Mock(), has_pending_stop=Mock(return_value=False))
+    repository = SimpleNamespace(
+        acquire_strategy_lease=Mock(side_effect=[None, 1]),
+        release_strategy_lease=Mock(),
+        has_pending_stop=Mock(return_value=False),
+        runtime_request=Mock(return_value={"retry_after_seconds": 0, "startup_retry_at": 0}),
+    )
     return TradingWorker(executor, repository), service
 
 

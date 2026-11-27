@@ -220,10 +220,10 @@ class StrategyCommandRepository:
                     """UPDATE qd_strategy_commands
                        SET status = 'pending', result_json = %s::jsonb,
                            attempts = GREATEST(0, attempts - 1),
-                           available_at = NOW() + INTERVAL '2 seconds',
+                           available_at = NOW() + (%s * INTERVAL '1 second'),
                            lease_expires_at = NULL, updated_at = NOW()
                        WHERE id = %s AND claimed_by = %s AND status = 'processing'""",
-                    (json.dumps(result), int(command_id), owner_id),
+                    (json.dumps(result), max(2.0, float(result.get("retry_after_seconds") or 2)), int(command_id), owner_id),
                 )
                 db.commit()
             finally:
@@ -271,6 +271,33 @@ class StrategyCommandRepository:
     def runtime_request(self, strategy_id: int) -> dict:
         return self.runtime_requests([strategy_id]).get(int(strategy_id), {})
 
+    def defer_exchange_start(self, strategy_id: int, *, epoch: int, seconds: float, token: int = 0) -> None:
+        """Fence a durable startup wait to the user's current running generation."""
+        with get_db_connection() as db:
+            cur = db.cursor()
+            try:
+                cur.execute(
+                    """INSERT INTO strategy_runtime_state (strategy_run_id, strategy_id, state_key, state_json)
+                       SELECT 0, s.id, 'startup_cooldown', jsonb_build_object(
+                           'epoch', s.desired_runtime_epoch, 'retry_at', EXTRACT(EPOCH FROM NOW()) + %s)
+                       FROM qd_strategies_trading s
+                       WHERE s.id = %s AND s.status = 'running' AND s.desired_runtime_epoch = %s
+                         AND (%s = 0 OR EXISTS (SELECT 1 FROM qd_strategy_runtime_leases l
+                             WHERE l.strategy_id = s.id AND l.fencing_token = %s AND l.lease_expires_at > NOW()))
+                       FOR UPDATE OF s
+                       ON CONFLICT (strategy_run_id, strategy_id, state_key) DO UPDATE
+                       SET state_json = CASE WHEN strategy_runtime_state.state_json->>'epoch' = EXCLUDED.state_json->>'epoch'
+                           THEN EXCLUDED.state_json || jsonb_build_object('retry_at', GREATEST(
+                               (strategy_runtime_state.state_json->>'retry_at')::numeric,
+                               (EXCLUDED.state_json->>'retry_at')::numeric)) ELSE EXCLUDED.state_json END,
+                           updated_at = NOW(),
+                           version = strategy_runtime_state.version + 1""",
+                    (max(1.0, float(seconds)), int(strategy_id), int(epoch), int(token), int(token)),
+                )
+                db.commit()
+            finally:
+                cur.close()
+
     def runtime_requests(self, strategy_ids) -> dict[int, dict]:
         ids = sorted({int(strategy_id) for strategy_id in strategy_ids})
         if not ids:
@@ -280,8 +307,15 @@ class StrategyCommandRepository:
             try:
                 cur.execute(
                     f"""SELECT strategy.id, strategy.status, strategy.desired_runtime_epoch,
-                              {READY_RUNTIME_EXISTS_SQL} AS ready
-                       FROM qd_strategies_trading AS strategy WHERE strategy.id = ANY(%s)""",
+                              {READY_RUNTIME_EXISTS_SQL} AS ready,
+                              COALESCE((cooldown.state_json->>'retry_at')::numeric, 0) AS startup_retry_at,
+                              GREATEST(0, COALESCE((cooldown.state_json->>'retry_at')::numeric, 0)
+                                  - EXTRACT(EPOCH FROM NOW())) AS retry_after_seconds
+                       FROM qd_strategies_trading AS strategy
+                       LEFT JOIN strategy_runtime_state cooldown ON cooldown.strategy_id = strategy.id
+                         AND cooldown.strategy_run_id = 0 AND cooldown.state_key = 'startup_cooldown'
+                         AND cooldown.state_json->>'epoch' = strategy.desired_runtime_epoch::text
+                       WHERE strategy.id = ANY(%s)""",
                     (ids,),
                 )
                 return {int(row["id"]): dict(row) for row in cur.fetchall()}

@@ -11,7 +11,8 @@ from app.services.strategy_runtime import candle_readiness
 
 @pytest.mark.parametrize("market,symbol,hour", [("USStock", "AAPL", 15), ("HKStock", "00700.HK", 2)])
 @pytest.mark.parametrize("minutes,recovered_age", [(16, 900), (5, 300)])
-def test_daily_loop_waits_for_quotes_then_records_zero_intents_once(monkeypatch, market, symbol, hour, minutes, recovered_age):
+@pytest.mark.parametrize("cooldown_cycles", [0, 6])
+def test_daily_loop_waits_for_quotes_then_records_zero_intents_once(monkeypatch, market, symbol, hour, minutes, recovered_age, cooldown_cycles):
     monkeypatch.setenv("EQUITY_QUOTE_MAX_AGE_MINUTES", str(minutes))
     key = f"{market}:{symbol}"
     now = pd.Timestamp(f"2026-11-25T{hour:02d}:00:00Z")
@@ -60,7 +61,17 @@ def handle_data(context, data):
     monkeypatch.setattr(executor, "_load_strategy", lambda _: strategy)
     monkeypatch.setattr(executor, "_load_source", lambda _: (1, code))
     monkeypatch.setattr(executor, "_load_schedule_timezone", lambda _: "UTC")
-    monkeypatch.setattr(executor, "_positions_by_symbol", lambda *a, **kw: {})
+    from app.utils.binance_request_guard import BinanceRateLimitError
+
+    position_checks = [0]
+
+    def positions(*a, **kw):
+        position_checks[0] += 1
+        if position_checks[0] <= cooldown_cycles:
+            raise BinanceRateLimitError(1084)
+        return {}
+
+    monkeypatch.setattr(executor, "_positions_by_symbol", positions)
     monkeypatch.setattr(executor, "_calculate_current_equity", lambda *a, **kw: 1000)
     monkeypatch.setattr(executor, "_register_event_subscriptions", lambda *a: None)
     monkeypatch.setattr(executor, "_mark_stopped", Mock())
@@ -77,7 +88,7 @@ def handle_data(context, data):
     intents.statuses_by_client_order_ids.return_value = {}
     monkeypatch.setattr(runtime, "OrderIntentService", lambda **kw: intents)
     monkeypatch.setattr(runtime, "persist_cancellations", Mock())
-    cycles = iter([True, True, True, False])
+    cycles = iter([True] * (3 + cooldown_cycles) + [False])
     monkeypatch.setattr(executor, "_is_strategy_running", lambda *a: next(cycles))
     try:
         loop = executor._run_strategy_loop(1)
@@ -87,7 +98,13 @@ def handle_data(context, data):
         assert "Daily signal evaluated" not in str(logs.call_args_list)
         submit.assert_not_called()
         for index, _ in enumerate(loop):
-            if index == 0:
+            if index < cooldown_cycles:
+                assert heartbeat.call_args.kwargs["last_error"] == "marketData.rate_limited"
+                submit.assert_not_called()
+                if index == cooldown_cycles - 1:
+                    tick[0] += 1085
+                continue
+            if index == cooldown_cycles:
                 assert "Daily signal waiting for fresh quotes" in str(logs.call_args_list)
                 assert "Daily signal evaluated" not in str(logs.call_args_list)
                 assert heartbeat.call_args.kwargs["status"] == "degraded"
@@ -96,6 +113,7 @@ def handle_data(context, data):
     finally:
         executor.close()
     assert executor._last_exit_reason == {}, logs.call_args_list
+    executor._mark_stopped.assert_not_called()
     submit.assert_not_called()
     evaluated = [call for call in logs.call_args_list if "Daily signal evaluated" in str(call)]
     assert len(evaluated) == 1, logs.call_args_list
