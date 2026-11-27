@@ -14,7 +14,9 @@ _YAHOO_EXCHANGES = {
 
 
 def default_dated_symbol(symbol: str):
-    match = re.fullmatch(r"([A-Z0-9]+)[FGHJKMNQUVXZ]\d{2}", symbol)
+    if not isinstance(symbol, str) or not 4 <= len(symbol) <= 11:
+        return None
+    match = re.fullmatch(r"([A-Z0-9]{1,8})[FGHJKMNQUVXZ][0-9]{2}", symbol)
     if match:
         for exchange, roots in _YAHOO_EXCHANGES.items():
             if match[1] in roots:

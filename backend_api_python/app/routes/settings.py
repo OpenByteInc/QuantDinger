@@ -2151,8 +2151,9 @@ def advertisements():
             data = save_advertisements(payload.get('items'), payload.get('revision'))
         return jsonify({'code': 1, 'msg': 'success', 'data': data})
     except ValueError as exc:
-        message = str(exc)
-        return jsonify({'code': 0, 'msg': message, 'data': None}), 409 if message == 'advertisements.conflict' else 400
+        if str(exc) == 'advertisements.conflict':
+            return jsonify({'code': 0, 'msg': 'advertisements.conflict', 'data': None}), 409
+        return jsonify({'code': 0, 'msg': 'advertisements.invalid', 'data': None}), 400
     except Exception:
         logger.exception('Advertisement settings request failed')
         return jsonify({'code': 0, 'msg': 'advertisements.failed', 'data': None}), 500

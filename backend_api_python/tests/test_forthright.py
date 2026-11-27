@@ -4,7 +4,9 @@ from types import SimpleNamespace
 
 import pytest
 import requests
-from cryptography.hazmat.primitives import serialization
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from app.services.openapi_brokers.forthright import ForthrightClient, ForthrightConfig
@@ -32,6 +34,51 @@ def test_official_signature_vector(client):
                               nonce="000102030405060708090a0b0c0d0e0f")
     assert headers["Content-Digest"] == "sha-256=:RBNvo1WzZ4oRRq0W9+hknpT7T8If536DEMBg9hyq/4o=:"
     assert headers["Signature"] == "sig1=:dFM2OJ53I7bwmP74+s2wBRTRu89RwzOqJW+ActP/9Jhdu65t1abUzAjWlg0GFXh/rUHPZCDIEziciVhEXjAgCA==:"
+
+
+@pytest.mark.parametrize('key_type', ['ed25519', 'rsa'])
+def test_unlock_signs_exact_body_digest_without_changing_password(config, monkeypatch, key_type):
+    if key_type == 'rsa':
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        pem = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                serialization.NoEncryption()).decode()
+        config = replace(config, private_key=pem)
+    config = replace(config, gateway_environment='sandbox')
+    client = ForthrightClient(config)
+    captured = {}
+
+    def post(url, **kwargs):
+        captured.update(url=url, **kwargs)
+        return SimpleNamespace(ok=True, json=lambda: {'status': 0, 'data': {}})
+
+    monkeypatch.setattr(client.session, 'post', post)
+    assert client.unlock() is True
+    assert captured['url'] == 'https://test-openapi-gw.techfx88.com/account/unlock'
+    assert captured['allow_redirects'] is False
+    assert client.session.verify is True
+    assert captured['data'] == (b'{"trade_account":"test-account","trade_account_type":"securities",'
+                                b'"password":"test-password"}')
+    headers = captured['headers']
+    digest = 'sha-256=:YDsHwX8GH8zImyjtMQcue/SEOV4efeN1xG5AO6wo+xA=:'
+    assert headers['Content-Digest'] == digest
+    message = '\n'.join([
+        '"@method": POST', '"@authority": test-openapi-gw.techfx88.com',
+        '"@path": /account/unlock', '"@query": ?', '"content-type": application/json',
+        f'"content-digest": {digest}',
+        f'"@signature-params": {headers["Signature-Input"].removeprefix("sig1=")}',
+    ]).encode()
+    signature = base64.b64decode(headers['Signature'].removeprefix('sig1=:').removesuffix(':'))
+    public_key = client._key.public_key()
+
+    def verify(body):
+        if key_type == 'rsa':
+            public_key.verify(signature, body, padding.PKCS1v15(), hashes.SHA256())
+        else:
+            public_key.verify(signature, body)
+
+    verify(message)
+    with pytest.raises(InvalidSignature):
+        verify(message.replace(digest.encode(), b'sha-256=:tampered:'))
 
 
 @pytest.mark.parametrize('exchange,currency,symbol', [('US','USD','AAPL'),('HK','HKD','00700')])

@@ -4,7 +4,28 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from app.services.market import assets, watchlist
+from app.services.market import dated_futures
 from app.services.market.dated_futures import contract_catalog_rows, futures_products, preset_contracts
+
+
+@pytest.mark.parametrize('symbol,expected', [
+    ('MESZ26', 'MESZ26.CME'), ('6AH27', '6AH27.CME'),
+    ('YMZ26', 'YMZ26.CBT'), ('GCZ26', 'GCZ26.CMX'), ('CLZ26', 'CLZ26.NYM'),
+    ('ABCZ26', None), ('MES', None), ('MESZ2026', None), ('MESZ26.CME', None),
+    ('mesz26', None), ('MESZ26\n', None), ('MESZ\u0662\u0666', None),
+])
+def test_default_dated_symbol_requires_exact_supported_contract(symbol, expected):
+    assert dated_futures.default_dated_symbol(symbol) == expected
+
+
+@pytest.mark.parametrize('symbol', [None, 123, '', '0' * 100_000, '0' * 100_000 + 'Z26'],
+                         ids=['null', 'number', 'empty', 'long-digits', 'long-dated-symbol'])
+def test_invalid_or_oversized_symbol_is_rejected_before_regex(monkeypatch, symbol):
+    def reject_regex(*args, **kwargs):
+        pytest.fail('Out-of-bounds symbol reached regular expression matching')
+
+    monkeypatch.setattr(dated_futures.re, 'fullmatch', reject_regex)
+    assert dated_futures.default_dated_symbol(symbol) is None
 
 
 def test_preset_catalog_contains_only_public_identity_fields():

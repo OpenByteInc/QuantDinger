@@ -197,6 +197,18 @@ def test_webull_signature_matches_hmac_sha1_contract():
     assert actual == expected
 
 
+def test_webull_signature_binds_body_account_nonce_and_timestamp():
+    client = WebullClient(WebullConfig(app_key='app-key', app_secret='secret', environment='sandbox'))
+    arguments = dict(method='POST', path='/trading/orders/place', params={'account_id': '123'},
+                     body='{"quantity":"1"}', timestamp='2026-10-29T01:02:03Z', nonce='nonce-1')
+    baseline = client.build_signature(**arguments)
+    for change in ({'body': '{"quantity":"2"}'}, {'body': ''}, {'params': {'account_id': '456'}},
+                   {'nonce': 'nonce-2'}, {'timestamp': '2026-10-29T01:02:04Z'}):
+        assert client.build_signature(**{**arguments, **change}) != baseline
+    assert client.base_url == 'https://api.sandbox.webull.com'
+    assert client.session.verify is True
+
+
 def test_public_broker_error_only_returns_allowlisted_keys():
     assert _public_error(
         ValueError("brokerAccounts.invalidOrder"), "brokerAccounts.orderFailed"

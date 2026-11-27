@@ -77,6 +77,45 @@ def test_raw_credential_probe_exception_is_not_a_public_message():
     assert credentials._credential_error(ValueError("INVALID_CREDENTIAL_MARKET_SCOPE")) == "INVALID_CREDENTIAL_MARKET_SCOPE"
 
 
+@pytest.mark.parametrize('code', sorted(credentials._SAFE_CREDENTIAL_ERRORS))
+def test_credential_errors_return_the_canonical_allowlisted_object(code):
+    supplied = code.encode().decode()
+    assert supplied is not code
+    assert credentials._credential_error(ValueError(supplied)) is code
+
+
+@pytest.mark.parametrize('operation', ['test', 'create'])
+@pytest.mark.parametrize('message,expected', [
+    ('INVALID_CREDENTIAL_MARKET_SCOPE', 'INVALID_CREDENTIAL_MARKET_SCOPE'),
+    ('api_secret=sensitive-marker at /srv/private/config.py', 'CREDENTIAL_CONNECTION_FAILED'),
+    ('INVALID_CREDENTIAL_MARKET_SCOPE: sensitive-marker', 'CREDENTIAL_CONNECTION_FAILED'),
+    ('CREDENTIAL_CONNECTION_FAILED\nsensitive-marker', 'CREDENTIAL_CONNECTION_FAILED'),
+])
+def test_credential_route_errors_do_not_reflect_exception_text(app, monkeypatch, operation, message, expected):
+    def reject(*args, **kwargs):
+        raise ValueError(message)
+
+    monkeypatch.setattr(credentials, '_crypto_credential_config', reject)
+    data = {'exchange_id': 'okx', 'api_key': 'test-key', 'secret_key': 'test-secret'}
+    with app.test_request_context(f'/api/credentials/{operation}', method='POST', json=data):
+        g.user_id = 7
+        response, status = inspect.unwrap(getattr(credentials, f'{operation}_credential'))(data)
+    assert status == 400
+    assert response.get_json() == {'code': 0, 'msg': expected, 'data': None}
+
+
+def test_credential_probe_failure_does_not_echo_provider_exception(app, monkeypatch):
+    def reject(*args, **kwargs):
+        raise RuntimeError('broker response contains api_secret=sensitive-marker')
+
+    monkeypatch.setattr(credentials, '_crypto_credential_config', lambda *args: {})
+    monkeypatch.setattr(credentials, '_probe_crypto_credential', reject)
+    with app.test_request_context('/api/credentials/test', method='POST'):
+        response, status = inspect.unwrap(credentials.test_credential)({'exchange_id': 'okx'})
+    assert status == 400
+    assert response.get_json() == {'code': 0, 'msg': 'CREDENTIAL_CONNECTION_FAILED', 'data': None}
+
+
 def test_broker_config_repr_does_not_print_secrets():
     from app.services.openapi_brokers import TigerConfig, WebullConfig
     assert "secret-marker" not in repr(TigerConfig("tiger", "account", "secret-marker"))

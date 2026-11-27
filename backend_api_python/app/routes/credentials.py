@@ -42,7 +42,10 @@ _SAFE_CREDENTIAL_ERRORS = {
 
 def _credential_error(exc):
     value = str(exc)
-    return value if value in _SAFE_CREDENTIAL_ERRORS else 'CREDENTIAL_CONNECTION_FAILED'
+    for code in _SAFE_CREDENTIAL_ERRORS:
+        if value == code:
+            return code
+    return 'CREDENTIAL_CONNECTION_FAILED'
 
 
 credentials_blp = Blueprint('credentials', __name__)

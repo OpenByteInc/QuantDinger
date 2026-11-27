@@ -99,6 +99,9 @@ class ForthrightClient(_HttpClient):
         self._contracts = None
 
     def _headers(self, path: str, body: bytes, *, created=None, nonce=None) -> dict:
+        # Forthright requires a SHA-256 Content-Digest of the exact HTTP body,
+        # including unlock requests. This is not a stored password verifier.
+        # https://dev-openapi-doc.techfx88.com/zh/quick-start/signature.html
         digest = "sha-256=:" + base64.b64encode(hashlib.sha256(body).digest()).decode() + ":"
         params = ('("@method" "@authority" "@path" "@query" "content-type" "content-digest")'
                   f';created={int(time.time()) if created is None else created};'

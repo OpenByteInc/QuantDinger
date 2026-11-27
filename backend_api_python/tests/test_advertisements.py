@@ -88,6 +88,25 @@ class AdvertisementTests(unittest.TestCase):
             with patch.object(service, 'save_advertisements', side_effect=ValueError('advertisements.conflict')):
                 self.assertEqual(client.put('/ads', headers=headers, json={}).status_code, 409)
 
+    def test_route_errors_expose_only_static_public_codes(self):
+        app = Flask(__name__)
+        app.add_url_rule('/ads', view_func=route, methods=['GET', 'PUT'])
+        client = app.test_client()
+        cases = [
+            (ValueError('advertisements.conflict'), 409, 'advertisements.conflict'),
+            (ValueError('advertisements.invalid'), 400, 'advertisements.invalid'),
+            (ValueError('database password=sensitive-marker at /srv/private/config.py'), 400, 'advertisements.invalid'),
+            (ValueError('advertisements.conflict\nsensitive-marker'), 400, 'advertisements.invalid'),
+            (RuntimeError('database password=sensitive-marker'), 500, 'advertisements.failed'),
+        ]
+        with patch('app.utils.auth.verify_token', return_value={'user_id': 1, '_verified_user_role': 'admin'}):
+            for method, function in [('get', 'read_advertisements'), ('put', 'save_advertisements')]:
+                for error, status, code in cases:
+                    with self.subTest(method=method, error=error), patch.object(service, function, side_effect=error):
+                        response = getattr(client, method)('/ads', headers={'Authorization': 'Bearer test'}, json={})
+                        self.assertEqual(response.status_code, status)
+                        self.assertEqual(response.json, {'code': 0, 'msg': code, 'data': None})
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -18,8 +18,9 @@ from .base import (BrokerApiError, BrokerOrderResult, _HttpClient, _number,
 
 def _webull_body_checksum(body: str) -> str:
     """Return the checksum required by Webull OpenAPI signature version 1.0."""
-    # Webull mandates MD5 here as a protocol checksum; it is not used for
-    # password storage, integrity decisions, or any other security boundary.
+    # Webull mandates MD5(body) inside its HMAC-SHA1 signing input over HTTPS.
+    # This is not password storage; replacing the digest breaks authentication.
+    # https://developer.webull.com/apis/docs/authentication/signature/
     payload = body.encode("utf-8")
     return hashlib.md5(payload, usedforsecurity=False).hexdigest().upper()  # lgtm[py/weak-sensitive-data-hashing]  # NOSONAR
 
