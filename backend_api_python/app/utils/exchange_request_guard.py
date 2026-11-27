@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import logging
 import math
@@ -89,7 +90,9 @@ class ExchangeRequestGuard:
             headers.get("x-simulated-trading") == "1" or headers.get("paptrading") == "1"
         )
         ip = f"{venue}:{'demo' if demo else 'live'}"
-        owner = hashlib.sha256(key.encode()).hexdigest()[:24] if key else "public"
+        # A high-entropy API key keys a domain-separated MAC, not a password hash.
+        # Keep the identifier stable across workers without storing the credential.
+        owner = hmac.new(key.encode(), b"quantdinger:exchange-rest:account:v1", hashlib.sha256).hexdigest() if key else "public"
         method = method.upper()
         read = method in {"GET", "HEAD"}
         # HTX swap reads also use POST. Match known read operations, never arbitrary POSTs.
@@ -100,7 +103,7 @@ class ExchangeRequestGuard:
             lane = "write"
         endpoint = f"{ip}:{owner}:{method}:{_endpoint(parts.path)}"
         # HTX derivatives publish shared read/trade budgets for each contract family.
-        if venue == "htx" and host.endswith("hbdm.com") and key and not parts.path.startswith("/v5/"):
+        if venue == "htx" and (host == "hbdm.com" or host.endswith(".hbdm.com")) and key and not parts.path.startswith("/v5/"):
             family = "linear" if "linear" in parts.path else ("inverse" if "swap" in parts.path else "delivery")
             endpoint = f"{ip}:{owner}:{family}:{'read' if read else 'trade'}"
         try:

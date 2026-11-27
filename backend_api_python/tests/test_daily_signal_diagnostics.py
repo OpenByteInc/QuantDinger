@@ -80,7 +80,13 @@ def handle_data(context, data):
     cycles = iter([True, True, True, False])
     monkeypatch.setattr(executor, "_is_strategy_running", lambda *a: next(cycles))
     try:
-        for index, _ in enumerate(executor._run_strategy_loop(1)):
+        loop = executor._run_strategy_loop(1)
+        assert next(loop) == 0.0
+        assert "Strategy runtime ready" in str(logs.call_args_list)
+        assert "Daily signal waiting for fresh quotes" not in str(logs.call_args_list)
+        assert "Daily signal evaluated" not in str(logs.call_args_list)
+        submit.assert_not_called()
+        for index, _ in enumerate(loop):
             if index == 0:
                 assert "Daily signal waiting for fresh quotes" in str(logs.call_args_list)
                 assert "Daily signal evaluated" not in str(logs.call_args_list)

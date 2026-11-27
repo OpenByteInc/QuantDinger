@@ -1,5 +1,7 @@
 import json
 import os
+import subprocess
+import sys
 import uuid
 from unittest.mock import Mock
 
@@ -12,6 +14,44 @@ from app.utils.exchange_request_budget import ExchangeRateLimitError, _EXTEND
 @pytest.fixture
 def guard(isolated_exchange_request_guard):
     return isolated_exchange_request_guard
+
+
+def test_account_scope_is_opaque_and_stable_across_worker_processes(guard):
+    url = "https://www.okx.com/api/v5/account/balance"
+    credential = "test-only-account-key"
+    scope = guard.scope(url, headers={"OK-ACCESS-KEY": credential})
+    assert credential not in scope.endpoint
+    assert len(scope.endpoint.split(":")[2]) == 64
+    assert scope.endpoint != guard.scope(url, headers={"OK-ACCESS-KEY": "other-test-key"}).endpoint
+    assert scope.endpoint != guard.scope(url).endpoint
+    code = (
+        "from app.utils.exchange_request_guard import ExchangeRequestGuard; "
+        f"print(ExchangeRequestGuard().scope({url!r}, headers={{'OK-ACCESS-KEY': {credential!r}}}).endpoint)"
+    )
+    for _ in range(2):
+        result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True, timeout=30)
+        assert result.stdout.strip() == scope.endpoint
+
+
+@pytest.mark.parametrize("host", ["hbdm.com", "api.hbdm.com", "API.HBDM.COM:443"])
+def test_htx_derivatives_scope_accepts_only_domain_boundaries(guard, host):
+    params = {"AccessKeyId": "test-only-account-key"}
+    scope = guard.scope(f"https://{host}/linear-swap-api/v1/swap_position_info", "POST", params=params)
+    assert scope.venue == "htx"
+    assert scope.endpoint.endswith(":linear:read")
+    assert scope == guard.scope(
+        f"https://{host}/linear-swap-api/v1/swap_position_info?AccessKeyId=test-only-account-key", "POST",
+    )
+    assert guard.scope(f"https://{host}/v5/trade/position_all", "POST", params=params).endpoint.endswith(":POST:/v5/trade/position_all")
+
+
+@pytest.mark.parametrize("host", [
+    "evilhbdm.com", "hbdm.com.evil.example", "api.hbdm.com.evil.example", "hbdm.com@evil.example",
+])
+def test_htx_lookalike_hosts_are_not_exchange_scopes(guard, host):
+    assert module.venue_for_url(f"https://{host}/") == ""
+    assert guard.scope(f"https://{host}/linear-swap-api/v1/swap_position_info", "POST",
+                       params={"AccessKeyId": "test-only-account-key"}) is None
 
 
 @pytest.mark.parametrize("url,payload,auth", [

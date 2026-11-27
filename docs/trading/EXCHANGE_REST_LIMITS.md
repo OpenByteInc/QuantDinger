@@ -10,7 +10,9 @@ Reviewed against official documentation on 2026-11-28. The implementation supple
 | [Gate](https://www.gate.com/docs/developers/apiv4/en/) | Recognize HTTP 429, `TOO_MANY_REQUESTS`, and `CONCURRENCY_LIMIT_EXCEEDED`. Read remaining/reset headers. |
 | [HTX spot](https://huobiapi.github.io/docs/spot/v1/en/) / [derivatives](https://huobiapi.github.io/docs/usdt_swap/v1/en/) | Recognize documented frequency errors and `1032`; read X-HB and derivatives remaining/reset headers. Legacy derivatives separate read/trade and contract-family cooldowns; V5 uses endpoint cooldowns. Known POST queries count as reads. |
 
-`Retry-After` and future reset timestamps take precedence. With no usable deadline, endpoint fallback cooldowns are OKX 2s, Bybit/Bitget 1s, Gate 10s, HTX 3s, plus 100ms. Repeated responses can extend but never shorten an existing cooldown. Normalized paths prevent changing an order ID from bypassing the same endpoint cooldown. Credentials are hashed before forming coordination keys.
+`Retry-After` and future reset timestamps take precedence. With no usable deadline, endpoint fallback cooldowns are OKX 2s, Bybit/Bitget 1s, Gate 10s, HTX 3s, plus 100ms. Repeated responses can extend but never shorten an existing cooldown. Normalized paths prevent changing an order ID from bypassing the same endpoint cooldown. Account coordination identifiers use HMAC-SHA256 with the high-entropy API key as the MAC key and a fixed, domain-separated message. This is not password storage: raw credentials never enter Redis keys, and identifiers stay consistent across workers and restarts without a process-local random salt.
+
+Upgrade all coordinating workers together: older plain-hash account identifiers do not share endpoint cooldowns with the new identifiers. IP cooldowns and shared read budgets keep their existing keys. No durable trading records or credentials are rewritten.
 
 Each venue has two shared read budgets: public market data and authenticated reads, defaulting to five requests/second **per lane across processes**, not per strategy. Configure `OKX_REST_READS_PER_SECOND`, `BYBIT_REST_READS_PER_SECOND`, `BITGET_REST_READS_PER_SECOND`, `GATE_REST_READS_PER_SECOND`, and `HTX_REST_READS_PER_SECOND`. Brief congestion waits up to two seconds; longer congestion returns a rate-limit error before sending HTTP. Writes do not consume the read budget. Endpoint cooldowns include the method and credential, so an unrelated query/account/cancel is not blocked; actual IP cooldowns include writes. Live and demo are separated.
 
@@ -29,3 +31,5 @@ Deploy the backend and restart API/market-data/trading workers to apply the code
 行情请求受限后不连续重试、不误报无效币种。已经确认的成交仍然保留；手续费暂时取不到时交给后续对账补齐，不当作已确认零手续费。成功下单不会因为记录限流反馈失败而变成失败，也没有新增下单自动重试。
 
 多进程、多部署若共用出口 IP，必须使用相同的 Redis 协调地址和命名空间；没有 Redis 配置时只能进程内协调。已配置的协调服务不可用时暂缓请求。部署后重启相关后端、行情和交易进程，无需数据库迁移；已有封禁仍需等待交易所解除。
+
+账户协调标识使用 API Key 作为密钥的 HMAC-SHA256，不将原始凭据写入 Redis 键，且跨进程、重启后保持一致。升级时统一更新所有参与协调的进程：旧版普通哈希与新版账户标识不共享接口冷却；IP 冷却和共享读取预算的键保持不变，不改写交易记录或凭据。
