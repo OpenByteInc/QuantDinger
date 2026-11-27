@@ -3,6 +3,10 @@ from app.services import kline as kline_module
 
 
 class _Response:
+    status_code = 200
+    headers = {}
+    text = "[]"
+
     def raise_for_status(self):
         return None
 

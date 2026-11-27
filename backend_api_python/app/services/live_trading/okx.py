@@ -25,6 +25,7 @@ from app.services.live_trading.base import (
 )
 from app.services.live_trading.ws_order_transport import submit_okx_order
 from app.utils.numeric_precision import floor_decimal_to_step, format_decimal
+from app.utils.exchange_request_budget import ExchangeRateLimitError
 
 logger = logging.getLogger(__name__)
 from app.services.live_trading.symbols import to_okx_swap_inst_id, to_okx_spot_inst_id
@@ -1418,6 +1419,8 @@ class OkxClient(BaseRestClient):
                         "fills": last_fills,
                         "filled_unit": "base",
                     }
+            except ExchangeRateLimitError:
+                end_ts = time.time()
             except Exception:
                 pass
 

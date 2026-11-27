@@ -7,6 +7,9 @@ from app.services.market_data_collector import MarketDataCollector
 class _Response:
     def __init__(self, payload):
         self.payload = payload
+        self.status_code = 200
+        self.headers = {}
+        self.text = "{}"
 
     def raise_for_status(self):
         return None
@@ -36,6 +39,12 @@ def test_coingecko_turnover_is_not_mislabeled_as_volume_change(monkeypatch):
 
 
 def test_binance_decimal_funding_is_normalized_to_legacy_percent(monkeypatch):
+    from app.utils import binance_request_guard as guard_module
+
+    guard = guard_module.BinanceRequestGuard()
+    guard._redis_url = ""
+    monkeypatch.setattr(guard_module, "binance_request_guard", guard)
+
     def fake_get(url, **_kwargs):
         if url.endswith("/fundingRate"):
             return _Response([{"fundingRate": "0.0001"}])

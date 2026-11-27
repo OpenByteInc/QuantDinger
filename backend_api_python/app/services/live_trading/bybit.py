@@ -21,6 +21,7 @@ from urllib.parse import urlencode
 from app.services.live_trading.base import BaseRestClient, LiveOrderResult, LiveTradingError
 from app.services.live_trading.ws_order_transport import submit_bybit_order
 from app.utils.numeric_precision import floor_decimal_to_step, format_decimal
+from app.utils.exchange_request_budget import ExchangeRateLimitError
 
 logger = logging.getLogger(__name__)
 from app.services.live_trading.symbols import to_bybit_symbol
@@ -918,6 +919,8 @@ class BybitClient(BaseRestClient):
                         fees_by_ccy = execution_fees
                         fee = sum(execution_fees.values())
                         fee_ccy = next(iter(execution_fees)) if len(execution_fees) == 1 else "MIXED"
+                except ExchangeRateLimitError:
+                    timed_out = True
                 except Exception as exc:
                     logger.debug("Bybit execution fee query failed for order %s: %s", order_id, exc)
             # cumExecFee / cumFeeDetail can lag slightly after fill shows up.

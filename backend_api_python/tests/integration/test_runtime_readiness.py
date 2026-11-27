@@ -153,6 +153,27 @@ def test_old_healthy_daily_run_does_not_satisfy_new_start(runtime_db):
     assert query("SELECT runtime_status FROM strategy_runs WHERE id = 4360")[0]["runtime_status"] == "stopped"
 
 
+def test_command_startup_clock_resets_only_on_expired_claim_handoff(runtime_db):
+    query, repository, _ = runtime_db
+    command = repository.enqueue(strategy_id=1324, command_type="start", user_id=1)
+    first = repository.claim_next(owner_id="worker-old", lease_seconds=30, max_attempts=3)
+    assert first.id == command.id
+    query("UPDATE qd_strategy_commands SET claimed_at=NOW()-INTERVAL '10 minutes' WHERE id=%s", (command.id,))
+    repository.defer_start(command.id, owner_id="worker-old", result={"status": "starting"})
+    query("UPDATE qd_strategy_commands SET available_at=NOW() WHERE id=%s", (command.id,))
+    same = repository.claim_next(owner_id="worker-old", lease_seconds=30, max_attempts=3)
+    assert same.elapsed_seconds >= 600
+    repository.defer_start(command.id, owner_id="worker-old", result={"status": "starting"})
+    query("UPDATE qd_strategy_commands SET available_at=NOW() WHERE id=%s", (command.id,))
+    other = repository.claim_next(owner_id="other-controller", lease_seconds=30, max_attempts=3)
+    assert other.id == command.id
+    assert other.elapsed_seconds >= 600
+    query("UPDATE qd_strategy_commands SET lease_expires_at=NOW()-INTERVAL '1 second' WHERE id=%s", (command.id,))
+    replacement = repository.claim_next(owner_id="worker-new", lease_seconds=30, max_attempts=3)
+    assert replacement.id == command.id
+    assert replacement.elapsed_seconds < 5
+
+
 @pytest.mark.parametrize("new_owner", ["evaluator", "replacement"])
 def test_lease_takeover_requires_fresh_readiness_even_for_same_owner(runtime_db, new_owner):
     query, repository, subscriptions = runtime_db

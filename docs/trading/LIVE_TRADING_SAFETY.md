@@ -52,6 +52,24 @@ Confirmed zero-fill cancellations use a guarded local update; concurrent local f
 
 Deploy the updated backend and trading workers together, followed by the desktop frontend for queued/pending/terminal labels. No database migration is required. This path repairs recoverable evidence; it cannot reconstruct records already removed by the exchange's history-retention policy.
 
+## Startup and worker recovery
+
+`STRATEGY_RUNTIME_STARTUP_TIMEOUT_SECONDS` bounds startup readiness polling per
+command (default 900 seconds, minimum 60). It includes historical-data
+loading and is separate from the sandbox callback timeout. Pending readiness
+polls retain the clock even when another controller claims them. Only takeover
+of an expired processing claim by a different worker resets the clock. Restart
+trading workers after changing this environment setting.
+
+Polling runtimes expose readiness before their first risk or signal cycle.
+Deferring a startup command stops its command heartbeat before returning it to
+pending. A terminal startup failure fences and cancels the local runtime without
+submitting closes or cancelling broker orders; an owned runtime lease is released
+after local exit, or allowed to expire if local shutdown times out. Existing
+orders and positions still require reconciliation. Deploy the worker fix before
+starting a previously failed strategy again; do not repair this state by deleting
+lease rows. No database migration is required.
+
 ## While running
 
 - Monitor runtime state, order status, fills, positions, available balance, and notifications.
@@ -158,7 +176,19 @@ HK candle-provider exceptions now permit the next configured fallback. Tencent H
 
 For daily live evaluation, `Daily signal waiting for fresh quotes` lists missing symbols, provider sources and observation ages (up to ten examples). Recovery is logged separately. `Daily signal evaluated` reports the completed signal session and intent count, including zero. Intent count is before broker submission and does not mean filled orders. Compare the same source, parameters, completed session **and strategy-owned positions** when investigating different accounts: a held stock may qualify for continued allocation while an empty account has no new-entry signal. These changes require updated strategy workers; no database migration is needed.
 
+## Binance REST request coordination
+
+Binance public market data and private REST clients share a request guard. With the standard Compose deployment it uses jobs Redis; standalone processes without a configured Redis endpoint use process-local coordination only. `BINANCE_REST_REDIS_URL` overrides the endpoint. All QuantDinger processes/deployments sharing an outbound IP must use the same Redis endpoint and `BINANCE_REST_NAMESPACE`. A configured coordinator outage defers requests rather than falling back to unlimited traffic. Other software using the same IP is outside this guard.
+
+Market data/fee queries and account reads have separate shared budgets, each defaulting to `BINANCE_REST_READS_PER_SECOND=5`. Brief congestion waits at most two seconds; longer waits return a retryable rate-limit error without sending HTTP. These are conservative request-count budgets, not a complete model of Binance endpoint weights. `X-MBX-USED-WEIGHT-1M` at `BINANCE_REST_WEIGHT_SOFT_LIMIT=1800` defers reads until the next minute. Writes do not consume these read budgets, and successful write responses are preserved even if publishing the weight feedback fails. There are no new automatic write retries.
+
+HTTP 429/418 establishes a shared cooldown for all Binance REST traffic, including writes, based on `Retry-After` and any `banned until` timestamp (the longer deadline wins). Without a server deadline the fallback is 60/120 seconds respectively, plus one second of margin. Live hosts share a conservative scope; demo/test hosts are separate. Existing bans must still expire at Binance. Fee reconciliation remains pending and does not perform immediate retry loops; K-line retrieval does not repeatedly retry the same limited venue or label the symbol invalid. Futures execution requests the account's mark price first and fetches a generic quote only if it is unavailable.
+
+Restart affected backend/market-data/trading workers after deploying or changing these environment settings. No migration is required. This guard reduces avoidable load; it cannot guarantee exchange availability or provide local stop execution while quotes/account REST are unavailable.
+
 ## Incident response
+
+For non-Binance REST coordination and official venue references, see [Exchange REST limits](EXCHANGE_REST_LIMITS.md).
 
 1. Stop new entries and additions.
 2. Record deployment, account, instrument, order IDs, timestamps, and errors.

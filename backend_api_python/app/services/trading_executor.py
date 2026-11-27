@@ -476,10 +476,11 @@ class TradingExecutor:
         *,
         persist_status: bool = True,
         preserve_run: bool = False,
+        cancel_orders: bool = True,
     ) -> bool:
         strategy_id = int(strategy_id)
         try:
-            if not preserve_run:
+            if not preserve_run and cancel_orders:
                 try:
                     strategy = self._load_strategy(strategy_id) or {}
                     if str(strategy.get("execution_mode") or "signal").strip().lower() == "signal":
@@ -1155,8 +1156,7 @@ class TradingExecutor:
             )
             # A preparation event must not execute the initial trading callback.
             # Yield makes scheduler readiness observable before the first risk tick.
-            if self.external_bar_triggers:
-                yield 0.0
+            yield 0.0
 
             while self._is_strategy_running(strategy_id, stop_event):
                 cycle_started = time.monotonic()
@@ -3266,19 +3266,24 @@ class TradingExecutor:
         *,
         equity_quotes=None,
     ) -> dict[str, float]:
+        exchange_id = str(exchange_config.get("exchange_id") or "").strip().lower()
+        mark_first = [
+            member for member in candidates
+            if exchange_id == "binance" and member.get("market") == "Crypto"
+            and str(member.get("market_type") or "swap").strip().lower() == "swap"
+        ]
         standard_candidates = [
             member
             for member in candidates
             if str(
                 member.get("api_family") or member.get("market_type") or "spot"
-            ).strip().lower() in {"spot", "swap"}
+            ).strip().lower() in {"spot", "swap"} and member not in mark_first
         ]
         quote_options = {"equity_quotes": equity_quotes} if equity_quotes is not None else {}
         prices = cls._live_prices(standard_candidates, **quote_options) if standard_candidates else {}
         from app.services.live_trading.factory import create_client
         from app.services.live_trading.symbols import to_okx_spot_inst_id, to_okx_swap_inst_id
 
-        exchange_id = str(exchange_config.get("exchange_id") or "").strip().lower()
         for member in candidates:
             if str(member.get("market") or "") != "Crypto":
                 continue
@@ -3333,6 +3338,9 @@ class TradingExecutor:
                     instrument_id or symbol,
                     exc,
                 )
+        missing = [member for member in mark_first if str(member.get("key") or "") not in prices]
+        if missing:
+            prices.update(cls._live_prices(missing, **quote_options))
         return prices
 
     @staticmethod

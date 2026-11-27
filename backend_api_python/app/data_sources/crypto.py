@@ -17,6 +17,7 @@ from app.data_sources.native_crypto import (
 )
 from app.utils.logger import get_logger
 from app.config import CryptoPublicConfig
+from app.utils.exchange_request_budget import ExchangeRateLimitError
 
 logger = get_logger(__name__)
 
@@ -469,9 +470,11 @@ class CryptoDataSource(BaseDataSource):
             
             if is_symbol_error:
                 self._mark_invalid_symbol(normalized, e)
+            elif isinstance(e, ExchangeRateLimitError):
+                logger.debug("Ticker request deferred for %s on %s: %s", normalized, self.exchange.id, e)
             else:
                 logger.warning(
-                    f"Symbol '{symbol}' (normalized: {normalized}) not found on {self.exchange.id}. "
+                    f"Ticker request failed for '{symbol}' (normalized: {normalized}) on {self.exchange.id}. "
                     f"Error: {str(e)[:100]}"
                 )
         
@@ -967,6 +970,8 @@ class CryptoDataSource(BaseDataSource):
                                     limit=request_limit,
                                 )
                             break
+                        except ExchangeRateLimitError:
+                            raise
                         except Exception as exc:
                             last_err = exc
                             if attempt < retry_per_batch:
@@ -1081,6 +1086,9 @@ class CryptoDataSource(BaseDataSource):
 
             return ohlcv
 
+        except ExchangeRateLimitError as e:
+            self._set_last_failure(e, symbol=symbol_pair, timeframe=timeframe)
+            return []
         except Exception as e:
             if _is_symbol_not_found_error(e):
                 self._mark_invalid_symbol(symbol_pair, e)

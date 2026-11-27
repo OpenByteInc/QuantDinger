@@ -24,6 +24,7 @@ from app.services.live_trading import htx_v5
 from app.services.live_trading.symbols import to_htx_contract_code, to_htx_spot_symbol
 from app.services.pending_orders.error_classification import classify_exchange_order_error
 from app.utils.numeric_precision import floor_decimal_to_step
+from app.utils.exchange_request_budget import ExchangeRateLimitError
 
 logger = logging.getLogger(__name__)
 
@@ -1240,6 +1241,8 @@ class HtxClient(BaseRestClient):
                         fees_by_ccy = match_fees
                         fee = sum(match_fees.values())
                         fee_ccy = next(iter(match_fees)) if len(match_fees) == 1 else "MIXED"
+                except ExchangeRateLimitError:
+                    timed_out = True
                 except Exception as exc:
                     logger.debug("HTX match fee query failed for order %s: %s", order_id, exc)
 

@@ -16,6 +16,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional
 from urllib.parse import urlencode, urlparse
 
 import requests
+from app.utils.binance_request_guard import guarded_binance_request
 
 from app.services.execution_streams.events import ExecutionEvent, FeeComponent
 from app.services.execution_streams.normalizers import (
@@ -360,8 +361,9 @@ class BinanceExecutionAdapter(PrivateWebSocketAdapter):
         path = "/fapi/v1/listenKey"
         self._listen_key_base = base.rstrip("/")
         self._listen_key_path = path
-        response = requests.post(
+        response = guarded_binance_request(requests.post,
             f"{base.rstrip('/')}{path}",
+            method="POST", public=False,
             headers={"X-MBX-APIKEY": api_key, "Connection": "close"},
             timeout=15,
             verify=_get_requests_verify(),
@@ -382,8 +384,9 @@ class BinanceExecutionAdapter(PrivateWebSocketAdapter):
         while not self._stop.wait(25 * 60):
             try:
                 api_key = str(self.config.get("api_key") or self.config.get("apiKey") or "")
-                response = requests.put(
+                response = guarded_binance_request(requests.put,
                     f"{self._listen_key_base}{self._listen_key_path}",
+                    method="PUT", public=False,
                     params=None,
                     headers={"X-MBX-APIKEY": api_key, "Connection": "close"},
                     timeout=15,

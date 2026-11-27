@@ -13,6 +13,10 @@ from app.services.strategy_v2.service import (
 
 
 class _Response:
+    status_code = 200
+    headers = {}
+    text = '{"code":"00000"}'
+
     def raise_for_status(self):
         return None
 

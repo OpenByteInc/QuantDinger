@@ -11,6 +11,7 @@ from typing import Any
 import requests
 
 from app.config.data_sources import CryptoPublicConfig
+from app.utils.exchange_request_guard import guarded_exchange_request
 
 
 GATE_SPOT_CANDLES_URL = "https://api.gateio.ws/api/v4/spot/candlesticks"
@@ -54,7 +55,7 @@ def get_gate_spot_klines(symbol: str, timeframe: str, limit: int = 120) -> list[
     response = None
     for attempt in range(2):
         try:
-            response = requests.get(GATE_SPOT_CANDLES_URL, **request_kwargs)
+            response = guarded_exchange_request(requests.get, GATE_SPOT_CANDLES_URL, **request_kwargs)
             break
         except (requests.Timeout, requests.ConnectionError):
             if attempt:

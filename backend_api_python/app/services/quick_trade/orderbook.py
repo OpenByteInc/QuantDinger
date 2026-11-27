@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Sequence, Tuple
 
 import requests
+from app.utils.binance_request_guard import guarded_binance_request
 
 from app.services.live_trading.base import get_live_trading_proxies, get_live_trading_requests_verify
 from app.services.quick_trade.symbols import is_supported_crypto_exchange
@@ -223,7 +224,7 @@ def _contract_multiplier(
         return cached[1]
     try:
         url, params = _contract_request_spec(exchange_id, parts)
-        response = session.get(
+        response = guarded_binance_request(session.get,
             url,
             params=params,
             timeout=timeout,
@@ -299,7 +300,7 @@ def fetch_order_book(
     bounded_limit = max(5, min(int(limit or 25), 50))
     parts = normalize_symbol(symbol)
     url, params = _request_spec(exchange, parts, normalized_market_type, bounded_limit)
-    response = session.get(
+    response = guarded_binance_request(session.get,
         url,
         params=params,
         timeout=timeout,

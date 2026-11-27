@@ -103,7 +103,10 @@ def rebalance(context, data):
 
     monkeypatch.setattr(runtime, "rebalance_batch", batch)
     try:
-        for delay in executor._run_strategy_loop(1):
+        loop = executor._run_strategy_loop(1)
+        assert next(loop) == 0.0
+        submit.assert_not_called()
+        for delay in loop:
             assert delay <= 5
             clock[0] += pd.Timedelta(minutes=1)
             monotonic[0] += 60
