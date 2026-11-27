@@ -11,6 +11,7 @@ from typing import Any
 
 import requests
 
+from app._version import APP_VERSION
 from app.services.llm import LLMService
 from app.utils.db import get_db_connection
 from app.utils.logger import get_logger
@@ -131,7 +132,7 @@ class AIDecisionResult:
 
 
 class AIDecisionFilter:
-    """Evaluate entry orders with Jev first and an LLM fallback."""
+    """Evaluate entry orders with a System One model (Jev or Drex) first and an LLM fallback."""
 
     def evaluate(self, request: AIDecisionRequest, *, enabled: bool) -> AIDecisionResult:
         decision_id = str(uuid.uuid4())
@@ -150,13 +151,13 @@ class AIDecisionFilter:
             return result
 
         failures: list[str] = []
-        jev_config = self._jev_config()
-        jev_enabled = str(jev_config.get("enabled", True)).strip().lower() in {
+        system_one = self._system_one_config()
+        system_one_enabled = str(system_one.get("enabled", True)).strip().lower() in {
             "1", "true", "yes", "on",
         }
         llm: LLMService | None = None
         llm_configured = False
-        if not jev_enabled or not jev_config["api_key"]:
+        if not system_one_enabled or not system_one["api_key"]:
             try:
                 llm = LLMService()
                 llm_configured = llm.is_configured()
@@ -194,17 +195,17 @@ class AIDecisionFilter:
             self._persist(request, result)
             return result
 
-        if jev_enabled and jev_config["api_key"]:
+        if system_one_enabled and system_one["api_key"]:
             try:
                 result = replace(
-                    self._evaluate_jev(request, decision_id, started, jev_config),
+                    self._evaluate_system_one(request, decision_id, started, system_one),
                     billing=billing,
                 )
                 self._persist(request, result)
                 return result
             except Exception as exc:
-                failures.append(f"jev:{self._safe_error(exc)}")
-                logger.warning("Jev decision failed open: %s", exc)
+                failures.append(f"{system_one['provider']}:{self._safe_error(exc)}")
+                logger.warning("%s decision failed open: %s", system_one["provider"].capitalize(), exc)
 
         if llm is None:
             try:
@@ -240,7 +241,7 @@ class AIDecisionFilter:
         self._persist(request, result)
         return result
 
-    def _evaluate_jev(
+    def _evaluate_system_one(
         self,
         request: AIDecisionRequest,
         decision_id: str,
@@ -249,14 +250,21 @@ class AIDecisionFilter:
     ) -> AIDecisionResult:
         base_url = config["base_url"].strip().rstrip("/")
         url = base_url if base_url.endswith("/systemone") else f"{base_url}/systemone"
+        provider = config["provider"]
+        label = provider.capitalize()
         model = config["model"].strip() or "jev-latest"
         timeout = max(1.0, min(float(config["timeout_seconds"] or 8), 30.0))
+        headers = {
+            "Authorization": f"Bearer {config['api_key']}",
+            "Content-Type": "application/json",
+        }
+        if provider == "drex":
+            # Nace attributes Drex traffic per client integration from these headers.
+            client = f"quantdinger/{APP_VERSION}"
+            headers.update({"X-Nace-Client": client, "User-Agent": client})
         response = requests.post(
             url,
-            headers={
-                "Authorization": f"Bearer {config['api_key']}",
-                "Content-Type": "application/json",
-            },
+            headers=headers,
             json={
                 "model": model,
                 "state": self._state_payload(request),
@@ -275,6 +283,7 @@ class AIDecisionFilter:
                 answer,
                 question=name,
                 options=options,
+                label=label,
             )
             confidence = self._confidence(answer, probabilities, choice)
             results[name] = (choice, probabilities, confidence)
@@ -291,7 +300,7 @@ class AIDecisionFilter:
             if confidence is None or confidence < min_confidence:
                 confidence_text = "missing" if confidence is None else f"{confidence:.3f}"
                 raise ValueError(
-                    f"Jev confidence below threshold for {name} "
+                    f"{label} confidence below threshold for {name} "
                     f"(confidence={confidence_text}, threshold={min_confidence:.3f})"
                 )
 
@@ -312,15 +321,15 @@ class AIDecisionFilter:
         )
         final_choice = "pass" if allowed else "reject"
         if allowed:
-            reason = "jev_entry_approved"
+            reason = f"{provider}_entry_approved"
         elif risk_choice == "block":
-            reason = "jev_entry_rejected:risk_block"
+            reason = f"{provider}_entry_rejected:risk_block"
         elif execution_choice == "block":
-            reason = "jev_entry_rejected:execution_block"
+            reason = f"{provider}_entry_rejected:execution_block"
         elif directional_block:
-            reason = "jev_entry_rejected:signal_conflict"
+            reason = f"{provider}_entry_rejected:signal_conflict"
         else:
-            reason = "jev_entry_rejected"
+            reason = f"{provider}_entry_rejected"
         if risk_choice == "block":
             confidence = risk_confidence
         elif execution_choice == "block":
@@ -332,7 +341,7 @@ class AIDecisionFilter:
         return self._result(
             allowed,
             final_choice,
-            "jev",
+            provider,
             reason,
             decision_id,
             started,
@@ -443,30 +452,31 @@ class AIDecisionFilter:
         *,
         question: str,
         options: set[str],
+        label: str,
     ) -> tuple[str, dict[str, float]]:
         choice = str(answer.get("choice") or answer.get("selected") or "").strip().lower()
         if choice not in options:
-            raise ValueError(f"Jev response did not contain a valid {question}")
+            raise ValueError(f"{label} response did not contain a valid {question}")
         raw_probabilities = cls._probabilities(answer)
         if set(raw_probabilities) != options:
-            raise ValueError(f"Jev response probabilities were incomplete for {question}")
+            raise ValueError(f"{label} response probabilities were incomplete for {question}")
         probabilities: dict[str, float] = {}
         for option, value in raw_probabilities.items():
             try:
                 probability = float(value)
             except (TypeError, ValueError) as exc:
-                raise ValueError(f"Jev response probability was invalid for {question}") from exc
+                raise ValueError(f"{label} response probability was invalid for {question}") from exc
             if probability < 0 or probability > 1:
-                raise ValueError(f"Jev response probability was out of range for {question}")
+                raise ValueError(f"{label} response probability was out of range for {question}")
             probabilities[str(option)] = probability
         if abs(sum(probabilities.values()) - 1.0) > 0.001:
-            raise ValueError(f"Jev response probabilities did not sum to one for {question}")
+            raise ValueError(f"{label} response probabilities did not sum to one for {question}")
         maximum = max(probabilities.values())
         if probabilities.get(choice) != maximum:
-            raise ValueError(f"Jev response choice was not the highest probability for {question}")
+            raise ValueError(f"{label} response choice was not the highest probability for {question}")
         confidence = cls._bounded_float(answer.get("confidence"))
         if confidence is None:
-            raise ValueError(f"Jev response confidence was invalid for {question}")
+            raise ValueError(f"{label} response confidence was invalid for {question}")
         return choice, probabilities
 
     @classmethod
@@ -498,21 +508,22 @@ class AIDecisionFilter:
         return parsed
 
     @staticmethod
-    def _jev_config() -> dict[str, Any]:
+    def _system_one_config() -> dict[str, Any]:
         values: dict[str, str] = {}
         try:
             from app.services.settings.env_file import read_env_file
 
             values = read_env_file()
         except Exception as exc:
-            logger.debug("Jev settings file refresh skipped: %s", exc)
+            logger.debug("AI decision settings file refresh skipped: %s", exc)
 
         def setting(key: str, default: str = "") -> str:
             if key in values:
                 return str(values.get(key) or "").strip()
             return str(os.getenv(key, default) or default).strip()
 
-        return {
+        config = {
+            "provider": "jev",
             "enabled": setting("JEV_ENABLED", "true").lower() in {"1", "true", "yes", "on"},
             "api_key": setting("JEV_API_KEY"),
             "base_url": setting("JEV_BASE_URL", "https://api.typesafe.ai/v1"),
@@ -520,6 +531,15 @@ class AIDecisionFilter:
             "timeout_seconds": setting("JEV_TIMEOUT_SECONDS", "8"),
             "min_confidence": setting("JEV_MIN_CONFIDENCE", "0.55"),
         }
+        if setting("AI_DECISION_PROVIDER", "jev").lower() == "drex":
+            config.update(
+                provider="drex",
+                enabled=True,
+                api_key=setting("NACE_API_KEY"),
+                base_url="https://console.nace.ai/v1",
+                model=setting("NACE_DEFAULT_DECISION_MODEL") or "drex-max-finance",
+            )
+        return config
 
     @staticmethod
     def _safe_error(exc: Exception) -> str:
