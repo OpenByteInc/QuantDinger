@@ -12,7 +12,7 @@ def equity_symbol(symbol, market=""):
                 return ""
             hint, value = category, value[len(prefix):]
             break
-    hk = re.fullmatch(r"(?:HK\.)?(\d{1,5})(?:\.HK)?", value)
+    hk = re.fullmatch(r"(?:HK\.?)?(\d{1,5})(?:\.HK)?", value)
     if hk and hint != "USSTOCK":
         return hk[1].zfill(5) + ".HK"
     if hint == "USSTOCK":

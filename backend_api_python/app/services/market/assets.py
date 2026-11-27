@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from app.services.market.instrument_products import PRODUCT_CRYPTO
+from app.services.openapi_brokers.symbols import equity_symbol
 from app.utils.db import get_db_connection
 
 
@@ -112,6 +114,10 @@ def get_market_asset(
 def search_market_assets(*, market: str, keyword: str, limit: int = 20) -> list[dict[str, Any]]:
     normalized_market = _clean(market)
     normalized_keyword = _clean(keyword).upper()
+    if normalized_market == 'HKStock' and not normalized_keyword.isdigit():
+        canonical = equity_symbol(normalized_keyword, 'HKStock')
+        if re.fullmatch(r'\d{5}\.HK', canonical):
+            normalized_keyword = canonical[:-3]
     safe_limit = max(1, min(int(limit or 20), 100))
     if not normalized_market or (not normalized_keyword and normalized_market != 'Futures'):
         return []
@@ -147,7 +153,7 @@ def search_market_assets(*, market: str, keyword: str, limit: int = 20) -> list[
             ORDER BY
               CASE WHEN UPPER(symbol) = ? THEN 0 WHEN UPPER(symbol) LIKE ? THEN 1 ELSE 2 END,
               symbol, id
-            LIMIT ?
+            {'' if normalized_market == 'HKStock' else 'LIMIT ?'}
             """,
             (
                 normalized_market,
@@ -157,10 +163,27 @@ def search_market_assets(*, market: str, keyword: str, limit: int = 20) -> list[
                 *catalog_params,
                 normalized_keyword,
                 f"{normalized_keyword}%",
-                safe_limit,
+                *([] if normalized_market == 'HKStock' else [safe_limit]),
             ),
         )
         assets = [normalize_asset_row(row) for row in (cur.fetchall() or [])]
+        if normalized_market == 'HKStock':
+            # Collapse legacy aliases before pagination while retaining real catalog IDs.
+            unique = {}
+            for asset in assets:
+                if not asset:
+                    continue
+                symbol = equity_symbol(asset['symbol'], 'HKStock')
+                underlying = equity_symbol(asset['underlying_symbol'], asset['underlying_market'])
+                key = (symbol, asset['product_type'], asset['underlying_market'], underlying)
+                existing = unique.get(key)
+                if existing is None or asset['symbol'] == symbol.removesuffix('.HK'):
+                    unique[key] = asset
+            assets = list(unique.values())[:safe_limit]
+            for asset in assets:
+                canonical = equity_symbol(asset['symbol'], 'HKStock')
+                if re.fullmatch(r'\d{5}\.HK', canonical):
+                    asset['symbol'] = canonical[:-3]
         asset_ids = [int(asset["asset_id"]) for asset in assets if asset]
         products_by_asset: dict[int, list[dict[str, Any]]] = {asset_id: [] for asset_id in asset_ids}
         if asset_ids:

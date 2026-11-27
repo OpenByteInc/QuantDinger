@@ -672,13 +672,14 @@ def test_stock_order_history_uses_calendar_time_latest_order_and_order_fee(clien
     assert orders[0]["fee_status"] == "actual"
 
 
-def test_true_stock_fills_include_partial_cancelled_executions_once(client, monkeypatch):
+@pytest.mark.parametrize("symbol", ["700", "HK00700", "HK.00700", "00700.HK"])
+def test_true_stock_fills_include_partial_cancelled_executions_once(client, monkeypatch, symbol):
     base = {"exchange_code": "HK", "product_code": "00700", "side": "B", "ccy": "HKD",
             "order_id": "partial-cancelled", "trade_date": 20261127, "curr_date": 20261126,
             "last_qty": 10, "last_px": 345.4, "serial_no": 1, "business_time": 90501}
     second = dict(base, serial_no=2, last_qty=20, last_px=345.5, business_time=90502)
     monkeypatch.setattr(client, "_query", lambda method, **kw: [base, second] if method == "history_match" else [second])
-    rows = client.get_transactions(symbol="700")
+    rows = client.get_transactions(symbol=symbol)
     assert len(rows) == 2 and sum(r["filled_qty"] for r in rows) == 30
     assert rows[0]["amount"] == 6910
     assert rows[0]["filled_at"] == "2026-11-26T09:05:02"

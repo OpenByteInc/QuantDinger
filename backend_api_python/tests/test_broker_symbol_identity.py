@@ -14,7 +14,7 @@ from app.services.openapi_brokers.tiger import TigerClient
 from app.services.ibkr_trading.client import IBKRClient
 
 
-@pytest.mark.parametrize("symbol", ["700", "00700", "700.HK", "00700.HK", "HKStock:00700", "HK.00700"])
+@pytest.mark.parametrize("symbol", ["700", "00700", "700.HK", "00700.HK", "HKStock:00700", "HK.00700", "HK00700"])
 def test_hk_strategy_identity_matches_both_brokers(symbol):
     assert normalize_strategy_symbol(symbol) == "00700.HK"
     assert TigerClient._query_symbol(symbol) == "00700"

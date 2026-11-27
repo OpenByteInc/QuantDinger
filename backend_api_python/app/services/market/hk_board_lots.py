@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 
 import openpyxl
 import requests
+from app.services.openapi_brokers.symbols import equity_symbol
 
 SOURCE = "https://www.hkex.com.hk/eng/services/trading/securities/securitieslists/ListOfSecurities.xlsx"
 
@@ -75,7 +76,7 @@ def _download():
 
 def board_lot_rule(symbol):
     from app.utils.db import get_db_connection
-    code = str(symbol).upper().removeprefix("HKSTOCK:").removesuffix(".HK")
+    code = equity_symbol(symbol, "HKStock").removesuffix(".HK")
     if not re.fullmatch(r"\d{1,5}", code):
         raise ValueError("brokerAccounts.forthright.lotUnavailable")
     code = code.zfill(5)

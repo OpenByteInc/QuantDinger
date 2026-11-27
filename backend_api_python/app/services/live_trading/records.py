@@ -35,7 +35,7 @@ def normalize_strategy_symbol(symbol: str) -> str:
     """
     s = str(symbol or "").strip().upper()
     # Equity ledger keys must retain share classes and unify HK broker aliases.
-    if re.fullmatch(r"(?:HKSTOCK:)?(?:HK\.)?\d{1,5}(?:\.HK)?", s):
+    if re.fullmatch(r"(?:HKSTOCK:)?(?:HK\.?)?\d{1,5}(?:\.HK)?", s):
         from app.services.openapi_brokers.symbols import equity_symbol
         return equity_symbol(s, "HKStock")
     if s.startswith(("USSTOCK:", "FUTURES:")):
@@ -73,7 +73,7 @@ def _position_symbol_candidates(symbol: str) -> List[str]:
             out.append(x)
     if re.fullmatch(r"\d{5}\.HK", norm):
         digits = norm[:-3]
-        for alias in (digits, str(int(digits)), f"{int(digits)}.HK", f"HK.{digits}",
+        for alias in (digits, str(int(digits)), f"{int(digits)}.HK", f"HK.{digits}", f"HK{digits}",
                       f"HKStock:{digits}", f"HKSTOCK:{digits}"):
             if alias not in out:
                 out.append(alias)
