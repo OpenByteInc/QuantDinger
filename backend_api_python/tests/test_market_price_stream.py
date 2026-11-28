@@ -46,6 +46,17 @@ def test_okx_public_price_feed_uses_port_443_websocket(market_type):
     assert _feed("okx", market_type)._url() == "wss://ws.okx.com/ws/v5/public"
 
 
+def test_binance_public_price_feed_uses_market_prefix_for_swap():
+    assert (
+        _feed("binance", "swap")._url()
+        == "wss://fstream.binance.com/market/stream?streams=btcusdt@markPrice@1s"
+    )
+    assert (
+        _feed("binance", "spot")._url()
+        == "wss://stream.binance.com:9443/stream?streams=btcusdt@ticker"
+    )
+
+
 def test_binance_spot_ticker_uses_last_price_instead_of_price_change():
     feed = _feed("binance", market_type="spot")
 
