@@ -22,6 +22,86 @@ def _feed(exchange_id="binance", market_type="swap", fallback=None):
     )
 
 
+class Socket:
+    def __init__(self):
+        self.closed = False
+        self.messages = []
+
+    def close(self):
+        self.closed = True
+
+    def send(self, message):
+        self.messages.append(message)
+
+
+@pytest.mark.parametrize("symbol", ["BTC/USDT", "BTC-USDT", "BTCUSDT"])
+def test_htx_linear_price_subscription_receives_native_symbol(symbol):
+    feed = _feed("htx")
+    feed.instruments[0]["instrument_id"] = symbol
+    assert feed._url() == "wss://api.hbdm.com/linear-swap-ws"
+    assert feed._subscribe_messages()[0]["sub"] == "market.BTC-USDT.detail"
+    feed._handle_message(Socket(), {"ch": "market.BTC-USDT.detail", "tick": {"close": 100}})
+    assert feed.snapshot().source == "public_websocket"
+    assert feed.snapshot().connected
+    assert _feed("htx", "spot")._subscribe_messages()[0]["sub"] == "market.btcusdt.detail"
+
+
+@pytest.mark.parametrize("exchange,payload", [
+    ("okx", {"event": "error", "code": "60012"}),
+    ("bitget", {"event": "error", "code": "30001"}),
+    ("bybit", {"op": "subscribe", "success": False}),
+    ("gate", {"event": "subscribe", "error": {"code": 2}}),
+    ("htx", {"status": "error", "err-code": "bad-request"}),
+])
+def test_public_subscription_rejection_closes_and_keeps_rest_fallback(exchange, payload):
+    feed = _feed(exchange, fallback=lambda: {"Crypto:BTC/USDT@binance:swap": 99})
+    ws = Socket()
+    feed._handle_message(ws, payload)
+    assert ws.closed
+    assert not feed.snapshot().connected
+    assert feed.snapshot().source == "rest_fallback"
+
+
+@pytest.mark.parametrize("exchange,heartbeat,pong", [
+    ("okx", "ping", "pong"), ("bitget", "ping", b"pong"),
+    ("bybit", {"op": "ping"}, {"op": "pong"}),
+])
+def test_public_application_heartbeat_and_ack_timeout(monkeypatch, exchange, heartbeat, pong):
+    feed = _feed(exchange)
+    assert feed._heartbeat_payload() == heartbeat
+    ws = Socket()
+    feed._opened_at = 10
+    feed._subscribed = True
+    clock = iter([10, 31, 62])
+    monkeypatch.setattr("app.services.market_price_stream.time.monotonic", lambda: next(clock))
+
+    class Clock:
+        def wait(self, _seconds):
+            return False
+
+    # The first time read is used as the first heartbeat tick.
+    feed._heartbeat_loop(ws, Clock())
+    assert len(ws.messages) == 1
+    assert ws.closed
+    feed._handle_message(ws, pong)
+    assert feed._ping_sent_at == 0
+
+
+def test_public_subscription_ack_alone_is_not_live_price():
+    feed = _feed("okx")
+    feed._handle_message(Socket(), {"event": "subscribe", "arg": {"channel": "tickers"}})
+    assert feed._subscribed
+    assert not feed.snapshot().connected
+
+
+@pytest.mark.parametrize("price", [float("nan"), float("inf"), -1, 0])
+def test_invalid_stream_prices_do_not_become_healthy(price):
+    feed = _feed()
+    feed._update("BTCUSDT", price)
+    assert not feed.snapshot().connected
+    assert feed.snapshot().prices == {}
+
+
 def test_public_price_feed_normalizes_binance_and_okx_symbols():
     binance = _feed("binance")
     for symbol, price in binance._parse({"data": {"s": "BTCUSDT", "p": "101.5"}}):

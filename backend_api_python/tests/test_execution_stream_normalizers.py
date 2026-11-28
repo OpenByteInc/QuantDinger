@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+
 from types import SimpleNamespace
 
 import pytest
@@ -451,3 +452,21 @@ def test_alpaca_trade_update_and_ibkr_execution_are_normalized():
     assert alpaca.fee_status == "pending"
     assert (ibkr.exchange_id, ibkr.symbol, ibkr.quantity) == ("ibkr", "MSFT", 2)
     assert ibkr.exchange_fill_id == "109"
+
+
+def test_bitget_classic_order_size_is_not_a_fill_and_row_identity_is_preserved():
+    from app.services.execution_streams.normalizers import parse_bitget
+
+    payload = {
+        "arg": {"channel": "orders", "instType": "SPOT", "instId": "default"},
+        "data": [{"instId": "BTCUSDT", "orderId": "order-1", "clientOid": "client-1",
+                  "size": "10", "accBaseVolume": "0", "status": "live"}],
+    }
+    assert parse_bitget(payload) == []
+    payload["data"][0].update({"accBaseVolume": "2", "priceAvg": "100", "status": "partially_filled"})
+    event = parse_bitget(payload)[0]
+    assert event.symbol == "BTC/USDT"
+    assert event.quantity == 0
+    assert event.cumulative_quantity == 2
+    assert event.cumulative_average_price == 100
+    assert event.client_order_id == "client-1"

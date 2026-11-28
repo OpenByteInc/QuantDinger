@@ -232,10 +232,13 @@ class GridEngine:
             self._last_market_price = value
 
     def _qty_from_usdt(self, usdt: float, price: float) -> float:
-        if price <= 0 or usdt <= 0:
+        if not math.isfinite(price) or not math.isfinite(usdt) or price <= 0 or usdt <= 0:
             return 0.0
         lev = self.cfg.leverage if self.cfg.market_type != "spot" else 1.0
-        return float(usdt) * lev / float(price)
+        if not math.isfinite(lev) or lev <= 0:
+            return 0.0
+        quantity = float(usdt) * lev / float(price)
+        return quantity if math.isfinite(quantity) and quantity > 0 else 0.0
 
     def _levels_and_cells(self) -> Tuple[List[float], List[GridCellSpec]]:
         upper, lower = self.cfg.effective_bounds(self._runtime_params)
@@ -1652,11 +1655,11 @@ class GridEngine:
 
     def _normalize_grid_base_qty(self, qty: float, price: float) -> float:
         """Floor to exchange lot/min; return 0 when below tradable minimum."""
-        if qty <= 0 or price <= 0:
+        if not math.isfinite(qty) or not math.isfinite(price) or qty <= 0 or price <= 0:
             return 0.0
         try:
             client = self._create_client()
-            return normalize_grid_order_quantity(
+            normalized = normalize_grid_order_quantity(
                 client,
                 symbol=self.symbol,
                 quantity=float(qty),
@@ -1664,6 +1667,7 @@ class GridEngine:
                 exchange_config=self.exchange_config,
                 price=float(price),
             )
+            return normalized if math.isfinite(normalized) and normalized > 0 else 0.0
         except Exception as e:
             logger.debug("grid normalize qty sid=%s: %s", self.strategy_id, e)
         return 0.0

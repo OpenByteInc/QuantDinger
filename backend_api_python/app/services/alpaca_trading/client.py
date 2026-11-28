@@ -17,6 +17,7 @@ from uuid import UUID
 import requests
 
 from app.utils.logger import get_logger
+from app.utils.broker_order_validation import order_number
 from app.services.alpaca_trading.symbols import parse_symbol
 
 logger = get_logger(__name__)
@@ -78,11 +79,11 @@ def _alpaca_error_status(message: str) -> Optional[int]:
 
 
 def _normalize_equity_price(value: Any) -> float:
-    price = Decimal(str(value or 0))
+    price = Decimal(str(order_number(value, allow_zero=True)))
     if price <= 0:
         return 0.0
     increment = Decimal("0.01") if price >= Decimal("1") else Decimal("0.0001")
-    return float(price.quantize(increment, rounding=ROUND_HALF_UP))
+    return order_number(price.quantize(increment, rounding=ROUND_HALF_UP))
 
 
 def _format_alpaca_error(err: Exception, *, context: str = "") -> str:
@@ -349,13 +350,16 @@ class AlpacaClient:
     ) -> OrderResult:
         """Place a market order. market_type: 'USStock' or 'crypto'."""
         try:
+            quantity = order_number(quantity, allow_zero=True)
+            requested_quantity = quantity
+            requested_notional = order_number(notional, allow_zero=True)
+            take_profit_price = order_number(take_profit_price, allow_zero=True)
+            stop_loss_price = order_number(stop_loss_price, allow_zero=True)
+            if (requested_quantity > 0) == (requested_notional > 0):
+                raise ValueError("Provide exactly one of quantity or notional")
             self._ensure_connected()
             modules = _ensure_alpaca()
             sym, asset_class = parse_symbol(symbol, market_hint=_market_hint_from_type(market_type))
-            requested_quantity = float(quantity or 0.0)
-            requested_notional = float(notional or 0.0)
-            if (requested_quantity > 0) == (requested_notional > 0):
-                raise ValueError("Provide exactly one of quantity or notional")
             if asset_class == "us_equity":
                 asset = self._trading_client.get_asset(sym)
                 if not bool(getattr(asset, "tradable", False)):
@@ -454,6 +458,10 @@ class AlpacaClient:
     ) -> OrderResult:
         """Place a limit order. extended_hours=True for pre/post-market."""
         try:
+            quantity = order_number(quantity)
+            price = order_number(price)
+            take_profit_price = order_number(take_profit_price, allow_zero=True)
+            stop_loss_price = order_number(stop_loss_price, allow_zero=True)
             self._ensure_connected()
             modules = _ensure_alpaca()
             sym, asset_class = parse_symbol(symbol, market_hint=_market_hint_from_type(market_type))

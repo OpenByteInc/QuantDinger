@@ -65,6 +65,7 @@ from app.services.quick_trade.positions import (
 )
 from app.services.quick_trade.strategy_conflicts import cached_recent_strategy_activity as _recent_strategy_conflict
 from app.services.quick_trade.sizing import (
+    QuickTradeSizingError,
     convert_usdt_to_base_qty as _convert_usdt_to_base_qty,
     resolve_order_notional_usdt as _resolve_order_notional_usdt,
 )
@@ -326,17 +327,6 @@ def place_order(body):
                 "data": {"strategy_conflict": strategy_conflict},
             }), 409
 
-        if market_type == "swap":
-            configure_quick_trade_derivatives(
-                client,
-                user_id=user_id,
-                credential_id=credential_id,
-                exchange_id=exchange_id,
-                symbol=symbol,
-                leverage=leverage,
-                margin_mode=margin_mode,
-            )
-
         # Spot orders may use quote notional or base quantity.
         # Swap input is margin and expands by leverage.
         conversion_price = price if order_type == "limit" and price > 0 else 0.0
@@ -425,14 +415,16 @@ def place_order(body):
                     except Exception as be:
                         logger.warning("spot buy balance pre-check skipped: %s", be)
         
-        # Validate conversion: equal values usually mean the price lookup fallback was used.
-        if market_type != "spot" and base_qty == order_notional_usdt and order_notional_usdt >= 1:
-            logger.error(
-                "USDT conversion may have failed: base_qty (%s) equals order_notional_usdt (%s)",
-                base_qty,
-                order_notional_usdt,
+        if market_type == "swap":
+            configure_quick_trade_derivatives(
+                client,
+                user_id=user_id,
+                credential_id=credential_id,
+                exchange_id=exchange_id,
+                symbol=symbol,
+                leverage=leverage,
+                margin_mode=margin_mode,
             )
-            logger.error(f"This suggests the price fetch failed. Order may fail due to insufficient margin.")
 
         executable_base_qty, quantity_snapshot = normalized_submission_quantity(
             client,
@@ -646,6 +638,12 @@ def place_order(body):
             },
         })
 
+    except QuickTradeSizingError:
+        return jsonify({
+            "code": 0,
+            "msg": "quickTrade.errorHints.sizingUnavailable",
+            "error_hint": "quickTrade.errorHints.sizingUnavailable",
+        }), 400
     except Exception as e:
         logger.error(f"quick trade failed: {e}")
         logger.error(traceback.format_exc())

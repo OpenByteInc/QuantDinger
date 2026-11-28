@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import math
 import ssl
 import threading
 import time
@@ -87,6 +88,9 @@ class PublicMarketPriceFeed:
         self._thread: threading.Thread | None = None
         self._ws: Any = None
         self._connected = False
+        self._subscribed = False
+        self._opened_at = 0.0
+        self._ping_sent_at = 0.0
 
     @property
     def supported(self) -> bool:
@@ -173,24 +177,24 @@ class PublicMarketPriceFeed:
             return
         backoff = 1.0
         while not self._stop.is_set():
+            connection_stop = threading.Event()
+            heartbeat_thread = None
             try:
                 def on_open(ws):
-                    self._connected = True
+                    nonlocal heartbeat_thread
+                    self._connected = False
+                    self._subscribed = False
+                    self._opened_at = time.monotonic()
+                    self._ping_sent_at = 0.0
                     for message in self._subscribe_messages():
                         ws.send(json.dumps(message, separators=(",", ":")))
+                    heartbeat_thread = threading.Thread(
+                        target=self._heartbeat_loop, args=(ws, connection_stop), daemon=True,
+                    )
+                    heartbeat_thread.start()
 
                 def on_message(ws, raw):
-                    payload = _json_payload(raw)
-                    if not payload:
-                        return
-                    if payload.get("ping") is not None:
-                        ws.send(json.dumps({"pong": payload["ping"]}))
-                        return
-                    if payload.get("op") == "ping":
-                        ws.send(json.dumps({"op": "pong", "ts": payload.get("ts")}))
-                        return
-                    for symbol, price in self._parse(payload):
-                        self._update(symbol, price)
+                    self._handle_message(ws, raw)
 
                 def on_error(_ws, error):
                     self._connected = False
@@ -221,9 +225,80 @@ class PublicMarketPriceFeed:
             except Exception as exc:
                 self._connected = False
                 logger.debug("Public market stream reconnect exchange=%s: %s", self.exchange_id, exc)
+            finally:
+                connection_stop.set()
+                if heartbeat_thread:
+                    heartbeat_thread.join(timeout=1.0)
+                if self._connected:
+                    backoff = 1.0
+                self._connected = False
             if self._stop.wait(backoff):
                 break
             backoff = min(30.0, backoff * 2.0)
+
+    def _heartbeat_payload(self) -> Any:
+        if self.exchange_id in {"okx", "bitget"}:
+            return "ping"
+        if self.exchange_id == "bybit":
+            return {"op": "ping"}
+        return None
+
+    def _heartbeat_loop(self, ws: Any, connection_stop: threading.Event) -> None:
+        last_ping = self._opened_at
+        while not connection_stop.wait(1.0) and not self._stop.is_set():
+            now = time.monotonic()
+            if (not self._subscribed and now - self._opened_at > 30) or (
+                self._ping_sent_at and now - self._ping_sent_at > 30
+            ):
+                self._connected = False
+                logger.warning("Public market stream acknowledgement timeout exchange=%s", self.exchange_id)
+                ws.close()
+                return
+            heartbeat = self._heartbeat_payload()
+            if heartbeat is not None and not self._ping_sent_at and now - last_ping >= 20:
+                self._ping_sent_at = now
+                last_ping = now
+                try:
+                    ws.send(heartbeat if isinstance(heartbeat, str) else json.dumps(heartbeat))
+                except Exception:
+                    ws.close()
+                    return
+
+    def _handle_message(self, ws: Any, raw: Any) -> None:
+        if raw in ("pong", b"pong"):
+            self._ping_sent_at = 0.0
+            return
+        payload = _json_payload(raw)
+        if not payload:
+            return
+        if payload.get("op") == "pong" or payload.get("ret_msg") == "pong":
+            self._ping_sent_at = 0.0
+            return
+        if payload.get("ping") is not None:
+            ws.send(json.dumps({"pong": payload["ping"]}))
+            return
+        if payload.get("op") == "ping":
+            ws.send(json.dumps({"op": "pong", "ts": payload.get("ts")}))
+            return
+        failed = (
+            payload.get("event") == "error" or payload.get("status") == "error"
+            or bool(payload.get("error")) or payload.get("success") is False
+            or str(payload.get("code") or "0") != "0"
+        )
+        if failed:
+            self._connected = False
+            logger.warning("Public market subscription rejected exchange=%s code=%s", self.exchange_id,
+                           payload.get("code") or payload.get("err-code") or "subscription_error")
+            ws.close()
+            return
+        if payload.get("event") == "subscribe" or payload.get("op") == "subscribe" or payload.get("subbed"):
+            self._subscribed = True
+            return
+        try:
+            for symbol, price in self._parse(payload):
+                self._update(symbol, price)
+        except (TypeError, ValueError, OverflowError):
+            logger.debug("Invalid public price payload exchange=%s", self.exchange_id)
 
     def _symbols(self) -> list[str]:
         return [
@@ -248,7 +323,7 @@ class PublicMarketPriceFeed:
             return "wss://ws.bitget.com/v3/ws/public"
         if self.exchange_id == "gate":
             return "wss://fx-ws.gateio.ws/v4/ws/usdt" if swap else "wss://api.gateio.ws/ws/v4/"
-        return "wss://api.hbdm.com/swap-ws" if swap else "wss://api.huobi.pro/ws"
+        return "wss://api.hbdm.com/linear-swap-ws" if swap else "wss://api.huobi.pro/ws"
 
     def _subscribe_messages(self) -> list[Dict[str, Any]]:
         swap = self.market_type != "spot"
@@ -282,10 +357,18 @@ class PublicMarketPriceFeed:
             ]}]
         if self.exchange_id == "htx":
             return [
-                {"sub": f"market.{symbol.replace('/', '').lower()}.detail", "id": str(index + 1)}
+                {"sub": f"market.{self._htx_symbol(symbol)}.detail", "id": str(index + 1)}
                 for index, symbol in enumerate(self._symbols())
             ]
         return []
+
+    def _htx_symbol(self, symbol: str) -> str:
+        compact = _normalized_symbol(symbol)
+        if self.market_type == "spot":
+            return compact.lower()
+        if compact.endswith("USDT"):
+            return compact[:-4] + "-USDT"
+        return symbol.replace("/", "-").upper()
 
     def _parse(self, payload: Dict[str, Any]) -> list[tuple[str, float]]:
         if self.exchange_id == "binance":
@@ -355,7 +438,9 @@ class PublicMarketPriceFeed:
         except Exception:
             return
         key = self._aliases.get(_normalized_symbol(symbol))
-        if not key or value <= 0:
+        if not key or not math.isfinite(value) or value <= 0:
             return
         with self._lock:
             self._prices[key] = (value, time.monotonic())
+        self._subscribed = True
+        self._connected = True

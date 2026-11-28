@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from typing import Optional, Dict, Any, List
 
 from app.utils.logger import get_logger
+from app.utils.broker_order_validation import order_number
 from app.utils.local_brokers import require_local_desktop_brokers_allowed
 from app.services.ibkr_trading.symbols import normalize_symbol, format_display_symbol
 
@@ -307,6 +308,7 @@ class IBKRClient:
             OrderResult
         """
         try:
+            quantity = order_number(quantity)
             self._ensure_connected()
             _ensure_ib_insync()
             
@@ -362,6 +364,8 @@ class IBKRClient:
             OrderResult
         """
         try:
+            quantity = order_number(quantity)
+            price = order_number(price)
             self._ensure_connected()
             _ensure_ib_insync()
             
@@ -409,6 +413,10 @@ class IBKRClient:
     ) -> OrderResult:
         """Submit a parent order and attached take-profit/stop-loss orders atomically."""
         try:
+            quantity = order_number(quantity)
+            limit_price = order_number(limit_price, allow_zero=True)
+            take_profit_price = order_number(take_profit_price, allow_zero=True)
+            stop_loss_price = order_number(stop_loss_price, allow_zero=True)
             self._ensure_connected()
             _ensure_ib_insync()
             contract = self._create_contract(symbol, market_type)

@@ -15,6 +15,7 @@ from flask import g, jsonify, request
 from app.openapi.blueprint import HumanBlueprint as Blueprint
 from app.utils.auth import login_required, trading_required
 from app.utils.logger import get_logger
+from app.utils.broker_order_validation import BrokerOrderValidationError, order_number
 from app.utils.broker_session import BrokerSessionRegistry
 from app.utils.credential_crypto import decrypt_credential_blob, encrypt_credential_blob
 from app.utils.db import get_db_connection
@@ -466,10 +467,10 @@ def place_order():
         symbol = data.get('symbol')
         side = data.get('side')
         try:
-            quantity = float(data.get('quantity') or 0)
-            notional = float(data.get('notional') or data.get('amount') or 0)
+            quantity = order_number(data.get('quantity'), allow_zero=True)
+            notional = order_number(data.get('notional'), allow_zero=True) or order_number(data.get('amount'), allow_zero=True)
         except (TypeError, ValueError):
-            return jsonify({"success": False, "error": "quantity and notional must be numeric"}), 400
+            return jsonify({"success": False, "error": "brokerAccounts.invalidOrder"}), 400
         if not symbol:
             return jsonify({"success": False, "error": "Missing symbol"}), 400
         if not side or side.lower() not in ('buy', 'sell'):
@@ -481,21 +482,22 @@ def place_order():
         order_type = (data.get('orderType') or 'market').lower()
 
         try:
-            take_profit_price = float(data.get('take_profit_price') or 0)
-            stop_loss_price = float(data.get('stop_loss_price') or 0)
+            take_profit_price = order_number(data.get('take_profit_price'), allow_zero=True)
+            stop_loss_price = order_number(data.get('stop_loss_price'), allow_zero=True)
         except (TypeError, ValueError):
-            return jsonify({"success": False, "error": "quickTrade.errorHints.invalidPrice"}), 400
+            return jsonify({"success": False, "error": "brokerAccounts.invalidOrder"}), 400
         protection_requested = take_profit_price > 0 or stop_loss_price > 0
 
         if order_type == 'limit':
             try:
-                price = float(data.get('price') or 0)
+                price = order_number(data.get('price'))
             except (TypeError, ValueError):
                 price = 0
             if price <= 0:
                 return jsonify({"success": False, "error": "Limit order requires price"}), 400
             if notional > 0:
-                quantity = int((notional / price) * 1_000_000_000) / 1_000_000_000
+                quantity = order_number(notional / price)
+                quantity = int(order_number(quantity * 1_000_000_000)) / 1_000_000_000
                 if quantity <= 0:
                     return jsonify({"success": False, "error": "notional is too small for the limit price"}), 400
             result = client.place_limit_order(
@@ -524,6 +526,8 @@ def place_order():
                 },
             })
         return jsonify({"success": False, "error": result.message, "data": result.raw}), 400
+    except BrokerOrderValidationError:
+        return jsonify({"success": False, "error": "brokerAccounts.invalidOrder"}), 400
     except Exception as e:
         logger.error(f"Place order failed: {e}")
         return jsonify({"success": False, "error": str(e)}), 500

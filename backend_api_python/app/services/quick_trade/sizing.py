@@ -2,10 +2,19 @@
 
 from __future__ import annotations
 
+import math
+
 from app.utils.logger import get_logger
 
 
 logger = get_logger(__name__)
+
+
+class QuickTradeSizingError(ValueError):
+    """The order cannot be sized safely; no submission is permitted."""
+
+    def __init__(self):
+        super().__init__("quickTrade.errorHints.sizingUnavailable")
 
 
 def resolve_order_notional_usdt(amount_usdt: float, leverage: int, market_type: str) -> float:
@@ -34,10 +43,13 @@ def convert_usdt_to_base_qty(client, symbol: str, usdt_amount: float, market_typ
     Returns:
         Base asset quantity
     """
-    if usdt_amount <= 0:
-        return usdt_amount
-
     try:
+        usdt_amount = float(usdt_amount)
+        reference_price = float(reference_price)
+        if not math.isfinite(usdt_amount) or usdt_amount <= 0:
+            raise QuickTradeSizingError()
+        if not math.isfinite(reference_price) or reference_price < 0:
+            raise QuickTradeSizingError()
         # Try to get current price from exchange
         current_price = 0.0
 
@@ -55,8 +67,9 @@ def convert_usdt_to_base_qty(client, symbol: str, usdt_amount: float, market_typ
                                 current_price = float(ticker.get(_pk) or 0)
                             except Exception:
                                 current_price = 0.0
-                            if current_price > 0:
+                            if math.isfinite(current_price) and current_price > 0:
                                 break
+                            current_price = 0.0
                 except Exception:
                     current_price = 0.0
 
@@ -147,21 +160,16 @@ def convert_usdt_to_base_qty(client, symbol: str, usdt_amount: float, market_typ
                 except Exception:
                     pass
 
-            # Other exchanges - can be added as needed
-            # For exchanges without price API, we'll use a fallback
-
-        if current_price > 0:
+        if math.isfinite(current_price) and current_price > 0:
             base_qty = usdt_amount / current_price
+            if not math.isfinite(base_qty) or base_qty <= 0:
+                raise QuickTradeSizingError()
             logger.info(f"Converted USDT amount {usdt_amount} to base qty {base_qty:.8f} using price {current_price} for {symbol}")
             return base_qty
-        else:
-            # Can't get price - this is critical for quick trade
-            # Quick trade always expects USDT input, so we must convert
-            logger.error(f"CRITICAL: Could not get price for {symbol} on {type(client).__name__} to convert USDT amount {usdt_amount}")
-            logger.error(f"This will cause order to fail. Please check exchange API connectivity or symbol format.")
-            # Still return original amount as fallback, but log error
-            return usdt_amount
-
+        logger.warning("Quick Trade sizing rejected: no valid price for %s on %s", symbol, type(client).__name__)
+        raise QuickTradeSizingError()
+    except QuickTradeSizingError:
+        raise
     except Exception as e:
-        logger.warning(f"Failed to convert USDT amount to base qty: {e}, using original amount")
-        return usdt_amount
+        logger.warning("Quick Trade sizing rejected for %s: %s", symbol, e)
+        raise QuickTradeSizingError() from e
