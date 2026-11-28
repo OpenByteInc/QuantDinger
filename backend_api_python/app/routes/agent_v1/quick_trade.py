@@ -340,6 +340,10 @@ def _place_live_order(*, body: dict, user_id: int) -> dict:
 
     tp_price = float(body.get("tp_price") or body.get("tpPrice") or 0)
     sl_price = float(body.get("sl_price") or body.get("slPrice") or 0)
+    trailing_stop_pct = max(0.0, float(body.get("trailing_stop_pct") or body.get("trailingStopPct") or 0))
+    trailing_activation_pct = max(
+        0.0, float(body.get("trailing_activation_pct") or body.get("trailingActivationPct") or 0)
+    )
     protection_result = []
     protection_error = ""
     try:
@@ -356,6 +360,8 @@ def _place_live_order(*, body: dict, user_id: int) -> dict:
             leverage=leverage,
             margin_mode=margin_mode,
             client_order_id=f"{client_order_id}p",
+            trailing_stop_pct=trailing_stop_pct,
+            trailing_activation_pct=trailing_activation_pct,
         )
     except Exception as protection_exc:
         protection_error = str(protection_exc)

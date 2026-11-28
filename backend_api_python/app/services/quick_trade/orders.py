@@ -233,13 +233,17 @@ def attach_quick_trade_protection(
     leverage: float,
     margin_mode: str,
     client_order_id: str,
+    trailing_stop_pct: float = 0.0,
+    trailing_activation_pct: float = 0.0,
 ) -> list[Dict[str, Any]]:
     """Attach native protection to the filled part of a Quick Trade entry."""
     if str(market_type or "").strip().lower() != "swap":
         return []
     if float(filled_qty or 0.0) <= 0 or float(avg_price or 0.0) <= 0:
         return []
-    if float(tp_price or 0.0) <= 0 and float(sl_price or 0.0) <= 0:
+    trailing_stop_pct = max(0.0, float(trailing_stop_pct or 0.0))
+    trailing_activation_pct = max(0.0, float(trailing_activation_pct or 0.0))
+    if float(tp_price or 0.0) <= 0 and float(sl_price or 0.0) <= 0 and trailing_stop_pct <= 0:
         return []
     from app.services.live_trading.native_protection import (
         NativeProtectionRequest,
@@ -254,6 +258,8 @@ def attach_quick_trade_protection(
         entry_price=float(avg_price),
         stop_loss_price=float(sl_price or 0.0),
         take_profit_price=float(tp_price or 0.0),
+        trailing_stop_pct=trailing_stop_pct,
+        trailing_activation_pct=trailing_activation_pct,
         margin_mode="isolated" if str(margin_mode).lower() in ("isolated", "iso") else "cross",
         leverage=float(leverage or 1.0),
         product_type=str(cfg.get("product_type") or cfg.get("productType") or "USDT-FUTURES"),
