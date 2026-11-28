@@ -11,6 +11,7 @@ security fixes. The canonical release history is available on the
 - Added DCO verification for pull requests.
 - Added keyless Sigstore signing for published backend container images.
 - Tightened default GitHub Actions token permissions.
+- Added MartLLM as an OpenAI-compatible LLM provider (`LLM_PROVIDER=martllm`).
 
 ## Security changes
 

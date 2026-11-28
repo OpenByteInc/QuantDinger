@@ -123,6 +123,11 @@ def load_addon_config() -> Dict[str, Any]:
         ('ATLASCLOUD_BASE_URL', 'atlascloud.base_url', 'string'),
         ('ATLASCLOUD_MODEL', 'atlascloud.model', 'string'),
 
+        # MartLLM
+        ('MARTLLM_API_KEY', 'martllm.api_key', 'string'),
+        ('MARTLLM_BASE_URL', 'martllm.base_url', 'string'),
+        ('MARTLLM_MODEL', 'martllm.model', 'string'),
+
         # Custom OpenAI-compatible endpoint (see LLMProvider.CUSTOM)
         ('CUSTOM_API_KEY', 'custom.api_key', 'string'),
         ('CUSTOM_API_URL', 'custom.base_url', 'string'),

@@ -1,7 +1,7 @@
 """
 LLM service.
 Supports multiple providers: OpenRouter, OpenAI, Google Gemini, DeepSeek, Grok,
-AtlasCloud, Custom (OpenAI-compatible), MiniMax.
+AtlasCloud, MartLLM, Custom (OpenAI-compatible), MiniMax.
 Kept separate from AnalysisService to avoid circular imports.
 """
 import json
@@ -113,6 +113,7 @@ class LLMProvider(Enum):
     DEEPSEEK = "deepseek"
     GROK = "grok"
     ATLASCLOUD = "atlascloud"
+    MARTLLM = "martllm"
     CUSTOM = "custom"
     MINIMAX = "minimax"
     LITELLM = "litellm"
@@ -150,6 +151,11 @@ PROVIDER_CONFIGS = {
         "default_model": "openai/gpt-5.4",
         "fallback_model": "openai/gpt-5.4",
     },
+    LLMProvider.MARTLLM: {
+        "base_url": "https://api.martllm.com/v1",
+        "default_model": "openai/gpt-5.4",
+        "fallback_model": "openai/gpt-4o-mini",
+    },
     LLMProvider.CUSTOM: {
         "base_url": "",  # User configured via CUSTOM_API_URL
         "default_model": "",  # User configured via CUSTOM_MODEL
@@ -176,7 +182,7 @@ class LLMService:
         Initialize LLM service.
 
         Args:
-            provider: Override the default provider (openrouter, openai, google, deepseek, grok, atlascloud, custom, minimax)
+            provider: Override the default provider (openrouter, openai, google, deepseek, grok, atlascloud, martllm, custom, minimax)
         """
         self._provider_override = provider
         # Populated by call_llm_api() so callers can report what actually answered;
@@ -208,7 +214,7 @@ class LLMService:
                 pass
         
         # Auto-detect: find any provider with a configured API key
-        # Priority: DeepSeek > AtlasCloud > Grok > MiniMax > OpenAI > Google > OpenRouter
+        # Priority: DeepSeek > AtlasCloud > Grok > MiniMax > OpenAI > Google > MartLLM > OpenRouter
         # (LiteLLM excluded from auto-detect; must be set explicitly via LLM_PROVIDER=litellm)
         priority_order = [
             LLMProvider.DEEPSEEK,
@@ -217,6 +223,7 @@ class LLMService:
             LLMProvider.MINIMAX,
             LLMProvider.OPENAI,
             LLMProvider.GOOGLE,
+            LLMProvider.MARTLLM,
             LLMProvider.OPENROUTER,
         ]
         
@@ -239,6 +246,7 @@ class LLMService:
             LLMProvider.DEEPSEEK: APIKeys.DEEPSEEK_API_KEY,
             LLMProvider.GROK: APIKeys.GROK_API_KEY,
             LLMProvider.ATLASCLOUD: APIKeys.ATLASCLOUD_API_KEY,
+            LLMProvider.MARTLLM: APIKeys.MARTLLM_API_KEY,
             LLMProvider.CUSTOM: APIKeys.CUSTOM_API_KEY,
             LLMProvider.MINIMAX: APIKeys.MINIMAX_API_KEY,
             LLMProvider.LITELLM: APIKeys.LITELLM_API_KEY,
@@ -448,7 +456,7 @@ class LLMService:
     def _call_openai_compatible(self, messages: list, model: str, temperature: float, 
                                  api_key: str, base_url: str, timeout: int,
                                  use_json_mode: bool = True, allow_response_format_retry: bool = False) -> str:
-        """Call OpenAI-compatible API (OpenAI, DeepSeek, Grok, AtlasCloud, OpenRouter)."""
+        """Call OpenAI-compatible API (OpenAI, DeepSeek, Grok, AtlasCloud, MartLLM, OpenRouter)."""
         url = f"{base_url}/chat/completions"
         
         headers = {"Content-Type": "application/json"}
@@ -488,6 +496,8 @@ class LLMService:
             normalized_base_url = (base_url or "").lower()
             if "atlascloud" in normalized_base_url:
                 provider_name = "AtlasCloud"
+            elif "martllm" in normalized_base_url:
+                provider_name = "MartLLM"
             elif "openrouter" in normalized_base_url:
                 provider_name = "OpenRouter"
             else:
@@ -1114,6 +1124,14 @@ class LLMService:
         if provider in (LLMProvider.OPENROUTER, LLMProvider.LITELLM):
             return model
 
+        # MartLLM model ids use the same vendor/model format as OpenRouter
+        # (e.g. openai/gpt-5.4, deepseek/deepseek-v4-flash). Keep them intact,
+        # accepting martllm/vendor/model as a convenience alias.
+        if provider == LLMProvider.MARTLLM:
+            if model.lower().startswith('martllm/'):
+                return model.split('/', 1)[1]
+            return model
+
         # AtlasCloud is OpenAI-compatible and may expose routed model ids such
         # as openai/gpt-5.4. Keep third-party prefixes intact, while still
         # accepting atlascloud/model as a convenience alias.
@@ -1178,6 +1196,7 @@ class LLMService:
             'xai': LLMProvider.GROK,
             'atlascloud': LLMProvider.ATLASCLOUD,
             'atlas': LLMProvider.ATLASCLOUD,
+            'martllm': LLMProvider.MARTLLM,
             'minimax': LLMProvider.MINIMAX,
             'anthropic': LLMProvider.OPENROUTER,  # Anthropic only via OpenRouter
             'meta': LLMProvider.OPENROUTER,  # Meta/Llama only via OpenRouter
@@ -1257,7 +1276,7 @@ class LLMService:
                 )
             # If no API key for current provider, try to find any available provider
             if try_alternative_providers:
-                for alt_provider in [LLMProvider.DEEPSEEK, LLMProvider.ATLASCLOUD, LLMProvider.GROK, LLMProvider.MINIMAX, LLMProvider.OPENAI, LLMProvider.GOOGLE, LLMProvider.OPENROUTER]:
+                for alt_provider in [LLMProvider.DEEPSEEK, LLMProvider.ATLASCLOUD, LLMProvider.GROK, LLMProvider.MINIMAX, LLMProvider.OPENAI, LLMProvider.GOOGLE, LLMProvider.MARTLLM, LLMProvider.OPENROUTER]:
                     if alt_provider != p and self.get_api_key(alt_provider):
                         logger.warning(f"No API key for {p.value}, switching to {alt_provider.value}")
                         p = alt_provider
@@ -1318,7 +1337,9 @@ class LLMService:
                 else:
                     # OpenAI-compatible providers
                     compatible_options = {"use_json_mode": use_json_mode}
-                    if p == LLMProvider.CUSTOM and use_json_mode:
+                    if p in (LLMProvider.CUSTOM, LLMProvider.MARTLLM) and use_json_mode:
+                        # Gateways route to many upstream models; some reject
+                        # response_format, so retry once without it.
                         compatible_options["allow_response_format_retry"] = True
                     result = self._call_openai_compatible(
                         messages, current_model, temperature,
@@ -1475,7 +1496,7 @@ class LLMService:
         """
         Try alternative providers when current provider fails.
 
-        Priority: DeepSeek > AtlasCloud > Grok > MiniMax > OpenAI > Google > OpenRouter
+        Priority: DeepSeek > AtlasCloud > Grok > MiniMax > OpenAI > Google > MartLLM > OpenRouter
         """
         priority_order = [
             LLMProvider.DEEPSEEK,
@@ -1484,6 +1505,7 @@ class LLMService:
             LLMProvider.MINIMAX,
             LLMProvider.OPENAI,
             LLMProvider.GOOGLE,
+            LLMProvider.MARTLLM,
             LLMProvider.OPENROUTER,
         ]
         
