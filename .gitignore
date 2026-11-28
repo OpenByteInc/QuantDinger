@@ -106,3 +106,12 @@ backend_api_python/data/memory/
 # Docker
 # ========================
 docker-compose.override.yml
+
+# Local design references, image generation notes, and visual QA output
+/docs/design-references/
+*.prompt.txt
+/audits/
+/design-qa*/
+/screenshots/
+/playwright-report/
+/test-results/
