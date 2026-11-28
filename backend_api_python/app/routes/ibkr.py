@@ -13,6 +13,7 @@ from app.openapi.blueprint import HumanBlueprint as Blueprint
 from app.utils.auth import login_required, trading_required
 
 from app.utils.logger import get_logger
+from app.utils.broker_order_validation import BrokerOrderValidationError, order_number
 from app.utils.broker_session import BrokerSessionRegistry
 from app.utils.local_brokers import (
     desktop_broker_cloud_reject_message,
@@ -283,7 +284,10 @@ def place_order():
         # Validate parameters
         symbol = data.get('symbol')
         side = data.get('side')
-        quantity = data.get('quantity')
+        try:
+            quantity = order_number(data.get('quantity'))
+        except BrokerOrderValidationError as exc:
+            return jsonify({"success": False, "error": str(exc)}), 400
 
         if not symbol:
             return jsonify({"success": False, "error": "Missing symbol"}), 400
@@ -297,7 +301,10 @@ def place_order():
 
         # Place order
         if order_type == 'limit':
-            price = data.get('price')
+            try:
+                price = order_number(data.get('price'))
+            except BrokerOrderValidationError as exc:
+                return jsonify({"success": False, "error": str(exc)}), 400
             if not price or float(price) <= 0:
                 return jsonify({"success": False, "error": "Limit order requires price"}), 400
 

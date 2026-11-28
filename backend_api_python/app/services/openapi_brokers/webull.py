@@ -11,6 +11,7 @@ from typing import Any, List, Optional
 from urllib.parse import quote, urlencode
 
 import requests
+from app.utils.broker_order_validation import order_number
 
 from .base import (BrokerApiError, BrokerOrderResult, _HttpClient, _number,
                    _compact_json, _canonical_order_status, _data_list)
@@ -243,6 +244,8 @@ class WebullClient(_HttpClient):
 
     def _place_order(self, *, symbol: str, side: str, quantity: float, order_type: str, price: float = 0.0,
                      market_type: str = "USStock", client_order_id: str = "", **_: Any) -> BrokerOrderResult:
+        quantity = order_number(quantity)
+        price = order_number(price, allow_zero=order_type.upper() != "LIMIT")
         if str(market_type).strip().lower() not in ("usstock", "stock", "equity", "spot"):
             raise BrokerApiError("brokerAccounts.webull.usStocksOnly")
         ticker = str(symbol or "").strip().upper()

@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any, List
 
 from .base import BrokerApiError, BrokerOrderResult, _number, _canonical_order_status
+from app.utils.broker_order_validation import order_number
 
 
 @dataclass(frozen=True)
@@ -279,8 +280,8 @@ class TigerClient:
 
     def _place_order(self, *, symbol: str, side: str, quantity: float, order_type: str, price: float = 0.0,
                      market_type: str = "USStock", client_order_id: str = "", **_: Any) -> BrokerOrderResult:
-        if quantity <= 0:
-            raise ValueError("brokerAccounts.invalidOrder")
+        quantity = order_number(quantity)
+        price = order_number(price, allow_zero=order_type != "limit")
         ticker, currency = self._instrument(symbol, market_type)
         if currency == "HKD":
             from app.services.market.hk_board_lots import validate_board_lot

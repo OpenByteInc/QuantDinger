@@ -15,6 +15,7 @@ from app.utils.broker_session import BrokerSessionRegistry
 from app.utils.credential_crypto import decrypt_credential_blob, encrypt_credential_blob
 from app.utils.db import get_db_connection
 from app.utils.logger import get_logger
+from app.utils.broker_order_validation import order_number
 from app.utils.trading_venue_visibility import is_trading_venue_enabled
 
 logger = get_logger(__name__)
@@ -599,14 +600,23 @@ def place_order(broker: str):
         symbol = str(data.get("symbol") or "").strip()
         side = str(data.get("side") or "").strip().lower()
         order_type = str(data.get("orderType") or data.get("order_type") or "market").strip().lower()
-        quantity = float(data.get("quantity") or data.get("size") or 0)
+        quantity = order_number(
+            order_number(data.get("quantity"), allow_zero=True)
+            or order_number(data.get("size"), allow_zero=True)
+        )
         if broker == "forthright" and any(data.get(key) for key in (
             "take_profit_price", "stop_loss_price", "takeProfitPrice", "stopLossPrice",
         )):
             raise ValueError("brokerAccounts.forthright.protectionUnsupported")
-        price = float(data.get("price") or data.get("limitPrice") or 0)
-        extra = ({"reference_price": float(data.get("referencePrice") or data.get("reference_price") or price)}
-                 if broker == "forthright" else {})
+        price = order_number(data.get("price"), allow_zero=True) or order_number(data.get("limitPrice"), allow_zero=True)
+        price = order_number(price, allow_zero=order_type != "limit")
+        extra = {}
+        if broker == "forthright":
+            extra["reference_price"] = (
+                order_number(data.get("referencePrice"), allow_zero=True)
+                or order_number(data.get("reference_price"), allow_zero=True)
+                or price
+            )
         if not symbol or side not in ("buy", "sell") or quantity <= 0:
             raise ValueError("brokerAccounts.invalidOrder")
         if order_type == "limit":

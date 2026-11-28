@@ -4,6 +4,14 @@
 
 This guide defines the minimum checks before moving from backtest or signal mode to real capital. Venue, broker, region, and account type affect available products; the active catalog and account response take precedence over static examples.
 
+## Quick Trade quantity conversion
+
+Quick Trade rejects quote-amount orders with HTTP 400 when it cannot obtain a positive, finite conversion price or calculate a positive, finite base quantity. It never treats the input USDT amount as a base-asset quantity on failure. Rejection happens before derivative account configuration and order submission; no order is automatically retried. Valid limit prices and recent reference prices retain their existing conversion paths. Spot orders explicitly entered in base quantity retain their separate sizing path. Deploy the backend fix for enforcement and the desktop/mobile locale updates for the translated rejection message; no database migration is required.
+
+## Broker order numeric validation
+
+Alpaca, IBKR, Tiger, Webull and Forthright validate order numbers at both the HTTP entry point and the broker adapter. Required quantities, notionals and limit prices must be positive and finite; optional protection prices may be zero when disabled. NaN, infinity, negative values, booleans and malformed numbers are rejected locally. Alpaca limit-notional conversion also rejects overflow and quantities that round to zero. IBKR bracket orders and Alpaca attached protection validate their inputs before submitting the parent order. Existing share precision, HK board-lot rules and supported notional orders remain in effect. Deploy the backend and any trading workers using these adapters together; no migration is required.
+
 ## Support boundary
 
 | Market | Current live venues | Key limit |

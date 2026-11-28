@@ -25,6 +25,7 @@ from cryptography.hazmat.primitives.asymmetric import ed25519, padding, rsa
 
 from .base import BrokerApiError, BrokerOrderResult, _HttpClient
 from .symbols import equity_symbol
+from app.utils.broker_order_validation import order_number
 
 _request_lock = threading.Lock()
 _next_request = {}
@@ -473,6 +474,9 @@ class ForthrightClient(_HttpClient):
 
     def _place(self, *, symbol, side, quantity, market_type="USStock", price=0,
                order_type="market", client_order_id="", reference_price=0, **kwargs):
+        quantity = order_number(quantity)
+        price = order_number(price, allow_zero=order_type != "limit")
+        reference_price = order_number(reference_price, allow_zero=True)
         product, exchange, contract = self._instrument(symbol, market_type)
         qty = float(quantity)
         if self.is_futures and self.strategy_units:
