@@ -233,10 +233,11 @@ def parse_bitget(payload: Dict[str, Any]) -> List[ExecutionEvent]:
                 item.get("fillQty")
                 or item.get("baseVolume")
                 or item.get("execQty")
-                or item.get("size")
+                or (item.get("size") if not is_order else None)
             )
         fill_id = str(item.get("tradeId") or item.get("execId") or "")
-        if qty <= 0 and not fill_id:
+        cumulative_qty = as_float(item.get("cumExecQty") or item.get("accBaseVolume"))
+        if qty <= 0 and not fill_id and not (is_order and cumulative_qty > 0):
             continue
         fees: List[FeeComponent] = []
         details = item.get("feeDetail")
@@ -263,9 +264,9 @@ def parse_bitget(payload: Dict[str, Any]) -> List[ExecutionEvent]:
             ExecutionEvent(
                 exchange_id="bitget",
                 market_type="spot" if is_spot else "swap",
-                symbol=normalize_symbol(item.get("symbol") or arg.get("symbol") or arg.get("instId")),
+                symbol=normalize_symbol(item.get("symbol") or item.get("instId") or arg.get("symbol") or arg.get("instId")),
                 exchange_order_id=str(item.get("orderId") or item.get("ordId") or ""),
-                client_order_id=str(item.get("clientOid") or item.get("clOrdId") or ""),
+                client_order_id=str(item.get("clientOid") or item.get("clientOId") or item.get("clOrdId") or ""),
                 exchange_fill_id=fill_id,
                 side=str(item.get("side") or "").lower(),
                 position_side=str(item.get("posSide") or item.get("holdSide") or "").lower(),
@@ -279,7 +280,7 @@ def parse_bitget(payload: Dict[str, Any]) -> List[ExecutionEvent]:
                     or item.get("price")
                 ),
                 quantity=qty,
-                cumulative_quantity=as_float(item.get("cumExecQty") or item.get("accBaseVolume")),
+                cumulative_quantity=cumulative_qty,
                 cumulative_average_price=as_float(item.get("avgPrice") or item.get("priceAvg")) if is_order else 0.0,
                 fees_cumulative=is_order and isinstance(details, list),
                 realized_pnl=as_float(item.get("execPnl") or item.get("profit")) if item.get("execPnl") not in (None, "") or item.get("profit") not in (None, "") else None,

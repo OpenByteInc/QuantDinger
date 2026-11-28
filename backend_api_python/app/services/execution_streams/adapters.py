@@ -96,6 +96,37 @@ class PrivateWebSocketAdapter:
         self._auth_paused = False
         self._last_error = ""
         self._last_message_at = 0.0
+        self._awaiting_pong_at = 0.0
+        self._pending_subscriptions: set[str] = set()
+
+    @staticmethod
+    def _subscription_key(message: Dict[str, Any]) -> str:
+        if isinstance(message.get("arg"), dict):
+            return json.dumps(message["arg"], sort_keys=True)
+        return str(message.get("topic") or message.get("ch") or message.get("op") or "")
+
+    def subscribe(self, ws: Any, messages: List[Dict[str, Any]]) -> None:
+        self._connected = False
+        self._pending_subscriptions = {
+            self._subscription_key({"arg": arg}) if isinstance(arg, dict) else "subscribe"
+            for message in messages for arg in message.get("args", [])
+        } | {
+            self._subscription_key(message) for message in messages if not message.get("args")
+        }
+        self.on_state("subscribing", "", self._reconnects > 0)
+        for message in messages:
+            ws.send(json.dumps(message))
+
+    def subscription_failed(self, ws: Any, reason: str) -> None:
+        self._connected = False
+        self._last_error = reason
+        self.on_state("error", reason, False)
+        logger.warning("Private stream subscription failed stream=%s reason=%s", self.stream_key, reason)
+        ws.close()
+
+    def _check_readiness(self, ws: Any) -> None:
+        if not self._stop.is_set() and not self._connected:
+            self.subscription_failed(ws, "Private stream authentication/subscription acknowledgement timed out")
 
     @property
     def stream_key(self) -> str:
@@ -174,6 +205,26 @@ class PrivateWebSocketAdapter:
         raise NotImplementedError
 
     def handle_control(self, ws: Any, payload: Dict[str, Any]) -> bool:
+        subscription_ack = (
+            payload.get("event") == "subscribe" or payload.get("op") in {"subscribe", "sub"}
+            or payload.get("action") == "sub"
+        )
+        if payload.get("event") == "error" or (subscription_ack and (
+            payload.get("success") is False or payload.get("error")
+            or str(payload.get("code") or "0") not in {"0", "200"}
+            or str(payload.get("err-code") or "0") != "0"
+        )):
+            self.subscription_failed(ws, "Private stream subscription rejected (code=" + str(
+                payload.get("code") or payload.get("err-code") or "subscription_error"
+            ) + ")")
+            return True
+        if subscription_ack:
+            key = self._subscription_key(payload)
+            if key in self._pending_subscriptions:
+                self._pending_subscriptions.remove(key)
+                if not self._pending_subscriptions:
+                    self.mark_ready()
+            return True
         if payload.get("ping") is not None:
             ws.send(json.dumps({"pong": payload.get("ping")}))
             return True
@@ -195,11 +246,17 @@ class PrivateWebSocketAdapter:
         if interval <= 0:
             return
         while not self._stop.is_set() and not connection_stop.wait(interval):
+            now = time.monotonic()
+            if self._awaiting_pong_at and now - self._awaiting_pong_at > 45:
+                self.subscription_failed(ws, "Private stream application heartbeat timed out")
+                return
             # Incoming frames must not defer a 20-second ping to the 40-second tick.
             payload = self.application_heartbeat_payload()
             if payload is None:
                 return
             try:
+                if not self._awaiting_pong_at:
+                    self._awaiting_pong_at = now
                 if isinstance(payload, str):
                     ws.send(payload)
                 else:
@@ -222,12 +279,15 @@ class PrivateWebSocketAdapter:
         while not self._stop.is_set():
             heartbeat_stop = threading.Event()
             heartbeat_thread: Optional[threading.Thread] = None
+            readiness_timer = None
             try:
                 self.prepare()
                 url = self.url()
 
                 def _open(ws):
-                    nonlocal heartbeat_thread
+                    nonlocal heartbeat_thread, readiness_timer
+                    self._pending_subscriptions.clear()
+                    self._awaiting_pong_at = 0.0
                     self._last_message_at = time.monotonic()
                     if self.ready_on_open():
                         self.mark_ready()
@@ -236,6 +296,10 @@ class PrivateWebSocketAdapter:
                         self.on_state("authenticating", "", self._reconnects > 0)
                     for message in self.on_open_messages():
                         ws.send(json.dumps(message, separators=(",", ":")))
+                    if not self.ready_on_open():
+                        readiness_timer = threading.Timer(30.0, self._check_readiness, args=(ws,))
+                        readiness_timer.daemon = True
+                        readiness_timer.start()
                     if self.application_heartbeat_interval() > 0:
                         heartbeat_thread = threading.Thread(
                             target=self._application_heartbeat_loop,
@@ -247,7 +311,13 @@ class PrivateWebSocketAdapter:
 
                 def _message(ws, raw):
                     self._last_message_at = time.monotonic()
+                    if raw in ("pong", b"pong"):
+                        self._awaiting_pong_at = 0.0
+                        return
                     payload = _json_message(raw)
+                    if payload.get("op") == "pong" or payload.get("ret_msg") == "pong":
+                        self._awaiting_pong_at = 0.0
+                        return
                     if not payload or self.handle_control(ws, payload):
                         return
                     for event in self.parse(payload):
@@ -256,6 +326,7 @@ class PrivateWebSocketAdapter:
                         self.on_event(event)
 
                 def _error(_ws, error):
+                    self._connected = False
                     self._last_error = str(error or "")
                     logger.warning(
                         "Private execution stream error stream=%s error=%s",
@@ -293,6 +364,8 @@ class PrivateWebSocketAdapter:
                         skip_utf8_validation=True,
                     )
                 finally:
+                    if readiness_timer:
+                        readiness_timer.cancel()
                     heartbeat_stop.set()
                     if heartbeat_thread and heartbeat_thread.is_alive():
                         heartbeat_thread.join(timeout=1.0)
@@ -473,8 +546,7 @@ class OkxExecutionAdapter(PrivateWebSocketAdapter):
     def handle_control(self, ws: Any, payload: Dict[str, Any]) -> bool:
         if payload.get("event") == "login":
             if str(payload.get("code") or "0") == "0":
-                self.mark_ready()
-                ws.send(json.dumps({"op": "subscribe", "args": [{"channel": "orders", "instType": "ANY"}]}))
+                self.subscribe(ws, [{"op": "subscribe", "args": [{"channel": "orders", "instType": "ANY"}]}])
             else:
                 self.authentication_failed(ws, f"OKX login failed: {payload}")
             return True
@@ -520,8 +592,7 @@ class BybitExecutionAdapter(PrivateWebSocketAdapter):
             return True
         if payload.get("op") == "auth":
             if bool(payload.get("success")):
-                self.mark_ready()
-                ws.send(json.dumps({"op": "subscribe", "args": ["execution"]}))
+                self.subscribe(ws, [{"op": "subscribe", "args": ["execution"]}])
             else:
                 self.authentication_failed(
                     ws,
@@ -535,6 +606,23 @@ class BybitExecutionAdapter(PrivateWebSocketAdapter):
 
 
 class BitgetExecutionAdapter(PrivateWebSocketAdapter):
+    def prepare(self) -> None:
+        from app.services.live_trading.factory import create_client
+
+        client = create_client({**self.config, "exchange_id": "bitget"}, market_type=self.market_type)
+        resolver = getattr(client, "_resolve_bitget_client", None)
+        if callable(resolver):
+            resolver()
+        self._account_mode = getattr(client, "bitget_account_mode", "uta")
+
+    def _fill_subscription(self) -> Dict[str, str]:
+        if getattr(self, "_account_mode", "uta") == "classic":
+            return {
+                "instType": "SPOT" if self.market_type == "spot" else "USDT-FUTURES",
+                "channel": "orders", "instId": "default",
+            }
+        return {"instType": "UTA", "topic": "fill"}
+
     def ready_on_open(self) -> bool:
         return False
 
@@ -547,9 +635,10 @@ class BitgetExecutionAdapter(PrivateWebSocketAdapter):
         return "ping"
 
     def url(self) -> str:
+        version = "v2" if getattr(self, "_account_mode", "uta") == "classic" else "v3"
         if exchange_trading_environment(self.config, "bitget") != "live":
-            return "wss://wspap.bitget.com/v3/ws/private"
-        return "wss://ws.bitget.com/v3/ws/private"
+            return f"wss://wspap.bitget.com/{version}/ws/private"
+        return f"wss://ws.bitget.com/{version}/ws/private"
 
     def on_open_messages(self) -> List[Dict[str, Any]]:
         timestamp = str(int(time.time() * 1000))
@@ -568,11 +657,7 @@ class BitgetExecutionAdapter(PrivateWebSocketAdapter):
     def handle_control(self, ws: Any, payload: Dict[str, Any]) -> bool:
         if payload.get("event") == "login":
             if str(payload.get("code") or "0") == "0":
-                self.mark_ready()
-                ws.send(json.dumps({
-                    "op": "subscribe",
-                    "args": [{"instType": "UTA", "topic": "fill"}],
-                }))
+                self.subscribe(ws, [{"op": "subscribe", "args": [self._fill_subscription()]}])
             else:
                 self.authentication_failed(ws, f"Bitget login failed: {payload}")
             return True
@@ -726,9 +811,7 @@ class HtxExecutionAdapter(PrivateWebSocketAdapter):
     def handle_control(self, ws: Any, payload: Dict[str, Any]) -> bool:
         if payload.get("ch") == "auth" and payload.get("action") == "req":
             if int(payload.get("code") or 0) == 200:
-                self.mark_ready()
-                for message in self._subscription_messages():
-                    ws.send(json.dumps(message))
+                self.subscribe(ws, self._subscription_messages())
             else:
                 self.authentication_failed(
                     ws,
@@ -737,9 +820,7 @@ class HtxExecutionAdapter(PrivateWebSocketAdapter):
             return True
         if payload.get("op") == "auth":
             if int(payload.get("err-code") or 0) == 0:
-                self.mark_ready()
-                for message in self._subscription_messages():
-                    ws.send(json.dumps(message))
+                self.subscribe(ws, self._subscription_messages())
             else:
                 self.authentication_failed(
                     ws,

@@ -93,8 +93,10 @@ def test_okx_subscribes_only_after_successful_login():
     ws = FakeSocket()
     assert adapter.handle_control(ws, {"event": "login", "code": "0"})
     assert ws.messages == [{"op": "subscribe", "args": [{"channel": "orders", "instType": "ANY"}]}]
+    assert not adapter.connected
+    adapter.handle_control(ws, {"event": "subscribe", "arg": {"channel": "orders", "instType": "ANY"}})
     assert adapter.connected
-    assert states == ["connected"]
+    assert states == ["subscribing", "connected"]
 
 
 def test_okx_and_bitget_use_literal_ping_and_bybit_uses_json_ping():
@@ -261,6 +263,8 @@ def test_bybit_subscribes_only_after_successful_authentication():
     ws = FakeSocket()
     adapter.handle_control(ws, {"op": "auth", "success": True})
     assert ws.messages == [{"op": "subscribe", "args": ["execution"]}]
+    assert not adapter.connected
+    adapter.handle_control(ws, {"op": "subscribe", "success": True})
     assert adapter.connected
 
 
@@ -282,6 +286,76 @@ def test_bitget_uses_uta_fill_subscription(market_type):
         "instType": "UTA",
         "topic": "fill",
     }
+    assert not adapter.connected
+    adapter.handle_control(ws, {"event": "subscribe", "arg": ws.messages[0]["args"][0]})
+    assert adapter.connected
+
+
+@pytest.mark.parametrize("mode,version", [("uta", "v3"), ("classic", "v2")])
+@pytest.mark.parametrize("market_type", ["spot", "swap"])
+def test_bitget_execution_uses_same_account_router_as_orders(monkeypatch, mode, version, market_type):
+    calls = []
+    fake = SimpleNamespace(bitget_account_mode=mode, _resolve_bitget_client=lambda: calls.append("resolve"))
+    monkeypatch.setattr("app.services.live_trading.factory.create_client", lambda config, **kw: fake)
+    adapter, _ = _adapter(BitgetExecutionAdapter, market_type=market_type)
+    adapter.prepare()
+    assert calls == ["resolve"]
+    assert f"/{version}/ws/private" in adapter.url()
+    ws = FakeSocket()
+    adapter.handle_control(ws, {"event": "login", "code": "0"})
+    arg = ws.messages[0]["args"][0]
+    if mode == "classic":
+        assert arg == {"instType": "SPOT" if market_type == "spot" else "USDT-FUTURES", "channel": "orders", "instId": "default"}
+    else:
+        assert arg == {"instType": "UTA", "topic": "fill"}
+    assert not adapter.connected
+    adapter.handle_control(ws, {"event": "subscribe", "arg": arg})
+    assert adapter.connected
+
+
+@pytest.mark.parametrize("adapter_cls,response", [
+    (OkxExecutionAdapter, {"event": "error", "code": "60012"}),
+    (BitgetExecutionAdapter, {"event": "error", "code": "30001"}),
+    (BybitExecutionAdapter, {"op": "subscribe", "success": False}),
+    (HtxExecutionAdapter, {"op": "sub", "err-code": 1000}),
+])
+def test_subscription_errors_do_not_report_ready_or_stop_strategy(adapter_cls, response):
+    adapter, states = _adapter(adapter_cls)
+    ws = FakeSocket()
+    adapter.handle_control(ws, response)
+    assert ws.closed
+    assert not adapter.connected
+    assert states == ["error"]
+    assert not adapter._stop.is_set()
+
+
+def test_htx_waits_for_both_futures_subscription_acknowledgements():
+    adapter, _ = _adapter(HtxExecutionAdapter)
+    ws = FakeSocket()
+    adapter.handle_control(ws, {"op": "auth", "err-code": 0})
+    adapter.handle_control(ws, {"op": "sub", "topic": "matchOrders.*", "err-code": 0})
+    assert not adapter.connected
+    adapter.handle_control(ws, {"op": "sub", "topic": "matchOrders_cross.*", "err-code": 0})
+    assert adapter.connected
+
+
+def test_private_subscription_timeout_recovers_without_stopping_strategy():
+    adapter, states = _adapter(OkxExecutionAdapter)
+    ws = FakeSocket()
+    adapter._check_readiness(ws)
+    assert ws.closed and states == ["error"]
+    assert not adapter._stop.is_set()
+
+
+@pytest.mark.parametrize("adapter_cls", [OkxExecutionAdapter, BitgetExecutionAdapter, BybitExecutionAdapter])
+def test_private_missing_pong_reconnects_without_stopping_strategy(monkeypatch, adapter_cls):
+    adapter, states = _adapter(adapter_cls)
+    ws = FakeSocket()
+    adapter._awaiting_pong_at = 1.0
+    monkeypatch.setattr("app.services.execution_streams.adapters.time.monotonic", lambda: 60.0)
+    adapter._application_heartbeat_loop(ws, StopAfterOneHeartbeat())
+    assert ws.closed and states == ["error"]
+    assert not adapter._stop.is_set()
 
 
 def test_gate_becomes_healthy_only_after_authenticated_subscription_ack():

@@ -126,3 +126,55 @@ K 线限流不立即重试分页或备用请求。已有封禁仍需等待到期
 统计需要涵盖所有调用进程，不包含同一出口 IP 上其他应用的流量。日志不记录 URL 查询参数、密钥、签名或响应正文。
 
 账户协调标识使用 API Key 作为密钥的 HMAC-SHA256，不将原始凭据写入 Redis 键，且跨进程、重启后保持一致。升级时统一更新所有参与协调的进程：旧版普通哈希与新版账户标识不共享接口冷却；IP 冷却和共享读取预算的键保持不变，不改写交易记录或凭据。
+
+
+## Cross-venue WebSocket recovery
+
+Public prices use the HTX USDT endpoint `wss://api.hbdm.com/linear-swap-ws`
+and native contract topics such as `market.BTC-USDT.detail`. OKX and Bitget
+receive text `ping`, and Bybit receives JSON `op=ping`, every 20 seconds.
+Missing application pong or startup acknowledgement closes the socket and uses
+bounded reconnect backoff; valid prices, not a TCP handshake, establish public
+feed readiness. REST fallback remains subject to existing cache and request guards.
+
+OKX, Bybit, Bitget and HTX private streams wait for the expected subscription
+acknowledgements after authentication. Rejections and 30-second startup timeouts
+report an unavailable stream, leaving REST reconciliation active. HTX waits for
+both isolated and cross-margin fill channels. Bitget reuses REST account-mode
+resolution: Classic V2 subscribes to `orders` and UTA V3 to `fill`. An unfilled
+Classic order's requested size is not treated as a fill; cumulative fills retain
+native instrument identity and use the existing reconciliation ledger.
+
+Desktop and mobile candle streams retain same-venue REST fallback during network
+failure and retry with 5/10/20/40/60-second backoff. Only valid candle data ends
+recovery. Explicit invalid-subscription responses and unsupported intervals stay
+on REST until the user changes context. Disconnecting cancels retries. Order-book
+recovery discards queued stale snapshots and reports live again after a valid
+new snapshot. Updates are frame-coalesced without interpolating fictitious trades.
+Exchange candle publication cadence still limits visible price changes; Binance
+spot ordinary candle streams publish approximately every two seconds, while
+USD-M candle streams publish approximately every 250 ms when data exists.
+
+These changes require backend/trading-worker and frontend deployment. They do not
+submit trades, clear bans, bypass freshness safeguards or replace REST fill
+reconciliation. Contract tests cover recovery and protocol handling; live private
+account connectivity still requires deployment validation.
+
+## 跨交易所 WebSocket 恢复
+
+HTX USDT 合约价格订阅改为 `linear-swap-ws` 和 `market.BTC-USDT.detail` 等原生标的频道。
+OKX、Bitget 补齐文本心跳，Bybit 补齐 JSON 心跳；心跳或启动确认超时后断线退避重连。
+公共行情收到有效价格才报告连接就绪，REST 兜底继续使用现有缓存及请求限制。
+
+OKX、Bybit、Bitget、HTX 私有成交流在鉴权后等待对应订阅确认，拒绝或启动确认超时继续走 REST 对账。
+HTX 等待逐仓、全仓两个频道确认。Bitget 复用下单端账户模式识别，Classic 使用 V2 orders，
+UTA 使用 V3 fill；未成交订单的委托数量不会被当作成交量，累计成交沿用原有账本对账。
+
+桌面端和移动端网络故障时保留同交易所 REST 兜底，按 5/10/20/40/60 秒退避恢复 WebSocket，
+收到有效 K 线才恢复实时状态。明确拒绝的订阅和不支持的周期保持 REST，切换上下文后再尝试。
+断开页面连接会取消重试；盘口重连会丢弃旧快照，并在新快照到达后恢复实时状态。
+图表按帧合并更新，不插值制造虚构成交。价格变动仍受上游推送频率限制，
+例如币安现货普通 K 线约两秒、USD-M 合约 K 线有数据时约 250 毫秒推送。
+
+需部署后端/交易进程及对应前端。本次不发起交易、不解除封禁、不绕过价格新鲜度检查，
+也不取代 REST 成交对账。协议及恢复流程已通过自动化测试，真实私有账户连接仍需上线验证。
