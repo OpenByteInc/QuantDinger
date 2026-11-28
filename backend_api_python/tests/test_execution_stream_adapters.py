@@ -163,8 +163,9 @@ def test_binance_spot_uses_signed_websocket_api_subscription(monkeypatch, enviro
 
 
 @pytest.mark.parametrize(("environment", "rest_host", "ws_host"), (
-    ("live", "https://fapi.binance.com", "wss://fstream.binance.com/ws"),
-    ("demo", "https://demo-fapi.binance.com", "wss://fstream.binancefuture.com/ws"),
+    ("live", "https://fapi.binance.com", "wss://fstream.binance.com/private/ws"),
+    ("demo", "https://demo-fapi.binance.com", "wss://demo-fstream.binance.com/ws"),
+    ("testnet", "https://demo-fapi.binance.com", "wss://demo-fstream.binance.com/ws"),
 ))
 def test_binance_futures_retains_listen_key_subscription(monkeypatch, environment, rest_host, ws_host):
     adapter, _states = _adapter(BinanceExecutionAdapter)
@@ -212,6 +213,29 @@ def test_binance_websocket_api_event_envelope_is_unwrapped():
     assert len(events) == 1
     assert events[0].symbol == "BTC/USDT"
     assert events[0].exchange_order_id == "12"
+
+
+def test_binance_private_futures_raw_order_event_preserves_fill_evidence():
+    adapter, _states = _adapter(BinanceExecutionAdapter)
+    adapter.config["environment"] = "live"
+    adapter._listen_key = "stream-key"
+    assert adapter.url() == "wss://fstream.binance.com/private/ws/stream-key"
+    payload = {
+        "e": "ORDER_TRADE_UPDATE", "E": 1_700_000_000_000,
+        "o": {
+            "s": "BTCUSDT", "i": 12, "t": 34, "c": "qd-1",
+            "S": "BUY", "ps": "LONG", "X": "FILLED", "x": "TRADE",
+            "L": "100", "l": "0.5", "z": "0.5", "n": "0.02", "N": "USDT",
+        },
+    }
+    assert adapter.handle_control(FakeSocket(), payload) is False
+    events = adapter.parse(payload)
+    assert len(events) == 1
+    assert events[0].exchange_order_id == "12"
+    assert events[0].quantity == 0.5
+    assert events[0].fee_status == "actual"
+    assert events[0].fees[0].currency == "USDT"
+    assert events[0].fees[0].amount == pytest.approx(0.02)
 
 
 def test_bitget_demo_and_live_use_matching_private_websocket_hosts():

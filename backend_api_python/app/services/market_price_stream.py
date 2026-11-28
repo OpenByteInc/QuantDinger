@@ -238,7 +238,7 @@ class PublicMarketPriceFeed:
                 f"{_normalized_symbol(symbol).lower()}@{'markPrice@1s' if swap else 'ticker'}"
                 for symbol in self._symbols()
             )
-            host = "wss://fstream.binance.com" if swap else "wss://stream.binance.com:9443"
+            host = "wss://fstream.binance.com/market" if swap else "wss://stream.binance.com:9443"
             return f"{host}/stream?streams={streams}"
         if self.exchange_id == "okx":
             return "wss://ws.okx.com/ws/v5/public"

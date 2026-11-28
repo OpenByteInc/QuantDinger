@@ -41,9 +41,33 @@ def test_public_price_feed_normalizes_binance_and_okx_symbols():
     assert okx.snapshot().prices["Crypto:BTC/USDT@okx:swap"] == 102
 
 
+def test_binance_routed_mark_price_updates_do_not_trigger_rest_fallback():
+    feed = _feed(fallback=lambda: pytest.fail("Fresh streamed prices must not call REST"))
+    assert "/market/stream?streams=" in feed._url()
+    for symbol, price in feed._parse({
+        "stream": "btcusdt@markPrice@1s",
+        "data": {"e": "markPriceUpdate", "s": "BTCUSDT", "p": "101.5"},
+    }):
+        feed._update(symbol, price)
+    snapshot = feed.snapshot(max_age_seconds=5)
+    assert snapshot.source == "public_websocket"
+    assert snapshot.prices["Crypto:BTC/USDT@binance:swap"] == 101.5
+
+
 @pytest.mark.parametrize("market_type", ("spot", "swap"))
 def test_okx_public_price_feed_uses_port_443_websocket(market_type):
     assert _feed("okx", market_type)._url() == "wss://ws.okx.com/ws/v5/public"
+
+
+def test_binance_public_price_feed_uses_market_prefix_for_swap():
+    assert (
+        _feed("binance", "swap")._url()
+        == "wss://fstream.binance.com/market/stream?streams=btcusdt@markPrice@1s"
+    )
+    assert (
+        _feed("binance", "spot")._url()
+        == "wss://stream.binance.com:9443/stream?streams=btcusdt@ticker"
+    )
 
 
 def test_binance_spot_ticker_uses_last_price_instead_of_price_change():
