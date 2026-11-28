@@ -79,6 +79,29 @@ def test_alpaca_rejects_overflow_or_underflow_in_limit_conversion(broker_route, 
     client.place_limit_order.assert_not_called()
 
 
+@pytest.mark.parametrize("broker,fail_at", [("alpaca", 6), ("ibkr", 1), ("ibkr", 2)])
+def test_validation_response_does_not_expose_exception_details(broker_route, monkeypatch, broker, fail_at):
+    send, client = broker_route
+    calls = 0
+
+    def validate(value, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == fail_at:
+            error = BrokerOrderValidationError()
+            error.args = ("internal-only traceback /srv/private/config",)
+            raise error
+        return order_number(value, **kwargs)
+
+    monkeypatch.setattr(alpaca if broker == "alpaca" else ibkr, "order_number", validate)
+    body, status = send(broker, orderType="limit", price=100, notional=5000, quantity=0 if broker == "alpaca" else 2)
+    assert calls == fail_at
+    assert status == 400
+    assert body == {"success": False, "error": "brokerAccounts.invalidOrder"}
+    client.place_market_order.assert_not_called()
+    client.place_limit_order.assert_not_called()
+
+
 @pytest.mark.parametrize("broker", BROKERS)
 @pytest.mark.parametrize("kind", ["market", "limit"])
 def test_valid_share_quantity_and_price_are_preserved(broker_route, broker, kind):

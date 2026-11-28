@@ -117,6 +117,22 @@ def test_expired_or_missing_reference_price_cannot_bypass_failure(order_route, r
     order_route.submit.assert_not_called()
 
 
+def test_sizing_response_does_not_expose_exception_details(order_route, monkeypatch):
+    error = QuickTradeSizingError()
+    error.args = ("internal-only traceback /srv/private/config",)
+    monkeypatch.setattr(quick_trade, "_convert_usdt_to_base_qty", Mock(side_effect=error))
+    body, status = order_route.request()
+    assert status == 400
+    assert body == {
+        "code": 0,
+        "msg": "quickTrade.errorHints.sizingUnavailable",
+        "error_hint": "quickTrade.errorHints.sizingUnavailable",
+    }
+    order_route.submit.assert_not_called()
+    order_route.configure.assert_not_called()
+    order_route.normalize.assert_not_called()
+
+
 @pytest.mark.parametrize("price", [60000, 1])
 @pytest.mark.parametrize("order_type", ["market", "limit"])
 def test_valid_orders_still_submit_correct_notional_quantity(order_route, price, order_type):

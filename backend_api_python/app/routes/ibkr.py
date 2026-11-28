@@ -286,8 +286,8 @@ def place_order():
         side = data.get('side')
         try:
             quantity = order_number(data.get('quantity'))
-        except BrokerOrderValidationError as exc:
-            return jsonify({"success": False, "error": str(exc)}), 400
+        except BrokerOrderValidationError:
+            return jsonify({"success": False, "error": "brokerAccounts.invalidOrder"}), 400
 
         if not symbol:
             return jsonify({"success": False, "error": "Missing symbol"}), 400
@@ -303,8 +303,8 @@ def place_order():
         if order_type == 'limit':
             try:
                 price = order_number(data.get('price'))
-            except BrokerOrderValidationError as exc:
-                return jsonify({"success": False, "error": str(exc)}), 400
+            except BrokerOrderValidationError:
+                return jsonify({"success": False, "error": "brokerAccounts.invalidOrder"}), 400
             if not price or float(price) <= 0:
                 return jsonify({"success": False, "error": "Limit order requires price"}), 400
 

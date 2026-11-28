@@ -638,8 +638,12 @@ def place_order(body):
             },
         })
 
-    except QuickTradeSizingError as e:
-        return jsonify({"code": 0, "msg": str(e), "error_hint": str(e)}), 400
+    except QuickTradeSizingError:
+        return jsonify({
+            "code": 0,
+            "msg": "quickTrade.errorHints.sizingUnavailable",
+            "error_hint": "quickTrade.errorHints.sizingUnavailable",
+        }), 400
     except Exception as e:
         logger.error(f"quick trade failed: {e}")
         logger.error(traceback.format_exc())

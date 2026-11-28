@@ -526,8 +526,8 @@ def place_order():
                 },
             })
         return jsonify({"success": False, "error": result.message, "data": result.raw}), 400
-    except BrokerOrderValidationError as e:
-        return jsonify({"success": False, "error": str(e)}), 400
+    except BrokerOrderValidationError:
+        return jsonify({"success": False, "error": "brokerAccounts.invalidOrder"}), 400
     except Exception as e:
         logger.error(f"Place order failed: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
