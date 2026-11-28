@@ -404,7 +404,11 @@ class BinanceExecutionAdapter(PrivateWebSocketAdapter):
             if environment == "demo":
                 return "wss://demo-ws-api.binance.com/ws-api/v3"
             return "wss://ws-api.binance.com:443/ws-api/v3"
-        host = "wss://fstream.binancefuture.com/ws" if environment != "live" else "wss://fstream.binance.com/ws"
+        host = (
+            "wss://demo-fstream.binance.com/ws"
+            if environment != "live"
+            else "wss://fstream.binance.com/private/ws"
+        )
         return f"{host}/{self._listen_key}"
 
     def handle_control(self, ws: Any, payload: Dict[str, Any]) -> bool:
