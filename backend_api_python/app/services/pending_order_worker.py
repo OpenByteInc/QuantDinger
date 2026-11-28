@@ -312,6 +312,8 @@ class PendingOrderWorker(
                     leverage=float(row.get("leverage") or 1.0),
                     margin_mode=margin_mode,
                     client_order_id=f"qdsync{trade_id}",
+                    trailing_stop_pct=float(metadata.get("trailing_stop_pct") or 0.0),
+                    trailing_activation_pct=float(metadata.get("trailing_activation_pct") or 0.0),
                 )
                 if protection_result:
                     prior = metadata.get("native_protection")

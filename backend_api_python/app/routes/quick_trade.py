@@ -255,6 +255,10 @@ def place_order(body):
         market_type = str(body.get("market_type") or "").strip().lower()
         tp_price = float(body.get("tp_price") or 0)
         sl_price = float(body.get("sl_price") or 0)
+        trailing_stop_pct = max(0.0, float(body.get("trailing_stop_pct") or body.get("trailingStopPct") or 0))
+        trailing_activation_pct = max(
+            0.0, float(body.get("trailing_activation_pct") or body.get("trailingActivationPct") or 0)
+        )
         source = str(body.get("source") or "manual").strip()
         margin_mode = str(body.get("margin_mode") or body.get("marginMode") or "").strip().lower()
         if margin_mode in ("cross", "crossed"):
@@ -551,13 +555,15 @@ def place_order(body):
                 leverage=leverage,
                 margin_mode=margin_mode,
                 client_order_id=f"{client_order_id}p",
+                trailing_stop_pct=trailing_stop_pct,
+                trailing_activation_pct=trailing_activation_pct,
             )
         except Exception as protection_exc:
             protection_error = str(protection_exc)
             logger.error("Quick Trade native protection failed order=%s: %s", exchange_order_id, protection_exc)
 
         protection_status, protection_error = quick_trade_protection_status(
-            requested=tp_price > 0 or sl_price > 0,
+            requested=tp_price > 0 or sl_price > 0 or trailing_stop_pct > 0,
             market_type=market_type,
             filled_qty=filled,
             avg_price=avg_fill,
@@ -581,6 +587,10 @@ def place_order(body):
             "amount_semantics": "base_quantity" if uses_base_quantity else ("margin" if market_type == "swap" else "quote_notional"),
             "input_base_quantity": requested_base_quantity if uses_base_quantity else None,
             "exchange_status": exchange_status,
+            "tp_price": tp_price if tp_price > 0 else None,
+            "sl_price": sl_price if sl_price > 0 else None,
+            "trailing_stop_pct": trailing_stop_pct if trailing_stop_pct > 0 else None,
+            "trailing_activation_pct": trailing_activation_pct if trailing_activation_pct > 0 else None,
             "native_protection": protection_result,
             "native_protection_error": protection_error,
             "protection_status": protection_status,
