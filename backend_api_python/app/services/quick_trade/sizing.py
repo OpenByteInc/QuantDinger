@@ -8,6 +8,11 @@ from app.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
+class PriceConversionError(RuntimeError):
+    """Raised when market price retrieval fails and USDT notional cannot safely be converted to base quantity."""
+    pass
+
+
 def resolve_order_notional_usdt(amount_usdt: float, leverage: int, market_type: str) -> float:
     """Translate the page input into quote notional using one consistent contract."""
     amount = max(0.0, float(amount_usdt or 0.0))
@@ -155,13 +160,17 @@ def convert_usdt_to_base_qty(client, symbol: str, usdt_amount: float, market_typ
             logger.info(f"Converted USDT amount {usdt_amount} to base qty {base_qty:.8f} using price {current_price} for {symbol}")
             return base_qty
         else:
-            # Can't get price - this is critical for quick trade
-            # Quick trade always expects USDT input, so we must convert
-            logger.error(f"CRITICAL: Could not get price for {symbol} on {type(client).__name__} to convert USDT amount {usdt_amount}")
-            logger.error(f"This will cause order to fail. Please check exchange API connectivity or symbol format.")
-            # Still return original amount as fallback, but log error
-            return usdt_amount
+            logger.error(
+                f"Could not get price for {symbol} on {type(client).__name__} to convert USDT amount {usdt_amount}"
+            )
+            raise PriceConversionError(
+                f"Could not retrieve current market price for {symbol} to convert {usdt_amount} USDT to base quantity."
+            )
 
+    except PriceConversionError:
+        raise
     except Exception as e:
-        logger.warning(f"Failed to convert USDT amount to base qty: {e}, using original amount")
-        return usdt_amount
+        logger.error(f"Failed to convert USDT amount {usdt_amount} to base qty for {symbol}: {e}")
+        raise PriceConversionError(
+            f"Failed to convert USDT amount to base quantity for {symbol}: {e}"
+        ) from e

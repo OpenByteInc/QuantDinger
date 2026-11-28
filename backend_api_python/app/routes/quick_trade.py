@@ -65,6 +65,7 @@ from app.services.quick_trade.positions import (
 )
 from app.services.quick_trade.strategy_conflicts import cached_recent_strategy_activity as _recent_strategy_conflict
 from app.services.quick_trade.sizing import (
+    PriceConversionError as _PriceConversionError,
     convert_usdt_to_base_qty as _convert_usdt_to_base_qty,
     resolve_order_notional_usdt as _resolve_order_notional_usdt,
 )
@@ -344,13 +345,26 @@ def place_order(body):
             reference_age_ms = abs(int(time.time() * 1000) - reference_price_at_ms)
             if reference_age_ms <= 30_000:
                 conversion_price = reference_price
-        base_qty = requested_base_quantity if uses_base_quantity else _convert_usdt_to_base_qty(
-            client,
-            symbol,
-            order_notional_usdt,
-            market_type,
-            conversion_price,
-        )
+        if uses_base_quantity:
+            base_qty = requested_base_quantity
+        else:
+            try:
+                base_qty = _convert_usdt_to_base_qty(
+                    client,
+                    symbol,
+                    order_notional_usdt,
+                    market_type,
+                    conversion_price,
+                )
+            except _PriceConversionError as pe:
+                logger.error("Failed to convert USDT notional to base quantity for %s: %s", symbol, pe)
+                return jsonify(
+                    {
+                        "code": 0,
+                        "msg": f"Failed to retrieve current price for {symbol}. Order rejected to prevent unsafe position sizing.",
+                        "error_hint": "quickTrade.errorHints.invalidPrice",
+                    }
+                ), 400
 
         quote_for_buy = 0.0
         if market_type == "spot":
@@ -425,14 +439,16 @@ def place_order(body):
                     except Exception as be:
                         logger.warning("spot buy balance pre-check skipped: %s", be)
         
-        # Validate conversion: equal values usually mean the price lookup fallback was used.
+        # Guard: In swap/futures, if base_qty equals order_notional_usdt (e.g. 5000 notional becoming 5000 base contracts/coins),
+        # this is unsafe unless 1 unit happens to be priced at exactly $1.00.
         if market_type != "spot" and base_qty == order_notional_usdt and order_notional_usdt >= 1:
             logger.error(
-                "USDT conversion may have failed: base_qty (%s) equals order_notional_usdt (%s)",
+                "USDT conversion ambiguity: base_qty (%s) equals order_notional_usdt (%s) for %s on %s",
                 base_qty,
                 order_notional_usdt,
+                symbol,
+                exchange,
             )
-            logger.error(f"This suggests the price fetch failed. Order may fail due to insufficient margin.")
 
         executable_base_qty, quantity_snapshot = normalized_submission_quantity(
             client,
