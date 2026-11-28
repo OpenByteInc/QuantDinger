@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import threading
 import time
@@ -1914,9 +1915,9 @@ class TradingExecutor:
         frame_aliases = (str(intent.symbol), str(member.get("key") or ""))
         frame = _instrument_frame(frames, intent_key, *frame_aliases)
         price = float(current_price_override or 0)
-        if price <= 0 and frame is not None and not frame.empty:
+        if (not math.isfinite(price) or price <= 0) and frame is not None and not frame.empty:
             price = float(frame["close"].iloc[-1])
-        if price <= 0:
+        if not math.isfinite(price) or price <= 0:
             raise RuntimeError(f"strategyV2.priceUnavailable:{intent.symbol}")
 
         symbol = str(member.get("symbol") or "")
@@ -1979,6 +1980,8 @@ class TradingExecutor:
         if abs(target_amount - current_amount) * price < MIN_LIVE_ORDER_NOTIONAL and not closes_position:
             return False
 
+        if not math.isfinite(target_amount - current_amount):
+            raise RuntimeError("strategyV2.invalidOrderSize")
         requests = self._order_plan(current_amount, target_amount)
         if (
             execution_mode == "live"
@@ -3048,22 +3051,33 @@ class TradingExecutor:
         leverage: float = 1.0,
         market_type: str = "spot",
     ) -> float:
+        value = float(intent.value)
+        if not all(math.isfinite(number) for number in (current, capital, price, leverage, value)):
+            raise RuntimeError("strategyV2.invalidOrderSize")
+        if price <= 0:
+            raise RuntimeError("strategyV2.invalidOrderSize")
         notional_multiplier = (
             max(1.0, float(leverage or 1.0))
             if str(market_type or "").lower() != "spot"
             else 1.0
         )
         if intent.kind == "quantity":
-            return current + float(intent.value)
-        if intent.kind == "value":
-            return current + float(intent.value) * notional_multiplier / price
-        if intent.kind == "target_quantity":
-            return float(intent.value)
-        if intent.kind == "target_value":
-            return float(intent.value) * notional_multiplier / price
-        if intent.kind == "target_percent":
-            return capital * float(intent.value) * notional_multiplier / price
-        raise RuntimeError(f"strategyV2.orderKindUnsupported:{intent.kind}")
+            target = current + value
+        elif intent.kind in {"value", "target_value", "target_percent"}:
+            notional = (capital * value if intent.kind == "target_percent" else value) * notional_multiplier
+            if notional == 0 and value != 0 and (intent.kind != "target_percent" or capital != 0):
+                raise RuntimeError("strategyV2.invalidOrderSize")
+            converted = notional / price
+            if not math.isfinite(converted) or (notional != 0 and converted == 0):
+                raise RuntimeError("strategyV2.invalidOrderSize")
+            target = current + converted if intent.kind == "value" else converted
+        elif intent.kind == "target_quantity":
+            target = value
+        else:
+            raise RuntimeError(f"strategyV2.orderKindUnsupported:{intent.kind}")
+        if not math.isfinite(target):
+            raise RuntimeError("strategyV2.invalidOrderSize")
+        return target
 
     @staticmethod
     def _direction_constrained_target(

@@ -440,6 +440,22 @@ class StrategyV2OrderGateway:
 
     @staticmethod
     def _validate(request: LiveOrderRequest) -> LiveOrderRequest:
+        numbers = (
+            request.quantity, request.reference_price, request.leverage,
+            request.limit_price, request.maker_wait_sec, request.maker_offset_bps,
+        )
+        try:
+            valid_numbers = all(not isinstance(value, bool) and math.isfinite(value) for value in numbers)
+        except (TypeError, ValueError, OverflowError):
+            valid_numbers = False
+        if not valid_numbers:
+            raise ValueError("strategyV2.invalidOrderSize")
+        if request.leverage <= 0 or request.limit_price < 0 or request.maker_wait_sec < 0:
+            raise ValueError("strategyV2.invalidOrderSize")
+        for price in (request.reference_price, request.limit_price):
+            notional = request.quantity * price
+            if not math.isfinite(notional) or (request.quantity > 0 and price > 0 and notional == 0):
+                raise ValueError("strategyV2.invalidOrderSize")
         if request.strategy_id <= 0 or request.user_id <= 0:
             raise ValueError("strategyV2.invalidRuntimeIdentity")
         if request.strategy_run_id <= 0:
@@ -468,6 +484,6 @@ class StrategyV2OrderGateway:
             raise ValueError("strategyV2.orderTypeUnsupported")
         if request.execution_algo not in {"market", "limit", "maker_then_market"}:
             raise ValueError("strategyV2.executionAlgoUnsupported")
-        if request.execution_algo == "limit" and request.limit_price <= 0:
+        if (request.execution_algo == "limit" or request.order_type == "limit") and request.limit_price <= 0:
             raise ValueError("strategyV2.limitPriceRequired")
         return request
