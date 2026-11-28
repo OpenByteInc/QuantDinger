@@ -53,9 +53,7 @@ Deploy the backend and restart API/market-data/trading workers to apply the code
 
 多进程、多部署若共用出口 IP，必须使用相同的 Redis 协调地址和命名空间；没有 Redis 配置时只能进程内协调。已配置的协调服务不可用时暂缓请求。部署后重启相关后端、行情和交易进程，无需数据库迁移；已有封禁仍需等待交易所解除。
 
-## Binance incident tracing
-
-### USD-M WebSocket routing
+## USD-M WebSocket routing
 
 Binance USD-M live mark-price feeds use `/market/stream`; desktop and mobile
 K-line subscriptions use `/market/ws`, and depth subscriptions use `/public/ws`.
@@ -74,7 +72,7 @@ execution reconciliation remain enabled for outages. Deploy backend workers and
 both frontend builds together. No database migration is required. Correct routing
 removes one cause of excess REST traffic; it does not clear an active IP ban.
 
-### USD-M WebSocket 路由
+## USD-M WebSocket 路由
 
 币安永续实盘价格使用 `/market/stream`，桌面端和移动端 K 线使用 `/market/ws`，盘口使用
 `/public/ws`。实盘成交订阅使用用户数据文档规定的 `/private/ws/<listenKey>`，保留原有事件格式、
@@ -84,6 +82,8 @@ listenKey 创建与续期逻辑；模拟和测试环境使用 `demo-fstream.bina
 部署时统一更新后端进程及两个前端，无需数据库迁移。连接握手成功不代表行情已经到达，需要确认
 价格来源为 `public_websocket` 且持续更新，并检查 K 线推送。REST 兜底和成交对账继续保留；
 正确路由能消除一类额外 REST 请求，但不会提前解除已经生效的 IP 封禁。
+
+## Binance incident tracing
 
 Deploy the same backend revision to every API, trading, evaluator, scheduler and
 Celery process that can call Binance. Verify that they share
